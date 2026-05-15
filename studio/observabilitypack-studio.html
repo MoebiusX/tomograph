@@ -1375,6 +1375,7 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
             <button class="atlas-tab" data-atlas="periodic">Periodic Table</button>
             <button class="atlas-tab" data-atlas="constellation">Constellation</button>
             <button class="atlas-tab" data-atlas="skyline">Skyline</button>
+            <button class="atlas-tab" data-atlas="transit">Transit</button>
           </div>
         </div>
         <div class="atlas-stage" id="atlasStage"></div>
@@ -1713,7 +1714,7 @@ const state = {
   packA: 'production-live',
   packB: 'target-advanced',
   filter: 'all',                // 'all' | 'BAU' | 'OLA' | 'NEW' | 'GAP' | 'PLANNED' | 'LIVE'
-  atlas: 'strata',              // 'strata' | 'periodic' | 'constellation' | 'skyline'
+  atlas: 'strata',              // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit'
   constMix: 0,                  // 0 = current sky, 1 = target sky
 };
 
@@ -2149,6 +2150,7 @@ function renderAtlas() {
   else if (state.atlas === 'periodic')  renderAtlasPeriodic(stage);
   else if (state.atlas === 'constellation') renderAtlasConstellation(stage);
   else if (state.atlas === 'skyline')   renderAtlasSkyline(stage);
+  else if (state.atlas === 'transit')   renderAtlasTransit(stage);
 
   // Update title + lede per metaphor
   const meta = ATLAS_META[state.atlas];
@@ -2172,6 +2174,10 @@ const ATLAS_META = {
   skyline: {
     title: 'The maturity skyline',
     lede: 'A slopegraph from current to target, one line per layer. The longest lines are the biggest deltas — that\'s your project plan written in geometry.',
+  },
+  transit: {
+    title: 'The platform as a transit network',
+    lede: 'A subway-style map of every artefact, every layer, every dependency. Closed stations are gaps; interchange chains show how an SLO becomes an alert. Where the line breaks, the train doesn\'t run — and you can see why.',
   },
 };
 
@@ -3017,6 +3023,289 @@ function renderAtlasSkyline(stage) {
       if (target) openDrawer(target.id, L, pack);
     });
   });
+}
+
+/* ============================================================
+   5) TRANSIT — the platform as a subway network
+   Each layer is a line. Each artefact is a station.
+   Closed stations (GAP) are open rings with a red ✕.
+   Vertical dashed columns highlight interchange chains where an
+   SLO becomes a query becomes an alert.
+   ============================================================ */
+
+function renderAtlasTransit(stage) {
+  const A = packBy(state.packA);
+  const B = packBy(state.packB);
+  const pack = A; // single-pack view; B used for the toggle hint
+
+  const LINE_C = {
+    L1:'#C97700', L2:'#2E75B6', L3:'#006B6B',
+    L4:'#A22323', L5:'#5B2C82', GOV:'#4A4A4A',
+  };
+  const CARD = '#11192A';      // dark card bg for open rings on dark stage
+  const INK_3 = '#9BA3AD';
+
+  // Per-layer y positions
+  const Y = { L1: 100, L2: 190, L3: 280, L4_POL: 340, L4_ALR: 380, L4_HEAL: 420, L5: 520, GOV: 600 };
+  const X_LEFT = 160, X_RIGHT = 1020;
+  const VB_W = 1100, VB_H = 720;
+
+  function expand(p, L) {
+    if (L === 'L4') {
+      const out = [];
+      ['policy','alerting','healing'].forEach(col => {
+        (p.layers.L4?.[col] || []).forEach(x => out.push({ ...x, _col: col }));
+      });
+      return out;
+    }
+    return (p.layers[L] || []).map(x => ({ ...x }));
+  }
+
+  function xsFor(n) {
+    if (n <= 1) return [(X_LEFT + X_RIGHT) / 2];
+    const step = (X_RIGHT - X_LEFT) / (n - 1);
+    return Array.from({ length: n }, (_, i) => X_LEFT + i * step);
+  }
+
+  // ---- Build per-line station tables -------------------------------------
+  const lines = []; // { id, y, color, label, stations: [{id,title,source,x,y,col?}] }
+  ['L1','L2','L3','L5','GOV'].forEach(L => {
+    const list = expand(pack, L);
+    const xs = xsFor(list.length);
+    const y = L === 'L1' ? Y.L1 : L === 'L2' ? Y.L2 : L === 'L3' ? Y.L3 : L === 'L5' ? Y.L5 : Y.GOV;
+    lines.push({
+      id: L, y, color: LINE_C[L],
+      label: SCHEMA_META.layers.find(m => m.id === L)?.name || L,
+      stations: list.map((it, i) => ({ ...it, x: xs[i], y })),
+    });
+  });
+
+  // L4 split into three branches (policy, alerting, healing)
+  const L4 = pack.layers.L4 || {};
+  const polList = (L4.policy   || []).map(x => ({ ...x, _col: 'policy'   }));
+  const alrList = (L4.alerting || []).map(x => ({ ...x, _col: 'alerting' }));
+  const healList= (L4.healing  || []).map(x => ({ ...x, _col: 'healing'  }));
+  const polXs   = xsFor(polList.length);
+  const alrXs   = xsFor(alrList.length);
+  const healXs  = xsFor(healList.length);
+  const polStations  = polList.map((it, i)  => ({ ...it, x: polXs[i],  y: Y.L4_POL  }));
+  const alrStations  = alrList.map((it, i)  => ({ ...it, x: alrXs[i],  y: Y.L4_ALR  }));
+  const healStations = healList.map((it, i) => ({ ...it, x: healXs[i], y: Y.L4_HEAL }));
+
+  // ---- Interchange detection (Option A: adjacent layers, same column) ----
+  // Build a flat list of all stations in render order; find vertical chains
+  // where adjacent-layer stations share approximately the same x.
+  const layerOrder = ['L1','L2','L3','L4_ALR','L5','GOV']; // alerting branch is the spine
+  const byLayer = {
+    L1: lines.find(l => l.id === 'L1').stations,
+    L2: lines.find(l => l.id === 'L2').stations,
+    L3: lines.find(l => l.id === 'L3').stations,
+    L4_ALR: alrStations,
+    L5: lines.find(l => l.id === 'L5').stations,
+    GOV: lines.find(l => l.id === 'GOV').stations,
+  };
+  const TOL = 35; // px tolerance for "same column"
+  const interchangeStations = new Set();
+  const interchangeColumns = []; // [{x, ys:[y1,y2,...]}]
+  for (let i = 0; i < layerOrder.length - 1; i++) {
+    const a = byLayer[layerOrder[i]];
+    const b = byLayer[layerOrder[i + 1]];
+    a.forEach(sa => {
+      b.forEach(sb => {
+        if (Math.abs(sa.x - sb.x) <= TOL) {
+          interchangeStations.add(sa.id);
+          interchangeStations.add(sb.id);
+          interchangeColumns.push({ x: (sa.x + sb.x) / 2, y1: sa.y, y2: sb.y });
+        }
+      });
+    });
+  }
+
+  // ---- SVG build ---------------------------------------------------------
+  let svg = `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="transit-svg" xmlns="http://www.w3.org/2000/svg" font-family="IBM Plex Sans, system-ui">`;
+
+  // Title strip
+  svg += `
+    <text x="${VB_W/2}" y="28" text-anchor="middle"
+      style="font-family:'Newsreader', serif; font-size:18px; font-weight:600; fill:#E5E7EB;">The platform as a transit network</text>
+    <text x="${VB_W/2}" y="48" text-anchor="middle"
+      style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; fill:#9BA3AD; letter-spacing:0.04em;">
+      ● operational  ◎ live  ○ closed/gap   |   layered loop = interchange chain
+    </text>`;
+
+  // ---- Interchange column hints (drawn BEFORE lines so stations sit on top)
+  // Group columns by x to draw one continuous dashed vertical per cluster
+  const colsByX = new Map();
+  interchangeColumns.forEach(c => {
+    const key = Math.round(c.x / 8) * 8;
+    if (!colsByX.has(key)) colsByX.set(key, { x: c.x, yMin: c.y1, yMax: c.y2 });
+    const g = colsByX.get(key);
+    g.yMin = Math.min(g.yMin, c.y1, c.y2);
+    g.yMax = Math.max(g.yMax, c.y1, c.y2);
+  });
+  colsByX.forEach(g => {
+    svg += `<line x1="${g.x}" y1="${g.yMin}" x2="${g.x}" y2="${g.yMax}"
+              stroke="${INK_3}" stroke-width="1" stroke-dasharray="2 3" opacity="0.5"/>`;
+  });
+
+  // Annotation: highlight the canonical SLO→QRY→ALR column if found
+  // Pick the leftmost interchange cluster that spans L1 → L4_ALR
+  let canonicalCol = null;
+  colsByX.forEach(g => {
+    if (g.yMin <= Y.L1 + 5 && g.yMax >= Y.L4_ALR - 5) {
+      if (!canonicalCol || g.x < canonicalCol.x) canonicalCol = g;
+    }
+  });
+  if (canonicalCol) {
+    svg += `<text x="${canonicalCol.x + 10}" y="68"
+              style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; fill:#C4CCD6;">
+              interchange · the SLO→alert chain</text>`;
+  }
+
+  // ---- Draw each line + line label ---------------------------------------
+  function drawLine(x1, y, x2, color) {
+    return `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}"
+              stroke="${color}" stroke-width="7" stroke-linecap="round" opacity="0.95"/>`;
+  }
+  function lineLabel(L, y, label) {
+    return `
+      <text x="20" y="${y - 6}" style="font-family:'IBM Plex Mono', monospace; font-size:11px; font-weight:700; fill:${LINE_C[L]}; letter-spacing:0.04em;">${L}</text>
+      <text x="20" y="${y + 10}" style="font-family:'Newsreader', serif; font-size:13px; fill:#D7DCE3;">${label}</text>`;
+  }
+
+  // L1, L2, L3, L5, GOV simple horizontals
+  ['L1','L2','L3','L5','GOV'].forEach(L => {
+    const ln = lines.find(l => l.id === L);
+    svg += drawLine(X_LEFT - 20, ln.y, X_RIGHT + 20, ln.color);
+    svg += lineLabel(L, ln.y, ln.label);
+  });
+
+  // L4 — junction + three branches
+  const JX = 200, JY = Y.L4_ALR;
+  svg += lineLabel('L4', JY, 'Action');
+  // Alerting (straight)
+  svg += `<line x1="${JX}" y1="${JY}" x2="${X_RIGHT + 20}" y2="${JY}"
+            stroke="${LINE_C.L4}" stroke-width="7" stroke-linecap="round"/>`;
+  // Policy — up-right diagonal then horizontal
+  const POL_X0 = JX + 40;
+  svg += `<path d="M ${JX} ${JY} L ${POL_X0} ${Y.L4_POL} L ${X_RIGHT + 20} ${Y.L4_POL}"
+            stroke="${LINE_C.L4}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.92"/>`;
+  // Healing — down-right diagonal then horizontal
+  const HEAL_X0 = JX + 40;
+  svg += `<path d="M ${JX} ${JY} L ${HEAL_X0} ${Y.L4_HEAL} L ${X_RIGHT + 20} ${Y.L4_HEAL}"
+            stroke="${LINE_C.L4}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.92"/>`;
+  // Branch labels at the right
+  svg += `
+    <text x="${X_RIGHT + 26}" y="${Y.L4_POL  + 4}" style="font-family:'IBM Plex Mono', monospace; font-size:10px; fill:${LINE_C.L4};">policy ›</text>
+    <text x="${X_RIGHT + 26}" y="${Y.L4_ALR  + 4}" style="font-family:'IBM Plex Mono', monospace; font-size:10px; fill:${LINE_C.L4};">alerting ›</text>
+    <text x="${X_RIGHT + 26}" y="${Y.L4_HEAL + 4}" style="font-family:'IBM Plex Mono', monospace; font-size:10px; fill:${LINE_C.L4};">healing ›</text>
+    <text x="${JX - 6}" y="${JY - 16}" text-anchor="end"
+      style="font-family:'Newsreader', serif; font-style:italic; font-size:10.5px; fill:#9BA3AD;">junction</text>
+    <circle cx="${JX}" cy="${JY}" r="5" fill="${LINE_C.L4}" stroke="#11192A" stroke-width="1.5"/>`;
+
+  // ---- Station rendering -------------------------------------------------
+  function stationGlyph(s, L) {
+    const color = LINE_C[L];
+    const inter = interchangeStations.has(s.id);
+    const baseR = inter ? 9 : 6;
+    let body = '';
+    if (s.source === 'GAP') {
+      // Open ring + red ✕
+      body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR}" fill="${CARD}" stroke="${color}" stroke-width="1.7"/>`;
+      body += `<g stroke="#DC2626" stroke-width="1.8" stroke-linecap="round">
+                 <line x1="${s.x-3.4}" y1="${s.y-3.4}" x2="${s.x+3.4}" y2="${s.y+3.4}"/>
+                 <line x1="${s.x-3.4}" y1="${s.y+3.4}" x2="${s.x+3.4}" y2="${s.y-3.4}"/>
+               </g>`;
+    } else if (s.source === 'LIVE') {
+      body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR + 1}" fill="#06B6D4" stroke="${color}" stroke-width="2"/>`;
+    } else if (s.source === 'NEW') {
+      body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR}" fill="${CARD}" stroke="${color}" stroke-width="1.8" stroke-dasharray="3 2"/>`;
+    } else if (s.source === 'PLANNED') {
+      body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR}" fill="${CARD}" stroke="${color}" stroke-width="1.5" stroke-dasharray="1.5 2.2"/>`;
+    } else {
+      // BAU / OLA — filled disc
+      body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR}" fill="${color}" stroke="${CARD}" stroke-width="1.2"/>`;
+    }
+    if (inter && s.source !== 'GAP') {
+      body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR + 3}" fill="none" stroke="${color}" stroke-width="1.6" opacity="0.85"/>`;
+    }
+    return body;
+  }
+
+  function stationLabel(s, i) {
+    // Alternate above/below to reduce collisions
+    const dy = (i % 2 === 0) ? -16 : 22;
+    const lbl = s.id + (s.source === 'LIVE' ? ' (live)' : '');
+    return `<text x="${s.x}" y="${s.y + dy}" text-anchor="middle"
+              style="font-family:'IBM Plex Mono', monospace; font-size:10px; fill:#D7DCE3;">${lbl}</text>`;
+  }
+
+  function renderStations(stations, L) {
+    return stations.map((s, i) => `
+      <g class="transit-station" data-id="${s.id}" data-layer="${L}" style="cursor:pointer">
+        ${stationGlyph(s, L)}
+        ${stationLabel(s, i)}
+        <title>${s.id} — ${s.title || ''} (${s.source})</title>
+      </g>`).join('');
+  }
+
+  ['L1','L2','L3','L5','GOV'].forEach(L => {
+    const ln = lines.find(l => l.id === L);
+    svg += renderStations(ln.stations, L);
+  });
+  svg += renderStations(polStations,  'L4');
+  svg += renderStations(alrStations,  'L4');
+  svg += renderStations(healStations, 'L4');
+
+  // ---- Footer reading guide ---------------------------------------------
+  svg += `
+    <g transform="translate(20 ${VB_H - 80})">
+      <rect x="0" y="0" width="${VB_W - 40}" height="70" rx="6"
+            fill="#0B1424" stroke="#1F2937" stroke-width="1"/>
+      <text x="14" y="20" style="font-family:'IBM Plex Mono', monospace; font-size:11px; fill:#E5E7EB; font-weight:600;">Reading the map</text>
+      <text x="14" y="38" style="font-family:'Newsreader', serif; font-size:12px; fill:#C4CCD6;">Open circles with red ✕ are gaps: the station exists on the plan but isn't built.</text>
+      <text x="14" y="56" style="font-family:'Newsreader', serif; font-size:12px; fill:#C4CCD6;">The whole healing branch is closed → no automated remediation. The Validation line and Governance are largely unbuilt.</text>
+    </g>`;
+
+  svg += `</svg>`;
+
+  // Compose
+  const otherId = pack.id === A.id ? B.id : A.id;
+  stage.innerHTML = `
+    <div class="transit-wrap" style="display:block; background:#0A111E; border-radius:8px; padding:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin: 4px 8px 10px; color:#C4CCD6;">
+        <span style="font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.06em;">SHOWING: ${pack.name}</span>
+        <button id="transitSwap" class="atlas-tab" style="background:#11192A; color:#C4CCD6;">switch to pack B (${B.name}) ›</button>
+      </div>
+      ${svg}
+    </div>
+    <div class="strata-legend" style="margin-top:10px;">
+      Click any station to open its drawer.
+      Dashed vertical lines mark <em>interchange chains</em> — where an artefact in one layer depends on one above it.
+    </div>
+  `;
+
+  // Click-through to drawer
+  stage.querySelectorAll('.transit-station').forEach(el => {
+    el.addEventListener('click', () => {
+      openDrawer(el.dataset.id, el.dataset.layer, pack);
+    });
+  });
+
+  // Pack A ↔ B toggle (memory-beats-simultaneity)
+  const swap = stage.querySelector('#transitSwap');
+  if (swap) {
+    swap.addEventListener('click', () => {
+      const tmp = state.packA;
+      state.packA = state.packB;
+      state.packB = tmp;
+      const sa = document.querySelector('#packA');
+      const sb = document.querySelector('#packB');
+      if (sa) sa.value = state.packA;
+      if (sb) sb.value = state.packB;
+      renderAll();
+    });
+  }
 }
 
 function renderAll() {
