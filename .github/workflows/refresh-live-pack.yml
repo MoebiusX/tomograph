@@ -1,0 +1,50 @@
+name: refresh-live-pack
+
+# Refresh packs/production-live.json from the live MCP server.
+# Configure secrets MCP_URL and (optionally) MCP_AUTH in repo settings.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # every 15 minutes
+  workflow_dispatch:          # also run on demand
+  push:
+    paths:
+      - tools/fetch-live-pack.mjs   # re-run after fetcher changes
+
+permissions:
+  contents: write   # to commit the refreshed JSON
+
+concurrency:
+  group: refresh-live-pack
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Fetch live pack from MCP
+        env:
+          MCP_URL:  ${{ secrets.MCP_URL }}
+          MCP_AUTH: ${{ secrets.MCP_AUTH }}
+          OUTPUT:   packs/production-live.json
+        run: node tools/fetch-live-pack.mjs
+
+      - name: Commit if changed
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add packs/production-live.json
+          if git diff --quiet --cached; then
+            echo "no changes"
+          else
+            git commit -m "chore(live): refresh $(date -u +%FT%TZ)"
+            git push
+          fi

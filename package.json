@@ -1,0 +1,25 @@
+{
+  "name": "otel-observability-pack-studio",
+  "version": "0.2.0",
+  "private": true,
+  "description": "A single-file web studio for visualising observability platform state, with live MCP wire-up.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "serve":         "python3 -m http.server 8000",
+    "fetch-live":    "node tools/fetch-live-pack.mjs",
+    "validate-pack": "node tools/validate-pack.mjs"
+  },
+  "license": "MIT",
+  "keywords": [
+    "observability",
+    "otel",
+    "opentelemetry",
+    "mcp",
+    "sre",
+    "slo",
+    "visualisation"
+  ]
+}

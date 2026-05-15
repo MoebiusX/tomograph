@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/otel-observability-pack-studio/pack.schema.json",
+  "title": "ObservabilityPack",
+  "description": "A versioned inventory of observability artefacts grouped by the 5-layer ObservabilityPack model.",
+  "type": "object",
+  "required": ["id", "name", "layers"],
+  "additionalProperties": true,
+  "properties": {
+    "id":          { "type": "string", "minLength": 1, "pattern": "^[a-z0-9][a-z0-9-]*$",
+                     "description": "Stable, kebab-case identifier. Matched by the studio loader and the file picker dedupe." },
+    "name":        { "type": "string", "minLength": 1, "description": "Display name shown in selectors." },
+    "badge":       { "type": "string", "description": "Short badge (BAU / LIVE / TARGET / etc.) used by the Constellation centre." },
+    "description": { "type": "string", "description": "One-line summary shown in the intro paragraph." },
+
+    "liveness": {
+      "type": "object",
+      "description": "Optional metadata about how this pack was produced. Studio reads it for the header badge.",
+      "additionalProperties": true,
+      "properties": {
+        "refreshedAt":         { "type": "string", "format": "date-time" },
+        "mcpUrl":              { "type": "string", "format": "uri" },
+        "toolsCalled":         { "type": "array",  "items": { "type": "string" } },
+        "toolsFailed":         { "type": "object" },
+        "servicesDiscovered":  { "type": "array",  "items": { "type": "string" } },
+        "baselinesComputed":   { "type": "integer", "minimum": 0 },
+        "activeAnomalies":     { "type": "integer", "minimum": 0 },
+        "embedded":            { "type": "boolean" }
+      }
+    },
+
+    "layers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "L1":  { "$ref": "#/$defs/layerList" },
+        "L2":  { "$ref": "#/$defs/layerList" },
+        "L3":  { "$ref": "#/$defs/layerList" },
+        "L5":  { "$ref": "#/$defs/layerList" },
+        "GOV": { "$ref": "#/$defs/layerList" },
+        "L4": {
+          "type": "object",
+          "description": "L4 Action is split into three sub-columns: Policy (when), Alerting (where), Self-Healing (what runs).",
+          "additionalProperties": false,
+          "properties": {
+            "policy":   { "$ref": "#/$defs/layerList" },
+            "alerting": { "$ref": "#/$defs/layerList" },
+            "healing":  { "$ref": "#/$defs/layerList" }
+          }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "layerList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artefact" }
+    },
+    "artefact": {
+      "type": "object",
+      "required": ["id", "source", "title"],
+      "additionalProperties": true,
+      "properties": {
+        "id":     { "type": "string", "minLength": 1, "description": "Unique within the pack. Convention: <TYPE>-<NN> (e.g. SLI-01, COL-03)." },
+        "title":  { "type": "string", "minLength": 1 },
+        "desc":   { "type": "string", "description": "Body shown on the card and at the top of the drawer." },
+        "tool":   { "type": "string", "description": "Tool / mechanism (Prometheus, OTel Collector, etc.). Use '-' or '—' for none." },
+        "tags":   { "type": "array", "items": { "type": "string" } },
+        "source": {
+          "type": "string",
+          "enum": ["BAU", "OLA", "NEW", "GAP", "PLANNED", "LIVE"],
+          "description": "What kind of fact this artefact represents. See README for semantics."
+        },
+        "mcp": {
+          "type": "object",
+          "description": "Provenance for LIVE/GAP artefacts produced by an MCP refresher.",
+          "required": ["source", "refreshedAt"],
+          "properties": {
+            "verified":    { "type": "boolean" },
+            "source":      { "type": "string", "description": "MCP tool name (e.g. 'system_health') or other identifier." },
+            "refreshedAt": { "type": "string", "format": "date-time" },
+            "evidence":    { "type": "object", "description": "Free-form key/value evidence. Surfaces in the drawer." }
+          }
+        }
+      }
+    }
+  }
+}
