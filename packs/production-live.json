@@ -1,11 +1,11 @@
 {
   "id": "production-live",
-  "name": "Production \u2014 Live (MCP)",
+  "name": "Production — Live (MCP)",
   "badge": "LIVE",
   "description": "Refreshed from otel-mcp-server. LIVE = verified by telemetry; BAU = claimed in repo but not directly verifiable from MCP surface.",
   "liveness": {
-    "refreshedAt": "2026-05-15T16:06:56.641Z",
-    "mcpUrl": "https://mcp.example.com/observability",
+    "refreshedAt": "2026-05-15T17:01:46.269Z",
+    "mcpUrl": "https://www.krystaline.io/mcp/public",
     "toolsCalled": [
       "system_health",
       "system_topology",
@@ -13,13 +13,13 @@
       "anomalies_baselines"
     ],
     "toolsFailed": {
-      "zk_stats": "zk_stats: Error: HTTP 404: Not Found \u2014 http://mcp-internal:5000/api/public/zk/stats",
-      "zk_solvency": "zk_solvency: Error: HTTP 404: Not Found \u2014 http://mcp-internal:5000/api/public/zk/solvency"
+      "zk_solvency": "zk_solvency: Error: HTTP 404: Not Found — http://kx-krystalinex-server:5000/api/public/zk/solvency",
+      "zk_stats": "zk_stats: Error: HTTP 404: Not Found — http://kx-krystalinex-server:5000/api/public/zk/stats"
     },
     "servicesDiscovered": [
-      "order-service",
-      "matching-engine",
-      "wallet-service"
+      "kx-exchange",
+      "kx-matcher",
+      "kx-wallet"
     ],
     "baselinesComputed": 32,
     "activeAnomalies": 0,
@@ -82,7 +82,7 @@
       {
         "id": "COL-01",
         "source": "BAU",
-        "title": "Prometheus scrape \u2014 12 targets",
+        "title": "Prometheus scrape — 12 targets",
         "desc": "Targets not exposed via MCP.",
         "tool": "Prometheus",
         "tags": [
@@ -95,7 +95,7 @@
         "id": "COL-02",
         "source": "LIVE",
         "title": "OTel Collector pipeline",
-        "desc": "OTLP receive \u00b7 batch \u00b7 export to Jaeger + Prometheus.",
+        "desc": "OTLP receive · batch · export to Jaeger + Prometheus.",
         "tool": "OTel Collector",
         "tags": [
           "otel",
@@ -104,10 +104,10 @@
         "mcp": {
           "verified": true,
           "source": "system_health",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {
             "services": 3,
-            "totalSpans": 36,
+            "totalSpans": 40,
             "healthyServices": 3
           }
         }
@@ -116,7 +116,7 @@
         "id": "COL-03",
         "source": "LIVE",
         "title": "Jaeger trace agent",
-        "desc": "system_topology shows 149 spans into jaeger from order-service.",
+        "desc": "system_topology shows 156 spans into jaeger from kx-exchange.",
         "tool": "Jaeger",
         "tags": [
           "traces"
@@ -124,10 +124,10 @@
         "mcp": {
           "verified": true,
           "source": "system_topology",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {
-            "jaegerInboundCalls": 149,
-            "sourceService": "order-service"
+            "jaegerInboundCalls": 156,
+            "sourceService": "kx-exchange"
           }
         }
       },
@@ -154,23 +154,23 @@
         "mcp": {
           "verified": true,
           "source": "system_health",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {
             "services": [
-              "order-service",
-              "matching-engine",
-              "wallet-service"
+              "kx-exchange",
+              "kx-matcher",
+              "kx-wallet"
             ],
             "allHealthy": true,
-            "lastPolled": "2026-05-15T16:06:57.117Z"
+            "lastPolled": "2026-05-15T17:01:46.850Z"
           }
         }
       },
       {
         "id": "COL-X1",
         "source": "LIVE",
-        "title": "Service: order-service",
-        "desc": "Live: healthy, P50 ~97ms, 34 spans, 0 anomalies.",
+        "title": "Service: kx-exchange",
+        "desc": "Live: healthy, P50 ~89ms, 38 spans, 0 anomalies.",
         "tool": "OTel + Prometheus",
         "tags": [
           "service",
@@ -179,20 +179,20 @@
         "mcp": {
           "verified": true,
           "source": "system_health",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {
             "status": "healthy",
-            "avgDuration": 96.95,
-            "spanCount": 34,
+            "avgDuration": 89.49,
+            "spanCount": 38,
             "activeAnomalies": 0,
-            "lastSeen": "2026-05-15T16:06:40.572Z"
+            "lastSeen": "2026-05-15T17:01:40.582Z"
           }
         }
       },
       {
         "id": "COL-X2",
         "source": "LIVE",
-        "title": "Service: matching-engine",
+        "title": "Service: kx-matcher",
         "desc": "Live: healthy, P50 ~4ms, 1 spans, 0 anomalies.",
         "tool": "OTel + Prometheus",
         "tags": [
@@ -203,20 +203,20 @@
         "mcp": {
           "verified": true,
           "source": "system_health",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {
             "status": "healthy",
-            "avgDuration": 4.47,
+            "avgDuration": 4.22,
             "spanCount": 1,
             "activeAnomalies": 0,
-            "lastSeen": "2026-05-15T16:06:40.572Z"
+            "lastSeen": "2026-05-15T17:01:40.582Z"
           }
         }
       },
       {
         "id": "COL-X3",
         "source": "LIVE",
-        "title": "Service: wallet-service",
+        "title": "Service: kx-wallet",
         "desc": "Live: healthy, P50 ~166ms, 1 spans, 0 anomalies.",
         "tool": "OTel + Prometheus",
         "tags": [
@@ -227,7 +227,7 @@
         "mcp": {
           "verified": true,
           "source": "system_health",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {
             "status": "healthy",
             "avgDuration": 166,
@@ -276,7 +276,7 @@
         "source": "GAP",
         "title": "Long-term metrics (>15d)",
         "desc": "Confirmed gap.",
-        "tool": "\u2014",
+        "tool": "—",
         "tags": [
           "retention",
           "audit-blocker"
@@ -284,7 +284,7 @@
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {}
         }
       }
@@ -293,7 +293,7 @@
       {
         "id": "QRY-01",
         "source": "BAU",
-        "title": "Recording rules \u2014 SLI burn",
+        "title": "Recording rules — SLI burn",
         "desc": "Not exposed.",
         "tool": "PromQL",
         "tags": [
@@ -315,7 +315,7 @@
       {
         "id": "DASH-01",
         "source": "BAU",
-        "title": "Grafana \u2014 Service Overview",
+        "title": "Grafana — Service Overview",
         "desc": "Not exposed.",
         "tool": "Grafana",
         "tags": [
@@ -326,7 +326,7 @@
       {
         "id": "DASH-02",
         "source": "BAU",
-        "title": "Grafana \u2014 RabbitMQ + Redis",
+        "title": "Grafana — RabbitMQ + Redis",
         "desc": "Not exposed.",
         "tool": "Grafana",
         "tags": [
@@ -337,7 +337,7 @@
       {
         "id": "DASH-03",
         "source": "BAU",
-        "title": "Grafana \u2014 SLO & Error Budget",
+        "title": "Grafana — SLO & Error Budget",
         "desc": "Not exposed.",
         "tool": "Grafana",
         "tags": [
@@ -350,14 +350,14 @@
         "source": "GAP",
         "title": "Trace-to-log correlation queries",
         "desc": "Confirmed gap.",
-        "tool": "\u2014",
+        "tool": "—",
         "tags": [
           "correlation"
         ],
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {}
         }
       },
@@ -374,20 +374,20 @@
         "mcp": {
           "verified": true,
           "source": "system_topology",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {
             "edges": 2,
             "services": 3,
             "detail": [
               {
-                "parent": "order-service",
-                "child": "jaeger-all-in-one",
-                "callCount": 149
+                "parent": "kx-gateway",
+                "child": "kx-exchange",
+                "callCount": 17
               },
               {
-                "parent": "api-gateway",
-                "child": "order-service",
-                "callCount": 15
+                "parent": "kx-exchange",
+                "child": "jaeger-all-in-one",
+                "callCount": 156
               }
             ]
           }
@@ -485,7 +485,7 @@
           "mcp": {
             "verified": true,
             "source": "anomalies_active",
-            "refreshedAt": "2026-05-15T16:06:56.641Z",
+            "refreshedAt": "2026-05-15T17:01:46.269Z",
             "evidence": {
               "traceAnomaliesActive": 0,
               "traceAnomaliesRecent": 0,
@@ -500,14 +500,14 @@
           "source": "GAP",
           "title": "Runbook automation",
           "desc": "Confirmed gap.",
-          "tool": "\u2014",
+          "tool": "—",
           "tags": [
             "automation"
           ],
           "mcp": {
             "verified": false,
             "source": "inferred",
-            "refreshedAt": "2026-05-15T16:06:56.641Z",
+            "refreshedAt": "2026-05-15T17:01:46.269Z",
             "evidence": {}
           }
         },
@@ -516,14 +516,14 @@
           "source": "GAP",
           "title": "HPA / scale guardrails",
           "desc": "Confirmed gap.",
-          "tool": "\u2014",
+          "tool": "—",
           "tags": [
             "autoscale"
           ],
           "mcp": {
             "verified": false,
             "source": "inferred",
-            "refreshedAt": "2026-05-15T16:06:56.641Z",
+            "refreshedAt": "2026-05-15T17:01:46.269Z",
             "evidence": {}
           }
         },
@@ -532,14 +532,14 @@
           "source": "GAP",
           "title": "Circuit breakers / shedding",
           "desc": "Confirmed gap.",
-          "tool": "\u2014",
+          "tool": "—",
           "tags": [
             "resilience"
           ],
           "mcp": {
             "verified": false,
             "source": "inferred",
-            "refreshedAt": "2026-05-15T16:06:56.641Z",
+            "refreshedAt": "2026-05-15T17:01:46.269Z",
             "evidence": {}
           }
         }
@@ -559,14 +559,14 @@
         "mcp": {
           "verified": true,
           "source": "anomalies_baselines",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {
             "totalBaselines": 32,
             "normalStatus": 32,
             "services": [
-              "order-service",
-              "matching-engine",
-              "wallet-service"
+              "kx-exchange",
+              "kx-matcher",
+              "kx-wallet"
             ],
             "maxSampleCount": 1453
           }
@@ -577,14 +577,14 @@
         "source": "GAP",
         "title": "Chaos testing",
         "desc": "No chaos tooling visible to MCP.",
-        "tool": "\u2014",
+        "tool": "—",
         "tags": [
           "chaos"
         ],
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {}
         }
       },
@@ -593,14 +593,14 @@
         "source": "GAP",
         "title": "Synthetic probes",
         "desc": "No probe data.",
-        "tool": "\u2014",
+        "tool": "—",
         "tags": [
           "synthetic"
         ],
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {}
         }
       },
@@ -609,14 +609,14 @@
         "source": "GAP",
         "title": "MTTD/MTTR baselines",
         "desc": "No incident pipeline.",
-        "tool": "\u2014",
+        "tool": "—",
         "tags": [
           "SRE-metric"
         ],
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {}
         }
       },
@@ -625,14 +625,14 @@
         "source": "GAP",
         "title": "Daily conformance scan",
         "desc": "No conformance endpoint.",
-        "tool": "\u2014",
+        "tool": "—",
         "tags": [
           "conformance"
         ],
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {}
         }
       }
@@ -651,7 +651,7 @@
         "mcp": {
           "verified": true,
           "source": "mcp.reachable",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {
             "toolsReachable": [
               "system_health",
@@ -660,8 +660,8 @@
               "anomalies_baselines"
             ],
             "toolsFailed": [
-              "zk_stats",
-              "zk_solvency"
+              "zk_solvency",
+              "zk_stats"
             ]
           }
         }
@@ -671,7 +671,7 @@
         "source": "GAP",
         "title": "ZK proof verification logs",
         "desc": "zk_stats and zk_solvency endpoints return HTTP 404 on the public proxy.",
-        "tool": "\u2014",
+        "tool": "—",
         "tags": [
           "compliance",
           "crypto",
@@ -680,7 +680,7 @@
         "mcp": {
           "verified": false,
           "source": "zk_stats",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {
             "httpStatus": 404,
             "endpoint": "/api/public/zk/stats"
@@ -692,14 +692,14 @@
         "source": "GAP",
         "title": "Conformance score (daily)",
         "desc": "No automated MUST/SHOULD score.",
-        "tool": "\u2014",
+        "tool": "—",
         "tags": [
           "conformance"
         ],
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {}
         }
       },
@@ -708,14 +708,14 @@
         "source": "GAP",
         "title": "Audit evidence pipeline",
         "desc": "No SOC2/ISO27001 evidence export.",
-        "tool": "\u2014",
+        "tool": "—",
         "tags": [
           "audit"
         ],
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {}
         }
       },
@@ -724,14 +724,14 @@
         "source": "GAP",
         "title": "Incident & postmortem rollups",
         "desc": "No MTTD/MTTR trend store.",
-        "tool": "\u2014",
+        "tool": "—",
         "tags": [
           "post-mortem"
         ],
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {}
         }
       },
@@ -740,14 +740,14 @@
         "source": "GAP",
         "title": "Cohort reports",
         "desc": "No per-team / per-tier rollups.",
-        "tool": "\u2014",
+        "tool": "—",
         "tags": [
           "cohort"
         ],
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-05-15T16:06:56.641Z",
+          "refreshedAt": "2026-05-15T17:01:46.269Z",
           "evidence": {}
         }
       }
