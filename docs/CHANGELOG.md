@@ -11,7 +11,7 @@
   responses to ObservabilityPack artefacts, and writes a JSON file. The
   studio's loader picks it up at boot.
 - **`LIVE` source tag** — a new source pill (pulsing cyan) for artefacts
-  verified by MCP at refresh time. Orthogonal to BAU/OLA/NEW/GAP — claims
+  verified by MCP at refresh time. Orthogonal to BAU/SLA/NEW/GAP — claims
   are about repo; LIVE is about telemetry-reality.
 - **Liveness badge** in the header — `live · 5m ago` / `embedded snapshot` /
   `stale · 36h ago` / `MCP error`.

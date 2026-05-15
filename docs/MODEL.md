@@ -142,7 +142,7 @@ This is orthogonal to which layer it sits in.
 | Tag | Colour | Meaning |
 |---|---|---|
 | `BAU` | slate | Claimed in repo — supposed to be in production |
-| `OLA` | violet | Contractual / audit-driven · externally required |
+| `SLA` | violet | Contractual / audit-driven · externally required |
 | `NEW` | green | On the target list to deploy |
 | `GAP` | red | Required for the layer but not present |
 | `PLANNED` | cyan-dark | On the roadmap, not committed |

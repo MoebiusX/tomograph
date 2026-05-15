@@ -69,8 +69,8 @@
         "tags":   { "type": "array", "items": { "type": "string" } },
         "source": {
           "type": "string",
-          "enum": ["BAU", "OLA", "NEW", "GAP", "PLANNED", "LIVE"],
-          "description": "What kind of fact this artefact represents. See README for semantics."
+          "enum": ["BAU", "SLA", "OLA", "NEW", "GAP", "PLANNED", "LIVE"],
+          "description": "What kind of fact this artefact represents. 'OLA' is a deprecated legacy alias for 'SLA' and is auto-normalized by the studio. See README for semantics."
         },
         "mcp": {
           "type": "object",

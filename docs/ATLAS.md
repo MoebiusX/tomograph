@@ -68,7 +68,7 @@ canonical-ordering. You can spot the missing cell from across the room.
 
 A dark navy sky. Five wedge-shaped sectors radiate from a central compass,
 one per layer. Each artefact is a star. Brightness encodes source: BAU
-and OLA stars sparkle; NEW stars pulse; GAP stars are dashed ghost
+and SLA stars sparkle; NEW stars pulse; GAP stars are dashed ghost
 outlines. A slider at the bottom morphs the current sky into the target
 sky — gaps light up as you drag.
 

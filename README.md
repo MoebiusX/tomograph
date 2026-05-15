@@ -44,7 +44,7 @@ Each artefact carries a `source` tag — what kind of "fact" it represents:
 | Source | Meaning |
 |---|---|
 | `BAU` | Claimed in the telemetry repo today |
-| `OLA` | Externally driven — contractual reporting or audit evidence |
+| `SLA` | Externally driven — contractual reporting or audit evidence |
 | `NEW` | On the target list to deploy |
 | `GAP` | Required but not present |
 | `PLANNED` | On the roadmap |

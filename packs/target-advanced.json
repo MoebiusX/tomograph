@@ -47,23 +47,23 @@
       },
       {
         "id": "SLI-03",
-        "source": "OLA",
+        "source": "SLA",
         "title": "Settlement Latency SLI",
         "desc": "End-to-end order \u2192 fill \u2192 settle. Contractual.",
         "tool": "OTel + PromQL",
         "tags": [
-          "OLA",
+          "SLA",
           "latency"
         ]
       },
       {
         "id": "SLO-03",
-        "source": "OLA",
+        "source": "SLA",
         "title": "Order Fill Rate SLO 99.95%",
         "desc": "Matching engine outcome SLO. Contractual.",
         "tool": "PromQL",
         "tags": [
-          "OLA",
+          "SLA",
           "SLO"
         ]
       },
@@ -472,13 +472,13 @@
         },
         {
           "id": "ALR-09",
-          "source": "OLA",
+          "source": "SLA",
           "title": "SettlementSLOBreach",
-          "desc": "OLA-driven, contractual.",
+          "desc": "SLA-driven, contractual.",
           "tool": "Alertmanager",
           "tags": [
             "alert",
-            "OLA"
+            "SLA"
           ]
         }
       ],
@@ -610,13 +610,13 @@
       },
       {
         "id": "GOV-04",
-        "source": "OLA",
+        "source": "SLA",
         "title": "Audit evidence pipeline",
         "desc": "SOC2 + ISO27001 evidence export, signed snapshots.",
         "tool": "compliance pipeline",
         "tags": [
           "audit",
-          "OLA"
+          "SLA"
         ]
       },
       {

@@ -25,7 +25,7 @@
 
   /* Source tags */
   --src-BAU: #475569;
-  --src-OLA: #6B21A8;
+  --src-SLA: #6B21A8;
   --src-NEW: #16A34A;
   --src-GAP: #DC2626;
   --src-PLANNED: #0891B2;
@@ -326,7 +326,7 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
   letter-spacing: 0.06em; line-height: 1;
 }
 .src-pill.BAU { background: var(--src-BAU); }
-.src-pill.OLA { background: var(--src-OLA); }
+.src-pill.SLA { background: var(--src-SLA); }
 .src-pill.NEW { background: var(--src-NEW); }
 .src-pill.GAP { background: var(--src-GAP); }
 .src-pill.PLANNED { background: var(--src-PLANNED); }
@@ -520,7 +520,7 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
   background: var(--src-BAU);
 }
 .card.src-BAU::before { background: var(--src-BAU); }
-.card.src-OLA::before { background: var(--src-OLA); }
+.card.src-SLA::before { background: var(--src-SLA); }
 .card.src-NEW::before { background: var(--src-NEW); }
 .card.src-GAP::before { background: var(--src-GAP); }
 .card.src-PLANNED::before { background: var(--src-PLANNED); }
@@ -1060,7 +1060,7 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
   position: absolute; top: 0; left: 0; right: 0; height: 3px;
 }
 .pcell.src-BAU .pstripe { background: var(--src-BAU); }
-.pcell.src-OLA .pstripe { background: var(--src-OLA); }
+.pcell.src-SLA .pstripe { background: var(--src-SLA); }
 .pcell.src-NEW .pstripe { background: var(--src-NEW); }
 .pcell.src-GAP .pstripe { background: var(--src-GAP); }
 .pcell.src-PLANNED .pstripe { background: var(--src-PLANNED); }
@@ -1214,7 +1214,7 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
   50% { opacity: 1; }
 }
 .star.bau { animation: twinkle 4s ease-in-out infinite; }
-.star.ola { animation: twinkle 5s ease-in-out infinite; }
+.star.sla { animation: twinkle 5s ease-in-out infinite; }
 @keyframes pulse-new {
   0%, 100% { transform: scale(1); opacity: 0.85; }
   50% { transform: scale(1.15); opacity: 1; }
@@ -1324,7 +1324,7 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
   <div class="legend">
     <span class="legend-title">Source</span>
     <span class="legend-item"><span class="src-pill BAU">BAU</span><span>in prod</span></span>
-    <span class="legend-item"><span class="src-pill OLA">OLA</span><span>contractual</span></span>
+    <span class="legend-item"><span class="src-pill SLA">SLA</span><span>contractual</span></span>
     <span class="legend-item"><span class="src-pill NEW">NEW</span><span>to deploy</span></span>
     <span class="legend-item"><span class="src-pill GAP">GAP</span><span>missing</span></span>
     <span class="legend-item"><span class="src-pill PLANNED">PLAN</span><span>roadmap</span></span>
@@ -1334,7 +1334,7 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
     <div class="filter-chips" id="filters">
       <button class="fchip active" data-filter="all">all</button>
       <button class="fchip" data-filter="BAU">BAU</button>
-      <button class="fchip" data-filter="OLA">OLA</button>
+      <button class="fchip" data-filter="SLA">SLA</button>
       <button class="fchip" data-filter="NEW">NEW</button>
       <button class="fchip" data-filter="GAP">GAP</button>
       <button class="fchip" data-filter="PLANNED">PLAN</button>
@@ -1526,8 +1526,8 @@ const packTarget = {
       { id: 'SLO-01', source: 'BAU', title: 'Availability SLO 99.9%', desc: 'Carried forward.', tool: 'PromQL', tags: ['SLO'] },
       { id: 'SLO-02', source: 'BAU', title: 'Latency SLO P99 < 2s', desc: 'Carried forward.', tool: 'PromQL', tags: ['SLO'] },
       // New
-      { id: 'SLI-03', source: 'OLA', title: 'Settlement Latency SLI', desc: 'End-to-end order → fill → settle. Contractual.', tool: 'OTel + PromQL', tags: ['OLA','latency'] },
-      { id: 'SLO-03', source: 'OLA', title: 'Order Fill Rate SLO 99.95%', desc: 'Matching engine outcome SLO. Contractual.', tool: 'PromQL', tags: ['OLA','SLO'] },
+      { id: 'SLI-03', source: 'SLA', title: 'Settlement Latency SLI', desc: 'End-to-end order → fill → settle. Contractual.', tool: 'OTel + PromQL', tags: ['SLA','latency'] },
+      { id: 'SLO-03', source: 'SLA', title: 'Order Fill Rate SLO 99.95%', desc: 'Matching engine outcome SLO. Contractual.', tool: 'PromQL', tags: ['SLA','SLO'] },
       { id: 'SLI-04', source: 'NEW', title: 'ZK Proof Verification SLI', desc: 'Proof generation success rate over rolling window.', tool: 'zk-proofs', tags: ['crypto','proof'] },
       { id: 'EBP-01', source: 'BAU', title: 'Error-budget policy (predict_linear)', desc: 'Carried forward.', tool: 'PromQL', tags: ['policy'] },
       { id: 'EBP-02', source: 'NEW', title: 'Tier rubric (MUST / SHOULD)', desc: 'Per-service tier; gates release if MUST coverage < 100%.', tool: 'policy-as-code', tags: ['governance','release-gate'] },
@@ -1577,7 +1577,7 @@ const packTarget = {
         { id: 'ALR-06', source: 'BAU', title: 'ContainerCrashLooping', desc: 'Carried forward.', tool: 'Alertmanager', tags: ['alert'] },
         { id: 'ALR-07', source: 'NEW', title: 'AnomalyDetected (trace)', desc: 'Span duration > baseline mean + 3σ for >5min.', tool: 'otel-mcp anomalies', tags: ['alert','anomaly'] },
         { id: 'ALR-08', source: 'NEW', title: 'ProfileRegression', desc: 'CPU profile diff > 20% vs 7d baseline.', tool: 'Pyroscope', tags: ['alert','profile'] },
-        { id: 'ALR-09', source: 'OLA', title: 'SettlementSLOBreach', desc: 'OLA-driven, contractual.', tool: 'Alertmanager', tags: ['alert','OLA'] },
+        { id: 'ALR-09', source: 'SLA', title: 'SettlementSLOBreach', desc: 'SLA-driven, contractual.', tool: 'Alertmanager', tags: ['alert','SLA'] },
       ],
       healing: [
         { id: 'HEAL-01', source: 'NEW', title: 'Runbook automation', desc: 'Event-driven remediation; runbook-as-code with audit trail.', tool: 'Argo Events + Rundeck', tags: ['automation'] },
@@ -1597,7 +1597,7 @@ const packTarget = {
       { id: 'GOV-01', source: 'BAU', title: 'MCP-driven reports', desc: 'Carried forward, scheduled cadence.', tool: 'otel-mcp-server', tags: ['report'] },
       { id: 'GOV-02', source: 'BAU', title: 'ZK proof verification logs', desc: 'Carried forward.', tool: 'zk-proofs', tags: ['crypto'] },
       { id: 'GOV-03', source: 'NEW', title: 'Conformance score (daily, public)', desc: 'Published per-service; gates release.', tool: 'policy-as-code', tags: ['conformance'] },
-      { id: 'GOV-04', source: 'OLA', title: 'Audit evidence pipeline', desc: 'SOC2 + ISO27001 evidence export, signed snapshots.', tool: 'compliance pipeline', tags: ['audit','OLA'] },
+      { id: 'GOV-04', source: 'SLA', title: 'Audit evidence pipeline', desc: 'SOC2 + ISO27001 evidence export, signed snapshots.', tool: 'compliance pipeline', tags: ['audit','SLA'] },
       { id: 'GOV-05', source: 'NEW', title: 'Incident & postmortem rollups', desc: 'MTTD/MTTR trends + cohort cuts.', tool: 'incident pipeline', tags: ['post-mortem'] },
       { id: 'GOV-06', source: 'NEW', title: 'Cohort reports', desc: 'Per team / tier / domain rollups, monthly.', tool: 'reporting', tags: ['cohort'] },
     ],
@@ -1713,7 +1713,7 @@ const state = {
   view: 'compare',              // 'current' | 'target' | 'compare' | 'atlas' | 'schema'
   packA: 'production-live',
   packB: 'target-advanced',
-  filter: 'all',                // 'all' | 'BAU' | 'OLA' | 'NEW' | 'GAP' | 'PLANNED' | 'LIVE'
+  filter: 'all',                // 'all' | 'BAU' | 'SLA' | 'NEW' | 'GAP' | 'PLANNED' | 'LIVE'
   atlas: 'strata',              // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit'
   constMix: 0,                  // 0 = current sky, 1 = target sky
 };
@@ -1735,7 +1735,7 @@ function allArtefacts(pack) {
 }
 
 function countBySource(pack) {
-  const counts = { BAU: 0, OLA: 0, NEW: 0, GAP: 0, PLANNED: 0 };
+  const counts = { BAU: 0, SLA: 0, NEW: 0, GAP: 0, PLANNED: 0 };
   allArtefacts(pack).forEach(a => counts[a.source] = (counts[a.source] || 0) + 1);
   return counts;
 }
@@ -1820,7 +1820,7 @@ function renderStats() {
     { val: total,        lbl: 'total artefacts' },
     { val: counts.BAU || 0,   lbl: 'BAU (claimed)' },
     { val: counts.LIVE || 0,  lbl: 'LIVE (mcp-verified)', cls: counts.LIVE ? 'live' : '' },
-    { val: counts.OLA || 0,   lbl: 'OLA (contractual)' },
+    { val: counts.SLA || 0,   lbl: 'SLA (contractual)' },
     { val: counts.NEW || 0,   lbl: 'NEW (to deploy)' },
     { val: counts.GAP || 0,   lbl: 'GAP (missing)' },
   ];
@@ -2071,7 +2071,7 @@ function openDrawer(id, layerId, pack) {
   const tags = (card.tags || []).map(t => `<span class="tag">${t}</span>`).join('');
   const sourceDesc = {
     BAU: 'In production today, in the telemetry repo. Not (yet) verified by MCP.',
-    OLA: 'Externally driven — contractual reporting or audit evidence.',
+    SLA: 'Externally driven — contractual reporting or audit evidence.',
     NEW: 'On the target list to deploy.',
     GAP: 'Identified gap — required for the layer but not present.',
     PLANNED: 'Planned on the roadmap.',
@@ -2199,7 +2199,7 @@ function renderAtlasStrata(stage) {
   const CBG = {
     L1:'#FFF4E0', L2:'#E5ECF5', L3:'#DBEEEE', L4:'#F8DCDC', L5:'#ECE0F4', GOV:'#E8E8E8',
   };
-  const SRC = { BAU:'#475569', OLA:'#6B21A8', NEW:'#16A34A', GAP:'#DC2626', PLANNED:'#0891B2' };
+  const SRC = { BAU:'#475569', SLA:'#6B21A8', NEW:'#16A34A', GAP:'#DC2626', PLANNED:'#0891B2' };
 
   // For each layer, count items per source
   function layerStats(pack, L) {
@@ -2732,7 +2732,7 @@ function renderAtlasConstellation(stage) {
       // Default base state opacity used in CSS; we'll set inline so slider can animate
       // Source styling
       if (srcA === 'BAU' || srcB === 'BAU') cls += ' bau';
-      if (srcA === 'OLA' || srcB === 'OLA') cls += ' ola';
+      if (srcA === 'SLA' || srcB === 'SLA') cls += ' sla';
       if ((srcB === 'NEW' && onlyB) || (srcA === 'NEW')) cls += ' new-pulse';
       const isGapA = srcA === 'GAP';
       const ghost = isGapA && !inBoth;
@@ -3223,7 +3223,7 @@ function renderAtlasTransit(stage) {
     } else if (s.source === 'PLANNED') {
       body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR}" fill="${CARD}" stroke="${color}" stroke-width="1.5" stroke-dasharray="1.5 2.2"/>`;
     } else {
-      // BAU / OLA — filled disc
+      // BAU / SLA — filled disc
       body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR}" fill="${color}" stroke="${CARD}" stroke-width="1.2"/>`;
     }
     if (inter && s.source !== 'GAP') {
@@ -3376,7 +3376,22 @@ function validatePack(obj, sourceLabel) {
   if (obj.layers.L4 !== undefined && (typeof obj.layers.L4 !== 'object' || Array.isArray(obj.layers.L4))) {
     throw new Error('layers.L4 must be an object with policy/alerting/healing sub-arrays');
   }
+  // Backward-compat: legacy source label "OLA" → "SLA"
+  normalizeSources(obj);
   return obj;
+}
+
+/* Rewrite legacy "OLA" → "SLA" in-place on any pack object (artefact.source
+   plus any `tags: ["OLA", ...]`). Idempotent; safe to call repeatedly. */
+function normalizeSources(pack) {
+  const fix = (arr) => arr.forEach(a => {
+    if (a && a.source === 'OLA') a.source = 'SLA';
+    if (Array.isArray(a?.tags)) a.tags = a.tags.map(t => t === 'OLA' ? 'SLA' : t);
+  });
+  ['L1','L2','L3','L5','GOV'].forEach(L => Array.isArray(pack.layers?.[L]) && fix(pack.layers[L]));
+  if (pack.layers?.L4 && typeof pack.layers.L4 === 'object') {
+    ['policy','alerting','healing'].forEach(col => Array.isArray(pack.layers.L4[col]) && fix(pack.layers.L4[col]));
+  }
 }
 
 async function loadPackFromFile(file) {
