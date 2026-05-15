@@ -28,7 +28,6 @@
   --src-SLA: #6B21A8;
   --src-NEW: #16A34A;
   --src-GAP: #DC2626;
-  --src-PLANNED: #0891B2;
   --src-LIVE: #06B6D4;
 
   /* Neutrals */
@@ -268,38 +267,6 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* ===================== STATS BANNER ===================== */
-.stats {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 1px; background: var(--line);
-  border-bottom: 1px solid var(--line);
-}
-.stat {
-  background: var(--card); padding: 14px 18px;
-  display: flex; flex-direction: column; gap: 2px;
-}
-.stat-val {
-  font-family: 'Newsreader', Georgia, serif;
-  font-weight: 500;
-  font-size: 28px;
-  line-height: 1;
-  color: var(--ink-2);
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-}
-.stat-val.delta-pos { color: var(--src-NEW); }
-.stat-val.delta-neg { color: var(--src-GAP); }
-.stat-val.live      { color: var(--src-LIVE); }
-.stat-val .unit { font-size: 14px; color: var(--ink-4); margin-left: 2px; }
-.stat-lbl {
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 10px;
-  letter-spacing: 0.10em;
-  text-transform: uppercase;
-  color: var(--ink-4);
-  margin-top: 4px;
-}
-
 /* ===================== LEGEND ===================== */
 .legend {
   display: flex; align-items: center; gap: 18px;
@@ -317,7 +284,27 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
   color: var(--ink-4);
   font-weight: 600;
 }
-.legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.legend-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  cursor: pointer;
+  padding: 2px 4px; border-radius: 4px;
+  transition: background .15s, opacity .15s;
+  user-select: none;
+}
+.legend-item:hover { background: var(--hover); }
+.legend-item.dim { opacity: 0.35; }
+.legend-item.active { background: var(--hover); }
+.legend-item.active .src-pill { box-shadow: 0 0 0 2px var(--ink-2); }
+.legend-all {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px; font-weight: 700;
+  color: var(--ink-3); padding: 2px 8px; border-radius: 3px;
+  letter-spacing: 0.06em; line-height: 1;
+  border: 1px solid var(--line); background: #fff;
+}
+.legend-item.active .legend-all {
+  background: var(--ink-2); color: #fff; border-color: var(--ink-2);
+}
 .src-pill {
   display: inline-flex; align-items: center; justify-content: center;
   font-family: 'IBM Plex Mono', monospace;
@@ -329,7 +316,6 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
 .src-pill.SLA { background: var(--src-SLA); }
 .src-pill.NEW { background: var(--src-NEW); }
 .src-pill.GAP { background: var(--src-GAP); }
-.src-pill.PLANNED { background: var(--src-PLANNED); }
 .src-pill.LIVE {
   background: var(--src-LIVE);
   position: relative;
@@ -348,20 +334,18 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
   0%, 100% { opacity: 0.4; transform: translateY(-50%) scale(0.85); }
   50%      { opacity: 1;   transform: translateY(-50%) scale(1.1); }
 }
-.legend-item span:not(.src-pill) { color: var(--ink-3); }
-.filter-spacer { flex: 1; min-width: 12px; }
-.filter-chips { display: inline-flex; gap: 4px; }
-.fchip {
-  font: inherit; font-size: 10px; font-weight: 500;
-  background: #fff; color: var(--ink-3);
-  border: 1px solid var(--line);
-  border-radius: 99px; padding: 3px 9px;
-  cursor: pointer; transition: all .15s;
+.legend-item span:not(.src-pill):not(.legend-all) { color: var(--ink-3); }
+.legend-note {
+  margin-left: auto;
   font-family: 'IBM Plex Mono', monospace;
-  letter-spacing: 0.05em;
+  font-size: 10px; color: var(--ink-4);
+  display: inline-flex; align-items: center; gap: 6px;
 }
-.fchip:hover { background: var(--hover); }
-.fchip.active { background: var(--ink-2); color: #fff; border-color: var(--ink-2); }
+.legend-note .live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--src-LIVE);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
 
 /* ===================== CANVAS ===================== */
 .canvas { padding: 24px 28px 48px; }
@@ -523,7 +507,6 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
 .card.src-SLA::before { background: var(--src-SLA); }
 .card.src-NEW::before { background: var(--src-NEW); }
 .card.src-GAP::before { background: var(--src-GAP); }
-.card.src-PLANNED::before { background: var(--src-PLANNED); }
 .card.src-LIVE::before {
   background: var(--src-LIVE);
   box-shadow: 0 0 6px var(--src-LIVE);
@@ -728,28 +711,20 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
 }
 .flow-valid .pill-name { color: var(--L5); }
 
-/* ===================== COMPARE STRIP ===================== */
-.compare-bar {
-  display: none;
-  align-items: center; gap: 14px;
-  padding: 10px 28px;
-  background: linear-gradient(to right, var(--L5-tint), #fff 60%);
-  border-bottom: 1px solid var(--line);
-  font-size: 12px;
-}
-.app[data-view="compare"] .compare-bar { display: flex; flex-wrap: wrap; }
-.compare-bar .delta-stats { display: flex; gap: 18px; margin-left: auto; }
-.delta-stat {
-  display: inline-flex; align-items: baseline; gap: 6px;
+/* ===================== INTRO DELTA (compare view) ===================== */
+.intro-deltas {
+  display: inline-flex; gap: 14px; margin-top: 8px;
   font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+  color: var(--ink-4);
 }
-.delta-stat .num {
+.intro-deltas .num {
   font-family: 'Newsreader', serif; font-weight: 600;
-  font-size: 18px; color: var(--ink-2);
+  font-size: 16px; color: var(--ink-2);
   font-variant-numeric: tabular-nums;
+  margin-right: 4px;
 }
-.delta-stat.add .num { color: var(--src-NEW); }
-.delta-stat.gap .num { color: var(--src-GAP); }
+.intro-deltas .add .num { color: var(--src-NEW); }
+.intro-deltas .gap .num { color: var(--src-GAP); }
 
 /* ===================== FOOTER ===================== */
 .foot {
@@ -778,8 +753,6 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
 @media (max-width: 640px) {
   .canvas { padding: 16px; }
   .hdr { padding: 14px 16px; }
-  .stat { padding: 10px 14px; }
-  .stat-val { font-size: 22px; }
 }
 
 /* Print-friendly */
@@ -1063,7 +1036,6 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
 .pcell.src-SLA .pstripe { background: var(--src-SLA); }
 .pcell.src-NEW .pstripe { background: var(--src-NEW); }
 .pcell.src-GAP .pstripe { background: var(--src-GAP); }
-.pcell.src-PLANNED .pstripe { background: var(--src-PLANNED); }
 .pcell.src-LIVE .pstripe {
   background: var(--src-LIVE);
   box-shadow: 0 0 4px var(--src-LIVE);
@@ -1304,42 +1276,15 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
     </div>
   </header>
 
-  <!-- ========== STATS ========== -->
-  <div class="stats" id="stats"></div>
-
-  <!-- ========== COMPARE BAR (only in compare mode) ========== -->
-  <div class="compare-bar">
-    <span class="viewbar-label" style="color: var(--ink-4);">Delta</span>
-    <span style="color: var(--ink-3); font-size: 12px;">
-      <span id="dirA"></span> → <span id="dirB"></span>
-    </span>
-    <div class="delta-stats">
-      <span class="delta-stat add"><span class="num" id="dAdd">0</span><span>added</span></span>
-      <span class="delta-stat gap"><span class="num" id="dGap">0</span><span>gaps</span></span>
-      <span class="delta-stat"><span class="num" id="dKept">0</span><span>retained</span></span>
-    </div>
-  </div>
-
-  <!-- ========== LEGEND + FILTERS ========== -->
-  <div class="legend">
+  <!-- ========== LEGEND (also the filter) ========== -->
+  <div class="legend" id="legend">
     <span class="legend-title">Source</span>
-    <span class="legend-item"><span class="src-pill BAU">BAU</span><span>in prod</span></span>
-    <span class="legend-item"><span class="src-pill SLA">SLA</span><span>contractual</span></span>
-    <span class="legend-item"><span class="src-pill NEW">NEW</span><span>to deploy</span></span>
-    <span class="legend-item"><span class="src-pill GAP">GAP</span><span>missing</span></span>
-    <span class="legend-item"><span class="src-pill PLANNED">PLAN</span><span>roadmap</span></span>
-    <span class="legend-item"><span class="src-pill LIVE">LIVE</span><span>verified by MCP</span></span>
-    <span class="filter-spacer"></span>
-    <span class="legend-title">Filter</span>
-    <div class="filter-chips" id="filters">
-      <button class="fchip active" data-filter="all">all</button>
-      <button class="fchip" data-filter="BAU">BAU</button>
-      <button class="fchip" data-filter="SLA">SLA</button>
-      <button class="fchip" data-filter="NEW">NEW</button>
-      <button class="fchip" data-filter="GAP">GAP</button>
-      <button class="fchip" data-filter="PLANNED">PLAN</button>
-      <button class="fchip" data-filter="LIVE">LIVE</button>
-    </div>
+    <span class="legend-item active" data-filter="all"><span class="legend-all">ALL</span><span>everything</span></span>
+    <span class="legend-item" data-filter="BAU"><span class="src-pill BAU">BAU</span><span>in prod</span></span>
+    <span class="legend-item" data-filter="SLA"><span class="src-pill SLA">SLA</span><span>contractual</span></span>
+    <span class="legend-item" data-filter="NEW"><span class="src-pill NEW">NEW</span><span>to deploy</span></span>
+    <span class="legend-item" data-filter="GAP"><span class="src-pill GAP">GAP</span><span>missing</span></span>
+    <span class="legend-note"><span class="live-dot"></span>cyan halo = verified live by MCP</span>
   </div>
 
   <!-- ========== CANVAS ========== -->
@@ -1371,11 +1316,11 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
             <p class="lede" id="atlasLede">Four ways of looking at the same comparison. The data is the same; the argument each one makes is not.</p>
           </div>
           <div class="atlas-tabs" id="atlasTabs">
-            <button class="atlas-tab active" data-atlas="strata">Stratigraphy</button>
-            <button class="atlas-tab" data-atlas="periodic">Periodic Table</button>
-            <button class="atlas-tab" data-atlas="constellation">Constellation</button>
+            <button class="atlas-tab active" data-atlas="transit">Transit</button>
+            <button class="atlas-tab" data-atlas="strata">Stratigraphy</button>
             <button class="atlas-tab" data-atlas="skyline">Skyline</button>
-            <button class="atlas-tab" data-atlas="transit">Transit</button>
+            <button class="atlas-tab" data-atlas="constellation">Constellation</button>
+            <button class="atlas-tab" data-atlas="periodic">Periodic Table</button>
           </div>
         </div>
         <div class="atlas-stage" id="atlasStage"></div>
@@ -1713,8 +1658,8 @@ const state = {
   view: 'compare',              // 'current' | 'target' | 'compare' | 'atlas' | 'schema'
   packA: 'production-live',
   packB: 'target-advanced',
-  filter: 'all',                // 'all' | 'BAU' | 'SLA' | 'NEW' | 'GAP' | 'PLANNED' | 'LIVE'
-  atlas: 'strata',              // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit'
+  filter: 'all',                // 'all' | 'BAU' | 'SLA' | 'NEW' | 'GAP'
+  atlas: 'transit',             // 'transit' | 'strata' | 'skyline' | 'constellation' | 'periodic'
   constMix: 0,                  // 0 = current sky, 1 = target sky
 };
 
@@ -1735,7 +1680,7 @@ function allArtefacts(pack) {
 }
 
 function countBySource(pack) {
-  const counts = { BAU: 0, SLA: 0, NEW: 0, GAP: 0, PLANNED: 0 };
+  const counts = { BAU: 0, SLA: 0, NEW: 0, GAP: 0 };
   allArtefacts(pack).forEach(a => counts[a.source] = (counts[a.source] || 0) + 1);
   return counts;
 }
@@ -1800,54 +1745,20 @@ function renderSelectors() {
   $('#packB').innerHTML = html; $('#packB').value = state.packB;
 }
 
-function renderStats() {
-  const A = packBy(state.packA);
-  const B = packBy(state.packB);
-
-  let pack, intro;
-  if (state.view === 'compare') {
-    pack = buildDiffPack(A, B);
-  } else if (state.view === 'target') {
-    pack = B;
-  } else {
-    pack = A;
-  }
-
-  // Stat cards
-  const counts = countBySource(pack);
-  const total = allArtefacts(pack).length;
-  const cells = [
-    { val: total,        lbl: 'total artefacts' },
-    { val: counts.BAU || 0,   lbl: 'BAU (claimed)' },
-    { val: counts.LIVE || 0,  lbl: 'LIVE (mcp-verified)', cls: counts.LIVE ? 'live' : '' },
-    { val: counts.SLA || 0,   lbl: 'SLA (contractual)' },
-    { val: counts.NEW || 0,   lbl: 'NEW (to deploy)' },
-    { val: counts.GAP || 0,   lbl: 'GAP (missing)' },
-  ];
-  $('#stats').innerHTML = cells.map(c => `
-    <div class="stat">
-      <span class="stat-val${c.cls === 'live' ? ' live' : ''}">${c.val}</span>
-      <span class="stat-lbl">${c.lbl}</span>
-    </div>`).join('');
-
-  // Compare bar
-  if (state.view === 'compare') {
-    const d = deltaCounts(pack);
-    $('#dirA').textContent = A.name;
-    $('#dirB').textContent = B.name;
-    $('#dAdd').textContent = d.add;
-    $('#dGap').textContent = d.gap;
-    $('#dKept').textContent = d.kept;
-  }
-}
-
 function renderIntro() {
   const A = packBy(state.packA);
   const B = packBy(state.packB);
-  let title, sub;
+  let title, sub, deltaLine = '';
   if (state.view === 'compare') {
     title = `<em>Comparing</em> <strong>${A.name}</strong> against <strong>${B.name}</strong>`;
     sub = 'Filled cards exist in target; faded ones are gaps (only present in current). Green stripe = NEW to deploy.';
+    const d = deltaCounts(buildDiffPack(A, B));
+    deltaLine = `
+      <div class="intro-deltas">
+        <span class="add"><span class="num">${d.add}</span>added</span>
+        <span class="gap"><span class="num">${d.gap}</span>gaps</span>
+        <span><span class="num">${d.kept}</span>retained</span>
+      </div>`;
   } else if (state.view === 'target') {
     title = `<em>Target</em> — ${B.name}`;
     sub = B.description;
@@ -1862,6 +1773,7 @@ function renderIntro() {
     <div>
       <h2>${title}</h2>
       <p>${sub}</p>
+      ${deltaLine}
     </div>`;
 }
 
@@ -2039,7 +1951,12 @@ function renderSchemaView() {
 }
 
 function renderFilters() {
-  $$('#filters .fchip').forEach(c => c.classList.toggle('active', c.dataset.filter === state.filter));
+  $$('#legend .legend-item').forEach(el => {
+    const isActive = el.dataset.filter === state.filter;
+    el.classList.toggle('active', isActive);
+    // dim non-matching when a specific filter is on
+    el.classList.toggle('dim', state.filter !== 'all' && !isActive);
+  });
 }
 
 /* ---------- DRAWER ---------- */
@@ -2074,7 +1991,6 @@ function openDrawer(id, layerId, pack) {
     SLA: 'Externally driven — contractual reporting or audit evidence.',
     NEW: 'On the target list to deploy.',
     GAP: 'Identified gap — required for the layer but not present.',
-    PLANNED: 'Planned on the roadmap.',
     LIVE: 'Verified by otel-mcp-server at the refresh time below. The signal is provably reaching us right now.',
   }[card.source] || '';
 
@@ -2199,7 +2115,7 @@ function renderAtlasStrata(stage) {
   const CBG = {
     L1:'#FFF4E0', L2:'#E5ECF5', L3:'#DBEEEE', L4:'#F8DCDC', L5:'#ECE0F4', GOV:'#E8E8E8',
   };
-  const SRC = { BAU:'#475569', SLA:'#6B21A8', NEW:'#16A34A', GAP:'#DC2626', PLANNED:'#0891B2' };
+  const SRC = { BAU:'#475569', SLA:'#6B21A8', NEW:'#16A34A', GAP:'#DC2626', LIVE:'#06B6D4' };
 
   // For each layer, count items per source
   function layerStats(pack, L) {
@@ -3220,8 +3136,6 @@ function renderAtlasTransit(stage) {
       body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR + 1}" fill="#06B6D4" stroke="${color}" stroke-width="2"/>`;
     } else if (s.source === 'NEW') {
       body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR}" fill="${CARD}" stroke="${color}" stroke-width="1.8" stroke-dasharray="3 2"/>`;
-    } else if (s.source === 'PLANNED') {
-      body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR}" fill="${CARD}" stroke="${color}" stroke-width="1.5" stroke-dasharray="1.5 2.2"/>`;
     } else {
       // BAU / SLA — filled disc
       body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR}" fill="${color}" stroke="${CARD}" stroke-width="1.2"/>`;
@@ -3310,7 +3224,6 @@ function renderAtlasTransit(stage) {
 
 function renderAll() {
   renderTabs();
-  renderStats();
   renderIntro();
   renderFilters();
   if (state.view === 'schema') {
@@ -3335,7 +3248,7 @@ $$('#tabs .tab').forEach(t => t.addEventListener('click', () => {
 $('#packA').addEventListener('change', e => { state.packA = e.target.value; renderAll(); });
 $('#packB').addEventListener('change', e => { state.packB = e.target.value; renderAll(); });
 
-$$('#filters .fchip').forEach(c => c.addEventListener('click', () => {
+$$('#legend .legend-item').forEach(c => c.addEventListener('click', () => {
   state.filter = c.dataset.filter; renderAll();
 }));
 
@@ -3376,17 +3289,20 @@ function validatePack(obj, sourceLabel) {
   if (obj.layers.L4 !== undefined && (typeof obj.layers.L4 !== 'object' || Array.isArray(obj.layers.L4))) {
     throw new Error('layers.L4 must be an object with policy/alerting/healing sub-arrays');
   }
-  // Backward-compat: legacy source label "OLA" → "SLA"
+  // Backward-compat: legacy source label "OLA" → "SLA"; "PLANNED" → "NEW"
   normalizeSources(obj);
   return obj;
 }
 
-/* Rewrite legacy "OLA" → "SLA" in-place on any pack object (artefact.source
-   plus any `tags: ["OLA", ...]`). Idempotent; safe to call repeatedly. */
+/* Rewrite legacy source values in-place on any pack object:
+   - 'OLA' -> 'SLA'  (renamed for accuracy: these are SLAs, not OLAs)
+   - 'PLANNED' -> 'NEW' (taxonomy collapse: roadmap items are just NEW)
+   Also fixes any tag strings. Idempotent; safe to call repeatedly. */
 function normalizeSources(pack) {
+  const rewrite = (v) => v === 'OLA' ? 'SLA' : v === 'PLANNED' ? 'NEW' : v;
   const fix = (arr) => arr.forEach(a => {
-    if (a && a.source === 'OLA') a.source = 'SLA';
-    if (Array.isArray(a?.tags)) a.tags = a.tags.map(t => t === 'OLA' ? 'SLA' : t);
+    if (a) a.source = rewrite(a.source);
+    if (Array.isArray(a?.tags)) a.tags = a.tags.map(rewrite);
   });
   ['L1','L2','L3','L5','GOV'].forEach(L => Array.isArray(pack.layers?.[L]) && fix(pack.layers[L]));
   if (pack.layers?.L4 && typeof pack.layers.L4 === 'object') {

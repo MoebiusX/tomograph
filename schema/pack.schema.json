@@ -70,7 +70,7 @@
         "source": {
           "type": "string",
           "enum": ["BAU", "SLA", "OLA", "NEW", "GAP", "PLANNED", "LIVE"],
-          "description": "What kind of fact this artefact represents. 'OLA' is a deprecated legacy alias for 'SLA' and is auto-normalized by the studio. See README for semantics."
+          "description": "What kind of fact this artefact represents. 'OLA' and 'PLANNED' are deprecated legacy aliases (auto-normalized by the studio to 'SLA' and 'NEW' respectively). See README for semantics."
         },
         "mcp": {
           "type": "object",
