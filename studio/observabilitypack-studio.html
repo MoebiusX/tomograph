@@ -1320,6 +1320,7 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
             <button class="atlas-tab" data-atlas="strata">Stratigraphy</button>
             <button class="atlas-tab" data-atlas="skyline">Skyline</button>
             <button class="atlas-tab" data-atlas="constellation">Constellation</button>
+            <button class="atlas-tab" data-atlas="arbor">Arbor</button>
             <button class="atlas-tab" data-atlas="periodic">Periodic Table</button>
           </div>
         </div>
@@ -2067,6 +2068,7 @@ function renderAtlas() {
   else if (state.atlas === 'constellation') renderAtlasConstellation(stage);
   else if (state.atlas === 'skyline')   renderAtlasSkyline(stage);
   else if (state.atlas === 'transit')   renderAtlasTransit(stage);
+  else if (state.atlas === 'arbor')     renderAtlasArbor(stage);
 
   // Update title + lede per metaphor
   const meta = ATLAS_META[state.atlas];
@@ -2094,6 +2096,10 @@ const ATLAS_META = {
   transit: {
     title: 'The platform as a transit network',
     lede: 'A subway-style map of every artefact, every layer, every dependency. Closed stations are gaps; interchange chains show how an SLO becomes an alert. Where the line breaks, the train doesn\'t run — and you can see why.',
+  },
+  arbor: {
+    title: 'A botanical of the platform',
+    lede: 'A plant rooted in the service. Branches divide upward through the layers — telemetry, storage, query, action — and where two upper branches descend from a single shared ancestor, they fuse: self-inosculation. Gaps are unfurled buds; LIVE artefacts glow at the tip.',
   },
 };
 
@@ -3208,6 +3214,361 @@ function renderAtlasTransit(stage) {
 
   // Pack A ↔ B toggle (memory-beats-simultaneity)
   const swap = stage.querySelector('#transitSwap');
+  if (swap) {
+    swap.addEventListener('click', () => {
+      const tmp = state.packA;
+      state.packA = state.packB;
+      state.packB = tmp;
+      const sa = document.querySelector('#packA');
+      const sb = document.querySelector('#packB');
+      if (sa) sa.value = state.packA;
+      if (sb) sb.value = state.packB;
+      renderAll();
+    });
+  }
+}
+
+/* ============================================================
+   6) ARBOR — a botanical of the platform
+   The pack is rendered as a plant, rooted in the service and
+   branching upward through the layers. Where two upper branches
+   share a single downstream ancestor (parent), the stems converge
+   to a fusion point before reuniting — self-inosculation.
+   Inosculation in botany: two branches of the same tree growing
+   together until their bark and wood fuse into a single conduit.
+   Here, it means: two artefacts in the same layer share a parent
+   in the layer below, so their lineage is literally the same.
+   ============================================================ */
+
+function renderAtlasArbor(stage) {
+  const A = packBy(state.packA);
+  const B = packBy(state.packB);
+  const pack = A;
+
+  // SVG canvas
+  const VB_W = 1100, VB_H = 820;
+
+  // Layer palette (organic-leaning hex versions of the CSS vars)
+  const LAYER_C = {
+    L1:'#C97700', L2:'#2E75B6', L3:'#006B6B',
+    L4:'#A22323', L5:'#5B2C82', GOV:'#4A4A4A',
+  };
+  const LAYER_NAME = {
+    L1:'Telemetry', L2:'Storage', L3:'Query', L4:'Action', L5:'Validation', GOV:'Governance',
+  };
+
+  // Plant grows UPWARD: root at bottom, canopy at top.
+  // y(L1) is closest to root; y(GOV) is canopy.
+  const ROOT_Y = VB_H - 60;
+  const Y = {
+    L1:  640,
+    L2:  520,
+    L3:  400,
+    L4:  290,
+    L5:  180,
+    GOV: 90,
+  };
+  const ROOT_X = VB_W / 2;
+  const X_LEFT = 100, X_RIGHT = VB_W - 100;
+  const TRUNK_C = '#7A4A1F';
+  const TRUNK_C_DARK = '#5B3614';
+  const PAPER = '#F7F1E1';   // soft vellum
+  const PAPER_2 = '#EFE6CF';
+  const INK = '#3B2F1E';
+  const INK_SOFT = '#7A6A50';
+
+  // Flatten L4 to one row (sub-column kept on each node for the drawer)
+  function nodesFor(L) {
+    if (L === 'L4') {
+      const out = [];
+      ['policy','alerting','healing'].forEach(col => {
+        (pack.layers.L4?.[col] || []).forEach(x => out.push({ ...x, _col: col, layer: 'L4' }));
+      });
+      return out;
+    }
+    return (pack.layers[L] || []).map(x => ({ ...x, layer: L }));
+  }
+
+  // Even horizontal spread, with a tighter band near the trunk for L1
+  function spreadXs(n, leftPad = 0, rightPad = 0) {
+    if (n <= 0) return [];
+    const xl = X_LEFT + leftPad, xr = X_RIGHT - rightPad;
+    if (n === 1) return [(xl + xr) / 2];
+    const step = (xr - xl) / (n - 1);
+    return Array.from({ length: n }, (_, i) => xl + i * step);
+  }
+
+  // Build node arrays per layer with positions
+  const LAYER_IDS = ['L1','L2','L3','L4','L5','GOV'];
+  const byLayer = {};
+  // L1 gets a narrower band because all branches rise from a single trunk
+  const padding = { L1: 220, L2: 80, L3: 40, L4: 40, L5: 100, GOV: 220 };
+  LAYER_IDS.forEach(L => {
+    const list = nodesFor(L);
+    const pad = padding[L] || 60;
+    const xs = spreadXs(list.length, pad, pad);
+    byLayer[L] = list.map((it, i) => ({ ...it, x: xs[i] || ROOT_X, y: Y[L] }));
+  });
+
+  // ---- Parent assignment (the key trick) --------------------------------
+  // For each node in layer N (N>=2), pick a parent in the layer below.
+  // Affinity: shared tags > shared id-prefix > horizontal proximity.
+  // Multiple children can share one parent — that's what causes inosculation.
+  function tagSet(n) { return new Set(n.tags || []); }
+  function sharedTags(a, b) {
+    const as = tagSet(a), bs = tagSet(b);
+    let n = 0; as.forEach(t => { if (bs.has(t)) n++; });
+    return n;
+  }
+  function idPrefix(id) { return (id || '').split('-')[0]; }
+
+  function pickParent(child, parents) {
+    if (!parents.length) return null;
+    let best = null, bestScore = -Infinity;
+    parents.forEach(p => {
+      const tagScore = sharedTags(child, p) * 10;
+      const prefixScore = idPrefix(child.id) === idPrefix(p.id) ? 4 : 0;
+      const distScore = -Math.abs(child.x - p.x) / 100; // closer = better, weak
+      const score = tagScore + prefixScore + distScore;
+      if (score > bestScore) { bestScore = score; best = p; }
+    });
+    return best;
+  }
+
+  // childrenOf: parent.id -> [child nodes]
+  const childrenOf = new Map();
+  const parentOf = new Map(); // child.id -> parent node
+  for (let i = 1; i < LAYER_IDS.length; i++) {
+    const upper = byLayer[LAYER_IDS[i]];
+    const lower = byLayer[LAYER_IDS[i - 1]];
+    upper.forEach(child => {
+      const p = pickParent(child, lower);
+      if (p) {
+        parentOf.set(child.id, p);
+        if (!childrenOf.has(p.id)) childrenOf.set(p.id, []);
+        childrenOf.get(p.id).push(child);
+      }
+    });
+  }
+
+  // ---- SVG build --------------------------------------------------------
+  let svg = `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="arbor-svg" xmlns="http://www.w3.org/2000/svg" font-family="IBM Plex Sans, system-ui">`;
+
+  // Background gradient (vellum + soft canopy halo)
+  svg += `
+    <defs>
+      <radialGradient id="arborBg" cx="50%" cy="92%" r="85%">
+        <stop offset="0%"  stop-color="${PAPER}"/>
+        <stop offset="60%" stop-color="${PAPER_2}"/>
+        <stop offset="100%" stop-color="#E2D6B6"/>
+      </radialGradient>
+      <radialGradient id="canopyGlow" cx="50%" cy="0%" r="60%">
+        <stop offset="0%"  stop-color="#A8C97A" stop-opacity="0.35"/>
+        <stop offset="100%" stop-color="#A8C97A" stop-opacity="0"/>
+      </radialGradient>
+      <filter id="leafShadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur in="SourceAlpha" stdDeviation="1.2"/>
+        <feOffset dx="0" dy="1" result="off"/>
+        <feComponentTransfer><feFuncA type="linear" slope="0.35"/></feComponentTransfer>
+        <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+    <rect x="0" y="0" width="${VB_W}" height="${VB_H}" fill="url(#arborBg)"/>
+    <rect x="0" y="0" width="${VB_W}" height="280" fill="url(#canopyGlow)"/>`;
+
+  // Title strip
+  svg += `
+    <text x="${VB_W/2}" y="32" text-anchor="middle"
+      style="font-family:'Newsreader', serif; font-size:18px; font-weight:600; fill:${INK};">A botanical of the platform</text>
+    <text x="${VB_W/2}" y="52" text-anchor="middle"
+      style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; fill:${INK_SOFT}; letter-spacing:0.04em;">
+      rooted in the service · branches fuse where lineage is shared (self-inosculation)
+    </text>`;
+
+  // Layer guide rules (very faint) + layer names on the right
+  LAYER_IDS.forEach(L => {
+    const y = Y[L];
+    svg += `<line x1="${X_LEFT - 40}" y1="${y}" x2="${X_RIGHT + 40}" y2="${y}"
+              stroke="${INK_SOFT}" stroke-width="0.6" stroke-dasharray="1 6" opacity="0.4"/>`;
+    svg += `
+      <text x="${X_LEFT - 50}" y="${y - 6}" text-anchor="end"
+            style="font-family:'IBM Plex Mono', monospace; font-size:10px; font-weight:700; fill:${LAYER_C[L]}; letter-spacing:0.04em;">${L}</text>
+      <text x="${X_LEFT - 50}" y="${y + 8}" text-anchor="end"
+            style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; fill:${INK_SOFT};">${LAYER_NAME[L]}</text>`;
+  });
+
+  // ---- Trunk: from root up to L1, fanning out to each L1 node -----------
+  // Single thick brown trunk that splits into stems for each L1 child.
+  const l1Nodes = byLayer.L1;
+  svg += `<line x1="${ROOT_X}" y1="${ROOT_Y}" x2="${ROOT_X}" y2="${Y.L1 + 60}"
+            stroke="${TRUNK_C_DARK}" stroke-width="14" stroke-linecap="round"/>`;
+  // Small soil dome under root
+  svg += `<ellipse cx="${ROOT_X}" cy="${ROOT_Y + 14}" rx="120" ry="10" fill="#4A3622" opacity="0.55"/>`;
+  svg += `<ellipse cx="${ROOT_X}" cy="${ROOT_Y + 20}" rx="160" ry="6" fill="#3B2A18" opacity="0.35"/>`;
+
+  // Stem from trunk-top to each L1 node (slight curve, organic)
+  l1Nodes.forEach(n => {
+    const cx1 = ROOT_X, cy1 = Y.L1 + 50;
+    const cx2 = n.x,    cy2 = Y.L1 + 10;
+    // Cubic curve from trunk top to L1 node
+    svg += `<path d="M ${ROOT_X} ${Y.L1 + 60}
+                    C ${cx1} ${cy1}, ${cx2} ${cy2}, ${n.x} ${n.y}"
+              stroke="${TRUNK_C}" stroke-width="6" fill="none" stroke-linecap="round"/>`;
+  });
+
+  // ---- Branches: child (upper) → parent (lower), with inosculation ------
+  // For each parent that has >=2 children, draw a fusion point and converge.
+  // For singletons, just a smooth Bezier.
+  const inoscFusionPoints = []; // for the legend annotation
+
+  childrenOf.forEach((children, parentId) => {
+    const parent = findNodeById(parentId);
+    if (!parent) return;
+    if (children.length === 1) {
+      const c = children[0];
+      svg += branchPath(parent, c, false);
+      return;
+    }
+    // Fusion point: median x of children, 60% of the way from parent to children
+    const meanChildX = children.reduce((s, c) => s + c.x, 0) / children.length;
+    // Inosculation y: between parent and children, biased toward children
+    const childY = children[0].y; // all children are same layer = same y
+    const fY = parent.y + (childY - parent.y) * 0.42; // 42% from parent toward children
+    const fX = (parent.x + meanChildX) / 2;
+    inoscFusionPoints.push({ x: fX, y: fY, n: children.length });
+
+    // Stem from parent up to fusion point
+    svg += `<path d="M ${parent.x} ${parent.y - 6}
+                    C ${parent.x} ${parent.y - 30}, ${fX} ${fY + 40}, ${fX} ${fY}"
+              stroke="${TRUNK_C}" stroke-width="4.5" fill="none" stroke-linecap="round"/>`;
+    // From fusion point, individual stems to each child
+    children.forEach(c => {
+      svg += `<path d="M ${fX} ${fY}
+                      C ${fX} ${fY - 30}, ${c.x} ${c.y + 30}, ${c.x} ${c.y + 6}"
+                stroke="${TRUNK_C}" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.92"/>`;
+    });
+    // Inosculation knot — a small almond/leaf shape at the fusion point
+    svg += `<ellipse cx="${fX}" cy="${fY}" rx="5" ry="3.2"
+              fill="${TRUNK_C_DARK}" stroke="${PAPER}" stroke-width="0.8"
+              transform="rotate(20 ${fX} ${fY})"/>`;
+  });
+
+  function branchPath(parent, child, dashed) {
+    // Smooth S-curve from parent (lower) to child (upper)
+    const dy = parent.y - child.y;
+    const c1x = parent.x, c1y = parent.y - dy * 0.45;
+    const c2x = child.x,  c2y = child.y + dy * 0.45;
+    const w = 3.0;
+    const da = dashed ? 'stroke-dasharray="4 4"' : '';
+    return `<path d="M ${parent.x} ${parent.y - 6}
+                    C ${c1x} ${c1y}, ${c2x} ${c2y}, ${child.x} ${child.y + 6}"
+              stroke="${TRUNK_C}" stroke-width="${w}" fill="none" stroke-linecap="round" opacity="0.9" ${da}/>`;
+  }
+
+  function findNodeById(id) {
+    for (const L of LAYER_IDS) {
+      const n = byLayer[L].find(x => x.id === id);
+      if (n) return n;
+    }
+    return null;
+  }
+
+  // ---- Leaf / node rendering -------------------------------------------
+  function leafGlyph(n) {
+    const color = LAYER_C[n.layer];
+    const isCanopy = n.layer === 'GOV' || n.layer === 'L5';
+    const baseR = isCanopy ? 9 : 7;
+    let body = '';
+    if (n.source === 'GAP') {
+      // Unfurled bud: open ring with red ✕
+      body += `<circle cx="${n.x}" cy="${n.y}" r="${baseR}" fill="${PAPER}" stroke="${color}" stroke-width="1.7"/>`;
+      body += `<g stroke="#DC2626" stroke-width="1.8" stroke-linecap="round">
+                 <line x1="${n.x-3.4}" y1="${n.y-3.4}" x2="${n.x+3.4}" y2="${n.y+3.4}"/>
+                 <line x1="${n.x-3.4}" y1="${n.y+3.4}" x2="${n.x+3.4}" y2="${n.y-3.4}"/>
+               </g>`;
+    } else if (n.source === 'LIVE') {
+      // Glowing tip — cyan halo
+      body += `<circle cx="${n.x}" cy="${n.y}" r="${baseR + 5}" fill="#06B6D4" opacity="0.22"/>`;
+      body += `<circle cx="${n.x}" cy="${n.y}" r="${baseR + 1}" fill="#06B6D4" stroke="${color}" stroke-width="1.6"/>`;
+    } else if (n.source === 'NEW') {
+      // Bud: dashed ring, hollow
+      body += `<circle cx="${n.x}" cy="${n.y}" r="${baseR}" fill="${PAPER}" stroke="${color}" stroke-width="1.8" stroke-dasharray="3 2"/>`;
+    } else {
+      // BAU / SLA — a small leaf shape (rotated ellipse), filled
+      body += `<ellipse cx="${n.x}" cy="${n.y}" rx="${baseR + 1}" ry="${baseR - 2}"
+                 fill="${color}" stroke="${PAPER}" stroke-width="1.2"
+                 transform="rotate(-25 ${n.x} ${n.y})" filter="url(#leafShadow)"/>`;
+    }
+    return body;
+  }
+
+  function leafLabel(n, idx) {
+    const dy = (idx % 2 === 0) ? -14 : 20;
+    return `<text x="${n.x}" y="${n.y + dy}" text-anchor="middle"
+              style="font-family:'IBM Plex Mono', monospace; font-size:9.5px; fill:${INK};">${n.id}</text>`;
+  }
+
+  LAYER_IDS.forEach(L => {
+    byLayer[L].forEach((n, i) => {
+      svg += `<g class="arbor-node" data-id="${n.id}" data-layer="${L}" style="cursor:pointer">
+                ${leafGlyph(n)}
+                ${leafLabel(n, i)}
+                <title>${n.id} — ${n.title || ''} (${n.source})</title>
+              </g>`;
+    });
+  });
+
+  // Root node
+  svg += `<circle cx="${ROOT_X}" cy="${ROOT_Y}" r="9" fill="${TRUNK_C_DARK}" stroke="${PAPER}" stroke-width="1.5"/>`;
+  svg += `<text x="${ROOT_X}" y="${ROOT_Y + 38}" text-anchor="middle"
+            style="font-family:'Newsreader', serif; font-style:italic; font-size:12px; fill:${INK_SOFT};">root · the service</text>`;
+
+  // Inosculation legend tag (only if we drew any)
+  if (inoscFusionPoints.length) {
+    const total = inoscFusionPoints.length;
+    const totalChildren = inoscFusionPoints.reduce((s, p) => s + p.n, 0);
+    svg += `
+      <g transform="translate(${VB_W - 280} ${VB_H - 92})">
+        <rect x="0" y="0" width="260" height="74" rx="8" fill="#FFFDF6" stroke="${INK_SOFT}" stroke-width="0.8" opacity="0.92"/>
+        <ellipse cx="20" cy="22" rx="5.5" ry="3.5" fill="${TRUNK_C_DARK}" transform="rotate(20 20 22)"/>
+        <text x="36" y="20" style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; font-weight:700; fill:${INK};">SELF-INOSCULATION</text>
+        <text x="36" y="36" style="font-family:'Newsreader', serif; font-size:11px; fill:${INK};">${total} fusion point${total === 1 ? '' : 's'} · ${totalChildren} converging branches</text>
+        <text x="14" y="58" style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; fill:${INK_SOFT};">Two branches sharing an ancestor</text>
+        <text x="14" y="71" style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; fill:${INK_SOFT};">fuse — lineage made visible.</text>
+      </g>`;
+  }
+
+  // Reading-guide footer
+  svg += `
+    <g transform="translate(20 ${VB_H - 92})">
+      <rect x="0" y="0" width="420" height="74" rx="8" fill="#FFFDF6" stroke="${INK_SOFT}" stroke-width="0.8" opacity="0.92"/>
+      <text x="14" y="20" style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; font-weight:700; fill:${INK};">READING THE PLANT</text>
+      <text x="14" y="38" style="font-family:'Newsreader', serif; font-size:11.5px; fill:${INK};">Leaves are filled = in production · dashed = NEW · ✕ = GAP · cyan halo = LIVE.</text>
+      <text x="14" y="55" style="font-family:'Newsreader', serif; font-size:11.5px; fill:${INK};">Affinity by shared tags decides parentage — that is what produces inosculation.</text>
+      <text x="14" y="70" style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; fill:${INK_SOFT};">Click any leaf to open its drawer.</text>
+    </g>`;
+
+  svg += `</svg>`;
+
+  // Compose
+  stage.innerHTML = `
+    <div class="arbor-wrap" style="display:block; background:${PAPER_2}; border-radius:8px; padding:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin: 4px 8px 10px; color:${INK};">
+        <span style="font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.06em;">SHOWING: ${pack.name}</span>
+        <button id="arborSwap" class="atlas-tab" style="background:#FFFDF6; color:${INK}; border:1px solid ${INK_SOFT};">switch to pack B (${B.name}) ›</button>
+      </div>
+      ${svg}
+    </div>
+    <div class="strata-legend" style="margin-top:10px;">
+      <em>Inosculation</em> — from Latin <code>osculari</code>, "to kiss". In botany, two branches of the same plant grow together until their bark and wood fuse into a single conduit. Here the metaphor is exact: when two artefacts in an upper layer descend from a single ancestor below, their stems converge to a fusion point — the lineage is visibly one.
+    </div>
+  `;
+
+  stage.querySelectorAll('.arbor-node').forEach(el => {
+    el.addEventListener('click', () => openDrawer(el.dataset.id, el.dataset.layer, pack));
+  });
+
+  const swap = stage.querySelector('#arborSwap');
   if (swap) {
     swap.addEventListener('click', () => {
       const tmp = state.packA;
