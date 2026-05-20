@@ -29,6 +29,8 @@
   --src-NEW: #16A34A;
   --src-GAP: #DC2626;
   --src-LIVE: #06B6D4;
+  --src-REQ: #C2410C;       /* requirements packs (e.g. Solace SLO Requirements) */
+  --src-fallback: #334155;  /* unknown / pack-defined source codes */
 
   /* Neutrals */
   --ink: #0F1B2D;
@@ -186,6 +188,7 @@ body::before {
   border-radius: var(--r-md);
   padding: 6px 10px;
   cursor: pointer;
+  max-width: 280px;
 }
 .pack-select:hover { background: rgba(255,255,255,0.10); }
 .pack-arrow { color: rgba(255,255,255,0.45); font-family: 'IBM Plex Mono', monospace; font-size: 14px; }
@@ -284,6 +287,10 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
   color: var(--ink-4);
   font-weight: 600;
 }
+.legend-items {
+  display: inline-flex; align-items: center; gap: 18px;
+  flex-wrap: wrap;
+}
 .legend-item {
   display: inline-flex; align-items: center; gap: 6px;
   cursor: pointer;
@@ -311,11 +318,15 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
   font-size: 9.5px; font-weight: 700;
   color: #fff; padding: 2px 6px; border-radius: 3px;
   letter-spacing: 0.06em; line-height: 1;
+  /* Default background for pack-defined source codes that don't match a
+     named token below. Overridden by the per-source rules. */
+  background: var(--src-fallback);
 }
 .src-pill.BAU { background: var(--src-BAU); }
 .src-pill.SLA { background: var(--src-SLA); }
 .src-pill.NEW { background: var(--src-NEW); }
 .src-pill.GAP { background: var(--src-GAP); }
+.src-pill.REQ { background: var(--src-REQ); }
 .src-pill.LIVE {
   background: var(--src-LIVE);
   position: relative;
@@ -341,6 +352,169 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
   font-size: 10px; color: var(--ink-4);
   display: inline-flex; align-items: center; gap: 6px;
 }
+
+/* ===================== PACK SUMMARY (compare view) ===================== */
+.pack-summary {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 28px;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+}
+.pack-summary .pack-card {
+  display: flex; align-items: center; gap: 10px;
+  min-width: 0;                  /* allow truncation in narrow viewports */
+}
+.pack-summary .pack-card.b { justify-content: flex-end; text-align: right; }
+.pack-summary .pack-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--ink-4); font-weight: 600;
+  flex-shrink: 0;
+}
+.pack-summary .pack-badge { flex-shrink: 0; }
+.pack-summary .pack-title {
+  font-weight: 600; color: var(--ink-2); font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pack-summary .pack-author {
+  font-style: italic; color: var(--ink-4); font-weight: 400;
+  margin-left: 4px;
+}
+.pack-summary .pack-stats {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px; letter-spacing: 0.04em;
+  color: var(--ink-4); margin-left: 4px;
+}
+.pack-summary .pack-stats .num { color: var(--ink-2); font-weight: 600; }
+.pack-summary .pack-arrow-mid {
+  color: var(--ink-4);
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* ===================== PACK HOVER TOOLTIP =====================
+   Hovering (or keyboard-focusing) a pack-card in the summary bar reveals
+   a small panel summarising the pack: per-layer counts, per-source counts,
+   and a couple of meta lines (badge, author, description). Positioned
+   absolute under the card; left-anchored for Pack A, right-anchored for B. */
+.pack-summary .pack-card { position: relative; cursor: help; }
+.pack-summary .pack-card .pack-tip {
+  position: absolute; top: calc(100% + 8px); z-index: 50;
+  min-width: 260px; max-width: 360px;
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 28px rgba(20,30,50,0.12);
+  padding: 12px 14px 10px;
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+  color: var(--ink-2);
+  opacity: 0; pointer-events: none; transform: translateY(-4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  text-align: left;
+}
+.pack-summary .pack-card.a .pack-tip { left: 0; }
+.pack-summary .pack-card.b .pack-tip { right: 0; }
+.pack-summary .pack-card:hover .pack-tip,
+.pack-summary .pack-card:focus-within .pack-tip {
+  opacity: 1; pointer-events: auto; transform: translateY(0);
+}
+.pack-tip .tip-desc {
+  font-family: 'Newsreader', serif; font-style: italic;
+  font-size: 12.5px; color: var(--ink-3);
+  margin: 0 0 10px; line-height: 1.35;
+}
+.pack-tip table { width: 100%; border-collapse: collapse; margin: 6px 0 8px; }
+.pack-tip table td {
+  padding: 3px 0; font-size: 11px;
+}
+.pack-tip table td.lab {
+  display: flex; align-items: center; gap: 6px;
+  color: var(--ink-3);
+}
+.pack-tip table td.num {
+  text-align: right; color: var(--ink-1); font-weight: 600;
+}
+.pack-tip .tip-sec {
+  font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-4); margin-top: 8px; padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+.pack-tip .tip-sec:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.pack-tip .lchip {
+  display: inline-block; width: 22px; text-align: center;
+  padding: 1px 0; border-radius: 3px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em;
+  color: #fff;
+}
+.pack-tip .lchip.l1  { background: #E0A33B; }
+.pack-tip .lchip.l2  { background: #2D9CDB; }
+.pack-tip .lchip.l3  { background: #4FAE6C; }
+.pack-tip .lchip.l4  { background: #D6553E; }
+.pack-tip .lchip.l5  { background: #8A6ED4; }
+.pack-tip .lchip.gov { background: #5A6573; }
+.pack-tip .schip {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em;
+  background: var(--ink-5); color: var(--ink-2);
+}
+.pack-tip .schip.LIVE { background: #d6f3ff; color: #0a5a86; }
+.pack-tip .schip.BAU  { background: #ECEEEF; color: #45525E; }
+.pack-tip .schip.SLA  { background: #FFE6CC; color: #8A4A12; }
+.pack-tip .schip.NEW  { background: #E0F4DF; color: #2C6B36; }
+.pack-tip .schip.GAP  { background: #FAD7D2; color: #8A2A1F; }
+.pack-tip .tip-meta {
+  font-size: 10px; color: var(--ink-4); margin-top: 8px;
+}
+
+/* ===================== SSE LIVE FEED row ===================== */
+.sse-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 28px;
+  background: #FBFBF8;
+  border-bottom: 1px solid var(--line);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+.sse-row label {
+  font-size: 10px; letter-spacing: 0.10em;
+  text-transform: uppercase; color: var(--ink-4); font-weight: 600;
+}
+.sse-row input[type="url"] {
+  flex: 1 1 320px; min-width: 240px;
+  font: inherit; font-family: 'IBM Plex Mono', monospace;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: #fff; color: var(--ink-2);
+}
+.sse-row input[type="url"]:focus {
+  outline: none; border-color: var(--src-LIVE);
+  box-shadow: 0 0 0 2px rgba(6,182,212,0.15);
+}
+.sse-row .sse-btn {
+  font: inherit; font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px; letter-spacing: 0.06em;
+  padding: 5px 14px;
+  border: 1px solid var(--ink-2); background: var(--ink-2); color: #fff;
+  border-radius: var(--r-sm); cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.sse-row .sse-btn:hover { background: var(--ink-3); border-color: var(--ink-3); }
+.sse-row .sse-btn.connected { background: var(--src-LIVE); border-color: var(--src-LIVE); }
+.sse-row .sse-btn.connected:hover { background: #0891B2; border-color: #0891B2; }
+.sse-row .sse-status {
+  font-size: 10px; letter-spacing: 0.04em;
+  color: var(--ink-4);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.sse-row .sse-status::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--line);
+}
+.sse-row .sse-status.ok::before { background: var(--src-LIVE); animation: live-pulse-badge 1.4s ease-in-out infinite; }
+.sse-row .sse-status.err::before { background: var(--src-GAP); }
 .legend-note .live-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--src-LIVE);
@@ -486,6 +660,91 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
 }
 .governance .layer-head { border-bottom: 1px solid var(--line-soft); }
 .governance .cards { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+
+/* ===================== COMPARE: SIDE-BY-SIDE BOARD PAIR ===================== */
+.board-pair { display: block; }
+.board-side { display: block; min-width: 0; }
+.board-side-head {
+  display: none;
+  align-items: baseline;
+  gap: 10px;
+  margin: 4px 2px 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.board-side-head .side-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: .08em;
+  color: var(--ink-4);
+  text-transform: uppercase;
+}
+.board-side-head .pack-name { font-size: 14px; font-weight: 600; color: var(--ink-1); }
+.board-side-head .pack-badge {
+  font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .06em;
+  padding: 2px 6px; border-radius: 4px; background: var(--ink-soft); color: var(--ink-2);
+}
+.board-side-head .pack-count { font-size: 11px; color: var(--ink-4); margin-left: auto; }
+
+/* Compare view: show both sides, side-by-side */
+.canvas[data-pair="on"] .board-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+.canvas[data-pair="on"] .board-side-head { display: flex; }
+.canvas[data-pair="on"] #boardB { display: block; }
+.canvas[data-pair="on"] .board { grid-template-columns: minmax(0, 1fr); }
+.canvas[data-pair="on"] .l5-side { display: none; }   /* L5 list folds into main column to save width */
+.canvas[data-pair="on"] [data-side] [data-layer="L5"] { display: block; }
+
+/* Per-card side-delta badge (only rendered when _sideDelta !== 'both') */
+.card-side-delta {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: .08em;
+  padding: 2px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.card-side-delta.only-a { background: rgba(220, 80, 80, .12);  color: #b73a3a; border: 1px solid rgba(220, 80, 80, .35); }
+.card-side-delta.only-b { background: rgba(60, 140, 240, .12); color: #2566c8; border: 1px solid rgba(60, 140, 240, .35); }
+.card[data-side-delta="only-a"] { border-left: 3px solid #b73a3a; }
+.card[data-side-delta="only-b"] { border-left: 3px solid #2566c8; }
+
+/* 3-way delta filter toggle */
+.delta-toggle {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.app[data-view="compare"] .delta-toggle { display: inline-flex; }
+.delta-toggle .delta-label {
+  font-family: 'IBM Plex Mono', monospace; font-size: 10px;
+  letter-spacing: .06em; color: var(--ink-4); text-transform: uppercase;
+  margin-right: 4px;
+}
+.delta-chip {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: .04em;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink-3);
+  cursor: pointer;
+  text-transform: uppercase;
+}
+.delta-chip[aria-pressed="true"] { background: var(--ink-1); color: var(--paper); border-color: var(--ink-1); }
+.delta-chip.only-a[aria-pressed="true"] { background: #b73a3a; border-color: #b73a3a; }
+.delta-chip.only-b[aria-pressed="true"] { background: #2566c8; border-color: #2566c8; }
 
 /* ===================== ARTEFACT CARD ===================== */
 .card {
@@ -1276,33 +1535,80 @@ body.drag-over .drop-overlay-msg { opacity: 1; }
     </div>
   </header>
 
-  <!-- ========== LEGEND (also the filter) ========== -->
+  <!-- ========== PACK SUMMARY (compare view) ========== -->
+  <div class="pack-summary" id="packSummary" hidden></div>
+
+  <!-- ========== LEGEND (also the filter) ==========
+       Chips are populated dynamically by renderFilters() from the union of
+       `source` values present in the currently-selected packs A and B. The
+       ALL chip is always rendered first as a static anchor below; the rest
+       follow on each render. Click handling is delegated on the container. -->
   <div class="legend" id="legend">
-    <span class="legend-title">Source</span>
-    <span class="legend-item active" data-filter="all"><span class="legend-all">ALL</span><span>everything</span></span>
-    <span class="legend-item" data-filter="BAU"><span class="src-pill BAU">BAU</span><span>in prod</span></span>
-    <span class="legend-item" data-filter="SLA"><span class="src-pill SLA">SLA</span><span>contractual</span></span>
-    <span class="legend-item" data-filter="NEW"><span class="src-pill NEW">NEW</span><span>to deploy</span></span>
-    <span class="legend-item" data-filter="GAP"><span class="src-pill GAP">GAP</span><span>missing</span></span>
-    <span class="legend-note"><span class="live-dot"></span>cyan halo = verified live by MCP</span>
+    <span class="legend-title">Filter by source</span>
+    <span class="legend-items" id="legendItems"></span>
+    <span class="delta-toggle" id="deltaToggle" role="group" aria-label="Filter by delta">
+      <span class="delta-label">Delta</span>
+      <button type="button" class="delta-chip only-a" data-delta="only-a" aria-pressed="true">Only in A</button>
+      <button type="button" class="delta-chip only-b" data-delta="only-b" aria-pressed="true">Only in B</button>
+      <button type="button" class="delta-chip both"   data-delta="both"   aria-pressed="true">In both</button>
+    </span>
+  </div>
+
+
+  <!-- ========== MCP VERIFY ROW (compare view) ==========
+       One-shot JSON-RPC round-trip to the public MCP server. Walks Pack A
+       level-by-level, asks the server what is actually deployed, and writes
+       the response back as a synthetic 'mcp-verified' pack that becomes
+       Pack B. The existing side-by-side then shows:
+         · "Only in A" = artefact NOT found in prod
+         · "Only in B" = something the MCP discovered that Pack A doesn't list
+         · matched    = verified deployed in prod -->
+  <div class="sse-row mcp-verify-row" id="mcpVerifyRow" hidden>
+    <label for="mcpUrl" title="Generate Pack B from a live MCP server">MCP</label>
+    <input type="url" id="mcpUrl" value="https://www.krystaline.io/mcp/public" spellcheck="false">
+    <button type="button" id="mcpVerifyBtn" class="sse-btn" title="Fetch a fresh live pack and assign it to Pack B">Refresh ↻</button>
+    <span class="sse-status" id="mcpVerifyStatus">idle</span>
   </div>
 
   <!-- ========== CANVAS ========== -->
   <main class="canvas" id="canvas">
     <div class="canvas-intro" id="canvasIntro"></div>
 
-    <!-- Board: L1-L4 column + L5 sidebar -->
-    <div class="board" id="board">
-      <div class="layers">
-        <div class="layer" data-layer="L1"></div>
-        <div class="layer" data-layer="L2"></div>
-        <div class="layer" data-layer="L3"></div>
-        <div class="layer" data-layer="L4"></div>
-      </div>
-      <aside class="l5-side" data-layer="L5"></aside>
-    </div>
+    <!-- Side-by-side board pair. In single-pack views (current/target) only
+         #boardA is visible and spans the full canvas. In compare view both
+         sides are visible side-by-side, each scoped to its own pack with
+         per-card ONLY-IN-A / ONLY-IN-B annotations applied by JS. -->
+    <div class="board-pair" id="boardPair">
 
-    <div class="governance" data-layer="GOV"></div>
+      <section class="board-side" id="boardA">
+        <header class="board-side-head" data-side="a"></header>
+        <div class="board" data-side="a">
+          <div class="layers">
+            <div class="layer" data-layer="L1"></div>
+            <div class="layer" data-layer="L2"></div>
+            <div class="layer" data-layer="L3"></div>
+            <div class="layer" data-layer="L4"></div>
+          </div>
+          <aside class="l5-side" data-layer="L5"></aside>
+        </div>
+        <div class="governance" data-layer="GOV"></div>
+      </section>
+
+      <section class="board-side" id="boardB" hidden>
+        <header class="board-side-head" data-side="b"></header>
+        <div class="board" data-side="b">
+          <div class="layers">
+            <div class="layer" data-layer="L1"></div>
+            <div class="layer" data-layer="L2"></div>
+            <div class="layer" data-layer="L3"></div>
+            <div class="layer" data-layer="L4"></div>
+          </div>
+          <aside class="l5-side" data-layer="L5"></aside>
+        </div>
+        <div class="governance" data-layer="GOV"></div>
+      </section>
+
+    </div>
 
     <!-- Schema explainer view -->
     <div class="schema-view" id="schemaView"></div>
@@ -1659,15 +1965,37 @@ const state = {
   view: 'compare',              // 'current' | 'target' | 'compare' | 'atlas' | 'schema'
   packA: 'production-live',
   packB: 'target-advanced',
-  filter: 'all',                // 'all' | 'BAU' | 'SLA' | 'NEW' | 'GAP'
+  filter: 'all',                // 'all' | <any source code present in packA/packB>
+  deltaFilter: new Set(['only-a', 'only-b', 'both']), // compare-view delta visibility
   atlas: 'transit',             // 'transit' | 'strata' | 'skyline' | 'constellation' | 'periodic'
   constMix: 0,                  // 0 = current sky, 1 = target sky
+  arborView: 'A',               // 'A' | 'B' | 'both' — which tree(s) the Arbor atlas renders
 };
 
 const $ = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
 
 function packBy(id) { return packs.find(p => p.id === id) || packs[0]; }
+
+/* Atlas-side helper: respect the top "FILTER BY SOURCE" bar by returning a
+   shallow-cloned pack whose layer arrays are filtered to state.filter.
+   When state.filter === 'all', returns the pack unchanged. */
+function filterPackBySource(pack) {
+  if (!pack || !state.filter || state.filter === 'all') return pack;
+  const src = state.filter;
+  const keep = c => c && c.source === src;
+  const out = { ...pack, layers: { ...(pack.layers || {}) } };
+  ['L1','L2','L3','L5','GOV'].forEach(L => {
+    out.layers[L] = (pack.layers?.[L] || []).filter(keep);
+  });
+  const l4 = pack.layers?.L4 || {};
+  out.layers.L4 = {
+    policy:   (l4.policy   || []).filter(keep),
+    alerting: (l4.alerting || []).filter(keep),
+    healing:  (l4.healing  || []).filter(keep),
+  };
+  return out;
+}
 
 /* Flatten L4 sub-cols into a single list for counting */
 function allArtefacts(pack) {
@@ -1727,6 +2055,44 @@ function deltaCounts(diffPack) {
   };
 }
 
+/* Per-side count: cards only-in-A, only-in-B, and in-both, matched by id
+   within the same layer (and same L4 sub-column). */
+function sideDeltaCounts(A, B) {
+  const idsIn = (pack, L, col) => {
+    if (L === 'L4') return new Set(((pack.layers.L4 || {})[col] || []).map(x => x.id));
+    return new Set((pack.layers[L] || []).map(x => x.id));
+  };
+  let onlyA = 0, onlyB = 0, both = 0;
+  ['L1','L2','L3','L5','GOV'].forEach(L => {
+    const aIds = idsIn(A, L); const bIds = idsIn(B, L);
+    aIds.forEach(id => (bIds.has(id) ? both++ : onlyA++));
+    bIds.forEach(id => { if (!aIds.has(id)) onlyB++; });
+  });
+  ['policy','alerting','healing'].forEach(col => {
+    const aIds = idsIn(A, 'L4', col); const bIds = idsIn(B, 'L4', col);
+    aIds.forEach(id => (bIds.has(id) ? both++ : onlyA++));
+    bIds.forEach(id => { if (!aIds.has(id)) onlyB++; });
+  });
+  return { onlyA, onlyB, both };
+}
+
+/* Coverage = proportion of artefacts that are NOT a gap. For requirements
+   packs (REQ) every artefact is by definition a requirement, so coverage is
+   trivially 100% — but this gracefully handles mixed packs too. */
+function coverageOf(pack) {
+  const all = allArtefacts(pack);
+  if (!all.length) return { pct: 0, total: 0 };
+  const gaps = all.filter(a => a.source === 'GAP').length;
+  return { pct: Math.round(((all.length - gaps) / all.length) * 100), total: all.length };
+}
+
+/* Minimal HTML escaper for untrusted strings interpolated into templates. */
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 /* ---------- DOM rendering ---------- */
 
 function renderTabs() {
@@ -1737,7 +2103,12 @@ function renderTabs() {
   $('#packB').style.display = (state.view === 'compare' || state.view === 'atlas') ? '' : 'none';
   $('#canvas').classList.toggle('schema-mode', state.view === 'schema');
   $('#canvas').classList.toggle('atlas-mode', state.view === 'atlas');
+  $('#canvas').dataset.pair = state.view === 'compare' ? 'on' : 'off';
   $('#atlasView').classList.toggle('active', state.view === 'atlas');
+  // MCP verify row + pack-summary are only relevant in compare view
+  const showCompareExtras = state.view === 'compare';
+  $('#mcpVerifyRow').hidden = !showCompareExtras;
+  $('#packSummary').hidden = !showCompareExtras;
 }
 
 function renderSelectors() {
@@ -1752,13 +2123,13 @@ function renderIntro() {
   let title, sub, deltaLine = '';
   if (state.view === 'compare') {
     title = `<em>Comparing</em> <strong>${A.name}</strong> against <strong>${B.name}</strong>`;
-    sub = 'Filled cards exist in target; faded ones are gaps (only present in current). Green stripe = NEW to deploy.';
-    const d = deltaCounts(buildDiffPack(A, B));
+    sub = 'Side-by-side view. Cards marked <em>Only in A</em> or <em>Only in B</em> are unique to that pack; unmarked cards exist in both.';
+    const d = sideDeltaCounts(A, B);
     deltaLine = `
       <div class="intro-deltas">
-        <span class="add"><span class="num">${d.add}</span>added</span>
-        <span class="gap"><span class="num">${d.gap}</span>gaps</span>
-        <span><span class="num">${d.kept}</span>retained</span>
+        <span class="add" style="color:#b73a3a"><span class="num">${d.onlyA}</span>only in A</span>
+        <span class="gap" style="color:#2566c8"><span class="num">${d.onlyB}</span>only in B</span>
+        <span><span class="num">${d.both}</span>unchanged</span>
       </div>`;
   } else if (state.view === 'target') {
     title = `<em>Target</em> — ${B.name}`;
@@ -1776,20 +2147,93 @@ function renderIntro() {
       <p>${sub}</p>
       ${deltaLine}
     </div>`;
+
+  renderPackSummary(A, B);
+}
+
+/* Render the "PACK A · REQ · Solace SLO Requirements (Vinod) · 100% coverage · 55 artefacts"
+   summary bar shown in Compare view between the header and the filter row.
+   Each card carries a hover tooltip with the per-layer + per-source breakdown. */
+function renderPackSummary(A, B) {
+  if (state.view !== 'compare') { $('#packSummary').innerHTML = ''; return; }
+
+  // Tooltip body: per-layer counts (L1..GOV) + per-source counts (LIVE/BAU/NEW/SLA/GAP).
+  const LAYER_LABELS = { L1: 'Contract', L2: 'Telemetry', L3: 'Insight', L4: 'Action', L5: 'Validation', GOV: 'Governance' };
+  const SOURCE_ORDER = ['LIVE', 'BAU', 'NEW', 'SLA', 'GAP'];
+  function tipHTML(pack) {
+    const all = allArtefacts(pack);
+    const byLayer = { L1: 0, L2: 0, L3: 0, L4: 0, L5: 0, GOV: 0 };
+    const bySrc = {};
+    all.forEach(a => {
+      if (byLayer[a.layer] != null) byLayer[a.layer]++;
+      if (a.source) bySrc[a.source] = (bySrc[a.source] || 0) + 1;
+    });
+    const layerRows = Object.entries(byLayer)
+      .filter(([, n]) => n > 0)
+      .map(([L, n]) => `<tr><td class="lab"><span class="lchip ${L.toLowerCase()}">${L}</span> ${LAYER_LABELS[L]}</td><td class="num">${n}</td></tr>`)
+      .join('');
+    const srcRows = SOURCE_ORDER
+      .filter(s => bySrc[s])
+      .map(s => `<tr><td class="lab"><span class="schip ${s}">${s}</span></td><td class="num">${bySrc[s]}</td></tr>`)
+      .join('');
+    const desc = pack.description ? `<p class="tip-desc">${escapeHtml(pack.description)}</p>` : '';
+    const author = pack.author ? `by ${escapeHtml(pack.author)} · ` : '';
+    const generated = pack.liveness?.refreshedAt || pack.generatedAt || '';
+    const meta = `${author}${generated ? 'generated ' + generated.slice(0, 19).replace('T', ' ') + ' UTC' : ''}`;
+    return `
+      <div class="pack-tip" role="tooltip">
+        ${desc}
+        <div class="tip-sec">By layer</div>
+        <table>${layerRows || '<tr><td class="lab">—</td><td class="num">0</td></tr>'}</table>
+        <div class="tip-sec">By source</div>
+        <table>${srcRows || '<tr><td class="lab">—</td><td class="num">0</td></tr>'}</table>
+        ${meta ? `<div class="tip-meta">${meta}</div>` : ''}
+      </div>`;
+  }
+
+  const card = (pack, side) => {
+    const badge = pack.badge || 'PACK';
+    const cls = badge.replace(/[^A-Za-z0-9_-]/g, '_');
+    const author = pack.author ? `<span class="pack-author">(${pack.author})</span>` : '';
+    const cov = coverageOf(pack);
+    return `
+      <div class="pack-card ${side}" tabindex="0" aria-describedby="pack-tip-${side}">
+        <span class="pack-label">PACK ${side.toUpperCase()}</span>
+        <span class="src-pill pack-badge ${cls}">${badge}</span>
+        <span class="pack-title">${pack.name}${author}</span>
+        <span class="pack-stats"><span class="num">${cov.pct}%</span> coverage · <span class="num">${cov.total}</span> artefact${cov.total === 1 ? '' : 's'}</span>
+        ${tipHTML(pack)}
+      </div>`;
+  };
+  $('#packSummary').innerHTML = card(A, 'a') + `<span class="pack-arrow-mid">→</span>` + card(B, 'b');
 }
 
 function passFilter(card) {
-  if (state.filter === 'all') return true;
-  return card.source === state.filter;
+  // Source filter (legacy single-value).
+  if (state.filter !== 'all' && card.source !== state.filter) return false;
+  // Side-delta filter (compare view only). state.deltaFilter is a Set of
+  // {'only-a','only-b','both'}; cards without _sideDelta are treated as 'both'.
+  if (state.view === 'compare' && state.deltaFilter && state.deltaFilter.size > 0) {
+    const d = card._sideDelta || 'both';
+    if (!state.deltaFilter.has(d)) return false;
+  }
+  return true;
 }
 
 function cardHTML(card, layerId) {
   if (!passFilter(card)) return '';
   const cls = `card src-${card.source}`;
   const dataDelta = card._delta && card._delta !== 'kept' ? ` data-delta="${card._delta}"` : '';
+  const sideDelta = card._sideDelta && card._sideDelta !== 'both' ? ` data-side-delta="${card._sideDelta}"` : '';
+  const sideBadge = card._sideDelta === 'only-a'
+    ? `<span class="card-side-delta only-a">Only in A</span>`
+    : card._sideDelta === 'only-b'
+      ? `<span class="card-side-delta only-b">Only in B</span>`
+      : '';
   const sourceBadge = `<span class="src-pill ${card.source}">${card.source}</span>`;
   return `
-    <article class="${cls}" data-id="${card.id}" data-layer="${layerId}"${dataDelta}>
+    <article class="${cls}" data-id="${card.id}" data-layer="${layerId}"${dataDelta}${sideDelta}>
+      ${sideBadge}
       <div class="card-top">
         <span class="card-id">${card.id}</span>
         ${sourceBadge}
@@ -1800,9 +2244,10 @@ function cardHTML(card, layerId) {
     </article>`;
 }
 
-function renderLayer(layerId, pack) {
+function renderLayer(layerId, pack, scopeEl) {
   const meta = SCHEMA_META.layers.find(L => L.id === layerId);
-  const root = $(`[data-layer="${layerId}"]`);
+  const scope = scopeEl || document;
+  const root = scope.querySelector(`[data-layer="${layerId}"]`);
   if (!root) return;
   const items = pack.layers[layerId] || [];
 
@@ -1863,18 +2308,90 @@ function renderLayer(layerId, pack) {
     </div>`;
 }
 
+// Build per-side annotated copies of A and B so each artefact carries
+// _sideDelta: 'only-a' | 'only-b' | 'both'. Match is by id within the
+// same layer (L4 matches per sub-column).
+function annotateSideDelta(A, B) {
+  const idsIn = (pack, L, col) => {
+    if (L === 'L4') return new Set(((pack.layers.L4 || {})[col] || []).map(x => x.id));
+    return new Set((pack.layers[L] || []).map(x => x.id));
+  };
+  const tag = (pack, otherHas, side) => {
+    const flat = ['L1','L2','L3','L5','GOV'];
+    const out = { ...pack, layers: {} };
+    flat.forEach(L => {
+      out.layers[L] = (pack.layers[L] || []).map(a => ({
+        ...a, _sideDelta: otherHas(L, null).has(a.id) ? 'both' : ('only-' + side),
+      }));
+    });
+    const l4src = pack.layers.L4 || { policy: [], alerting: [], healing: [] };
+    out.layers.L4 = {};
+    ['policy','alerting','healing'].forEach(col => {
+      out.layers.L4[col] = (l4src[col] || []).map(a => ({
+        ...a, _sideDelta: otherHas('L4', col).has(a.id) ? 'both' : ('only-' + side),
+      }));
+    });
+    return out;
+  };
+  return {
+    A: tag(A, (L, col) => idsIn(B, L, col), 'a'),
+    B: tag(B, (L, col) => idsIn(A, L, col), 'b'),
+  };
+}
+
+function renderSideHead(scopeEl, sideLetter, pack, totalCount) {
+  const head = scopeEl.querySelector('.board-side-head');
+  if (!head) return;
+  head.innerHTML = `
+    <span class="side-label">Pack ${sideLetter}</span>
+    <span class="pack-name">${pack.name || pack.id}</span>
+    ${pack.badge ? `<span class="pack-badge">${pack.badge}</span>` : ''}
+    <span class="pack-count">${totalCount} artefacts</span>`;
+}
+
+function renderBoardSide(scopeEl, pack) {
+  ['L1','L2','L3','L4','L5','GOV'].forEach(L => renderLayer(L, pack, scopeEl));
+  scopeEl.querySelectorAll('.card').forEach(el => {
+    el.addEventListener('click', () => openDrawer(el.dataset.id, el.dataset.layer, pack));
+  });
+}
+
+function packArtefactCount(pack) {
+  let n = 0;
+  ['L1','L2','L3','L5','GOV'].forEach(L => { n += (pack.layers[L] || []).length; });
+  const l4 = pack.layers.L4 || {};
+  ['policy','alerting','healing'].forEach(c => { n += (l4[c] || []).length; });
+  return n;
+}
+
 function renderBoard() {
   if (state.view === 'schema') return;
   const A = packBy(state.packA), B = packBy(state.packB);
-  let pack;
-  if (state.view === 'compare') pack = buildDiffPack(A, B);
-  else if (state.view === 'target') pack = B;
-  else pack = A;
+  const sideA = document.getElementById('boardA');
+  const sideB = document.getElementById('boardB');
 
-  ['L1','L2','L3','L4','L5','GOV'].forEach(L => renderLayer(L, pack));
-
-  // Attach click handlers
-  $$('.card').forEach(el => el.addEventListener('click', () => openDrawer(el.dataset.id, el.dataset.layer, pack)));
+  if (state.view === 'compare') {
+    sideA.hidden = false;
+    sideB.hidden = false;
+    const { A: aAnn, B: bAnn } = annotateSideDelta(A, B);
+    renderSideHead(sideA, 'A', A, packArtefactCount(A));
+    renderSideHead(sideB, 'B', B, packArtefactCount(B));
+    renderBoardSide(sideA, aAnn);
+    renderBoardSide(sideB, bAnn);
+  } else {
+    // Single-pack view (current / target): show only sideA, hide + clear sideB
+    // so a previous Compare render doesn't leak through as a second pack.
+    const pack = state.view === 'target' ? B : A;
+    sideA.hidden = false;
+    sideB.hidden = true;
+    const headB = sideB.querySelector('.board-side-head');
+    if (headB) headB.innerHTML = '';
+    sideB.querySelectorAll('.layer, .l5-side').forEach(el => { el.innerHTML = ''; });
+    // Also clear sideA's side-label header — only Compare wants the "Pack A" chip.
+    const headA = sideA.querySelector('.board-side-head');
+    if (headA) headA.innerHTML = '';
+    renderBoardSide(sideA, pack);
+  }
 }
 
 function renderSchemaView() {
@@ -1952,10 +2469,58 @@ function renderSchemaView() {
 }
 
 function renderFilters() {
+  /* Discover the set of `source` values present in the currently-selected
+     packs A and B. The filter chip row is rebuilt from this set on every
+     render so any pack-defined source code (e.g. REQ, NONPROD4, Vinod,
+     anything streamed in via SSE) becomes filterable without a code change.
+     The ALL chip is always present as the first option. If the current
+     filter is no longer in the set, fall back to 'all'. */
+  const A = packBy(state.packA);
+  const B = (state.view === 'compare' || state.view === 'atlas') ? packBy(state.packB) : null;
+  const seen = new Set();
+  const meta = {}; // source -> { count, label }
+  const sample = (pack) => {
+    if (!pack) return;
+    allArtefacts(pack).forEach(a => {
+      const s = a.source;
+      if (!s || typeof s !== 'string') return;
+      seen.add(s);
+      meta[s] = meta[s] || { count: 0 };
+      meta[s].count += 1;
+    });
+  };
+  sample(A); sample(B);
+
+  // Human-readable hints for the well-known taxonomy. Unknown source codes
+  // (REQ-pack specifics like NONPROD4 / Vinod) get an artefact count instead.
+  const HINTS = { BAU: 'in prod', SLA: 'contractual', NEW: 'to deploy', GAP: 'missing', LIVE: 'live', REQ: 'requirement' };
+
+  // Stable ordering: well-known sources first in canonical order, then any
+  // pack-defined extras sorted alphabetically.
+  const KNOWN = ['BAU', 'SLA', 'NEW', 'GAP', 'LIVE', 'REQ'];
+  const extras = [...seen].filter(s => !KNOWN.includes(s)).sort();
+  const ordered = KNOWN.filter(s => seen.has(s)).concat(extras);
+
+  // If the active filter has disappeared from the new set, reset to ALL.
+  if (state.filter !== 'all' && !seen.has(state.filter)) state.filter = 'all';
+
+  const sanitize = (s) => s.replace(/[^A-Za-z0-9_-]/g, '_');
+  const chips = ordered.map(s => {
+    const cls = sanitize(s);
+    const hint = HINTS[s] || `${meta[s].count} artefact${meta[s].count === 1 ? '' : 's'}`;
+    return `<span class="legend-item${state.filter === s ? ' active' : ''}" data-filter="${s}">
+      <span class="src-pill ${cls}">${s}</span><span>${hint}</span>
+    </span>`;
+  }).join('');
+
+  $('#legendItems').innerHTML =
+    `<span class="legend-item${state.filter === 'all' ? ' active' : ''}" data-filter="all">
+      <span class="legend-all">ALL</span><span>everything</span>
+    </span>` + chips;
+
+  // Apply dim styling: when a specific filter is selected, fade non-matches.
   $$('#legend .legend-item').forEach(el => {
     const isActive = el.dataset.filter === state.filter;
-    el.classList.toggle('active', isActive);
-    // dim non-matching when a specific filter is on
     el.classList.toggle('dim', state.filter !== 'all' && !isActive);
   });
 }
@@ -2110,8 +2675,8 @@ const ATLAS_META = {
    ============================================================ */
 
 function renderAtlasStrata(stage) {
-  const A = packBy(state.packA);
-  const B = packBy(state.packB);
+  const A = filterPackBySource(packBy(state.packA));
+  const B = filterPackBySource(packBy(state.packB));
   const layerIds = ['L1','L2','L3','L4','L5','GOV'];
 
   // Hex palette mirroring CSS vars (SVG attributes need explicit colors)
@@ -2367,8 +2932,8 @@ function renderAtlasStrata(stage) {
    ============================================================ */
 
 function renderAtlasPeriodic(stage) {
-  const A = packBy(state.packA);
-  const B = packBy(state.packB);
+  const A = filterPackBySource(packBy(state.packA));
+  const B = filterPackBySource(packBy(state.packB));
   const layerIds = ['L1','L2','L3','L4','L5','GOV'];
 
   function expand(pack, L) {
@@ -2481,8 +3046,8 @@ function renderAtlasPeriodic(stage) {
    ============================================================ */
 
 function renderAtlasConstellation(stage) {
-  const A = packBy(state.packA);
-  const B = packBy(state.packB);
+  const A = filterPackBySource(packBy(state.packA));
+  const B = filterPackBySource(packBy(state.packB));
 
   // Use union of both packs for the full sky; states drive opacity.
   const layerIds = ['L1','L2','L3','L4','L5'];  // GOV becomes the outer arc
@@ -2793,8 +3358,8 @@ function renderAtlasConstellation(stage) {
    ============================================================ */
 
 function renderAtlasSkyline(stage) {
-  const A = packBy(state.packA);
-  const B = packBy(state.packB);
+  const A = filterPackBySource(packBy(state.packA));
+  const B = filterPackBySource(packBy(state.packB));
   const layerIds = ['L1','L2','L3','L4','L5','GOV'];
 
   function expand(pack, L) {
@@ -2956,8 +3521,8 @@ function renderAtlasSkyline(stage) {
    ============================================================ */
 
 function renderAtlasTransit(stage) {
-  const A = packBy(state.packA);
-  const B = packBy(state.packB);
+  const A = filterPackBySource(packBy(state.packA));
+  const B = filterPackBySource(packBy(state.packB));
   const pack = A; // single-pack view; B used for the toggle hint
 
   const LINE_C = {
@@ -3241,11 +3806,11 @@ function renderAtlasTransit(stage) {
    ============================================================ */
 
 function renderAtlasArbor(stage) {
-  const A = packBy(state.packA);
-  const B = packBy(state.packB);
-  const pack = A;
+  const A = filterPackBySource(packBy(state.packA));
+  const B = filterPackBySource(packBy(state.packB));
+  const samePack = !B || A.id === B.id;
 
-  // SVG canvas
+  // SVG canvas (per tree)
   const VB_W = 1100, VB_H = 820;
 
   // Layer palette (organic-leaning hex versions of the CSS vars)
@@ -3276,6 +3841,13 @@ function renderAtlasArbor(stage) {
   const PAPER_2 = '#EFE6CF';
   const INK = '#3B2F1E';
   const INK_SOFT = '#7A6A50';
+
+  // ============================================================
+  // buildTree(pack) — builds one self-contained SVG for one pack.
+  // Called twice so Compare-by-default shows both trees stacked
+  // side-by-side (no more swap-button ping-pong).
+  // ============================================================
+  function buildTree(pack) {
 
   // Flatten L4 to one row (sub-column kept on each node for the drawer)
   function nodesFor(L) {
@@ -3549,38 +4121,76 @@ function renderAtlasArbor(stage) {
     </g>`;
 
   svg += `</svg>`;
+  return svg;
+  } // end buildTree
 
-  // Compose
-  stage.innerHTML = `
-    <div class="arbor-wrap" style="display:block; background:${PAPER_2}; border-radius:8px; padding:12px;">
+  // ---- Compose: single tree, or both side-by-side, depending on state.arborView ----
+  const mode = samePack ? 'A' : (state.arborView || 'A');
+  const showA = mode === 'A' || mode === 'both';
+  const showB = !samePack && (mode === 'B' || mode === 'both');
+  const svgA = showA ? buildTree(A) : null;
+  const svgB = showB ? buildTree(B) : null;
+
+  const cardA = svgA ? `
+    <div class="arbor-wrap" data-pack="A" style="display:block; background:${PAPER_2}; border-radius:8px; padding:12px; min-width:0;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin: 4px 8px 10px; color:${INK};">
-        <span style="font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.06em;">SHOWING: ${pack.name}</span>
-        <button id="arborSwap" class="atlas-tab" style="background:#FFFDF6; color:${INK}; border:1px solid ${INK_SOFT};">switch to pack B (${B.name}) ›</button>
+        <span style="font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.06em;">PACK A · ${escapeHtml(A.name)}</span>
+        <span style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; color:${INK_SOFT};">${A.badge || ''}</span>
       </div>
-      ${svg}
+      ${svgA}
+    </div>` : '';
+
+  const cardB = svgB ? `
+    <div class="arbor-wrap" data-pack="B" style="display:block; background:${PAPER_2}; border-radius:8px; padding:12px; min-width:0;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin: 4px 8px 10px; color:${INK};">
+        <span style="font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.06em;">PACK B · ${escapeHtml(B.name)}</span>
+        <span style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; color:${INK_SOFT};">${B.badge || ''}</span>
+      </div>
+      ${svgB}
+    </div>` : '';
+
+  const gridCols = (showA && showB) ? 'minmax(0,1fr) minmax(0,1fr)' : '1fr';
+
+  // Toolbar with the third dropdown option (A / B / both side-by-side)
+  const toolbar = `
+    <div class="arbor-toolbar" style="display:flex; align-items:center; gap:10px; margin: 2px 2px 10px;">
+      <label for="arborViewSel" style="font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.06em; color:${INK_SOFT};">VIEW</label>
+      <select id="arborViewSel" class="arbor-view-sel" ${samePack ? 'disabled title="Pack A and Pack B are the same — pick a different pack in the right selector to enable B and side-by-side."' : ''}
+              style="font-family:'IBM Plex Mono', monospace; font-size:11px; padding:4px 8px; border-radius:6px; border:1px solid ${INK_SOFT}; background:#FFFDF6; color:${INK};">
+        <option value="A"    ${mode === 'A'    ? 'selected' : ''}>Pack A · ${escapeHtml(A.name)}</option>
+        <option value="B"    ${mode === 'B'    ? 'selected' : ''} ${samePack ? 'disabled' : ''}>Pack B · ${escapeHtml((B||A).name)}</option>
+        <option value="both" ${mode === 'both' ? 'selected' : ''} ${samePack ? 'disabled' : ''}>Both side-by-side</option>
+      </select>
+      ${samePack ? `<span style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; color:${INK_SOFT};">Pack A and Pack B are the same pack.</span>` : ''}
+    </div>`;
+
+  stage.innerHTML = `
+    ${toolbar}
+    <div class="arbor-pair" style="display:grid; grid-template-columns:${gridCols}; gap:14px; align-items:start;">
+      ${cardA}
+      ${cardB}
     </div>
     <div class="strata-legend" style="margin-top:10px;">
       <em>Inosculation</em> — from Latin <code>osculari</code>, "to kiss". In botany, two branches of the same plant grow together until their bark and wood fuse into a single conduit. Here the metaphor is exact: when two artefacts in an upper layer descend from a single ancestor below, their stems converge to a fusion point — the lineage is visibly one.
     </div>
   `;
 
-  stage.querySelectorAll('.arbor-node').forEach(el => {
-    el.addEventListener('click', () => openDrawer(el.dataset.id, el.dataset.layer, pack));
+  // Wire per-card click handlers so each tree opens the right pack's drawer
+  const cardAEl = stage.querySelector('[data-pack="A"]');
+  if (cardAEl) cardAEl.querySelectorAll('.arbor-node').forEach(el => {
+    el.addEventListener('click', () => openDrawer(el.dataset.id, el.dataset.layer, A));
+  });
+  const cardBEl = stage.querySelector('[data-pack="B"]');
+  if (cardBEl) cardBEl.querySelectorAll('.arbor-node').forEach(el => {
+    el.addEventListener('click', () => openDrawer(el.dataset.id, el.dataset.layer, B));
   });
 
-  const swap = stage.querySelector('#arborSwap');
-  if (swap) {
-    swap.addEventListener('click', () => {
-      const tmp = state.packA;
-      state.packA = state.packB;
-      state.packB = tmp;
-      const sa = document.querySelector('#packA');
-      const sb = document.querySelector('#packB');
-      if (sa) sa.value = state.packA;
-      if (sb) sb.value = state.packB;
-      renderAll();
-    });
-  }
+  // Dropdown changes which tree(s) we render
+  const sel = stage.querySelector('#arborViewSel');
+  if (sel) sel.addEventListener('change', () => {
+    state.arborView = sel.value;
+    renderAtlasArbor(stage);
+  });
 }
 
 function renderAll() {
@@ -3612,6 +4222,298 @@ $('#packB').addEventListener('change', e => { state.packB = e.target.value; rend
 $$('#legend .legend-item').forEach(c => c.addEventListener('click', () => {
   state.filter = c.dataset.filter; renderAll();
 }));
+/* Delegated handler for chips populated by renderFilters(). The per-item
+   listeners above only fire for the static ALL chip baked into the markup;
+   dynamic chips need event delegation since they are re-created each render. */
+$('#legend').addEventListener('click', (e) => {
+  const item = e.target.closest('.legend-item');
+  if (!item || !item.dataset.filter) return;
+  state.filter = item.dataset.filter;
+  renderAll();
+});
+
+/* Delta toggle chips (compare view): multi-select Only-A / Only-B / Both. */
+$('#deltaToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('.delta-chip');
+  if (!btn) return;
+  const key = btn.dataset.delta;
+  if (state.deltaFilter.has(key)) state.deltaFilter.delete(key);
+  else state.deltaFilter.add(key);
+  // Don't allow zero-selection (would blank the board): re-add what was clicked.
+  if (state.deltaFilter.size === 0) state.deltaFilter.add(key);
+  btn.setAttribute('aria-pressed', state.deltaFilter.has(key) ? 'true' : 'false');
+  renderAll();
+});
+
+/* ============================================================
+   MCP VERIFY — Refresh-against-prod (browser MCP client)
+
+   In-browser port of tools/fetch-live-pack.mjs. One-shot JSON-RPC 2.0
+   round-trip against the public MCP server: `initialize`, then a fan-out
+   of `tools/call` to system_health, system_topology, anomalies_active,
+   anomalies_baselines (with best-effort zk_*). The responses are folded
+   into a fresh pack with id `mcp-live-<ISO>` which is pushed to packs[]
+   and selected as Pack B. Then the standard side-by-side Compare shows:
+     · Only in A = listed in Pack A but NOT verified by MCP
+     · Only in B = discovered by MCP, not in Pack A
+     · matched  = present in both
+   ============================================================ */
+
+const mcpState = { sessionId: null, nextId: 1, inFlight: false };
+
+function setMcpStatus(text, kind) {
+  const el = $('#mcpVerifyStatus');
+  el.textContent = text;
+  el.classList.remove('ok', 'err');
+  if (kind) el.classList.add(kind);
+}
+
+async function mcpJsonRpc(url, method, params) {
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json, text/event-stream',
+    'MCP-Protocol-Version': '2025-06-18',
+  };
+  if (mcpState.sessionId) headers['Mcp-Session-Id'] = mcpState.sessionId;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ jsonrpc: '2.0', id: mcpState.nextId++, method, params: params || {} }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status} on ${method}${body ? ': ' + body.slice(0, 120) : ''}`);
+  }
+  const sid = res.headers.get('mcp-session-id');
+  if (sid) mcpState.sessionId = sid;
+
+  const ctype = res.headers.get('content-type') || '';
+  if (ctype.includes('text/event-stream')) {
+    // Consume one full SSE frame (data: lines terminated by blank line).
+    const text = await res.text();
+    const frame = text.split('\n\n')[0] || '';
+    const data = frame.split('\n').filter(l => l.startsWith('data:'))
+      .map(l => l.replace(/^data:\s?/, '')).join('\n');
+    if (!data) throw new Error(`${method}: empty SSE frame`);
+    const obj = JSON.parse(data);
+    if (obj.error) throw new Error(`${method}: ${obj.error.message}`);
+    return obj.result;
+  }
+  const data = await res.json();
+  if (data.error) throw new Error(`${method}: ${data.error.message}`);
+  return data.result;
+}
+
+async function mcpInitialize(url) {
+  return mcpJsonRpc(url, 'initialize', {
+    protocolVersion: '2025-06-18',
+    capabilities: {},
+    clientInfo: { name: 'observabilitypack-studio', version: '0.1.0' },
+  });
+}
+
+async function mcpToolsCall(url, name, args) {
+  const result = await mcpJsonRpc(url, 'tools/call', { name, arguments: args || {} });
+  if (result?.isError) {
+    const errText = result?.content?.map(c => c.text).filter(Boolean).join(' ') || 'tool returned isError';
+    throw new Error(`${name}: ${errText}`);
+  }
+  const text = result?.content?.[0]?.text;
+  if (typeof text !== 'string') return result;
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+// Mirror of the artefact constructors in tools/fetch-live-pack.mjs.
+function buildLivePackFromMcp({ health, topology, anomaliesActive, baselines, errors, mcpUrl }) {
+  const REFRESH_AT = new Date().toISOString();
+  const live = (id, title, desc, tool, tags, source, evidence) => ({
+    id, source: 'LIVE', title, desc, tool, tags,
+    mcp: { verified: true, source, refreshedAt: REFRESH_AT, evidence },
+  });
+  const gap = (id, title, desc, tags, source, evidence) => ({
+    id, source: 'GAP', title, desc, tool: '—', tags,
+    mcp: { verified: false, source, refreshedAt: REFRESH_AT, evidence },
+  });
+
+  const services = health?.services || [];
+  const serviceNames = services.map(s => s.name);
+  const baselineCount = baselines?.baselines?.length || 0;
+  const baselineNormal = (baselines?.baselines || []).filter(b => b.statusIndicator?.status === 'normal').length;
+  const jaegerEdge = (topology?.dependencies || []).find(d => (d.child || '').includes('jaeger'));
+
+  const perService = services.map((s, i) => live(
+    `COL-X${i + 1}`,
+    `Service: ${s.name}`,
+    `Live: ${s.status}, P50 ~${Math.round(s.avgDuration || 0)}ms, ${s.spanCount || 0} spans, ${s.activeAnomalies || 0} anomalies.`,
+    'OTel + Prometheus',
+    ['service', 'discovered', ...((s.spanCount || 0) < 5 ? ['sparse-traces'] : [])],
+    'system_health', s,
+  ));
+
+  return {
+    id: 'mcp-live-' + REFRESH_AT,
+    name: 'MCP Live — ' + REFRESH_AT.replace('T', ' ').slice(0, 19) + ' UTC',
+    badge: 'LIVE',
+    description: `Generated in-browser from ${mcpUrl}. ${serviceNames.length} services, ${baselineCount} baselines.`,
+    liveness: {
+      refreshedAt: REFRESH_AT,
+      mcpUrl,
+      toolsCalled: Object.keys(errors).length < 4 ? ['system_health','system_topology','anomalies_active','anomalies_baselines'] : [],
+      toolsFailed: errors,
+      servicesDiscovered: serviceNames,
+      baselinesComputed: baselineCount,
+      activeAnomalies: anomaliesActive?.traceAnomalies?.active?.length || 0,
+      embedded: false,
+    },
+    layers: {
+      L1: [],   // No SLOs are directly verifiable from the public MCP surface.
+      L2: [
+        live('COL-02', 'OTel Collector pipeline',
+          'OTLP receive · batch · export to Jaeger + Prometheus.',
+          'OTel Collector', ['otel', 'pipeline'], 'system_health',
+          { services: services.length, healthyServices: services.filter(s => s.status === 'healthy').length }),
+        live('COL-03', 'Jaeger trace agent',
+          `system_topology shows ${jaegerEdge?.callCount || 0} spans into jaeger from ${jaegerEdge?.parent || 'unknown'}.`,
+          'Jaeger', ['traces'], 'system_topology',
+          { jaegerInboundCalls: jaegerEdge?.callCount || 0, sourceService: jaegerEdge?.parent || null }),
+        live('COL-05', 'Health-check probes',
+          `system_health responds; ${services.length} services reporting.`,
+          'kube-state-metrics', ['health'], 'system_health',
+          { services: serviceNames }),
+        ...perService,
+      ],
+      L3: [
+        live('TOPO-X1', 'Live dependency map',
+          `system_topology returned ${(topology?.dependencies || []).length} edges.`,
+          'system_topology', ['topology', 'discovered'], 'system_topology',
+          { edges: (topology?.dependencies || []).length, detail: topology?.dependencies || [] }),
+      ],
+      L4: {
+        policy: [],
+        alerting: anomaliesActive ? [
+          live('ALR-07', 'Anomaly detector (trace)',
+            `anomalies_active: ${anomaliesActive?.traceAnomalies?.active?.length || 0} active anomalies.`,
+            'otel-mcp anomalies', ['alert', 'anomaly'], 'anomalies_active',
+            {
+              traceAnomaliesActive: anomaliesActive?.traceAnomalies?.active?.length || 0,
+              traceAnomaliesRecent: anomaliesActive?.traceAnomalies?.recentCount || 0,
+              amountDetectorEnabled: !!anomaliesActive?.amountAnomalies?.enabled,
+            }),
+        ] : [],
+        healing: [],
+      },
+      L5: baselines ? [
+        live('VAL-01', 'Anomaly baselines (live)',
+          `anomalies_baselines: ${baselineCount} baselines computed, ${baselineNormal} status=normal.`,
+          'otel-mcp-server', ['anomaly', 'verified'], 'anomalies_baselines',
+          { totalBaselines: baselineCount, normalStatus: baselineNormal }),
+      ] : [],
+      GOV: [
+        live('GOV-01', 'MCP-driven reports',
+          'MCP tools reachable; studio is itself a consumer.',
+          'otel-mcp-server', ['report', 'meta'], 'mcp.reachable',
+          { toolsReachable: ['system_health','system_topology','anomalies_active','anomalies_baselines'], toolsFailed: Object.keys(errors) }),
+        ...(errors['zk_stats'] || errors['zk_solvency'] ? [
+          gap('GOV-02', 'ZK proof verification logs',
+            'zk_stats / zk_solvency unavailable on the public MCP surface.',
+            ['compliance', 'crypto', 'endpoint-missing'], 'zk_stats',
+            { errors: { zk_stats: errors['zk_stats'], zk_solvency: errors['zk_solvency'] } }),
+        ] : []),
+      ],
+    },
+  };
+}
+
+/*
+ * Refresh strategy:
+ *   The public MCP endpoint does not send CORS headers, so the browser cannot
+ *   POST to it directly. Instead we POST to the local dev-server's same-origin
+ *   proxy /api/mcp/refresh, which performs the JSON-RPC round-trip server-side
+ *   (Node fetch, no CORS) and returns the freshly-built pack. The user's MCP
+ *   URL field is forwarded as the body so it remains source-of-truth.
+ *
+ *   Run the dev server with:  npm run dev   (or: node tools/dev-server.mjs)
+ */
+async function refreshFromMcp(opts = {}) {
+  const silent = !!opts.silent;
+  if (mcpState.inFlight) return;
+  const mcpUrl = $('#mcpUrl').value.trim();
+  if (!mcpUrl) { setMcpStatus('enter an MCP URL', 'err'); return; }
+  if (location.protocol === 'file:') {
+    if (!silent) setMcpStatus('serve over http (run: npm run dev) to call MCP', 'err');
+    return;
+  }
+  mcpState.inFlight = true;
+  if (!silent) setMcpStatus('refreshing via local proxy…');
+  $('#mcpVerifyBtn').disabled = true;
+
+  try {
+    const proxyUrl = new URL('/api/mcp/refresh', location.href).toString();
+    const res = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpUrl }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // Hint when the proxy itself is absent (e.g. user is still on python http.server).
+      const hint = res.status === 404 ? ' — is the dev server running? (npm run dev)' : '';
+      throw new Error((body && body.error) || `proxy HTTP ${res.status}${hint}`);
+    }
+    const fresh = body;
+    if (!fresh || !fresh.id || !fresh.id.startsWith('mcp-live-')) {
+      throw new Error('proxy returned unexpected payload');
+    }
+
+    // Promote the freshly-built pack to BE the canonical 'production-live'
+    // pack (Pack A). We preserve the id so user pack selection isn't lost,
+    // and we preserve the public-facing name so the selector label stays
+    // "Production — Live (MCP)". Everything else (layers, liveness,
+    // description, badge) is replaced with what MCP just returned.
+    const targetId = 'production-live';
+    const i = packs.findIndex(p => p.id === targetId);
+    const promoted = {
+      ...fresh,
+      id: targetId,
+      name: 'Production — Live (MCP)',
+      badge: 'LIVE',
+    };
+    if (i >= 0) packs[i] = promoted; else packs.push(promoted);
+
+    // Drop any leftover synthetic mcp-live-* packs from earlier refreshes.
+    for (let j = packs.length - 1; j >= 0; j--) {
+      if (packs[j].id.startsWith('mcp-live-')) packs.splice(j, 1);
+    }
+
+    // Keep current selections (Pack A remains 'production-live', Pack B as user chose).
+    renderSelectors();
+    renderAll();
+    renderLivenessBadge();
+
+    const failed = Object.keys(promoted.liveness?.toolsFailed || {});
+    const ageNote = `refreshed ${new Date(promoted.liveness.refreshedAt).toISOString().slice(11, 19)} UTC`;
+    setMcpStatus(
+      `ok · ${promoted.liveness.servicesDiscovered.length} services, ${promoted.liveness.baselinesComputed} baselines · ${ageNote}` +
+      (failed.length ? ` · ${failed.length} tool(s) failed` : ''),
+      'ok'
+    );
+    if (!silent) toast(`Pack A refreshed from MCP — ${ageNote}`);
+  } catch (e) {
+    console.error('[mcp] refresh failed:', e);
+    if (!silent) {
+      setMcpStatus('error: ' + e.message, 'err');
+      toast('MCP refresh failed — see status bar', 'err');
+    } else {
+      console.info('[mcp] auto-refresh skipped:', e.message);
+    }
+  } finally {
+    mcpState.inFlight = false;
+    $('#mcpVerifyBtn').disabled = false;
+  }
+}
+
+$('#mcpVerifyBtn').addEventListener('click', () => refreshFromMcp());
 
 // Atlas sub-tabs
 $$('#atlasTabs .atlas-tab').forEach(t => t.addEventListener('click', () => {
@@ -3839,6 +4741,16 @@ function renderLivenessBadge() {
 }
 
 async function tryRefreshLive() {
+  // file:// origins can't fetch sibling JSON in any modern browser (CORS treats
+  // every file URL as a unique origin). Skip the attempt entirely to avoid
+  // spamming the console with CORS / net::ERR_FAILED errors; the embedded
+  // snapshot is shown instead. Serve the studio over HTTP (e.g. `npm run
+  // serve`) to enable live refresh.
+  if (location.protocol === 'file:') {
+    console.info('[live] file:// origin — skipping live refresh, using embedded snapshot');
+    renderLivenessBadge();
+    return;
+  }
   for (const url of LIVE_URL_CANDIDATES) {
     try {
       const res = await fetch(url, { cache: 'no-cache' });
@@ -3868,6 +4780,14 @@ renderSelectors();
 renderAll();
 renderLivenessBadge();
 tryRefreshLive();
+
+/* Auto-refresh Pack A from the live MCP server on boot (silent if the dev
+   server isn't running or the network is unreachable). This is what makes
+   'Production — Live (MCP)' actually live instead of a 20h-old on-disk
+   snapshot. The user can re-fire it any time via the Refresh button. */
+if (location.protocol !== 'file:') {
+  setTimeout(() => refreshFromMcp({ silent: true }), 250);
+}
 </script>
 </body>
 </html>
