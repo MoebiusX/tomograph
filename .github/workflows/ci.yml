@@ -1,0 +1,39 @@
+name: ci
+
+# Validates every push to develop/main and every PR targeting main.
+# Zero npm deps in this repo, so we skip install entirely.
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Lint fetcher (node --check)
+        run: npm run lint:fetcher
+
+      - name: Validate all packs against schema
+        run: npm run validate
+
+      - name: Smoke-check studio HTML is parseable
+        run: |
+          node -e "const fs=require('fs');const html=fs.readFileSync('studio/observabilitypack-studio.html','utf8');if(!html.includes('</html>'))process.exit(1);console.log('studio html ok ('+html.length+' bytes)')"
