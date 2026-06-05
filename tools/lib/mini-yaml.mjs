@@ -151,17 +151,25 @@ function parseBlockMapping(stream, indent) {
     stream.idx = sig + 1;
 
     if (rest === '') {
-      // nested mapping/sequence at greater indent
+      // nested mapping/sequence at greater indent, OR a compact sequence
+      // whose items sit at the same indent as the parent mapping key (YAML
+      // allows both styles).
       const nextSig = stream.nextSignificantIdx();
-      if (nextSig === -1 || indentOf(stream.lines[nextSig]) <= indent) {
+      if (nextSig === -1) {
         out[key] = null;
       } else {
         const childIndent = indentOf(stream.lines[nextSig]);
         const childContent = stripTrailingComment(stream.lines[nextSig].slice(childIndent));
-        if (childContent.startsWith('- ') || childContent === '-') {
+        const isSeqItem = childContent.startsWith('- ') || childContent === '-';
+        if (childIndent > indent) {
+          if (isSeqItem) out[key] = parseBlockSequence(stream, childIndent);
+          else out[key] = parseBlockMapping(stream, childIndent);
+        } else if (childIndent === indent && isSeqItem) {
+          // compact sequence: `owners:\n  - team-x\n  - team-y` where the
+          // sequence items share the parent's indent.
           out[key] = parseBlockSequence(stream, childIndent);
         } else {
-          out[key] = parseBlockMapping(stream, childIndent);
+          out[key] = null;
         }
       }
     } else if (rest === '|') {
@@ -303,6 +311,160 @@ function parseFlowSequence(s) {
   if (inner === '') return [];
   return splitFlow(inner, ',').map(p => parseValue(p.trim()));
 }
+
+// ============================================================
+// Emitter — minimal block-style YAML writer. Symmetric to the parser:
+// output round-trips through parse() back to a structurally equal value.
+//
+// Emits: block mappings, block sequences, literal block scalars (`|`),
+// quoted strings when ambiguous, JSON-style scalars for numbers /
+// booleans / null. Compact (no empty containers as inline `{}`/`[]`).
+// ============================================================
+
+export function emit(value, opts = {}) {
+  const indent = opts.indent || 2;
+  const out = emitValue(value, 0, indent, true);
+  return out.endsWith('\n') ? out : out + '\n';
+}
+
+function emitValue(value, depth, indent, topLevel = false) {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'number') {
+    if (Number.isFinite(value)) return String(value);
+    return 'null'; // NaN / Infinity not representable; lose with care
+  }
+  if (typeof value === 'string') return emitScalarString(value);
+  if (Array.isArray(value)) return emitSequence(value, depth, indent, topLevel);
+  if (typeof value === 'object') return emitMapping(value, depth, indent, topLevel);
+  return 'null';
+}
+
+function emitScalarString(s) {
+  if (s === '') return "''";
+  // Multi-line: use a literal block scalar. Caller handles placement.
+  // We tag the result with a sentinel `__BLOCK__` so the parent renderer
+  // knows to format it correctly. (Single-line emission shouldn't see this.)
+  if (s.includes('\n')) return '__BLOCK__:' + s;
+  if (needsQuoting(s)) return JSON.stringify(s); // double-quoted with JSON escapes
+  return s;
+}
+
+function needsQuoting(s) {
+  if (s.length === 0) return true;
+  // Special YAML keywords
+  if (/^(true|false|null|yes|no|on|off|~)$/i.test(s)) return true;
+  // Numeric-looking
+  if (/^[-+]?(\d+(\.\d+)?([eE][-+]?\d+)?|\.\d+([eE][-+]?\d+)?)$/.test(s)) return true;
+  // Leading sigils / whitespace / structural chars
+  if (/^[\s\-?:,\[\]{}#&*!|>'"%@`]/.test(s)) return true;
+  // Trailing whitespace would lose data on parse
+  if (/[\s]$/.test(s)) return true;
+  // Embedded ": " (mapping ambiguity) or " #" (comment ambiguity)
+  if (/: /.test(s)) return true;
+  if (/ #/.test(s)) return true;
+  return false;
+}
+
+function emitMapping(obj, depth, indent, topLevel) {
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return '{}';
+  const pad = ' '.repeat(depth * indent);
+  const childPad = ' '.repeat((depth + 1) * indent);
+  const lines = [];
+  for (const k of keys) {
+    const v = obj[k];
+    const key = emitKey(k);
+    if (v === null || v === undefined) {
+      lines.push(`${pad}${key}: null`);
+      continue;
+    }
+    if (Array.isArray(v)) {
+      if (v.length === 0) { lines.push(`${pad}${key}: []`); continue; }
+      lines.push(`${pad}${key}:`);
+      lines.push(emitSequence(v, depth + 1, indent));
+      continue;
+    }
+    if (typeof v === 'object') {
+      if (Object.keys(v).length === 0) { lines.push(`${pad}${key}: {}`); continue; }
+      lines.push(`${pad}${key}:`);
+      lines.push(emitMapping(v, depth + 1, indent));
+      continue;
+    }
+    if (typeof v === 'string' && v.includes('\n')) {
+      lines.push(`${pad}${key}: |`);
+      // strip trailing single newline so block content doesn't double-up
+      const content = v.replace(/\n$/, '');
+      for (const line of content.split('\n')) lines.push(childPad + line);
+      continue;
+    }
+    lines.push(`${pad}${key}: ${emitValue(v, depth + 1, indent)}`);
+  }
+  return lines.join('\n');
+}
+
+function emitSequence(arr, depth, indent) {
+  const pad = ' '.repeat(depth * indent);
+  // YAML compact sequence: continuation keys indent past `- ` (2 spaces).
+  const lines = [];
+  for (const item of arr) {
+    if (item === null || item === undefined) { lines.push(`${pad}- null`); continue; }
+    if (Array.isArray(item)) {
+      if (item.length === 0) { lines.push(`${pad}- []`); continue; }
+      lines.push(`${pad}-`);
+      lines.push(emitSequence(item, depth + 1, indent));
+      continue;
+    }
+    if (typeof item === 'object') {
+      if (Object.keys(item).length === 0) { lines.push(`${pad}- {}`); continue; }
+      // If the first key has a complex value (non-empty array/mapping or
+      // multi-line string), emit `-` on its own line and the full mapping
+      // one level deeper. Otherwise use the compact form: first key inline
+      // with `- `, remaining keys at `depth + 1`. This avoids producing the
+      // "- key:\n    <nested>" pattern which forks YAML parsers around the
+      // continuation indent.
+      const firstKey = Object.keys(item)[0];
+      const firstVal = item[firstKey];
+      const firstIsComplex =
+        (Array.isArray(firstVal) && firstVal.length > 0) ||
+        (firstVal !== null && typeof firstVal === 'object' && Object.keys(firstVal).length > 0) ||
+        (typeof firstVal === 'string' && firstVal.includes('\n'));
+      if (firstIsComplex) {
+        lines.push(`${pad}-`);
+        lines.push(emitMapping(item, depth + 1, indent));
+        continue;
+      }
+      const mapLines = emitMapping(item, depth + 1, indent).split('\n');
+      const childPad = ' '.repeat((depth + 1) * indent);
+      const head = `${pad}- ` + mapLines[0].slice(childPad.length);
+      lines.push(head);
+      for (let i = 1; i < mapLines.length; i++) lines.push(mapLines[i]);
+      continue;
+    }
+    if (typeof item === 'string' && item.includes('\n')) {
+      lines.push(`${pad}- |`);
+      const content = item.replace(/\n$/, '');
+      const childPad = ' '.repeat((depth + 1) * indent);
+      for (const line of content.split('\n')) lines.push(childPad + line);
+      continue;
+    }
+    lines.push(`${pad}- ${emitValue(item, depth + 1, indent)}`);
+  }
+  return lines.join('\n');
+}
+
+function emitKey(k) {
+  // Most keys are bare identifiers. Quote if the key would be ambiguous.
+  if (typeof k !== 'string') k = String(k);
+  if (k === '') return "''";
+  if (/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(k)) return k;
+  if (needsQuoting(k) || /[:#]/.test(k)) return JSON.stringify(k);
+  return k;
+}
+
+// ============================================================
+// Internal: shared splitFlow utility for the parser.
+// ============================================================
 
 // Split a flow string by `sep`, respecting nested brackets and quotes.
 function splitFlow(s, sep) {

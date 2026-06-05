@@ -53,6 +53,9 @@ jobs:
       - name: Adapter regression suite
         run: npm run test:adapt
 
+      - name: Fetcher regression suite (offline, schema + YAML round-trip)
+        run: npm run test:fetch
+
       - name: Server smoke test (start, hit each route, assert)
         run: npm run test:server
 

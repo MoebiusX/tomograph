@@ -52,6 +52,12 @@ const PACK_CATALOG = [
     path: 'vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml',
     description: "The spec repo's reference tier-1 pack — HTTP API + Kafka consumer.",
   },
+  {
+    id: 'production-live',
+    label: 'Production live (MCP fetcher)',
+    path: 'packs/production-live.pack.yaml',
+    description: 'Refreshed by the refresh-live-pack workflow. Reflects MCP-verifiable state.',
+  },
 ];
 
 function loadPackFile(relPath) {

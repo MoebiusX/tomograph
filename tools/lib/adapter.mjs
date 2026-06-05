@@ -59,13 +59,18 @@ export function adapt(canonical, opts = {}) {
   const envs = listEnvironments(canonical);
   const envName = opts.environment ?? envs[0] ?? null;
   const { spec, effective } = applyEnvironmentOverlay(canonical.spec || {}, envName);
-  const mcpAnnotations = canonical.metadata?.annotations?.mcp || {};
+
+  // Per-artefact verification markers live as flat annotation keys:
+  // `mcp.verified.<symbol>` -> ISO timestamp (a single string, since the
+  // schema constrains metadata.annotations to {string: string}).
+  const annotations = canonical.metadata?.annotations || {};
+  const verifyPrefix = 'mcp.verified.';
 
   const ctx = {
     spec,
-    mcpAnnotations,
-    sourceOf: (id) => (mcpAnnotations[id] ? 'Verified' : 'Declared'),
-    mcpEvidence: (id) => mcpAnnotations[id] ?? undefined,
+    annotations,
+    sourceOf: (id) => (annotations[`${verifyPrefix}${id}`] ? 'Verified' : 'Declared'),
+    mcpEvidence: (id) => annotations[`${verifyPrefix}${id}`] ?? undefined,
   };
 
   const metaBindings = canonical.metadata?.bindings || {};

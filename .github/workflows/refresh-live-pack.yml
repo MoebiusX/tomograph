@@ -1,18 +1,25 @@
 name: refresh-live-pack
 
-# Refresh packs/production-live.json from the live MCP server.
+# Refresh packs/production-live.pack.yaml from the live MCP server.
+# The fetcher builds a canonical ObservabilityPack v1.2 manifest from the
+# MCP responses, validates it against the vendored schema, and writes it
+# as YAML.
+#
 # Configure secrets MCP_URL and (optionally) MCP_AUTH in repo settings.
 
 on:
   schedule:
     - cron: '*/15 * * * *'   # every 15 minutes
-  workflow_dispatch:          # also run on demand
+  workflow_dispatch:
   push:
     paths:
-      - tools/fetch-live-pack.mjs   # re-run after fetcher changes
+      - tools/fetch-live-pack.mjs
+      - tools/lib/adapter.mjs
+      - tools/lib/mini-yaml.mjs
+      - tools/lib/validator.mjs
 
 permissions:
-  contents: write   # to commit the refreshed JSON
+  contents: write   # to commit the refreshed pack
 
 concurrency:
   group: refresh-live-pack
@@ -29,19 +36,26 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
+          cache: 'npm'
+
+      # The fetcher itself has no runtime deps, but reads SCHEMA via the
+      # shared validator module. No `npm ci` needed.
 
       - name: Fetch live pack from MCP
         env:
           MCP_URL:  ${{ secrets.MCP_URL }}
           MCP_AUTH: ${{ secrets.MCP_AUTH }}
-          OUTPUT:   packs/production-live.json
+          OUTPUT:   packs/production-live.pack.yaml
         run: node tools/fetch-live-pack.mjs
 
       - name: Commit if changed
         run: |
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add packs/production-live.json
+          git add packs/production-live.pack.yaml
+          # Also drop the legacy JSON if it's still present from before the
+          # Phase 4 migration so subsequent diffs don't carry both.
+          git rm --quiet --ignore-unmatch packs/production-live.json
           if git diff --quiet --cached; then
             echo "no changes"
           else
