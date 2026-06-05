@@ -1,0 +1,31 @@
+{
+  "schema": "1.2",
+  "upstream": {
+    "repo": "MoebiusX/otel-observability-pack",
+    "ref": "main",
+    "commit": "d13532b8c3a26cc0140ed6f74d4b862a109d0046"
+  },
+  "fetchedAt": "2026-06-05T20:23:01Z",
+  "files": {
+    "v1.2/observability-pack.schema.json": {
+      "sourcePath": "schema/observability-pack.schema.json",
+      "sha256": "4be376656efc877cd2f907d1714549ca0fd679e969ac426303966267ff21fbaf",
+      "bytes": 27823
+    },
+    "v1.2/spec.md": {
+      "sourcePath": "spec/ObservabilityPack-Spec.md",
+      "sha256": "0d308ad3a9636068045e3f9830a5c1e52daf9aceb818176a28b958374d62653e",
+      "bytes": 30280
+    },
+    "v1.2/examples/payment-service.pack.yaml": {
+      "sourcePath": "examples/payment-service.pack.yaml",
+      "sha256": "75c7d55aa1deb636f0a2b44886a9f1dc46a7608f57c8bf6d8d4d54084c63d21f",
+      "bytes": 20728
+    },
+    "v1.2/docs/maturity-model.md": {
+      "sourcePath": "docs/maturity-model.md",
+      "sha256": "0cd6230d6a5a1bfb7a1f1072f287f82b2beee36b7339d73484aea92732bdfece",
+      "bytes": 13627
+    }
+  }
+}
