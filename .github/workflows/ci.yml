@@ -27,12 +27,22 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Lint fetcher (node --check)
         run: npm run lint:fetcher
 
       - name: Lint adapter (node --check)
         run: npm run lint:adapter
+
+      - name: Lint server (node --check)
+        run: npm run lint:server
+
+      - name: Lint studio client (node --check)
+        run: npm run lint:studio
 
       - name: Verify vendored spec checksums
         run: npm run sync-spec:check
@@ -43,6 +53,9 @@ jobs:
       - name: Adapter regression suite
         run: npm run test:adapt
 
+      - name: Server smoke test (start, hit each route, assert)
+        run: npm run test:server
+
       - name: Smoke-check studio HTML is parseable
         run: |
-          node -e "const fs=require('fs');const html=fs.readFileSync('studio/observabilitypack-studio.html','utf8');if(!html.includes('</html>'))process.exit(1);console.log('studio html ok ('+html.length+' bytes)')"
+          node -e "const fs=require('fs');const html=fs.readFileSync('studio/index.html','utf8');if(!html.includes('</html>'))process.exit(1);console.log('studio html ok ('+html.length+' bytes)')"

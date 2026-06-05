@@ -1,27 +1,50 @@
 # otel-observability-pack-studio
 
-> A single-file web studio for **visualising the gap** between an
-> observability platform's current state and its target state — and proving
-> the current state with live data from `otel-mcp-server` (or any MCP-exposing
-> observability surface).
+> Engineering studio for **ObservabilityPack spec v1.2** manifests. Express
+> server + thin vanilla-JS client. Renders the canonical spec into a layered
+> view (L1 → L2 / L2X → L3 → L4 → L5 + GOV) for engineering buy-in and
+> architectural review.
 
-Built for the moment when an observability roadmap needs **engineering buy-in**:
-the visual the team will *remember* and the architects will *defend*.
+**Status:** v0.3 in progress. The spec v1.2 migration is happening in
+phases — Phase 0–2 are merged (vendored spec, canonical validator, layered
+adapter); Phase 3a (this) refreshes the studio onto a Node/Express
+foundation. Phase 3b adds the drawer enrichment, ref checker, and
+conformance panel. See `~/.claude/plans/hello-the-observabilitypack-spec-jolly-kahan.md` for the full plan.
 
 ---
 
-## What you get
-
-A single HTML file plus a small Node script.
+## Architecture
 
 ```
-studio/observabilitypack-studio.html      → drop on any static host, no build
-tools/fetch-live-pack.mjs                 → optional: refresh live pack from MCP
-packs/*.json                              → sample pack data, edit or replace
-schema/pack.schema.json                   → JSON Schema for pack validation
+server/index.mjs                          → Express server: validator + adapter + API
+studio/{index.html, app.css, app.mjs}     → thin client; fetches /api/packs
+tools/lib/{mini-yaml, adapter}.mjs        → shared ESM modules (also used by CLIs)
+tools/{validate,adapt-spec,fetch-live,sync-spec}-pack.mjs  → CLIs
+vendor/observability-pack-spec/v1.2/      → pinned canonical spec
 ```
 
-It runs entirely in the browser. No backend. No framework. ~140 KB.
+## Quickstart
+
+```bash
+git clone <this repo>
+cd otel-observability-pack-studio
+npm install        # one dep: express
+npm run dev        # serves http://127.0.0.1:8000
+```
+
+Open the URL. The studio loads the canonical example pack
+(`vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml`)
+from the server and renders its 60+ artefacts across the layered model.
+
+### API endpoints
+
+| Method | Path | What it returns |
+|---|---|---|
+| `GET`  | `/healthz` | `{ ok, specVersion, schemaPath }` |
+| `GET`  | `/api/packs` | Pack catalog (`id`, `name`, `version`, `criticality`, `environments`) |
+| `GET`  | `/api/packs/:id?env=<name>` | Adapted layered display pack |
+| `GET`  | `/api/packs/:id/canonical?env=<name>` | Raw canonical manifest with env overlay applied |
+| `POST` | `/api/validate` | Validate uploaded JSON/YAML; returns errors or adapted pack |
 
 ---
 

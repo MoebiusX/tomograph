@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ObservabilityPack Studio</title>
+<meta name="description" content="Engineering studio for ObservabilityPack spec v1.2 manifests.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<a class="skip" href="#layer-view">Skip to content</a>
+
+<header class="hdr">
+  <div class="hdr-brand">
+    <h1>Observability<span class="ital">Pack</span> Studio</h1>
+    <div class="hdr-sub">canonical spec v1.2 · engineering bench</div>
+  </div>
+  <div class="hdr-controls">
+    <label class="ctrl">
+      <span class="ctrl-key">PACK</span>
+      <select id="pack-select" aria-label="Select pack"></select>
+    </label>
+    <label class="ctrl">
+      <span class="ctrl-key">ENV</span>
+      <select id="env-select" aria-label="Select environment"></select>
+    </label>
+    <a class="ctrl-link" href="/api/packs" target="_blank" rel="noopener" title="Pack catalog JSON">api</a>
+  </div>
+</header>
+
+<section class="meta" id="meta" aria-label="Pack metadata">
+  <div class="meta-row">
+    <span class="meta-label">api</span><span class="meta-val" data-meta="apiVersion">—</span>
+    <span class="sep"></span>
+    <span class="meta-label">kind</span><span class="meta-val" data-meta="kind">—</span>
+    <span class="sep"></span>
+    <span class="meta-label">binding</span><span class="meta-val" data-meta="binding">—</span>
+    <span class="sep"></span>
+    <span class="meta-label">version</span><span class="meta-val" data-meta="version">—</span>
+  </div>
+  <div class="meta-row">
+    <span class="meta-label">criticality</span><span class="meta-val criticality" data-meta="criticality">—</span>
+    <span class="sep"></span>
+    <span class="meta-label">target</span><span class="meta-val" data-meta="target">—</span>
+    <span class="sep"></span>
+    <span class="meta-label">owners</span><span class="meta-val" data-meta="owners">—</span>
+    <span class="sep"></span>
+    <span class="meta-label">environments</span><span class="meta-val" data-meta="environments">—</span>
+  </div>
+</section>
+
+<nav class="tabs" id="layer-tabs" aria-label="Layer navigation"></nav>
+
+<main id="layer-view" tabindex="-1" aria-live="polite">
+  <div class="placeholder">Loading pack…</div>
+</main>
+
+<aside class="drawer" id="drawer" aria-hidden="true" aria-label="Artefact detail">
+  <div class="drawer-head">
+    <div class="drawer-eyebrow" id="drawer-eyebrow">—</div>
+    <h2 class="drawer-title" id="drawer-title">—</h2>
+    <button class="drawer-close" id="drawer-close" aria-label="Close detail">esc</button>
+  </div>
+  <div class="drawer-meta" id="drawer-meta"></div>
+  <section class="drawer-section">
+    <h3>Canonical source</h3>
+    <pre class="json" id="drawer-source">—</pre>
+  </section>
+</aside>
+
+<footer class="ftr">
+  <div>ObservabilityPack Studio · v0.3-dev</div>
+  <div>
+    <a href="https://github.com/MoebiusX/otel-observability-pack/blob/main/spec/ObservabilityPack-Spec.md" target="_blank" rel="noopener">spec v1.2</a>
+    ·
+    <a href="https://github.com/MoebiusX/otel-observability-pack-studio" target="_blank" rel="noopener">studio repo</a>
+  </div>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script type="module" src="/app.mjs"></script>
+</body>
+</html>

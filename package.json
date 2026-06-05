@@ -1,24 +1,31 @@
 {
   "name": "otel-observability-pack-studio",
-  "version": "0.2.0",
+  "version": "0.3.0-dev",
   "private": true,
-  "description": "A single-file web studio for visualising observability platform state, with live MCP wire-up.",
+  "description": "Engineering studio for ObservabilityPack spec v1.2 manifests. Express server + thin client.",
   "type": "module",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "serve":         "node tools/dev-server.mjs",
-    "dev":           "node tools/dev-server.mjs",
-    "fetch-live":    "node tools/fetch-live-pack.mjs",
-    "validate-pack": "node tools/validate-pack.mjs",
-    "validate":      "node tools/validate-pack.mjs vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml",
-    "lint:fetcher":  "node --check tools/fetch-live-pack.mjs",
-    "lint:adapter":  "node --check tools/adapt-spec-pack.mjs && node --check tools/lib/adapter.mjs && node --check tools/lib/mini-yaml.mjs",
-    "adapt":         "node tools/adapt-spec-pack.mjs",
-    "test:adapt":    "node tools/test-adapt.mjs",
-    "sync-spec":     "node tools/sync-spec.mjs",
+    "start":           "node server/index.mjs",
+    "serve":           "node server/index.mjs",
+    "dev":             "node server/index.mjs",
+    "fetch-live":      "node tools/fetch-live-pack.mjs",
+    "validate-pack":   "node tools/validate-pack.mjs",
+    "validate":        "node tools/validate-pack.mjs vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml",
+    "lint:fetcher":    "node --check tools/fetch-live-pack.mjs",
+    "lint:adapter":    "node --check tools/adapt-spec-pack.mjs && node --check tools/lib/adapter.mjs && node --check tools/lib/mini-yaml.mjs",
+    "lint:server":     "node --check server/index.mjs",
+    "lint:studio":     "node --check studio/app.mjs",
+    "adapt":           "node tools/adapt-spec-pack.mjs",
+    "test:adapt":      "node tools/test-adapt.mjs",
+    "test:server":     "node server/test-smoke.mjs",
+    "sync-spec":       "node tools/sync-spec.mjs",
     "sync-spec:check": "node tools/sync-spec.mjs --check"
+  },
+  "dependencies": {
+    "express": "^5.0.0"
   },
   "license": "MIT",
   "keywords": [
@@ -28,6 +35,7 @@
     "mcp",
     "sre",
     "slo",
-    "visualisation"
+    "spec",
+    "v1.2"
   ]
 }
