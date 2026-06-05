@@ -31,11 +31,17 @@ jobs:
       - name: Lint fetcher (node --check)
         run: npm run lint:fetcher
 
+      - name: Lint adapter (node --check)
+        run: npm run lint:adapter
+
       - name: Verify vendored spec checksums
         run: npm run sync-spec:check
 
       - name: Validate canonical example against spec v1.2 schema
         run: npm run validate
+
+      - name: Adapter regression suite
+        run: npm run test:adapt
 
       - name: Smoke-check studio HTML is parseable
         run: |
