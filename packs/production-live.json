@@ -4,7 +4,7 @@
   "badge": "LIVE",
   "description": "Refreshed from otel-mcp-server. LIVE = verified by telemetry; BAU = claimed in repo but not directly verifiable from MCP surface.",
   "liveness": {
-    "refreshedAt": "2026-06-05T22:29:01.086Z",
+    "refreshedAt": "2026-06-05T22:55:20.301Z",
     "mcpUrl": "https://www.krystaline.io/mcp/public",
     "toolsCalled": [
       "system_health",
@@ -12,16 +12,14 @@
       "anomalies_active",
       "anomalies_baselines"
     ],
-    "toolsFailed": {
-      "anomalies_baselines": "MCP HTTP 503 on tools/call: <html>\r\n<head><title>503 Service Temporarily Unavailable</title></head>\r\n<body>\r\n<center><h1>503 Service Temporarily Unavailable</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
-    },
+    "toolsFailed": {},
     "servicesDiscovered": [
       "kx-exchange",
       "kx-matcher",
       "kx-wallet"
     ],
     "baselinesComputed": 0,
-    "activeAnomalies": 16,
+    "activeAnomalies": 17,
     "embedded": false
   },
   "layers": {
@@ -103,7 +101,7 @@
         "mcp": {
           "verified": true,
           "source": "system_health",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {
             "services": 3,
             "totalSpans": 39,
@@ -123,7 +121,7 @@
         "mcp": {
           "verified": true,
           "source": "system_topology",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {
             "jaegerInboundCalls": 0,
             "sourceService": null
@@ -153,7 +151,7 @@
         "mcp": {
           "verified": true,
           "source": "system_health",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {
             "services": [
               "kx-exchange",
@@ -161,7 +159,7 @@
               "kx-wallet"
             ],
             "allHealthy": false,
-            "lastPolled": "2026-06-05T22:29:02.152Z"
+            "lastPolled": "2026-06-05T22:55:21.251Z"
           }
         }
       },
@@ -169,7 +167,7 @@
         "id": "COL-X1",
         "source": "LIVE",
         "title": "Service: kx-exchange",
-        "desc": "Live: critical, P50 ~21522ms, 28 spans, 16 anomalies.",
+        "desc": "Live: critical, P50 ~22072ms, 28 spans, 17 anomalies.",
         "tool": "OTel + Prometheus",
         "tags": [
           "service",
@@ -178,13 +176,13 @@
         "mcp": {
           "verified": true,
           "source": "system_health",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {
             "status": "critical",
-            "avgDuration": 21522.24,
+            "avgDuration": 22072.32,
             "spanCount": 28,
-            "activeAnomalies": 16,
-            "lastSeen": "2026-06-05T22:28:55.313Z"
+            "activeAnomalies": 17,
+            "lastSeen": "2026-06-05T22:54:56.157Z"
           }
         }
       },
@@ -202,13 +200,13 @@
         "mcp": {
           "verified": true,
           "source": "system_health",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {
             "status": "healthy",
-            "avgDuration": 167.37,
+            "avgDuration": 167.09,
             "spanCount": 3,
             "activeAnomalies": 0,
-            "lastSeen": "2026-06-05T22:28:55.313Z"
+            "lastSeen": "2026-06-05T22:54:56.157Z"
           }
         }
       },
@@ -216,7 +214,7 @@
         "id": "COL-X3",
         "source": "LIVE",
         "title": "Service: kx-wallet",
-        "desc": "Live: healthy, P50 ~135ms, 8 spans, 0 anomalies.",
+        "desc": "Live: healthy, P50 ~136ms, 8 spans, 0 anomalies.",
         "tool": "OTel + Prometheus",
         "tags": [
           "service",
@@ -225,13 +223,13 @@
         "mcp": {
           "verified": true,
           "source": "system_health",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {
             "status": "healthy",
-            "avgDuration": 135.45,
+            "avgDuration": 135.5,
             "spanCount": 8,
             "activeAnomalies": 0,
-            "lastSeen": "2026-06-05T22:28:55.312Z"
+            "lastSeen": "2026-06-05T22:54:56.156Z"
           }
         }
       },
@@ -282,7 +280,7 @@
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {}
         }
       }
@@ -355,7 +353,7 @@
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {}
         }
       },
@@ -372,40 +370,40 @@
         "mcp": {
           "verified": true,
           "source": "system_topology",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {
             "edges": 6,
             "services": 4,
             "detail": [
               {
-                "parent": "kx-exchange",
+                "parent": "kx-gateway",
+                "child": "kx-gateway",
+                "callCount": 1267
+              },
+              {
+                "parent": "kx-gateway",
                 "child": "kx-exchange",
-                "callCount": 8249
+                "callCount": 181
+              },
+              {
+                "parent": "kx-exchange",
+                "child": "bayesian-service",
+                "callCount": 122
               },
               {
                 "parent": "bayesian-service",
                 "child": "bayesian-service",
-                "callCount": 437
+                "callCount": 490
               },
               {
                 "parent": "kx-exchange",
-                "child": "bayesian-service",
-                "callCount": 108
+                "child": "kx-exchange",
+                "callCount": 6980
               },
               {
                 "parent": "kx-wallet",
                 "child": "kx-gateway",
-                "callCount": 277
-              },
-              {
-                "parent": "kx-gateway",
-                "child": "kx-gateway",
-                "callCount": 2016
-              },
-              {
-                "parent": "kx-gateway",
-                "child": "kx-exchange",
-                "callCount": 288
+                "callCount": 166
               }
             ]
           }
@@ -494,7 +492,7 @@
           "id": "ALR-07",
           "source": "LIVE",
           "title": "Anomaly detector (trace)",
-          "desc": "anomalies_active: 16 active anomalies. amount detector disabled.",
+          "desc": "anomalies_active: 17 active anomalies. amount detector disabled.",
           "tool": "otel-mcp anomalies",
           "tags": [
             "alert",
@@ -503,10 +501,10 @@
           "mcp": {
             "verified": true,
             "source": "anomalies_active",
-            "refreshedAt": "2026-06-05T22:29:01.086Z",
+            "refreshedAt": "2026-06-05T22:55:20.301Z",
             "evidence": {
-              "traceAnomaliesActive": 16,
-              "traceAnomaliesRecent": 16,
+              "traceAnomaliesActive": 17,
+              "traceAnomaliesRecent": 17,
               "amountDetectorEnabled": false
             }
           }
@@ -525,7 +523,7 @@
           "mcp": {
             "verified": false,
             "source": "inferred",
-            "refreshedAt": "2026-06-05T22:29:01.086Z",
+            "refreshedAt": "2026-06-05T22:55:20.301Z",
             "evidence": {}
           }
         },
@@ -541,7 +539,7 @@
           "mcp": {
             "verified": false,
             "source": "inferred",
-            "refreshedAt": "2026-06-05T22:29:01.086Z",
+            "refreshedAt": "2026-06-05T22:55:20.301Z",
             "evidence": {}
           }
         },
@@ -557,7 +555,7 @@
           "mcp": {
             "verified": false,
             "source": "inferred",
-            "refreshedAt": "2026-06-05T22:29:01.086Z",
+            "refreshedAt": "2026-06-05T22:55:20.301Z",
             "evidence": {}
           }
         }
@@ -577,7 +575,7 @@
         "mcp": {
           "verified": true,
           "source": "anomalies_baselines",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {
             "totalBaselines": 0,
             "normalStatus": 0,
@@ -598,7 +596,7 @@
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {}
         }
       },
@@ -614,7 +612,7 @@
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {}
         }
       },
@@ -630,7 +628,7 @@
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {}
         }
       },
@@ -646,7 +644,7 @@
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {}
         }
       }
@@ -665,7 +663,7 @@
         "mcp": {
           "verified": true,
           "source": "mcp.reachable",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {
             "toolsReachable": [
               "system_health",
@@ -673,9 +671,7 @@
               "anomalies_active",
               "anomalies_baselines"
             ],
-            "toolsFailed": [
-              "anomalies_baselines"
-            ]
+            "toolsFailed": []
           }
         }
       },
@@ -693,7 +689,7 @@
         "mcp": {
           "verified": false,
           "source": "zk_stats",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {
             "httpStatus": 404,
             "endpoint": "/api/public/zk/stats"
@@ -712,7 +708,7 @@
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {}
         }
       },
@@ -728,7 +724,7 @@
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {}
         }
       },
@@ -744,7 +740,7 @@
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {}
         }
       },
@@ -760,7 +756,7 @@
         "mcp": {
           "verified": false,
           "source": "inferred",
-          "refreshedAt": "2026-06-05T22:29:01.086Z",
+          "refreshedAt": "2026-06-05T22:55:20.301Z",
           "evidence": {}
         }
       }
