@@ -14,6 +14,9 @@
     "validate-pack": "node tools/validate-pack.mjs",
     "validate":      "node tools/validate-pack.mjs vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml",
     "lint:fetcher":  "node --check tools/fetch-live-pack.mjs",
+    "lint:adapter":  "node --check tools/adapt-spec-pack.mjs && node --check tools/lib/adapter.mjs && node --check tools/lib/mini-yaml.mjs",
+    "adapt":         "node tools/adapt-spec-pack.mjs",
+    "test:adapt":    "node tools/test-adapt.mjs",
     "sync-spec":     "node tools/sync-spec.mjs",
     "sync-spec:check": "node tools/sync-spec.mjs --check"
   },
