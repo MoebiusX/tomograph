@@ -12,7 +12,7 @@
     "dev":           "node tools/dev-server.mjs",
     "fetch-live":    "node tools/fetch-live-pack.mjs",
     "validate-pack": "node tools/validate-pack.mjs",
-    "validate":      "node tools/validate-pack.mjs packs/production-live.json packs/production-curated.json packs/target-advanced.json packs/demo-skeleton.json",
+    "validate":      "node tools/validate-pack.mjs vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml",
     "lint:fetcher":  "node --check tools/fetch-live-pack.mjs",
     "sync-spec":     "node tools/sync-spec.mjs",
     "sync-spec:check": "node tools/sync-spec.mjs --check"
