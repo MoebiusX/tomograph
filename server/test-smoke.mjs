@@ -49,6 +49,16 @@ try {
   assert(example?.name === 'payment-service', 'payment-service name');
   assert(example?.criticality === 'tier-1', 'payment-service criticality');
   assert(example?.environments?.length === 2, 'payment-service environments count');
+  const live = catalog.packs.find(p => p.id === 'production-live');
+  assert(!!live, 'catalog includes production-live entry');
+  // The cron writes packs/production-live.pack.yaml; in CI the file may not
+  // exist yet, in which case catalog reports ok:false with an error message.
+  if (live.ok) {
+    assert(live.name === 'production-live', 'production-live pack name when present');
+  } else {
+    assert(/pack file missing|file not found|ENOENT/i.test(live.error || ''),
+           'production-live missing-file error is surfaced cleanly');
+  }
 
   // /api/packs/:id default env
   const adapted = await getJson(base, '/api/packs/payment-service');
