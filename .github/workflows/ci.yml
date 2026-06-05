@@ -31,8 +31,19 @@ jobs:
       - name: Lint fetcher (node --check)
         run: npm run lint:fetcher
 
-      - name: Validate all packs against schema
-        run: npm run validate
+      # Phase 0 of the v1.2 migration deleted schema/pack.schema.json (the old
+      # studio display schema) and vendored the canonical spec under
+      # vendor/observability-pack-spec/v1.2/. Pack validation is offline until
+      # Phase 1 rewires tools/validate-pack.mjs against the vendored canonical
+      # schema. In the meantime, drift-check the vendored spec — the only
+      # validation gate we can run today.
+      - name: Verify vendored spec checksums
+        run: npm run sync-spec:check
+
+      # TODO(phase-1): restore once tools/validate-pack.mjs targets the
+      # canonical schema and bundled packs migrate to canonical YAML.
+      # - name: Validate all packs against schema
+      #   run: npm run validate
 
       - name: Smoke-check studio HTML is parseable
         run: |
