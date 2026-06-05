@@ -27,6 +27,8 @@
       <span class="ctrl-key">ENV</span>
       <select id="env-select" aria-label="Select environment"></select>
     </label>
+    <button id="upload-btn" class="ctrl-btn" type="button" title="Upload a canonical v1.2 pack (.yaml or .json)">upload</button>
+    <input id="file-input" type="file" accept=".yaml,.yml,.json,application/json,text/yaml,application/x-yaml" hidden>
     <a class="ctrl-link" href="/api/packs" target="_blank" rel="noopener" title="Pack catalog JSON">api</a>
   </div>
 </header>
@@ -64,12 +66,17 @@
     <h2 class="drawer-title" id="drawer-title">—</h2>
     <button class="drawer-close" id="drawer-close" aria-label="Close detail">esc</button>
   </div>
-  <div class="drawer-meta" id="drawer-meta"></div>
-  <section class="drawer-section">
-    <h3>Canonical source</h3>
-    <pre class="json" id="drawer-source">—</pre>
-  </section>
+  <dl class="drawer-meta" id="drawer-meta"></dl>
+  <div id="drawer-panels"></div>
 </aside>
+
+<div class="drop-overlay" id="drop-overlay" hidden>
+  <div class="drop-overlay-inner">
+    <div class="drop-overlay-eyebrow">drop to validate + adapt</div>
+    <div class="drop-overlay-title">Load an ObservabilityPack v1.2 manifest</div>
+    <div class="drop-overlay-sub">.yaml · .yml · .json — sent to <code>POST /api/validate</code></div>
+  </div>
+</div>
 
 <footer class="ftr">
   <div>ObservabilityPack Studio · v0.3-dev</div>

@@ -77,6 +77,29 @@ try {
   const notFound = await fetch(`${base}/api/packs/does-not-exist`);
   assert(notFound.status === 404, 'unknown pack returns 404');
 
+  // /api/packs/:id/conformance
+  const conformance = await getJson(base, '/api/packs/payment-service/conformance');
+  assert(conformance.declaredTier === 'tier-1', 'conformance tier');
+  assert(typeof conformance.scorePercent === 'number', 'conformance scorePercent is a number');
+  assert(typeof conformance.mustPercent  === 'number', 'conformance mustPercent is a number');
+  assert(Array.isArray(conformance.clauses), 'conformance clauses array');
+  assert(conformance.clauses.length >= 20, 'conformance has >= 20 clauses');
+  assert(conformance.byDimension?.L1?.mustTotal >= 1, 'conformance byDimension populated');
+  const passClause = conformance.clauses.find(c => c.id === 'L1.MUST.availability_slo');
+  assert(passClause?.pass === true, 'availability SLO clause passes on example');
+  const failClause = conformance.clauses.find(c => c.id === 'L3.MUST.recording_rule_per_slo');
+  assert(failClause?.pass === false, 'recording-rule-per-SLO clause flags real gap in example');
+
+  // /api/packs/:id/conformance ?env= overlays
+  const stgConf = await getJson(base, '/api/packs/payment-service/conformance?env=staging');
+  assert(stgConf.declaredTier === 'tier-2', 'staging env overlay reports tier-2');
+
+  // /api/maturity-rubric
+  const rubric = await getJson(base, '/api/maturity-rubric');
+  assert(rubric.specVersion === '1.2', 'rubric specVersion 1.2');
+  assert(Array.isArray(rubric.clauses) && rubric.clauses.length >= 20, 'rubric clauses present');
+  assert(!('evaluate' in (rubric.clauses[0] || {})), 'rubric clauses do not leak evaluate function');
+
   // POST /api/validate — valid canonical (use staging-with-effective shape rejected by additionalProperties)
   // Send a minimal valid canonical pack: re-fetch the raw vendored example via the canonical route (without env)
   const raw = await getJson(base, '/api/packs/payment-service/canonical');
@@ -90,6 +113,7 @@ try {
   }).then(r => r.json());
   assert(validateRes.ok === true, 'POST /api/validate accepts a valid canonical pack', validateRes.errors, []);
   assert(validateRes.adapted?.meta?.apiVersion === 'observability.platform/v1', 'validate response includes adapted layered pack');
+  assert(typeof validateRes.conformance?.scorePercent === 'number', 'validate response includes conformance report');
 
   // POST /api/validate — pre-1.2 should fail gatekeeper
   const bad = await fetch(`${base}/api/validate`, {
