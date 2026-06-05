@@ -1112,11 +1112,43 @@ async function boot() {
   state.selectedEnv = firstOk.environments?.[0] || null;
   renderPackSelect();
   setupUpload();
+  setupTheme();
   await refresh();
 }
 
 $('#drawer-close').onclick = closeDrawer;
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+
+// ---------- theme ----------
+// The inline script in <head> already applied the persisted/system theme
+// before paint. Here we wire the toggle and keep the studio in sync with
+// the system preference if the user hasn't pinned one.
+
+function setupTheme() {
+  const btn = $('#theme-toggle');
+  if (!btn) return;
+  const apply = (t) => document.documentElement.setAttribute('data-theme', t);
+  const current = () => document.documentElement.getAttribute('data-theme') || 'light';
+
+  btn.onclick = () => {
+    const next = current() === 'dark' ? 'light' : 'dark';
+    apply(next);
+    try { localStorage.setItem('studioTheme', next); } catch (_) {}
+    btn.setAttribute('title', `Switch to ${next === 'dark' ? 'light' : 'dark'} mode`);
+  };
+  btn.setAttribute('title', `Switch to ${current() === 'dark' ? 'light' : 'dark'} mode`);
+
+  // Follow the system preference when the user hasn't explicitly chosen.
+  try {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    mq.addEventListener?.('change', (e) => {
+      const explicit = localStorage.getItem('studioTheme');
+      if (explicit !== 'light' && explicit !== 'dark') {
+        apply(e.matches ? 'dark' : 'light');
+      }
+    });
+  } catch (_) {}
+}
 
 // ---------- helpers ----------
 

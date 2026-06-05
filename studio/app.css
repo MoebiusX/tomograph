@@ -2,6 +2,11 @@
    ObservabilityPack Studio v0.3 — engineering bench refresh
    Visual identity: hairline grid · monospaced data · layer-numbered
    sections · slide-in drawer.
+
+   Theming: every color is a CSS variable under :root (light) or
+   [data-theme="dark"] (dark). The toggle in studio/app.mjs flips
+   data-theme on <html>. The inline FOUC-prevention script in
+   studio/index.html applies the saved/system preference before paint.
    ============================================================ */
 
 :root {
@@ -13,6 +18,12 @@
   --L4:  #A22323;  --L4-bg:  #F8DCDC;  --L4-tint:  #FCEFEF;
   --L5:  #5B2C82;  --L5-bg:  #ECE0F4;  --L5-tint:  #F4EDF8;
   --GOV: #4A4A4A;  --GOV-bg: #E8E8E8;  --GOV-tint: #F1F1F1;
+
+  /* Conformance accent (gold-amber) */
+  --CONF:      #B8860B;
+  --CONF-bg:   #FCE9B2;
+  --CONF-tint: #FFF8E6;
+  --CONF-text: #6E4F00;
 
   /* Source tag palette */
   --src-Declared: #475569;
@@ -36,11 +47,65 @@
   --card:   #FFFFFF;
   --hover:  #F6F4EE;
 
+  /* Semantic backgrounds (conformance pass/fail, code blocks) */
+  --code-bg:    #FBFBF8;
+  --pass-bg:    #F0FDF4;  --pass-border: #15803D;
+  --fail-bg:    #FFFAF8;  --fail-border: #DC2626;
+  --warn-bg:    #FFFCF0;
+  --error-bg:   #FEF2F2;  --error-text:  #7F1D1D;
+  --error-border: #FCA5A5;
+  --dot-rgba:   rgba(15, 27, 45, 0.04);   /* paper texture */
+
   --r-sm: 3px; --r-md: 5px; --r-lg: 8px;
 
   --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --serif: 'Newsreader', 'IBM Plex Serif', Georgia, serif;
+}
+
+[data-theme="dark"] {
+  /* Layer accents kept bright; their *backgrounds* go dark. */
+  --L1:  #E89738;  --L1-bg:  #3C2611;  --L1-tint:  #261810;
+  --L2:  #5A99D4;  --L2-bg:  #18283A;  --L2-tint:  #131D2A;
+  --L2X: #34B8B8;  --L2X-bg: #133030;  --L2X-tint: #0E2222;
+  --L3:  #3DA8A8;  --L3-bg:  #112E2C;  --L3-tint:  #0D2220;
+  --L4:  #E25A5A;  --L4-bg:  #3A1818;  --L4-tint:  #281010;
+  --L5:  #A37FCC;  --L5-bg:  #29183C;  --L5-tint:  #1C1027;
+  --GOV: #9AA3AD;  --GOV-bg: #2A2A2E;  --GOV-tint: #1E1E22;
+
+  --CONF:      #E0B040;
+  --CONF-bg:   #3A2E10;
+  --CONF-tint: #28200B;
+  --CONF-text: #F7DC9A;
+
+  --src-Declared: #8B95A3;
+  --src-Verified: #22D3EE;
+  --src-Missing:  #F87171;
+
+  --crit-tier-1: #F87171;
+  --crit-tier-2: #FBBF24;
+  --crit-tier-3: #94A3B8;
+
+  --ink:    #E5E8EC;
+  --ink-2:  #B6BFCB;
+  --ink-3:  #9AA3AD;
+  --ink-4:  #788396;
+  --ink-5:  #58637A;
+  --line:   #2A3548;
+  --line-2: #1F2A3A;
+  --paper:  #0F1623;
+  --card:   #18202E;
+  --hover:  #1F2A3A;
+
+  --code-bg:    #11192A;
+  --pass-bg:    #102A1A;  --pass-border: #34D399;
+  --fail-bg:    #2A1414;  --fail-border: #F87171;
+  --warn-bg:    #2A2510;
+  --error-bg:   #2A1414;  --error-text:  #FCA5A5;
+  --error-border: #7F1D1D;
+  --dot-rgba:   rgba(255, 255, 255, 0.04);
+
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -56,12 +121,21 @@ body {
 }
 body.no-scroll { overflow: hidden; }
 
+/* Subtle paper texture — engineering blueprint feel. The dot color is
+   themed via --dot-rgba so it stays visible against both backgrounds. */
+body::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image: radial-gradient(circle at 1px 1px, var(--dot-rgba) 1px, transparent 0);
+  background-size: 28px 28px;
+  opacity: 0.55;
+}
+
 a { color: var(--ink-2); }
 a:hover { color: var(--ink); }
 
 .skip {
   position: absolute; left: -9999px;
-  background: var(--ink); color: #fff; padding: 8px 12px;
+  background: var(--ink); color: var(--paper); padding: 8px 12px;
 }
 .skip:focus { left: 12px; top: 12px; z-index: 1000; }
 
@@ -131,6 +205,15 @@ a:hover { color: var(--ink); }
 }
 .ctrl-btn:hover { color: var(--ink); border-color: var(--ink-3); background: var(--hover); }
 
+/* Theme toggle — content set per theme so the same button reads as
+   "dark" in light mode (action) and "light" in dark mode. */
+.theme-toggle { min-width: 56px; }
+.theme-toggle::before {
+  content: "◐ dark";
+  display: inline-block;
+}
+[data-theme="dark"] .theme-toggle::before { content: "◑ light"; }
+
 /* ===================== META STRIP ===================== */
 .meta {
   display: flex; flex-direction: column; gap: 4px;
@@ -195,9 +278,9 @@ a:hover { color: var(--ink); }
   margin-left: auto;
   border-left: 1px dashed var(--line);
 }
-.tab[data-layer="CONF"] { --accent: #B8860B; }
+.tab[data-layer="CONF"] { --accent: var(--CONF); }
 .tab[data-layer="CONF"] .tab-count {
-  background: #FCE9B2; color: #6E4F00;
+  background: var(--CONF-bg); color: var(--CONF-text);
   font-weight: 600;
 }
 
@@ -211,7 +294,7 @@ a:hover { color: var(--ink); }
 #layer-view .error {
   padding: 16px 18px;
   border-left: 3px solid var(--src-Missing);
-  background: #FEF2F2; color: #7F1D1D;
+  background: var(--error-bg); color: var(--error-text);
   font-family: var(--mono); font-size: 12px;
   white-space: pre-wrap;
   border-radius: var(--r-md);
@@ -321,9 +404,9 @@ a:hover { color: var(--ink); }
 .card.has-broken-refs {
   outline: 1.5px solid var(--src-Missing);
   outline-offset: -1.5px;
-  background: #FFFAF8;
+  background: var(--fail-bg);
 }
-.card.has-broken-refs:hover { background: #FEEEE8; }
+.card.has-broken-refs:hover { background: var(--accent-tint); }
 
 .card-title {
   font-family: var(--mono); font-weight: 500; font-size: 13px;
@@ -436,7 +519,7 @@ a:hover { color: var(--ink); }
   margin: 0;
   font: 12px/1.55 var(--mono);
   color: var(--ink);
-  background: #FBFBF8;
+  background: var(--code-bg);
   border: 1px solid var(--line-2);
   border-radius: var(--r-md);
   padding: 12px 14px;
@@ -478,7 +561,7 @@ a:hover { color: var(--ink); }
 .panel-table th {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--ink-4); font-weight: 600;
-  background: #FAFAF7;
+  background: var(--paper);
 }
 .endpoint-list {
   margin: 0; padding-left: 18px;
@@ -505,8 +588,8 @@ a:hover { color: var(--ink); }
 .broken-list code {
   font: 11px/1 var(--mono);
   padding: 4px 8px; border-radius: var(--r-md);
-  background: #FEE; color: #7F1D1D;
-  border: 1px solid #FCA5A5;
+  background: var(--error-bg); color: var(--error-text);
+  border: 1px solid var(--error-border);
 }
 
 /* drawer accent per layer */
@@ -517,22 +600,22 @@ a:hover { color: var(--ink); }
 .drawer[data-layer="L4"]  { --accent: var(--L4); }
 .drawer[data-layer="L5"]  { --accent: var(--L5); }
 .drawer[data-layer="GOV"] { --accent: var(--GOV); }
-.drawer[data-layer="CONF"] { --accent: #B8860B; }
+.drawer[data-layer="CONF"] { --accent: var(--CONF); }
 
 /* ===================== CONFORMANCE VIEW ===================== */
-.conformance-view { --accent: #B8860B; --accent-bg: #FCE9B2; --accent-tint: #FFF8E6; }
+.conformance-view { --accent: var(--CONF); --accent-bg: var(--CONF-bg); --accent-tint: var(--CONF-tint); }
 .conformance-view .section-head {
-  border-color: #B8860B; background: #FFF8E6;
+  border-color: var(--CONF); background: var(--CONF-tint);
 }
 
 .conf-headline {
   display: grid; gap: 12px;
   padding: 14px 18px;
-  border: 1px solid #B8860B; border-top: none;
+  border: 1px solid var(--CONF); border-top: none;
   background: var(--card);
 }
-.conf-headline.is-pass { background: #F0FDF4; border-color: #15803D; }
-.conf-headline.is-fail { background: #FFFAF1; }
+.conf-headline.is-pass { background: var(--pass-bg); border-color: var(--pass-border); }
+.conf-headline.is-fail { background: var(--warn-bg); }
 .conf-meta {
   display: grid; gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -574,7 +657,7 @@ a:hover { color: var(--ink); }
 .conf-dim[data-layer="L3"]  { border-bottom-color: var(--L3); }
 .conf-dim[data-layer="L4"]  { border-bottom-color: var(--L4); }
 .conf-dim[data-layer="L5"]  { border-bottom-color: var(--L5); }
-.conf-dim[data-pass="false"] { background: #FFFAF8; }
+.conf-dim[data-pass="false"] { background: var(--fail-bg); }
 .conf-dim-key {
   font: 700 12px/1 var(--mono);
   letter-spacing: 0.06em; text-transform: uppercase;
@@ -601,13 +684,13 @@ a:hover { color: var(--ink); }
 }
 .conf-clause:last-child { border-bottom: none; }
 .conf-clause[data-applies="false"] { opacity: 0.5; }
-.conf-clause[data-pass="false"][data-sev="MUST"]   { background: #FFFAF8; }
-.conf-clause[data-pass="false"][data-sev="SHOULD"] { background: #FFFCF0; }
+.conf-clause[data-pass="false"][data-sev="MUST"]   { background: var(--fail-bg); }
+.conf-clause[data-pass="false"][data-sev="SHOULD"] { background: var(--warn-bg); }
 .conf-clause-icon {
   font: 700 16px/1 var(--mono);
   text-align: center; padding-top: 2px;
 }
-.conf-clause[data-pass="true"]  .conf-clause-icon { color: #15803D; }
+.conf-clause[data-pass="true"]  .conf-clause-icon { color: var(--pass-border); }
 .conf-clause[data-pass="false"] .conf-clause-icon { color: var(--src-Missing); }
 .conf-clause[data-applies="false"] .conf-clause-icon { color: var(--ink-5); }
 .conf-clause-id {
@@ -620,8 +703,8 @@ a:hover { color: var(--ink); }
   letter-spacing: 0.08em;
   padding: 1px 5px; border-radius: 99px;
 }
-.conf-clause[data-sev="MUST"]   .conf-clause-sev { background: #FEE2E2; color: #991B1B; }
-.conf-clause[data-sev="SHOULD"] .conf-clause-sev { background: #FEF3C7; color: #92400E; }
+.conf-clause[data-sev="MUST"]   .conf-clause-sev { background: var(--fail-bg); color: var(--error-text); }
+.conf-clause[data-sev="SHOULD"] .conf-clause-sev { background: var(--warn-bg); color: var(--CONF-text); }
 .conf-clause-tier, .conf-clause-ref {
   margin-left: 6px;
   font: 10px/1 var(--mono);
@@ -648,14 +731,15 @@ a:hover { color: var(--ink); }
 /* ===================== TOAST ===================== */
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  background: var(--ink); color: #fff;
+  background: var(--ink); color: var(--paper);
   padding: 10px 16px; border-radius: var(--r-md);
   font: 500 12px/1.2 var(--mono);
   letter-spacing: 0.02em;
   z-index: 100;
+  border: 1px solid var(--line);
 }
 .toast[hidden] { display: none; }
-.toast.is-error { background: var(--src-Missing); }
+.toast.is-error { background: var(--src-Missing); color: #fff; border-color: var(--src-Missing); }
 
 /* ===================== DROP OVERLAY ===================== */
 .drop-overlay {
@@ -665,6 +749,7 @@ a:hover { color: var(--ink); }
   display: flex; align-items: center; justify-content: center;
   pointer-events: none;
 }
+[data-theme="dark"] .drop-overlay { background: rgba(0, 0, 0, 0.7); }
 .drop-overlay[hidden] { display: none; }
 .drop-overlay-inner {
   background: var(--card);
@@ -694,6 +779,7 @@ a:hover { color: var(--ink); }
   background: var(--hover);
   padding: 2px 6px; border-radius: var(--r-sm);
   font-size: 11px;
+  color: var(--ink);
 }
 
 /* ===================== L4 nested sub-grids ===================== */

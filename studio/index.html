@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ObservabilityPack Studio</title>
 <meta name="description" content="Engineering studio for ObservabilityPack spec v1.2 manifests.">
+<meta name="color-scheme" content="light dark">
+<!-- Apply persisted/system theme before paint to avoid FOUC. -->
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem('studioTheme');
+      if (t !== 'light' && t !== 'dark') {
+        t = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (_) { document.documentElement.setAttribute('data-theme', 'light'); }
+  })();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
@@ -29,6 +42,7 @@
     </label>
     <button id="upload-btn" class="ctrl-btn" type="button" title="Upload a canonical v1.2 pack (.yaml or .json)">upload</button>
     <input id="file-input" type="file" accept=".yaml,.yml,.json,application/json,text/yaml,application/x-yaml" hidden>
+    <button id="theme-toggle" class="ctrl-btn theme-toggle" type="button" aria-label="Toggle theme"></button>
     <a class="ctrl-link" href="/api/packs" target="_blank" rel="noopener" title="Pack catalog JSON">api</a>
   </div>
 </header>
