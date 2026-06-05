@@ -21,6 +21,7 @@
     "lint:studio":     "node --check studio/app.mjs",
     "adapt":           "node tools/adapt-spec-pack.mjs",
     "test:adapt":      "node tools/test-adapt.mjs",
+    "test:packs":      "node tools/test-packs.mjs",
     "test:server":     "node server/test-smoke.mjs",
     "sync-spec":       "node tools/sync-spec.mjs",
     "sync-spec:check": "node tools/sync-spec.mjs --check"
