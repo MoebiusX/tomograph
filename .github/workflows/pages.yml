@@ -1,12 +1,26 @@
 name: pages
 
-# Publishes the repo (studio + packs + index redirect) to GitHub Pages
-# whenever main moves. Replaces the legacy "deploy from branch" setting —
-# turn that off in repo Settings → Pages → Build and deployment → Source = "GitHub Actions".
+# GitHub Pages deployment is currently disabled.
+#
+# Background: through Studio v0.2 the studio was a single static HTML file
+# with embedded JSON packs, which Pages could host fine. From Studio v0.3
+# (the spec v1.2 migration, Phase 3a) the studio is split into:
+#
+#   - studio/{index.html, app.css, app.mjs}  thin client, fetches over HTTP
+#   - server/index.mjs                       Express server that runs the
+#                                            validator + adapter and exposes
+#                                            /api/packs etc.
+#
+# A static Pages deploy can no longer serve a working studio. Re-enabling
+# would require either (a) a static-build target that bakes the adapted
+# pack JSON into the HTML, or (b) hosting the Node server on a real PaaS
+# (Render, Fly.io, etc.) and pointing Pages at a redirect.
+#
+# Until a deploy target is decided, this workflow only runs on manual
+# `workflow_dispatch` so it doesn't auto-publish a broken page on every
+# push to main.
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -20,6 +34,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: false   # disabled — see header comment
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment:
