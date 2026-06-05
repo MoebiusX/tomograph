@@ -53,10 +53,28 @@ const PACK_CATALOG = [
     description: "The spec repo's reference tier-1 pack — HTTP API + Kafka consumer.",
   },
   {
+    id: 'target-advanced',
+    label: 'Target advanced (tier-1 reference)',
+    path: 'packs/target-advanced.pack.yaml',
+    description: 'Aspirational tier-1 — 100% MUST conformance, all 5 SHOULDs pass.',
+  },
+  {
+    id: 'production-curated',
+    label: 'Production curated (tier-2 BAU)',
+    path: 'packs/production-curated.pack.yaml',
+    description: 'Hand-curated tier-2 baseline with intentional gaps the conformance panel surfaces.',
+  },
+  {
     id: 'production-live',
     label: 'Production live (MCP fetcher)',
     path: 'packs/production-live.pack.yaml',
     description: 'Refreshed by the refresh-live-pack workflow. Reflects MCP-verifiable state.',
+  },
+  {
+    id: 'demo-skeleton',
+    label: 'Demo skeleton (tier-3 minimum)',
+    path: 'packs/demo-skeleton.pack.yaml',
+    description: "Smallest valid canonical v1.2 pack — every schema-required section with the leanest content.",
   },
 ];
 

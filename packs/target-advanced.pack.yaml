@@ -1,0 +1,386 @@
+# =============================================================================
+# ObservabilityPack: target-advanced
+# -----------------------------------------------------------------------------
+# Aspirational tier-1 reference. Hand-curated to satisfy 100% of the
+# applicable MUST clauses in tools/lib/conformance.mjs against tier-1
+# criticality — what "fully conformant" looks like for a customer-facing
+# service.
+#
+# Differences from the canonical example (vendored payment-service):
+#   - Recording rules + burn-rate alerts + chaos experiments cover EVERY
+#     declared SLO (the canonical example carries four orphans).
+#   - At least one weekly chaos experiment runs in prod alongside the
+#     OTel-instrumented synthetic probe (L5 tier-1 MUST).
+#   - regression_gate is set to a release-blocking mode (L5 tier-1 SHOULD).
+# =============================================================================
+
+apiVersion: observability.platform/v1
+kind: ObservabilityPack
+
+metadata:
+  name: platform-edge
+  version: 1.0.0
+  binding: otel-elastic-prometheus-grafana
+  owners:
+    - team-edge
+    - team-platform-sre
+  imports:
+    - ref: platform/golden-signals-base@1.4
+    - ref: platform/std-alert-routes@3.0
+    - ref: platform/std-budget-policy@2.1
+  bindings:
+    service: platform-edge
+    environments: [prod, staging]
+    criticality: tier-1
+  labels:
+    business_domain: edge
+    pii_class: low
+  annotations:
+    docs: https://docs.example.internal/services/platform-edge
+    on_call_handbook: https://runbooks.example.internal/edge
+
+spec:
+
+  # ---------------------------------------------------------------------------
+  # OTel instrumentation contract (tier-1 thresholds: SemConv 1.27.0,
+  # 5+ resource attributes, log correlation on).
+  # ---------------------------------------------------------------------------
+  otel:
+    semconv: "1.27.0"
+    resource_attributes:
+      required:
+        - service.name
+        - service.namespace
+        - service.version
+        - service.instance.id
+        - deployment.environment
+      custom:
+        - region
+        - tenant.id
+    sdk:
+      languages: [java, go]
+      sampling:
+        policy: parentbased_traceidratio
+        ratio: 0.1
+      propagators: [tracecontext, baggage]
+      log_correlation: true
+
+  # ---------------------------------------------------------------------------
+  # Telemetry backend catalog — metrics + logs + traces signals all covered
+  # (L2 tier-2 MUST), each backend pins a `min` version with `gating: warn`
+  # (L2 tier-1 SHOULD).
+  # ---------------------------------------------------------------------------
+  telemetry:
+    backends:
+      - id: metrics-prom
+        signal: metrics
+        product: prometheus
+        version: { declared: "2.55", min: "2.53", gating: warn }
+        endpoints: [https://prom.internal:9090]
+        auth: { kind: bearer, secretRef: prometheus-token }
+        default: true
+      - id: logs-es
+        signal: logs
+        product: elasticsearch
+        version: { declared: "8.15", min: "8.13", gating: warn }
+        endpoints: [https://es.internal:9200]
+        auth: { kind: basic, secretRef: es-credentials }
+      - id: traces-es
+        signal: traces
+        product: elasticsearch
+        version: { declared: "8.15", min: "8.13", gating: warn }
+        endpoints: [https://es.internal:9200]
+        auth: { kind: basic, secretRef: es-credentials }
+      - id: profiles-pyroscope
+        signal: profiles
+        product: pyroscope
+        endpoints: [https://pyroscope.internal:4040]
+
+  environments:
+    prod:
+      target: ske
+      criticality: tier-1
+      backends: { metrics: metrics-prom, logs: logs-es, traces: traces-es }
+      overrides:
+        otel.sdk.sampling.ratio: 0.1
+    staging:
+      target: bare-k8s
+      criticality: tier-2
+      backends: { metrics: metrics-prom, logs: logs-es, traces: traces-es }
+      overrides:
+        otel.sdk.sampling.ratio: 1.0
+
+  # ---------------------------------------------------------------------------
+  # SLIs — 4 total: availability (ratio), latency (threshold), cache hit
+  # (ratio domain), upstream success (ratio domain). Every SLI is paired
+  # with an SLO below (L1 sli_covered_by_slo MUST).
+  # ---------------------------------------------------------------------------
+  slis:
+    - id: gateway_availability
+      type: ratio
+      description: Non-5xx HTTP responses over total responses at the gateway.
+      semconv_metric: http.server.request.duration
+      good:  sum(rate(http_server_request_duration_seconds_count{service_name="platform-edge",http_response_status_code!~"5.."}[5m]))
+      total: sum(rate(http_server_request_duration_seconds_count{service_name="platform-edge"}[5m]))
+
+    - id: gateway_latency_p99
+      type: threshold
+      description: 99th-percentile request latency, server-side.
+      semconv_metric: http.server.request.duration
+      query: |
+        histogram_quantile(0.99,
+          sum by (le)(rate(http_server_request_duration_seconds_bucket{
+            service_name="platform-edge"
+          }[5m])))
+      threshold: 0.4
+      unit: seconds
+
+    - id: cache_hit_ratio
+      type: ratio
+      description: Edge cache hit ratio (a domain SLI for the platform).
+      good:  sum(rate(edge_cache_hits_total{service_name="platform-edge"}[5m]))
+      total: sum(rate(edge_cache_requests_total{service_name="platform-edge"}[5m]))
+
+    - id: upstream_success_ratio
+      type: ratio
+      description: Successful upstream proxied responses over total.
+      good:  sum(rate(edge_upstream_responses_total{service_name="platform-edge",outcome="ok"}[5m]))
+      total: sum(rate(edge_upstream_responses_total{service_name="platform-edge"}[5m]))
+
+  # ---------------------------------------------------------------------------
+  # SLOs — 4 total, one per SLI (L1 SHOULD domain_slo: 4+ SLOs).
+  # ---------------------------------------------------------------------------
+  slos:
+    - { id: gateway_availability_99_9,    sli: gateway_availability,    objective: 0.999,  window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: gateway_latency_99_p99_400ms, sli: gateway_latency_p99,     objective: 0.99,   window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: cache_hit_98,                 sli: cache_hit_ratio,         objective: 0.98,   window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: upstream_success_99_95,       sli: upstream_success_ratio,  objective: 0.9995, window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+
+  # ---------------------------------------------------------------------------
+  # Pipelines — OTLP receiver, tail-sampling, and 3-signal exporters
+  # (L2 tier-1 MUSTs: otlp_receiver, tail_sampling, logs_and_traces_exporters).
+  # ---------------------------------------------------------------------------
+  pipelines:
+    receivers:
+      - name: otlp
+        protocols: [grpc, http]
+    processors:
+      - name: memory_limiter
+      - name: batch
+      - name: tail_sampling
+        decision_wait: 10s
+    exporters:
+      metrics: { kind: prometheusremotewrite, endpoint: https://prometheus.internal/api/v1/write }
+      logs:    { kind: elasticsearch, endpoints: [https://es.internal:9200], logs_index: logs-edge-default }
+      traces:  { kind: elasticsearch, endpoints: [https://es.internal:9200], traces_index: traces-apm-default }
+
+  storage:
+    metrics: { backend: prometheus, version: "2.55", retention: 30d }
+    logs:    { backend: elasticsearch, version: "8.15", data_stream: logs-edge-default,    ilm_policy: ref:platform/std-logs-ilm-90d }
+    traces:  { backend: elasticsearch, version: "8.15", data_stream: traces-apm-default,   ilm_policy: ref:platform/std-traces-ilm-14d, sampling: tail-based }
+
+  # ---------------------------------------------------------------------------
+  # Queries — one recording rule per SLO (L3 tier-3 MUST). A derived view
+  # earns the L3 tier-2 SHOULD.
+  # ---------------------------------------------------------------------------
+  queries:
+    recording_rules:
+      - { name: edge:gateway_availability:ratio_5m, expr: ref:slis.gateway_availability,    interval: 30s }
+      - { name: edge:gateway_latency:p99_5m,        expr: ref:slis.gateway_latency_p99,     interval: 30s }
+      - { name: edge:cache_hit:ratio_5m,            expr: ref:slis.cache_hit_ratio,         interval: 30s }
+      - { name: edge:upstream_success:ratio_5m,     expr: ref:slis.upstream_success_ratio,  interval: 30s }
+
+    derived_views:
+      - { id: golden_signals, bind: ref:platform/golden-signals-view, params: { service: platform-edge } }
+
+  # ---------------------------------------------------------------------------
+  # Dashboards — 4 required at tier-1 (L3 tier1_dashboards MUST):
+  # service-overview, slo-burn, deployment-overlay, customer-impact.
+  # ---------------------------------------------------------------------------
+  dashboards:
+    - id: edge-service-overview
+      provider: { kind: grafana, version: "11.3", schemaVersion: 39 }
+      folder: platform-edge
+      source: file://dashboards/edge-overview.json
+      datasources:
+        metrics: ref:platform/ds-prometheus
+        logs:    ref:platform/ds-elasticsearch-logs
+        traces:  ref:platform/ds-elasticsearch-apm
+      panel_bindings:
+        - { panel: sli-gateway-availability, binds_to: slis.gateway_availability }
+        - { panel: sli-gateway-latency-p99,  binds_to: slis.gateway_latency_p99 }
+        - { panel: slo-gateway-availability, binds_to: slos.gateway_availability_99_9 }
+
+    - id: edge-slo-burn
+      provider: { kind: grafana, version: "11.3", schemaVersion: 39 }
+      folder: platform-edge
+      template: ref:platform/slo-burn-template
+      params:
+        slos: [gateway_availability_99_9, gateway_latency_99_p99_400ms, cache_hit_98, upstream_success_99_95]
+
+    - id: edge-deployment
+      provider: { kind: grafana, version: "11.3", schemaVersion: 39 }
+      folder: platform-edge
+      template: ref:platform/deployment-overlay-template
+      params: { service: platform-edge }
+
+    - id: edge-customer-impact
+      provider: { kind: grafana, version: "11.3", schemaVersion: 39 }
+      folder: platform-edge
+      template: ref:platform/per-tenant-template
+      params: { view: golden_signals }
+
+  # ---------------------------------------------------------------------------
+  # Policy — every SLO has a multi-window burn-rate alert (L4 tier-2 MUST).
+  # A forecast on the headline availability SLO satisfies the tier-1 SHOULD.
+  # ---------------------------------------------------------------------------
+  policy:
+    burn_rate_alerts:
+      - slo: gateway_availability_99_9
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: gateway_latency_99_p99_400ms
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: cache_hit_98
+        windows:
+          - { short: 10m, long: 1h, factor: 10, severity: SEV2 }
+          - { short: 1h,  long: 6h, factor: 4,  severity: SEV3 }
+
+      - slo: upstream_success_99_95
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+    forecasts:
+      - { slo: gateway_availability_99_9, method: holt-winters, horizon: 7d, on_projected_breach: open_ticket }
+
+  # ---------------------------------------------------------------------------
+  # Alerting — SEV1 route includes voice (L4 tier-1 MUST).
+  # ---------------------------------------------------------------------------
+  alerting:
+    routes:
+      - severity: SEV1
+        channels:
+          - { msteams:  "#edge-oncall" }
+          - { voice:    "pagerduty://edge-team" }
+          - { whatsapp: "group://edge-oncall" }
+      - severity: SEV2
+        channels:
+          - { msteams: "#edge-oncall" }
+          - { voice:   "pagerduty://edge-low" }
+      - severity: SEV3
+        channels:
+          - { msteams: "#edge-team" }
+
+    dedup: ref:platform/std-dedup
+    suppress: [maintenance_windows, deploy_freezes, dependency_outage]
+
+  # ---------------------------------------------------------------------------
+  # Self-healing — at least one automation declared (L4 tier-1 MUST).
+  # ---------------------------------------------------------------------------
+  remediation:
+    - trigger: alert:edge-upstream-saturated
+      runbook: file://runbooks/upstream-saturation.md
+      automation: argo-workflow://shed-and-rebalance
+      guardrails:
+        max_invocations_per_hour: 3
+        requires_human_above: SEV1
+        rollback_on_failure: true
+        cooldown_after_success: 15m
+        circuit_breaker: { failures: 2, window: 1h }
+
+    - trigger: alert:edge-cache-cold
+      runbook: file://runbooks/cache-cold-prewarm.md
+      automation: argo-workflow://prewarm-cache
+      guardrails:
+        max_invocations_per_hour: 2
+        requires_human_above: SEV2
+        rollback_on_failure: false
+        cooldown_after_success: 30m
+
+  # ---------------------------------------------------------------------------
+  # Baselines — release-blocking regression gate at tier-1 (L5 tier-1 SHOULD).
+  # ---------------------------------------------------------------------------
+  baselines:
+    mttd_target_p50: 2m
+    mttd_target_p95: 5m
+    mttr_target_p50: 30m
+    mttr_target_p95: 1h
+    measurement_source: incident-mgmt + alertmanager firing timestamps
+    review_cadence: monthly
+    regression_gate: block_release_if_either_breaches_target
+
+  # ---------------------------------------------------------------------------
+  # Validation — every SLO covered by chaos (L5 tier-1 MUST),
+  # weekly+ chaos in prod (L5 tier-1 MUST), monthly+ chaos in staging
+  # (L5 tier-2 MUST), at least one OTel-instrumented synthetic probe
+  # (the L5 tier-1 weekly_prod_chaos clause requires both).
+  # ---------------------------------------------------------------------------
+  validation:
+
+    chaos_experiments:
+
+      - id: gateway-pod-kill
+        engine: chaos-mesh
+        target: platform-edge
+        steady_state_hypothesis: ref:slos.gateway_availability_99_9
+        fault: { kind: pod-failure, fraction: 0.5, duration: 60s }
+        expected_alerts: [edge-pod-down]
+        expected_mttd: 2m
+        schedule: weekly
+        environment: prod
+
+      - id: gateway-network-latency
+        engine: chaos-mesh
+        target: platform-edge
+        steady_state_hypothesis: ref:slos.gateway_latency_99_p99_400ms
+        fault: { kind: network-delay, fraction: 0.25, duration: 5m }
+        expected_alerts: [edge-latency-burn-fast]
+        expected_mttd: 5m
+        schedule: weekly
+        environment: staging
+
+      - id: cache-eviction-storm
+        engine: chaos-mesh
+        target: platform-edge-cache
+        steady_state_hypothesis: ref:slos.cache_hit_98
+        fault: { kind: cache-evict, fraction: 0.5, duration: 3m }
+        expected_alerts: [cache-hit-burn]
+        expected_mttd: 5m
+        schedule: monthly
+        environment: staging
+
+      - id: upstream-partition-failure
+        engine: chaos-mesh
+        target: platform-edge
+        steady_state_hypothesis: ref:slos.upstream_success_99_95
+        fault: { kind: network-partition, fraction: 0.1, duration: 2m }
+        expected_alerts: [upstream-error-burn-fast]
+        expected_mttd: 5m
+        schedule: monthly
+        environment: staging
+
+    synthetic_checks:
+
+      - id: edge-checkout-canary
+        kind: elastic-synthetics
+        target: https://edge.example.com/canary
+        interval: 1m
+        otel_instrumentation: true
+        assertions:
+          - { status_code: 200 }
+          - { latency_lt: 400ms }
+        on_fail_severity: SEV2
+
+      - id: edge-tls-validity
+        kind: elastic-synthetics
+        target: https://edge.example.com/health
+        interval: 10m
+        assertions:
+          - { tls_expiry_gt: 14d }
+        on_fail_severity: SEV3

@@ -1,0 +1,110 @@
+# =============================================================================
+# ObservabilityPack: demo-skeleton
+# -----------------------------------------------------------------------------
+# The smallest valid canonical v1.2 pack. Declares tier-3 criticality and
+# fills every schema-required section with the leanest content that still
+# satisfies tier-3 MUSTs. Use this as a "what's the minimum?" reference.
+#
+# Tier-3 conformance bands (per docs/maturity-model.md):
+#   - L1 SLIs/SLOs : Availability SLO
+#   - L2 Pipelines : Default OTLP receiver
+#   - L2 OTel      : service.name attr
+#   - L3 Queries   : Recording rule per SLO
+#   - L3 Dashboards: Service overview
+#   - L4 Policy    : Single-window alert (we use two anyway — the schema
+#                    requires minItems: 2)
+#   - L4 Alerting  : Chat
+#   - L5 Baselines : Declared
+#   - L5 Validation: Synthetic probe
+# =============================================================================
+
+apiVersion: observability.platform/v1
+kind: ObservabilityPack
+
+metadata:
+  name: demo-skeleton
+  version: 0.1.0
+  binding: otel-elastic-prometheus-grafana
+  owners:
+    - team-platform
+  bindings:
+    service: demo-skeleton
+    environments: [prod]
+    criticality: tier-3
+  labels:
+    purpose: example
+
+spec:
+
+  otel:
+    semconv: "1.26.0"
+    resource_attributes:
+      required:
+        - service.name
+    sdk:
+      languages: [go]
+      sampling:
+        policy: parentbased_traceidratio
+        ratio: 0.1
+      propagators: [tracecontext]
+
+  slis:
+    - id: service_availability
+      type: ratio
+      description: Successful (non-5xx) responses over total responses.
+      good:  sum(rate(http_requests_total{status_code!~"5.."}[5m]))
+      total: sum(rate(http_requests_total[5m]))
+
+  slos:
+    - id: service_availability_99
+      sli: service_availability
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+
+  pipelines:
+    receivers:
+      - name: otlp
+    processors:
+      - name: batch
+    exporters:
+      metrics: { kind: prometheusremotewrite }
+      logs:    { kind: elasticsearch }
+      traces:  { kind: jaeger }
+
+  queries:
+    recording_rules:
+      - name: demo:service_availability:ratio_5m
+        expr: ref:slis.service_availability
+
+  dashboards:
+    - id: service-overview
+      provider: { kind: grafana }
+      folder: demo
+      source: file://dashboards/service-overview.json
+
+  policy:
+    burn_rate_alerts:
+      - slo: service_availability_99
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+  alerting:
+    routes:
+      - severity: SEV1
+        channels:
+          - { msteams: "#demo-oncall" }
+
+  baselines:
+    mttd_target_p50: 15m
+    mttr_target_p50: 1d
+    review_cadence: monthly
+
+  validation:
+    synthetic_checks:
+      - id: demo-health-canary
+        kind: blackbox-exporter
+        target: https://demo.example.com/health
+        interval: 1m
+        on_fail_severity: SEV3

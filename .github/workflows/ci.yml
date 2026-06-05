@@ -56,6 +56,9 @@ jobs:
       - name: Fetcher regression suite (offline, schema + YAML round-trip)
         run: npm run test:fetch
 
+      - name: Bundled-pack regression suite (validate + adapt + conformance)
+        run: npm run test:packs
+
       - name: Server smoke test (start, hit each route, assert)
         run: npm run test:server
 

@@ -42,7 +42,15 @@ try {
   // /api/packs catalog
   const catalog = await getJson(base, '/api/packs');
   assert(Array.isArray(catalog.packs), 'GET /api/packs returns packs[]');
-  assert(catalog.packs.length >= 1, 'GET /api/packs returns at least one pack');
+  assert(catalog.packs.length >= 4, 'GET /api/packs returns at least 4 packs (Phase 5 catalog)', catalog.packs.length, '>= 4');
+  for (const id of ['payment-service', 'target-advanced', 'production-curated', 'demo-skeleton']) {
+    const entry = catalog.packs.find(p => p.id === id);
+    assert(!!entry && entry.ok === true, `catalog entry '${id}' loads ok`, entry?.error, 'ok');
+  }
+  const target = catalog.packs.find(p => p.id === 'target-advanced');
+  assert(target?.criticality === 'tier-1', 'target-advanced declares tier-1');
+  const demo = catalog.packs.find(p => p.id === 'demo-skeleton');
+  assert(demo?.criticality === 'tier-3', 'demo-skeleton declares tier-3');
   const example = catalog.packs.find(p => p.id === 'payment-service');
   assert(!!example, 'catalog includes payment-service');
   assert(example?.ok === true, 'payment-service loaded ok');
