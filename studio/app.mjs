@@ -353,12 +353,12 @@ function renderPackBSelect() {
     state.conformanceB = null;
     state.compileCatalogB = null;
     state.compileContentB = null;
-    // Focus snaps back to A — no point pointing at a pack that's gone.
-    state.viewFocus = 'a';
     if (!newId) {
-      // User cleared Pack B — back to single-pack focus. If the active
-      // view was a cross-pack one, fall back to Layers.
-      if (state.view === 'compare' || state.view === 'atlas') state.view = 'layers';
+      // User cleared Pack B — back to single-pack focus.
+      state.viewFocus = 'a';
+      if (state.view === 'compare' || state.view === 'atlas' || state.view === 'traceability') {
+        state.view = 'layers';
+      }
       applyModeChrome();
       renderTabs();
       renderMainView();
@@ -370,8 +370,24 @@ function renderPackBSelect() {
       const ex = (state._examplesCache || []).find(p => p.id === newId);
       if (ex) state.catalog.push(ex);
     }
-    // Lazy-load B then refresh tabs + view.
-    loadPackB().then(() => { refreshDiff(); applyModeChrome(); renderEnvBSelect(); renderTabs(); renderMainView(); });
+    // Lazy-load B then refresh tabs + view. Auto-switch to Compare —
+    // picking Pack B IS the user's intent to compare; making them then
+    // click Compare separately was the source of "I changed Pack B and
+    // lost the comparison" confusion. Preserve any cross-pack view
+    // they had already chosen (Atlas, Traceability) so we don't fight
+    // the user when they switched away deliberately.
+    const crossPackViews = new Set(['compare', 'atlas', 'traceability']);
+    const wantedAutoSwitch = !crossPackViews.has(state.view);
+    loadPackB().then(() => {
+      refreshDiff();
+      if (wantedAutoSwitch) state.view = 'compare';
+      // applyModeChrome reads state.view — must run AFTER the
+      // potential switch so the header pickers hide/show correctly.
+      applyModeChrome();
+      renderEnvBSelect();
+      renderTabs();
+      renderMainView();
+    });
   };
   renderEnvBSelect();
 }
@@ -600,6 +616,9 @@ function renderPrimaryViewNav() {
       // Mirror to activeLayer for legacy code paths.
       state.activeLayer = ({ conformance: 'CONF', compile: 'COMPILE', atlas: 'ATLAS', schema: 'CONF', layers: state.layerFilter !== 'all' ? state.layerFilter : 'L1' })[v.id] || 'L1';
       state.activeCardKey = null;
+      // Header chrome depends on the current view (Compare hides its
+      // pickers because the compare pack-cards have their own).
+      applyModeChrome();
       renderTabs();
       renderMainView();
     };
@@ -3432,16 +3451,21 @@ function setupUpload() {
     if (!e.dataTransfer?.types?.includes('Files')) return;
     dragDepth++;
     overlay.hidden = false;
+    document.body.classList.add('is-dragging');
   });
   document.addEventListener('dragleave', () => {
     dragDepth = Math.max(0, dragDepth - 1);
-    if (dragDepth === 0) overlay.hidden = true;
+    if (dragDepth === 0) {
+      overlay.hidden = true;
+      document.body.classList.remove('is-dragging');
+    }
   });
   document.addEventListener('dragover', (e) => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
   document.addEventListener('drop', (e) => {
     if (!e.dataTransfer?.files?.length) return;
     e.preventDefault();
     dragDepth = 0; overlay.hidden = true;
+    document.body.classList.remove('is-dragging');
     handleFile(e.dataTransfer.files[0]);
   });
 }
@@ -3477,6 +3501,7 @@ async function boot() {
 
   setupUpload();
   setupTheme();
+  setupResetButton();
   // Eagerly fetch /api/examples so the Pack B picker has the archived
   // reference packs available even before the user visits the home
   // examples disclosure. AWAITED so the persistence rehydrate below can
@@ -3588,23 +3613,69 @@ function enterCompareMode(aId, aEnv, bId, bEnv) {
 // new pack.
 function applyModeChrome() {
   const isHome = state.mode === 'home';
+  // On Compare view the pack-A / pack-B cards inside the comparison
+  // already carry their own pickers, env selectors, swap button, and
+  // metadata chips. Showing the header pickers above is pure
+  // duplication — the same two controls fifty pixels higher. Hide them.
+  // Every other view needs the header pickers as the only way to swap
+  // packs.
+  const onCompare = state.view === 'compare';
   document.body.dataset.mode = state.mode;
+  document.body.dataset.view = state.view || '';
   const packSel = $('#pack-select')?.parentElement;
   const envSel  = $('#env-select')?.parentElement;
-  if (packSel) packSel.hidden = isHome;
-  if (envSel)  envSel.hidden  = isHome;
+  if (packSel) packSel.hidden = isHome || onCompare;
+  if (envSel)  envSel.hidden  = isHome || onCompare;
   // Pack B picker stays visible whenever we're not on home — empty until
   // the user picks something. This is the unlock: no more rigid single
-  // vs compare mode.
+  // vs compare mode. Hide it on Compare for the same duplication reason.
   const packBCtrl = $('#ctrl-pack-b');
   const envBCtrl  = $('#ctrl-env-b');
-  if (packBCtrl) packBCtrl.hidden = isHome;
-  if (envBCtrl)  envBCtrl.hidden  = isHome || !state.packB;
+  if (packBCtrl) packBCtrl.hidden = isHome || onCompare;
+  if (envBCtrl)  envBCtrl.hidden  = isHome || onCompare || !state.packB;
   // Clear-B button only when B is loaded.
   const clearB = $('#pack-b-clear');
-  if (clearB) clearB.hidden = !state.packB;
+  if (clearB) clearB.hidden = !state.packB || onCompare;
   const meta = $('#meta');   if (meta) meta.hidden = isHome;
   const tabs = $('#layer-tabs'); if (tabs) tabs.hidden = isHome;
+}
+
+// RESET button — clears EVERYTHING (server uploads + client persistence)
+// and reloads. Hard-refresh alone doesn't reset the studio because
+// persistence rehydrates the previous pack, and uploaded packs sit in
+// the server's in-memory map until the process restarts. This button
+// gives the user one click for a true clean slate without bouncing
+// `npm run dev`.
+function setupResetButton() {
+  const btn = $('#reset-btn');
+  if (!btn) return;
+  btn.onclick = async () => {
+    const ok = confirm('Reset the studio?\n\n' +
+      'This will:\n' +
+      '  • drop every uploaded / crawled / drafted pack from the server\n' +
+      '  • clear saved view + filter + focus + trace preferences from localStorage\n' +
+      '  • reload the page to the empty home screen\n\n' +
+      'Catalog-shipped example packs are unaffected (they live on disk).');
+    if (!ok) return;
+    // 1. Stop persistence from racing the reload + writing stale state.
+    try { persistence.suspend(); } catch (_) {}
+    // 2. Wipe localStorage. Keep theme so the user's dark/light choice
+    //    survives — that's not session state, it's a preference.
+    try {
+      const theme = localStorage.getItem('studioTheme');
+      localStorage.clear();
+      if (theme) localStorage.setItem('studioTheme', theme);
+    } catch (_) {}
+    // 3. Drop server-side uploads. If the endpoint is unreachable we
+    //    still reload — the client-side reset is the higher-leverage part.
+    try {
+      await fetch('/api/uploads', { method: 'DELETE' });
+    } catch (_) {}
+    // 4. Reload. location.reload(true) is non-standard in modern Firefox;
+    //    plain reload() picks up server changes since the navigation
+    //    bypasses the disk cache for HTML.
+    location.reload();
+  };
 }
 
 // Logo click returns home.
@@ -3617,131 +3688,229 @@ function setupHomeAffordance() {
 }
 
 // Hero / home screen — two big affordances. Mode-aware.
+// Default MCP endpoint shown on the home screen — points to Krystaline's
+// public reference MCP so a first-time visitor's one-click experience
+// is connecting to a real, live observability platform. localStorage
+// override (the user's last-used MCP URL) wins so returning users keep
+// their own configured endpoint. To rebrand for a different anchor MCP,
+// change this constant — the rest of the home is data-driven.
+const DEFAULT_MCP_URL = 'https://www.krystaline.io/mcp/public';
+
 function renderHomeView() {
   const view = $('#layer-view');
   if (!view) return;
-  const catalogPacks = (state.catalog || []).filter(p => p.ok);
-  const hasCatalog = catalogPacks.length > 0;
-  const live   = catalogPacks.find(p => p.id === 'production-live');
-  const repoOk = catalogPacks.filter(p => p.id !== 'production-live');
-  const defaultA = repoOk[0]?.id || catalogPacks[0]?.id || '';
-  const defaultB = live?.id || repoOk[1]?.id || defaultA;
-  const catalogOptions = catalogPacks
-    .map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')} · ${escapeHtml(p.criticality || '?')}</option>`).join('');
+
+  // Premium fintech-grade home. The previous draft was functional but
+  // crude — eyebrow numbering, four widget boxes, textbook-internal
+  // tone. This redesign assumes a sophisticated audience: confident
+  // serif headline, single primary action (URL already filled in, just
+  // hit Connect), capability surface presented as an executive summary
+  // not a dashboard. Auth + manual paths still reachable but quiet.
+  const mcpUrl = (() => {
+    try { return localStorage.getItem('mcpUrl') || DEFAULT_MCP_URL; }
+    catch (_) { return DEFAULT_MCP_URL; }
+  })();
 
   view.innerHTML = `
     <section class="home-hero">
-      <h2 class="home-hero-title"><em>What do you want to do?</em></h2>
+      <div class="home-hero-eyebrow">canonical observability · spec v1.2</div>
+      <h2 class="home-hero-title">Map your observability platform in seconds.</h2>
       <p class="home-hero-lede">
-        The studio starts empty. Open a pack from disk — drop a YAML/JSON,
-        crawl your service repo, or draft from a live MCP — then analyze it
-        on its own or compare two side by side (typically repo vs live).
+        Connect to any OpenTelemetry MCP server. The studio interrogates it
+        for backends, topology, baselines, and anomalies — and renders a
+        complete, conformant canonical v1.2 manifest you can compile and
+        deploy.
       </p>
 
-      <div class="home-cards">
-        <!-- Analyze a single pack -->
-        <article class="home-card home-card-analyze">
-          <header class="home-card-head">
-            <span class="home-card-num">①</span>
-            <h3>Analyze a pack</h3>
-          </header>
-          <p>Open one canonical v1.2 pack — score its conformance, browse its
-             layers, compile it to native artefacts, deploy.</p>
-          <div class="home-card-shortcuts home-card-shortcuts-primary">
-            <button id="home-shortcut-upload" type="button" class="home-shortcut home-shortcut-primary">
-              <span class="home-shortcut-key">▤</span>
-              <span><strong>Upload a YAML / JSON pack</strong><br><em>drop a file, or pick from disk</em></span>
-            </button>
-            <button id="home-shortcut-crawl"  type="button" class="home-shortcut">
-              <span class="home-shortcut-key">↻</span>
-              <span><strong>New from repo</strong> <em>(Path A · crawler)</em></span>
-            </button>
-            <button id="home-shortcut-live"   type="button" class="home-shortcut">
-              <span class="home-shortcut-key">○</span>
-              <span><strong>New from live MCP</strong> <em>(Path B)</em></span>
-            </button>
-          </div>
-          ${hasCatalog ? `
-            <div class="home-card-divider"><span>or reopen a recent pack</span></div>
-            <div class="home-card-form">
-              <label class="home-card-field">
-                <span class="home-card-key">Pack</span>
-                <select id="home-analyze-pack">
-                  <option value="">— pick from catalog —</option>
-                  ${catalogOptions}
-                </select>
-              </label>
-              <button id="home-analyze-go" type="button" class="home-card-cta" disabled>Open →</button>
-            </div>` : ''}
-        </article>
+      <div class="home-mcp-card">
+        <label class="home-mcp-url-row">
+          <span class="home-mcp-url-label">MCP endpoint</span>
+          <input id="home-mcp-url" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(mcpUrl)}">
+        </label>
+        <div class="home-mcp-actions">
+          <button id="home-mcp-connect" type="button" class="home-mcp-connect-btn">
+            <span class="home-mcp-connect-label">Connect</span>
+            <span class="home-mcp-connect-arrow" aria-hidden="true">→</span>
+          </button>
+          <button id="home-mcp-advanced-toggle" type="button" class="home-mcp-advanced-toggle" aria-expanded="false">
+            Advanced
+          </button>
+          <span id="home-mcp-status" class="home-mcp-status"></span>
+        </div>
+        <div id="home-mcp-advanced" class="home-mcp-advanced" hidden>
+          <label class="home-mcp-field">
+            <span class="home-mcp-key">Auth token <em>not persisted</em></span>
+            <input id="home-mcp-auth" type="password" placeholder="bearer" autocomplete="off">
+          </label>
+        </div>
 
-        <!-- Compare two packs -->
-        <article class="home-card home-card-compare">
-          <header class="home-card-head">
-            <span class="home-card-num">②</span>
-            <h3>Compare two packs</h3>
-          </header>
-          <p>Diff <em>repo vs live</em>, declared vs observed. See gaps,
-             drift, and unverified declarations in context.</p>
-          ${hasCatalog && catalogPacks.length >= 2 ? `
-            <div class="home-card-form">
-              <label class="home-card-field">
-                <span class="home-card-key">PACK A <em>(typically the repo-derived draft)</em></span>
-                <select id="home-compare-a">${catalogOptions}</select>
-              </label>
-              <label class="home-card-field">
-                <span class="home-card-key">PACK B <em>(typically the live MCP snapshot)</em></span>
-                <select id="home-compare-b">${catalogOptions}</select>
-              </label>
-              <button id="home-compare-go" type="button" class="home-card-cta">Compare →</button>
-            </div>` : `
-            <p class="home-card-hint home-card-empty">
-              <em>Open at least two packs first — upload, crawl, or draft from a live MCP.
-              You'll be able to compare them once both are loaded.</em>
-            </p>`}
-        </article>
+        <!-- Capabilities surface here once the MCP responds. -->
+        <div id="home-mcp-capabilities" class="home-mcp-capabilities" hidden></div>
+
+        <div id="home-mcp-adopt-bar" class="home-mcp-adopt-bar" hidden>
+          <button id="home-mcp-adopt" type="button" class="home-mcp-adopt-btn">
+            <span class="home-mcp-adopt-title">Render the manifest</span>
+            <span class="home-mcp-adopt-sub" id="home-mcp-adopt-hint">canonical v1.2 · ready to compile and deploy</span>
+          </button>
+        </div>
       </div>
 
-      <!-- Browse archived examples -->
-      <details class="home-examples" id="home-examples-details">
-        <summary>Browse archived reference packs <span class="home-examples-count" id="home-examples-count">(checking…)</span></summary>
-        <p class="home-examples-lede">
-          Five reference packs shipped with the studio for demos and as
-          conformance benchmarks. Click one to open it like any other pack.
-        </p>
-        <div class="home-examples-list" id="home-examples-list">
-          <div class="placeholder">Loading examples…</div>
+      <div class="home-alt">
+        <div class="home-alt-head"><span>or open a pack manually</span></div>
+        <div class="home-alt-buttons">
+          <button id="home-shortcut-upload" type="button" class="home-alt-btn">
+            <span class="home-alt-key" aria-hidden="true">▤</span>
+            <span class="home-alt-label">Drop a YAML / JSON pack</span>
+            <span class="home-alt-sub">canonical v1.2 manifest</span>
+          </button>
+          <button id="home-shortcut-crawl" type="button" class="home-alt-btn">
+            <span class="home-alt-key" aria-hidden="true">↻</span>
+            <span class="home-alt-label">Crawl a service repo</span>
+            <span class="home-alt-sub">walks Prom / OTel / Grafana / AM configs</span>
+          </button>
         </div>
-      </details>
+      </div>
     </section>
   `;
 
-  // Wire catalog-driven controls (only present when catalog is non-empty)
-  const analyzeSel = $('#home-analyze-pack');
-  const analyzeGo  = $('#home-analyze-go');
-  if (analyzeSel && analyzeGo) {
-    analyzeSel.onchange = () => { analyzeGo.disabled = !analyzeSel.value; };
-    analyzeGo.onclick = () => enterAnalyzeMode(analyzeSel.value);
-  }
-  const compA = $('#home-compare-a');
-  const compB = $('#home-compare-b');
-  const compGo = $('#home-compare-go');
-  if (compA && compB && compGo) {
-    if (defaultA) compA.value = defaultA;
-    if (defaultB) compB.value = defaultB;
-    compGo.onclick = () => {
-      if (!compA.value || !compB.value || compA.value === compB.value) return;
-      enterCompareMode(compA.value, defaultEnvFor(compA.value), compB.value, defaultEnvFor(compB.value));
-    };
-  }
-
-  // Creation shortcuts — open the existing modals
+  $('#home-mcp-connect').onclick = () => doHomeMcpConnect();
+  $('#home-mcp-url').onkeydown = (e) => { if (e.key === 'Enter') doHomeMcpConnect(); };
+  $('#home-mcp-advanced-toggle').onclick = () => {
+    const adv = $('#home-mcp-advanced');
+    const tog = $('#home-mcp-advanced-toggle');
+    const shown = adv.hidden;
+    adv.hidden = !shown;
+    tog.setAttribute('aria-expanded', String(shown));
+    if (shown) $('#home-mcp-auth')?.focus();
+  };
   $('#home-shortcut-upload').onclick = () => $('#upload-btn')?.click();
   $('#home-shortcut-crawl').onclick  = () => $('#crawl-btn')?.click();
-  $('#home-shortcut-live').onclick   = () => $('#draft-mcp-btn')?.click();
+}
 
-  // Examples list — fetched lazily so an empty catalog doesn't block paint.
-  loadAndRenderHomeExamples();
+async function doHomeMcpConnect() {
+  const urlInput  = $('#home-mcp-url');
+  const authInput = $('#home-mcp-auth');
+  const statusEl  = $('#home-mcp-status');
+  const goBtn     = $('#home-mcp-connect');
+  const capEl     = $('#home-mcp-capabilities');
+  const adoptBar  = $('#home-mcp-adopt-bar');
+  if (!urlInput || !statusEl) return;
+
+  const url  = urlInput.value.trim();
+  const auth = authInput?.value || '';
+  if (!url) {
+    statusEl.textContent = 'enter your MCP URL first';
+    statusEl.className = 'home-mcp-status is-error';
+    return;
+  }
+  try { localStorage.setItem('mcpUrl', url); } catch (_) {}
+
+  goBtn.disabled = true;
+  statusEl.textContent = 'contacting MCP…';
+  statusEl.className = 'home-mcp-status is-pending';
+  capEl.hidden = true;
+  adoptBar.hidden = true;
+
+  try {
+    const r = await fetch('/api/draft-from-mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
+    });
+    const ct = r.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      throw new Error(`server returned ${r.status} ${ct || 'no content-type'}`);
+    }
+    const out = await r.json();
+    if (!out.ok) throw new Error(out.error || 'MCP draft failed');
+    draftMcpState.lastResult = out;
+
+    statusEl.textContent = `connected · ${out.summary.discovered.backends} backend(s) · ${out.tookMs}ms`;
+    statusEl.className = 'home-mcp-status is-ok';
+
+    renderHomeMcpCapabilities(out, capEl);
+    capEl.hidden = false;
+    adoptBar.hidden = false;
+
+    const hint = $('#home-mcp-adopt-hint');
+    if (hint) hint.textContent = out.canonical?.metadata?.name
+      ? `pack name: ${out.canonical.metadata.name}` : '';
+
+    $('#home-mcp-adopt').onclick = () => adoptDraftFromMcpResult();
+  } catch (e) {
+    statusEl.textContent = `error: ${e.message}`;
+    statusEl.className = 'home-mcp-status is-error';
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+function renderHomeMcpCapabilities(out, host) {
+  const s = out.summary?.discovered || {};
+  const ann = out.annotations || {};
+  const tools = (ann['mcp.toolsCalled'] || '').split(',').filter(Boolean);
+  const failed = (ann['mcp.toolsFailed'] || '').split(',').filter(Boolean);
+  const services = (ann['mcp.servicesDiscovered'] || '').split(',').filter(Boolean);
+  const baselines = parseInt(ann['mcp.baselinesComputed'] || '0', 10);
+  const anomalies = parseInt(ann['mcp.activeAnomalies'] || '0', 10);
+  const backends = s.backends ?? 0;
+
+  // Recognised vs unrecognised tools. Surfacing this honestly is part
+  // of the studio's integrity story.
+  const knownTools = new Set([
+    'system_health', 'system_topology',
+    'anomalies_active', 'anomalies_baselines',
+    'zk_stats', 'zk_solvency',
+  ]);
+  const recognised   = tools.filter(t => knownTools.has(t));
+  const unrecognised = tools.filter(t => !knownTools.has(t));
+  const mcpHost = (() => {
+    try { return new URL(out.summary?.mcpUrl || '').host || 'mcp'; }
+    catch (_) { return 'mcp'; }
+  })();
+
+  // Four-card grid: each capability owns its own card with detail
+  // content inside. Connection status sits above as a pulse-dot line.
+  // Styling kept from the premium pass (subtle borders, serif numbers,
+  // ink-tone accents) but the per-card content is back so the user can
+  // SEE which tools were called, which services were discovered, etc.
+  host.innerHTML = `
+    <div class="home-mcp-report">
+      <div class="home-mcp-report-head">
+        <span class="home-mcp-report-dot" aria-hidden="true"></span>
+        Connected to <strong>${escapeHtml(mcpHost)}</strong>${out.tookMs ? ` <span class="home-mcp-report-meta">· ${out.tookMs}ms</span>` : ''}
+      </div>
+      <div class="home-mcp-cap-grid">
+        <div class="home-mcp-cap" data-cap="tools">
+          <div class="home-mcp-cap-num">${tools.length}</div>
+          <div class="home-mcp-cap-key">tools called</div>
+          <div class="home-mcp-cap-detail">${recognised.length ? recognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ') : '<em>unrecognised set</em>'}</div>
+          ${unrecognised.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-unknown">+${unrecognised.length} unrecognised: ${unrecognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
+          ${failed.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-fail">⚠ failed: ${failed.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
+        </div>
+        <div class="home-mcp-cap" data-cap="services">
+          <div class="home-mcp-cap-num">${services.length}</div>
+          <div class="home-mcp-cap-key">services discovered</div>
+          <div class="home-mcp-cap-detail">${services.length ? services.slice(0, 6).map(s => `<code>${escapeHtml(s)}</code>`).join(' ') + (services.length > 6 ? `<div class="home-mcp-cap-more">+${services.length - 6} more</div>` : '') : '<em>none</em>'}</div>
+        </div>
+        <div class="home-mcp-cap" data-cap="backends">
+          <div class="home-mcp-cap-num">${backends}</div>
+          <div class="home-mcp-cap-key">backends inferred</div>
+          <div class="home-mcp-cap-detail">${backends ? 'metrics / logs / traces<div class="home-mcp-cap-meta">pipelines inferred from topology</div>' : '<em>none observed</em>'}</div>
+        </div>
+        <div class="home-mcp-cap" data-cap="anomalies">
+          <div class="home-mcp-cap-num">${anomalies}</div>
+          <div class="home-mcp-cap-key">active anomalies</div>
+          <div class="home-mcp-cap-detail">${baselines} baseline${baselines === 1 ? '' : 's'} computed<div class="home-mcp-cap-meta">from recent telemetry</div></div>
+        </div>
+      </div>
+      ${out.summary?.warnings?.length ? `
+        <div class="home-mcp-gaps">
+          <div class="home-mcp-gaps-head">⚠ Honest gaps</div>
+          <ul>${out.summary.warnings.slice(0, 5).map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul>
+        </div>` : ''}
+    </div>
+  `;
 }
 
 async function loadAndCacheExamples() {
@@ -3755,47 +3924,12 @@ async function loadAndCacheExamples() {
   return state._examplesCache;
 }
 
-async function loadAndRenderHomeExamples() {
-  try {
-    const r = await api('/api/examples');
-    const examples = r.examples || [];
-    // Cache for openExampleAsPack so it can populate state.catalog with
-    // the same catalog-entry shape (label/version/criticality/etc.) that
-    // /api/packs returns — not the adapted-pack shape.
-    state._examplesCache = examples;
-    $('#home-examples-count').textContent = `(${examples.length})`;
-    $('#home-examples-list').innerHTML = examples.length
-      ? examples.map(e => `
-          <button type="button" class="home-example-row" data-id="${escapeHtml(e.id)}" title="${escapeHtml(e.description || '')}">
-            <span class="home-example-name">${escapeHtml(e.label)}</span>
-            <span class="home-example-meta">v${escapeHtml(e.version || '?')} · ${escapeHtml(e.criticality || '?')}</span>
-            <span class="home-example-desc">${escapeHtml(e.description || '')}</span>
-          </button>`).join('')
-      : '<div class="placeholder">No archived examples available.</div>';
-    $('#home-examples-list').querySelectorAll('.home-example-row').forEach(b => {
-      b.onclick = () => openExampleAsPack(b.dataset.id);
-    });
-  } catch (e) {
-    $('#home-examples-list').innerHTML = `<div class="error">Could not load examples: ${escapeHtml(e.message)}</div>`;
-  }
-}
-
-async function openExampleAsPack(exampleId) {
-  // The server's /api/packs/:id/* routes look up examples via
-  // findPackMeta(), so we can just enter Analyze mode against the
-  // example id directly. We do need to inject the example into
-  // state.catalog so the pack-select dropdown + the catalog-entry
-  // resolver have a label to display.
-  state.catalog = state.catalog || [];
-  const cached = (state._examplesCache || []).find(p => p.id === exampleId);
-  if (!cached) {
-    toast(`Example not found: ${exampleId}`, 'error');
-    return;
-  }
-  const exists = state.catalog.find(p => p.id === exampleId);
-  if (!exists) state.catalog.push(cached);
-  enterAnalyzeMode(exampleId);
-}
+// loadAndRenderHomeExamples + openExampleAsPack lived here until the
+// home-screen redesign — they powered the "Browse archived reference
+// packs" disclosure. Dropped now that the home screen is just the
+// drop-zone affordance + 3 input buttons; example packs are still
+// reachable as Pack B options (loadAndCacheExamples populates them in
+// the picker) but no longer surface on the empty start screen.
 
 $('#drawer-close').onclick   = () => closeDrawer('b');
 $('#drawer-a-close').onclick = () => closeDrawer('a');

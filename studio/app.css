@@ -208,7 +208,14 @@ a:hover { color: var(--ink); }
   color: var(--ink-4);
   margin-top: 6px;
 }
-.hdr-controls { display: flex; gap: 14px; align-items: center; }
+.hdr-controls {
+  display: flex; gap: 14px; align-items: center;
+  /* Wrap when the row would push past the viewport. PACK A + ENV A +
+     PACK B + ENV B + UPLOAD + NEW FROM REPO + NEW FROM LIVE + MCP +
+     THEME + RESET + API is wider than 1080px on most desktops. */
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
 .ctrl {
   display: inline-flex; align-items: center; gap: 8px;
   border: 1px solid var(--line);
@@ -262,6 +269,15 @@ a:hover { color: var(--ink); }
   padding: 8px 10px; cursor: pointer;
 }
 .ctrl-btn:hover { color: var(--ink); border-color: var(--ink-3); background: var(--hover); }
+/* RESET — visually quieter than the primary actions but unmistakably
+   destructive on hover, so a misclick gives a visible warning before
+   the confirm dialog. */
+.ctrl-reset { color: var(--ink-4); }
+.ctrl-reset:hover {
+  color: var(--src-Missing, #DC2626);
+  border-color: var(--src-Missing, #DC2626);
+  background: var(--fail-bg);
+}
 
 /* MCP button + dot + age */
 .mcp-btn { display: inline-flex; align-items: center; gap: 6px; }
@@ -1987,226 +2003,367 @@ body[data-mode="home"] .meta { display: none; }
 body[data-mode="home"] .tabs { display: none; }
 body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
 
+/* ===================== HOME — PREMIUM FINTECH ===================== */
 .home-hero {
-  max-width: 1080px;
-  margin: 32px auto;
-  padding: 0 24px;
+  max-width: 780px;
+  margin: 64px auto 48px;
+  padding: 0 28px;
+}
+.home-hero-eyebrow {
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 18px;
 }
 .home-hero-title {
-  margin: 0 0 8px;
-  font: 600 28px/1.2 var(--serif);
-  font-style: italic;
+  margin: 0 0 16px;
+  font: 500 40px/1.1 var(--serif);
+  letter-spacing: -0.012em;
   color: var(--ink);
+  max-width: 640px;
 }
 .home-hero-lede {
-  margin: 0 0 28px;
-  font: 14px/1.6 var(--serif);
+  margin: 0 0 36px;
+  font: 16px/1.55 var(--serif);
   color: var(--ink-3);
-  max-width: 720px;
+  max-width: 620px;
 }
-.home-cards {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 22px;
-}
-.home-card {
+
+/* MCP connect card — quietly premium. Subtle border, generous internal
+   spacing, no heavy color. The headline action is the Connect button. */
+.home-mcp-card {
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  padding: 22px 22px 18px;
-  display: flex; flex-direction: column; gap: 12px;
-  box-shadow: 0 1px 2px rgba(15,27,45,0.04);
-  transition: border-color 180ms ease, box-shadow 180ms ease;
+  border-radius: 14px;
+  padding: 28px 32px 24px;
+  margin-bottom: 28px;
+  box-shadow: 0 2px 8px -2px rgba(15,27,45,0.06), 0 1px 2px rgba(15,27,45,0.04);
 }
-.home-card:hover {
-  border-color: var(--CMP);
-  box-shadow: 0 6px 16px -4px rgba(15,27,45,0.10);
+.home-mcp-url-row {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-bottom: 14px;
 }
-.home-card-analyze { border-top: 4px solid var(--L1); }
-.home-card-compare { border-top: 4px solid var(--CMP); }
-.home-card-head {
-  display: flex; align-items: baseline; gap: 12px;
-}
-.home-card-num {
-  font: 700 24px/1 var(--serif);
-  color: var(--ink-4);
-}
-.home-card-analyze .home-card-num { color: var(--L1); }
-.home-card-compare .home-card-num { color: var(--CMP); }
-.home-card-head h3 {
-  margin: 0;
-  font: 600 18px/1.2 var(--serif);
-  color: var(--ink);
-}
-.home-card > p {
-  margin: 0;
-  font: 13.5px/1.55 var(--serif);
-  color: var(--ink-3);
-}
-.home-card > p em { font-style: italic; }
-.home-card-form {
-  display: flex; flex-direction: column; gap: 10px;
-  margin-top: 4px;
-}
-.home-card-field {
-  display: flex; flex-direction: column; gap: 4px;
-}
-.home-card-key {
-  font: 500 10px/1.3 var(--mono);
-  letter-spacing: 0.08em;
+.home-mcp-url-label {
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ink-4);
 }
-.home-card-key em { font-style: italic; color: var(--ink-5); }
-.home-card-form select {
-  padding: 8px 10px;
+.home-mcp-url-row input {
+  width: 100%;
+  padding: 14px 16px;
+  font: 14.5px/1.3 var(--mono);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  letter-spacing: -0.005em;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.home-mcp-url-row input:hover  { border-color: var(--ink-4); }
+.home-mcp-url-row input:focus  {
+  outline: none;
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(15,27,45,0.08);
+}
+.home-mcp-actions {
+  display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap;
+}
+.home-mcp-connect-btn {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 12px 24px;
+  font: 600 14.5px/1.2 var(--sans);
+  letter-spacing: 0.005em;
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--ink);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: filter 120ms ease, transform 80ms ease, box-shadow 120ms ease;
+  box-shadow: 0 1px 2px rgba(15,27,45,0.10);
+}
+.home-mcp-connect-btn:hover {
+  filter: brightness(1.15);
+  box-shadow: 0 4px 10px -2px rgba(15,27,45,0.20);
+  transform: translateY(-1px);
+}
+.home-mcp-connect-btn:active { transform: translateY(0); filter: brightness(1); }
+.home-mcp-connect-btn:disabled {
+  opacity: 0.55;
+  cursor: progress;
+  box-shadow: none;
+  transform: none;
+}
+.home-mcp-connect-label { font-weight: 600; }
+.home-mcp-connect-arrow { font-weight: 500; opacity: 0.9; }
+.home-mcp-advanced-toggle {
+  padding: 12px 14px;
+  font: 13px/1.2 var(--sans);
+  background: transparent;
+  border: none;
+  color: var(--ink-4);
+  cursor: pointer;
+  letter-spacing: 0.01em;
+}
+.home-mcp-advanced-toggle:hover { color: var(--ink); text-decoration: underline; }
+.home-mcp-advanced-toggle[aria-expanded="true"] { color: var(--ink); }
+.home-mcp-status {
+  font: 13px/1.35 var(--sans);
+  color: var(--ink-3);
+  margin-left: auto;
+}
+.home-mcp-status.is-pending { color: var(--ink-4); font-style: italic; }
+.home-mcp-status.is-ok      { color: var(--BLD); }
+.home-mcp-status.is-error   { color: var(--src-Missing, #DC2626); }
+
+.home-mcp-advanced {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-2);
+}
+.home-mcp-field {
+  display: flex; flex-direction: column; gap: 6px;
+  max-width: 420px;
+}
+.home-mcp-key {
+  font: 500 10px/1.3 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.home-mcp-key em { font-style: italic; color: var(--ink-5); text-transform: none; }
+.home-mcp-field input {
+  padding: 10px 12px;
   font: 13px/1.4 var(--mono);
   background: var(--paper);
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  border-radius: 6px;
   color: var(--ink);
 }
-.home-card-form select:focus {
-  outline: 2px solid var(--CMP); outline-offset: 1px;
-  border-color: var(--CMP);
+.home-mcp-field input:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px rgba(15,27,45,0.08); }
+
+/* Capabilities — executive-summary report, not widget grid. */
+.home-mcp-capabilities[hidden] { display: none; }
+.home-mcp-report {
+  margin-top: 24px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line-2);
 }
-.home-card-cta {
-  margin-top: 8px;
-  padding: 10px 16px;
-  font: 600 13.5px/1.3 var(--sans);
-  letter-spacing: 0.02em;
-  background: var(--CMP);
-  color: var(--paper);
-  border: 1px solid var(--CMP);
-  border-radius: var(--r-md);
-  cursor: pointer;
-}
-.home-card-analyze .home-card-cta { background: var(--L1); border-color: var(--L1); }
-.home-card-cta:hover { filter: brightness(0.9); }
-.home-card-cta:disabled {
-  background: var(--ink-5); border-color: var(--ink-5);
-  cursor: not-allowed; opacity: 0.5;
-}
-.home-card-divider {
-  display: flex; align-items: center; gap: 8px;
-  margin-top: 10px;
-}
-.home-card-divider::before, .home-card-divider::after {
-  content: ''; flex: 1;
-  height: 1px; background: var(--line);
-}
-.home-card-divider span {
-  font: italic 11px/1.4 var(--serif);
-  color: var(--ink-4);
-}
-.home-card-shortcuts {
-  display: flex; flex-direction: column; gap: 6px;
-}
-.home-shortcut {
+.home-mcp-report-head {
   display: flex; align-items: center; gap: 10px;
-  width: 100%;
-  padding: 8px 12px;
+  font: 14px/1.4 var(--sans);
+  color: var(--ink-3);
+  margin-bottom: 22px;
+}
+.home-mcp-report-head strong { color: var(--ink); font-weight: 600; }
+.home-mcp-report-meta { color: var(--ink-4); font-size: 12px; }
+.home-mcp-report-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--BLD);
+  box-shadow: 0 0 0 4px rgba(4,120,87,0.15);
+}
+/* Four-card capability grid. Each card owns its content — tools card
+   shows recognised + unrecognised + failed chips, services shows the
+   actual service names, backends explains the signal classes,
+   anomalies pairs the count with baseline context. Subtle left-border
+   accents per category but the rest stays neutral. */
+.home-mcp-cap-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+.home-mcp-cap {
+  padding: 16px 16px 14px;
   background: var(--paper);
   border: 1px solid var(--line-2);
-  border-radius: var(--r-sm);
-  text-align: left;
-  color: var(--ink);
-  cursor: pointer;
-  font: 12.5px/1.4 var(--sans);
+  border-left: 3px solid var(--ink-4);
+  border-radius: 8px;
+  transition: border-color 120ms ease;
 }
-.home-shortcut:hover { border-color: var(--L1); background: var(--L1-tint); }
-.home-shortcut-key {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px;
-  font: 12px/1 var(--mono);
+.home-mcp-cap[data-cap="tools"]     { border-left-color: var(--L2); }
+.home-mcp-cap[data-cap="services"]  { border-left-color: var(--BLD); }
+.home-mcp-cap[data-cap="backends"]  { border-left-color: var(--ATL); }
+.home-mcp-cap[data-cap="anomalies"] { border-left-color: var(--L4); }
+.home-mcp-cap-num {
+  font: 500 34px/1 var(--serif);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.015em;
+  margin-bottom: 6px;
+}
+.home-mcp-cap-key {
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 12px;
+}
+.home-mcp-cap-detail {
+  font: 12.5px/1.6 var(--sans);
+  color: var(--ink-3);
+  word-break: break-word;
+}
+.home-mcp-cap-detail code {
+  display: inline-block;
+  font: 11px/1.3 var(--mono);
   background: var(--card);
   border: 1px solid var(--line-2);
-  border-radius: var(--r-sm);
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin: 2px 2px 2px 0;
   color: var(--ink-3);
 }
-.home-shortcut em { font: italic 11px/1.4 var(--serif); color: var(--ink-4); margin-left: 4px; }
-.home-card-hint {
-  font: italic 12px/1.5 var(--serif);
+.home-mcp-cap-detail em { font-style: italic; color: var(--ink-5); }
+.home-mcp-cap-detail-unknown {
   color: var(--ink-4);
-  margin: 6px 0 0;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line-2);
+  font-size: 11.5px;
 }
-.link-btn {
-  background: none; border: none; padding: 0;
-  color: var(--CMP);
-  text-decoration: underline;
+.home-mcp-cap-detail-fail {
+  color: var(--src-Missing, #DC2626);
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line-2);
+  font-size: 11.5px;
+}
+.home-mcp-cap-more {
+  margin-top: 4px;
+  font: italic 11.5px/1.4 var(--serif);
+  color: var(--ink-4);
+}
+.home-mcp-cap-meta {
+  margin-top: 4px;
+  font: italic 11.5px/1.4 var(--serif);
+  color: var(--ink-4);
+}
+
+.home-mcp-gaps {
+  margin-top: 18px;
+  padding: 14px 18px;
+  background: var(--warn-bg);
+  border-left: 3px solid var(--CONF);
+  border-radius: 4px;
+}
+.home-mcp-gaps-head {
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--CONF-text);
+  margin-bottom: 8px;
+}
+.home-mcp-gaps ul {
+  margin: 0; padding-left: 18px;
+  font: 13px/1.55 var(--serif);
+  color: var(--ink-3);
+}
+
+/* Adopt CTA — visually distinguished from Connect by being green (BLD)
+   so the user understands these are two different actions. */
+.home-mcp-adopt-bar[hidden] { display: none; }
+.home-mcp-adopt-bar {
+  margin-top: 22px;
+}
+.home-mcp-adopt-btn {
+  display: flex; flex-direction: column; align-items: flex-start;
+  width: 100%;
+  padding: 18px 24px;
+  background: var(--BLD);
+  color: var(--paper);
+  border: 1px solid var(--BLD);
+  border-radius: 10px;
   cursor: pointer;
-  font: inherit;
+  text-align: left;
+  transition: filter 120ms ease, transform 80ms ease, box-shadow 120ms ease;
+  box-shadow: 0 2px 8px -2px rgba(4,120,87,0.30);
+}
+.home-mcp-adopt-btn:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px -4px rgba(4,120,87,0.40);
+}
+.home-mcp-adopt-btn:active { transform: translateY(0); }
+.home-mcp-adopt-title {
+  font: 600 16px/1.2 var(--sans);
+  letter-spacing: 0.005em;
+  margin-bottom: 3px;
+}
+.home-mcp-adopt-sub {
+  font: 12.5px/1.3 var(--sans);
+  opacity: 0.85;
+  letter-spacing: 0.005em;
+}
+
+/* Manual alternatives — secondary to the MCP card above, but still
+   visually substantial. Italic-serif rule-divided heading + two equal
+   buttons with an icon, sans-label, and italic-serif subtitle. */
+.home-alt {
+  margin-top: 32px;
+}
+.home-alt-head {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 14px;
+}
+.home-alt-head::before, .home-alt-head::after {
+  content: ''; flex: 1;
+  height: 1px; background: var(--line-2);
+}
+.home-alt-head span {
+  font: italic 12px/1.4 var(--serif);
+  color: var(--ink-4);
+}
+.home-alt-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.home-alt-btn {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.home-alt-btn:hover {
+  border-color: var(--ink-4);
+  background: var(--hover);
+}
+.home-alt-key {
+  font: 600 14px/1 var(--mono);
+  color: var(--ink-4);
+}
+.home-alt-label {
+  font: 600 13px/1.3 var(--sans);
+  color: var(--ink);
+}
+.home-alt-sub {
+  font: italic 11.5px/1.4 var(--serif);
+  color: var(--ink-4);
 }
 
 .hdr-brand h1 { transition: color 150ms ease; }
 .hdr-brand h1:hover { color: var(--CMP); }
 
-.home-card-shortcuts-primary { margin-top: 4px; }
-.home-shortcut-primary {
-  border-color: var(--L1);
-  background: var(--L1-tint);
+@media (max-width: 920px) {
+  .home-mcp-cap-grid { grid-template-columns: 1fr 1fr; }
 }
-.home-shortcut-primary strong { color: var(--L1); font-weight: 700; }
-.home-shortcut strong { font-weight: 600; }
-.home-card-empty {
-  background: var(--code-bg);
-  border: 1px dashed var(--line-2);
-  padding: 12px 14px;
-  border-radius: var(--r-md);
-}
-
-/* Archived examples disclosure */
-.home-examples {
-  margin-top: 28px;
-  padding: 16px 22px;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-}
-.home-examples summary {
-  cursor: pointer;
-  font: 600 13px/1.3 var(--sans);
-  color: var(--ink-3);
-  user-select: none;
-}
-.home-examples summary:hover { color: var(--ink); }
-.home-examples-count {
-  font: 11px/1.3 var(--mono);
-  color: var(--ink-4);
-}
-.home-examples-lede {
-  margin: 10px 0 14px;
-  font: italic 12px/1.55 var(--serif);
-  color: var(--ink-4);
-}
-.home-examples-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 8px;
-}
-.home-example-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 4px 12px;
-  padding: 10px 12px;
-  background: var(--paper);
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-sm);
-  text-align: left;
-  color: var(--ink);
-  cursor: pointer;
-}
-.home-example-row:hover { border-color: var(--CMP); }
-.home-example-name { font: 500 13px/1.3 var(--serif); }
-.home-example-meta { font: 11px/1.3 var(--mono); color: var(--ink-4); }
-.home-example-desc {
-  grid-column: 1 / -1;
-  font: italic 11.5px/1.5 var(--serif);
-  color: var(--ink-4);
-}
-
-@media (max-width: 760px) {
-  .home-cards { grid-template-columns: 1fr; }
+@media (max-width: 720px) {
+  .home-hero { margin-top: 36px; padding: 0 20px; }
+  .home-hero-title { font-size: 30px; }
+  .home-hero-lede { font-size: 14.5px; }
+  .home-mcp-card { padding: 22px 20px 18px; }
+  .home-mcp-cap-grid { grid-template-columns: 1fr; }
+  .home-mcp-cap-num { font-size: 28px; }
+  .home-mcp-actions { flex-direction: column; align-items: stretch; }
+  .home-mcp-status { margin-left: 0; }
+  .home-alt-buttons { grid-template-columns: 1fr; }
 }
 
 /* ===================== COMPARE — SIDE-BY-SIDE (legacy) ===================== */

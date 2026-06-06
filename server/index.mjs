@@ -263,6 +263,16 @@ app.get('/healthz', (req, res) => {
   });
 });
 
+// Wipe in-memory uploaded / crawled / drafted packs. Used by the
+// studio's RESET button so the user can start truly fresh — the client
+// pairs this with a localStorage.clear() + reload. No body, no params.
+// Returns the number of entries dropped so the client can echo it.
+app.delete('/api/uploads', (req, res) => {
+  const dropped = UPLOADED_PACKS.size;
+  UPLOADED_PACKS.clear();
+  res.json({ ok: true, dropped });
+});
+
 app.get('/api/packs', (req, res) => {
   // Catalog + in-memory uploads. Uploaded packs lead the list so the
   // picker surfaces them at the top — they're the user's just-created
