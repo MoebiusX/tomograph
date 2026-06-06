@@ -684,8 +684,98 @@ a:hover { color: var(--ink); }
   background: var(--line); margin: 0 6px;
 }
 
-/* ===================== LAYER TABS ===================== */
+/* ============================================================
+   TWO-LEVEL NAV
+   Level 1 (.view-nav)    — primary view selector (Layers /
+                            Conformance / Compile / Atlas / Schema).
+   Level 2 (.layer-chips) — secondary layer filter (All / L1 / L2 /
+                            L2X / L3 / L4 / L5 / GOV) — only on
+                            Layers view.
+   Replaces the old single .tabs strip that crammed both jobs into
+   one horizontal row and ran out of space.
+   ============================================================ */
 .tabs {
+  display: flex; flex-direction: column;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+}
+.view-nav {
+  display: flex; gap: 4px;
+  padding: 8px 28px 0;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line-2);
+  overflow-x: auto;
+}
+.view-nav-btn {
+  position: relative;
+  padding: 10px 18px 12px;
+  font: 600 13px/1.2 var(--sans);
+  letter-spacing: 0.01em;
+  color: var(--ink-4);
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.view-nav-btn:hover { color: var(--ink); background: var(--hover); }
+.view-nav-btn.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--CMP);
+}
+.layer-chips {
+  display: flex; gap: 4px;
+  padding: 8px 28px;
+  background: var(--paper);
+  overflow-x: auto;
+}
+.layer-chips[hidden] { display: none; }
+.layer-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px;
+  font: 11.5px/1.3 var(--mono);
+  color: var(--ink-4);
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.layer-chip:hover { color: var(--ink); border-color: var(--ink-4); }
+.layer-chip.is-active {
+  color: var(--paper);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.layer-chip .lc-num {
+  font: 600 9.5px/1.2 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--code-bg);
+  color: var(--ink-3);
+}
+.layer-chip[data-layer="L1"]  .lc-num { background: var(--L1);  color: var(--paper); }
+.layer-chip[data-layer="L2"]  .lc-num { background: var(--L2);  color: var(--paper); }
+.layer-chip[data-layer="L2X"] .lc-num { background: var(--L2X); color: var(--paper); }
+.layer-chip[data-layer="L3"]  .lc-num { background: var(--L3);  color: var(--paper); }
+.layer-chip[data-layer="L4"]  .lc-num { background: var(--L4);  color: var(--paper); }
+.layer-chip[data-layer="L5"]  .lc-num { background: var(--L5);  color: var(--paper); }
+.layer-chip[data-layer="GOV"] .lc-num { background: var(--GOV); color: var(--paper); }
+.layer-chip.is-active .lc-num { background: var(--paper); color: var(--ink); }
+.layer-chip .lc-count {
+  font: 9.5px/1.2 var(--mono);
+  color: var(--ink-4);
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 999px;
+}
+.layer-chip.is-active .lc-count { background: var(--paper); color: var(--ink); }
+
+/* Legacy .tab selectors retained below for any code path still
+   rendering the single-row tabs (compile sub-controls, etc.) ----------- */
+.tabs-legacy-row {
   display: flex; gap: 0;
   padding: 0 28px;
   border-bottom: 1px solid var(--line);

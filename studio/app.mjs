@@ -43,6 +43,14 @@ const state = {
   pack: null,
   conformance: null,
   symbolTable: null,
+  // Primary view selector (top nav). One of: layers, conformance,
+  // compile, atlas, schema. Compare mode hides conformance + compile.
+  view: 'layers',
+  // Secondary layer filter chips (only visible on view='layers').
+  // 'all' stacks every layer; the layer ids narrow to one.
+  layerFilter: 'all',
+  // Legacy: kept for back-compat with code that still reads it
+  // (drawer card highlight on per-layer cards, etc.). Mirrors view.
   activeLayer: 'L1',
   activeCardKey: null,
   activeCardKeyA: null,        // side-A card highlight (compare view)
@@ -260,49 +268,109 @@ function layerArtefactCount(layerId) {
   return (layers[layerId] || []).length;
 }
 
+// ============================================================
+// Two-level navigation
+//
+// LEVEL 1 (primary view selector, top nav strip):
+//   Layers · Conformance · Compile · Atlas · Schema     (single mode)
+//   Layers · Atlas · Schema                              (compare mode)
+//
+// LEVEL 2 (layer filter chip strip, only visible on Layers view):
+//   All · L1 · L2 · L2X · L3 · L4 · L5 · GOV
+//
+// The previous design crammed everything in one row — layer tabs
+// L1..GOV mixed with the primary views CONF / BLD / CMP / ATL — which
+// meant filters fought primary navigation for screen space and the
+// user couldn't tell which was which. User feedback was unambiguous:
+// "filters are displayed mixed with the main Studio functions, that
+// you can't even see."
+// ============================================================
+
 function renderTabs() {
   const tabs = $('#layer-tabs');
+  if (!tabs) return;
   tabs.innerHTML = '';
-  for (const def of LAYER_DEFS) {
-    const count = layerArtefactCount(def.id);
-    if (def.id === 'L2X' && count === 0) continue;
-    tabs.appendChild(renderTab(def, count));
-  }
-  if (state.conformance) {
-    const def = CONFORMANCE_TAB;
-    const conf = state.conformance;
-    const label = `${conf.mustPercent}% MUST`;
-    tabs.appendChild(renderTab(def, label, true));
-  }
-  if (state.pack?.meta?.apiVersion) {
-    const shortLabel = (state.compileTarget || '').split('-')[0] || 'targets';
-    tabs.appendChild(renderTab(COMPILE_TAB, shortLabel, true));
-  }
-  if (state.catalog.filter(p => p.ok).length >= 2) {
-    const def = COMPARE_TAB;
-    // state.diff may be null (not yet loaded), {error: '...'} (fetch
-    // failed — e.g. stale dev server without /api/diff), or the real
-    // result. Guard against the error shape.
-    const sum = state.diff?.summary;
-    const label = sum ? `${sum.inBoth}/${sum.union}` : (state.diff?.error ? 'err' : 'pick');
-    tabs.appendChild(renderTab(def, label, true));
-    const aDef = ATLAS_TAB;
-    tabs.appendChild(renderTab(aDef, state.atlasVariant, true));
-  }
+  tabs.appendChild(renderPrimaryViewNav());
+  tabs.appendChild(renderLayerFilterChips());
 }
 
-function renderTab(def, countOrLabel, isMeta = false) {
-  const btn = document.createElement('button');
-  btn.className = 'tab' + (isMeta ? ' tab-meta' : '');
-  btn.dataset.layer = def.id;
-  btn.setAttribute('aria-selected', def.id === state.activeLayer ? 'true' : 'false');
-  btn.innerHTML = `
-    <span class="tab-num">${def.num}</span>
-    <span class="tab-name">${def.name}</span>
-    <span class="tab-count">${countOrLabel}</span>
-  `;
-  btn.onclick = () => { state.activeLayer = def.id; state.activeCardKey = null; renderTabs(); renderMainView(); };
-  return btn;
+function renderPrimaryViewNav() {
+  const nav = document.createElement('div');
+  nav.className = 'view-nav';
+
+  // Decide which views are available for the current mode.
+  const views = (state.mode === 'compare')
+    ? [
+        { id: 'layers',     label: 'Layers',     hint: 'Side-by-side per-layer comparison.' },
+        { id: 'atlas',      label: 'Atlas',      hint: 'Side-by-side atlas variants.' },
+        { id: 'schema',     label: 'Schema',     hint: 'Maturity rubric + spec compliance.' },
+      ]
+    : [
+        { id: 'layers',     label: 'Layers',     hint: 'Browse artefacts by layer (L1..GOV).' },
+        { id: 'conformance',label: 'Conformance',hint: 'Maturity rubric per tier with pass/fail.' },
+        { id: 'compile',    label: 'Compile',    hint: 'Per-artefact compilation to native platform format.' },
+        { id: 'atlas',      label: 'Atlas',      hint: 'Visualise the pack as Stratigraphy, Periodic, Constellation, Skyline, Transit, or Arbor.' },
+        { id: 'schema',     label: 'Schema',     hint: 'Maturity score + canonical schema view.' },
+      ];
+  const active = state.view || 'layers';
+
+  for (const v of views) {
+    const b = document.createElement('button');
+    b.className = 'view-nav-btn' + (v.id === active ? ' is-active' : '');
+    b.type = 'button';
+    b.title = v.hint;
+    b.textContent = v.label;
+    b.onclick = () => {
+      state.view = v.id;
+      // Mirror to activeLayer for legacy code paths.
+      state.activeLayer = ({ conformance: 'CONF', compile: 'COMPILE', atlas: 'ATLAS', schema: 'CONF', layers: state.layerFilter !== 'all' ? state.layerFilter : 'L1' })[v.id] || 'L1';
+      state.activeCardKey = null;
+      renderTabs();
+      renderMainView();
+    };
+    nav.appendChild(b);
+  }
+  return nav;
+}
+
+function renderLayerFilterChips() {
+  const wrap = document.createElement('div');
+  wrap.className = 'layer-chips';
+  // Only show layer filter chips on the Layers view.
+  if (state.view !== 'layers' && state.view !== undefined && state.view !== null) {
+    wrap.hidden = true;
+    return wrap;
+  }
+  // 'All' first, then each layer in order.
+  const filterOptions = [{ id: 'all', label: 'All', count: null }];
+  for (const def of LAYER_DEFS) {
+    const count = state.pack ? layerArtefactCount(def.id) : 0;
+    if (def.id === 'L2X' && count === 0 && state.mode === 'single') continue;
+    filterOptions.push({ id: def.id, label: def.id, name: def.name, count });
+  }
+  const active = state.layerFilter || 'all';
+  for (const opt of filterOptions) {
+    const c = document.createElement('button');
+    c.type = 'button';
+    c.className = 'layer-chip' + (opt.id === active ? ' is-active' : '');
+    c.dataset.layer = opt.id;
+    if (opt.name) c.title = `${opt.id} · ${opt.name}${opt.count != null ? ' · ' + opt.count + ' artefact' + (opt.count === 1 ? '' : 's') : ''}`;
+    c.innerHTML = `
+      ${opt.id === 'all' ? '' : `<span class="lc-num">${opt.id}</span>`}
+      <span class="lc-label">${escapeHtml(opt.id === 'all' ? 'All' : (opt.name || opt.id))}</span>
+      ${opt.count != null ? `<span class="lc-count">${opt.count}</span>` : ''}
+    `;
+    c.onclick = () => {
+      state.layerFilter = opt.id;
+      // Mirror to activeLayer for renderLayerView et al.
+      state.activeLayer = opt.id === 'all' ? 'L1' : opt.id;
+      state.activeCardKey = null;
+      renderTabs();
+      renderMainView();
+    };
+    wrap.appendChild(c);
+  }
+  return wrap;
 }
 
 // ---------- main view ----------
@@ -310,35 +378,55 @@ function renderTab(def, countOrLabel, isMeta = false) {
 function renderMainView() {
   const view = $('#layer-view');
   view.innerHTML = '';
+  if (state.mode === 'home') { renderHomeView(); return; }
   if (!state.pack) { view.innerHTML = '<div class="placeholder">Loading pack…</div>'; return; }
 
-  if (state.activeLayer === 'CONF') {
-    view.appendChild(renderConformanceView());
+  // Compare mode always renders the side-by-side compare view, with
+  // its own sub-views (Layers / Atlas / Schema) selected via the
+  // primary view nav above.
+  if (state.mode === 'compare') {
+    if (state.view === 'atlas')   { renderAtlasView(view); return; }
+    if (state.view === 'schema')  { view.appendChild(renderConformanceView()); return; }
+    renderCompareView(view);   // 'layers' (default)
     return;
   }
 
-  if (state.activeLayer === 'COMPILE') {
-    renderCompileView(view);
-    return;
+  // Single mode — dispatch on view.
+  switch (state.view) {
+    case 'conformance': view.appendChild(renderConformanceView()); return;
+    case 'compile':     renderCompileView(view); return;
+    case 'atlas':       renderAtlasView(view); return;
+    case 'schema':      view.appendChild(renderConformanceView()); return;
+    case 'layers':
+    default:
+      renderLayersView(view);
+      return;
   }
+}
 
-  if (state.activeLayer === 'COMPARE') {
-    renderCompareView(view);
-    return;
-  }
+// Layers view — stacks every layer when filter='all', narrows to one
+// otherwise. Replaces the old per-layer-tab navigation.
+function renderLayersView(view) {
+  const filter = state.layerFilter || 'all';
+  const layersToShow = (filter === 'all')
+    ? LAYER_DEFS
+    : LAYER_DEFS.filter(d => d.id === filter);
 
-  if (state.activeLayer === 'ATLAS') {
-    renderAtlasView(view);
-    return;
+  let rendered = 0;
+  for (const def of layersToShow) {
+    // Skip L2X if empty (it's optional per spec v1.2).
+    if (def.id === 'L2X' && layerArtefactCount('L2X') === 0) continue;
+    if (def.id === 'L4') {
+      renderLayer4(view);
+    } else {
+      const items = state.pack.layers[def.id] || [];
+      view.appendChild(renderSection(def, items));
+    }
+    rendered++;
   }
-
-  const def = LAYER_DEFS.find(d => d.id === state.activeLayer) || LAYER_DEFS[0];
-  if (def.id === 'L4') {
-    renderLayer4(view);
-    return;
+  if (rendered === 0) {
+    view.innerHTML = '<div class="placeholder">No artefacts on this layer.</div>';
   }
-  const items = state.pack.layers[def.id] || [];
-  view.appendChild(renderSection(def, items));
 }
 
 function renderSection(def, items, opts = {}) {
