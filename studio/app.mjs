@@ -6,6 +6,10 @@
 //   - Cross-reference checker (red border + drawer "broken refs" list).
 //   - Conformance tab (maturity rubric scoring per dimension).
 //   - File-upload + drag-and-drop UI for POST /api/validate.
+// Phase 7b adds the Compare tab (pack arithmetic).
+// Phase 7c adds the Atlas tab (6 SVG metaphors).
+
+import { render as renderAtlas, VARIANTS as ATLAS_VARIANTS, ATLAS_META } from './atlases.mjs';
 
 const LAYER_DEFS = [
   { id: 'L1',  num: 'L1',  name: 'Contract'   },
@@ -25,6 +29,7 @@ const L4_SUBGROUPS = [
 
 const CONFORMANCE_TAB = { id: 'CONF',    num: 'CONF', name: 'Conformance' };
 const COMPARE_TAB     = { id: 'COMPARE', num: 'CMP',  name: 'Compare' };
+const ATLAS_TAB       = { id: 'ATLAS',   num: 'ATL',  name: 'Atlas' };
 
 const state = {
   catalog: [],
@@ -39,6 +44,9 @@ const state = {
   compareBId: null,            // second pack id for the COMPARE view
   compareBEnv: null,
   diff: null,                  // last fetched /api/diff result
+  packB: null,                 // B's full layered pack (for atlases)
+  atlasVariant: 'strata',      // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit' | 'arbor'
+  atlasMorph: 0,               // 0..1 for the constellation slider
   mcpStatus: null,
 };
 
@@ -240,6 +248,8 @@ function renderTabs() {
     const def = COMPARE_TAB;
     const label = state.diff ? `${state.diff.summary.inBoth}/${state.diff.summary.union}` : 'pick';
     tabs.appendChild(renderTab(def, label, true));
+    const aDef = ATLAS_TAB;
+    tabs.appendChild(renderTab(aDef, state.atlasVariant, true));
   }
 }
 
@@ -271,6 +281,11 @@ function renderMainView() {
 
   if (state.activeLayer === 'COMPARE') {
     renderCompareView(view);
+    return;
+  }
+
+  if (state.activeLayer === 'ATLAS') {
+    renderAtlasView(view);
     return;
   }
 
@@ -509,6 +524,8 @@ async function loadDiff() {
 
 async function refreshDiff() {
   await loadDiff();
+  // Invalidate B's full layered pack so the atlas refetches.
+  state.packB = null;
   renderTabs();
   renderMainView();
 }
@@ -697,6 +714,109 @@ function renderCompareColumn(label, cls, items, def, inBothPairs = null) {
     col.appendChild(row);
   }
   return col;
+}
+
+// ---------- atlas view ----------
+
+async function loadPackB() {
+  if (!state.compareBId) { state.packB = null; return; }
+  const q = state.compareBEnv ? `?env=${encodeURIComponent(state.compareBEnv)}` : '';
+  state.packB = await api(`/api/packs/${encodeURIComponent(state.compareBId)}${q}`);
+}
+
+function renderAtlasView(view) {
+  if (!state.compareBId) state.compareBId = defaultCompareB();
+  if (!state.compareBEnv) state.compareBEnv = defaultEnvFor(state.compareBId);
+
+  if (!state.compareBId) {
+    view.innerHTML = '<div class="placeholder">Need at least two packs in the catalog to render an atlas.</div>';
+    return;
+  }
+
+  const section = document.createElement('section');
+  section.className = 'section atlas-view';
+  section.dataset.layer = 'ATLAS';
+
+  const meta = ATLAS_META[state.atlasVariant] || { title: state.atlasVariant, lede: '' };
+  const head = document.createElement('div');
+  head.className = 'section-head';
+  head.innerHTML = `
+    <span class="section-num">ATL</span>
+    <span class="section-name">${escapeHtml(meta.title)}</span>
+    <span class="section-count">${escapeHtml(state.atlasVariant)}</span>
+  `;
+  section.appendChild(head);
+
+  const sub = document.createElement('div');
+  sub.className = 'atlas-lede';
+  sub.textContent = meta.lede;
+  section.appendChild(sub);
+
+  // Variant selector pills
+  const pills = document.createElement('div');
+  pills.className = 'atlas-variants';
+  for (const v of ATLAS_VARIANTS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'atlas-variant' + (v === state.atlasVariant ? ' is-active' : '');
+    b.textContent = v;
+    b.onclick = () => {
+      state.atlasVariant = v;
+      renderTabs();
+      renderMainView();
+    };
+    pills.appendChild(b);
+  }
+  section.appendChild(pills);
+
+  // Pack-B + env-B + swap (same controls as compare view)
+  section.appendChild(renderComparePicker());
+
+  // Stage for SVG
+  const stage = document.createElement('div');
+  stage.className = 'atlas-stage';
+  section.appendChild(stage);
+
+  // Constellation gets a morph slider
+  if (state.atlasVariant === 'constellation') {
+    const tools = document.createElement('div');
+    tools.className = 'atlas-tools';
+    tools.innerHTML = `
+      <label class="atlas-morph">
+        <span class="ctrl-key">A → B</span>
+        <input type="range" min="0" max="100" value="${Math.round(state.atlasMorph * 100)}" id="atlas-morph">
+      </label>
+    `;
+    section.appendChild(tools);
+    setTimeout(() => {
+      const r = section.querySelector('#atlas-morph');
+      if (!r) return;
+      r.oninput = () => {
+        state.atlasMorph = Number(r.value) / 100;
+        renderAtlas(state.atlasVariant, stage, datasetFor(), { morph: state.atlasMorph });
+      };
+    }, 0);
+  }
+
+  view.appendChild(section);
+
+  // Render — fetch packB lazily if missing
+  const dataset = datasetFor();
+  if (!dataset.b) {
+    stage.innerHTML = '<div class="placeholder">Loading pack B…</div>';
+    Promise.all([
+      state.packB ? Promise.resolve() : loadPackB(),
+      state.diff  ? Promise.resolve() : loadDiff(),
+    ]).then(() => {
+      renderAtlas(state.atlasVariant, stage, datasetFor(), { morph: state.atlasMorph });
+    });
+  } else {
+    renderAtlas(state.atlasVariant, stage, dataset, { morph: state.atlasMorph });
+  }
+}
+
+function datasetFor() {
+  return { a: state.pack, b: state.packB, diff: state.diff };
 }
 
 // ---------- drawer ----------
