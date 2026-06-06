@@ -1,6 +1,9 @@
 name: pages
 
-# GitHub Pages deployment is currently disabled.
+# Publishes the landing page at repo root (index.html) to GitHub Pages.
+# The landing page is a static stand-in — it explains what the studio is,
+# how to run it locally, and links to the canonical spec. It does NOT
+# bundle the studio itself.
 #
 # Background: through Studio v0.2 the studio was a single static HTML file
 # with embedded JSON packs, which Pages could host fine. From Studio v0.3
@@ -11,16 +14,15 @@ name: pages
 #                                            validator + adapter and exposes
 #                                            /api/packs etc.
 #
-# A static Pages deploy can no longer serve a working studio. Re-enabling
-# would require either (a) a static-build target that bakes the adapted
-# pack JSON into the HTML, or (b) hosting the Node server on a real PaaS
-# (Render, Fly.io, etc.) and pointing Pages at a redirect.
-#
-# Until a deploy target is decided, this workflow only runs on manual
-# `workflow_dispatch` so it doesn't auto-publish a broken page on every
-# push to main.
+# A static Pages deploy can no longer serve a working studio. Hosting the
+# real thing needs a Node runtime — coming after the current milestone.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - index.html
+      - .github/workflows/pages.yml
   workflow_dispatch:
 
 permissions:
@@ -34,7 +36,6 @@ concurrency:
 
 jobs:
   deploy:
-    if: false   # disabled — see header comment
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment:
@@ -45,10 +46,17 @@ jobs:
 
       - uses: actions/configure-pages@v6
 
+      # Stage just the landing page + nothing else. We don't want Pages
+      # serving every file in the repo (LICENSE, src trees, etc.).
+      - name: Stage landing page
+        run: |
+          mkdir -p _site
+          cp index.html _site/
+
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v5
         with:
-          path: .
+          path: _site
 
       - id: deployment
         uses: actions/deploy-pages@v5
