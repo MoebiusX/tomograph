@@ -784,13 +784,15 @@ const PROBES = [
     candidates: ['grafana_dashboards_search', 'grafana_dashboard_get', 'list_dashboards', 'grafana_dashboards', 'grafana_list_dashboards', 'grafana_search_dashboards', 'dashboards_list', 'grafana_search'],
     target: 'spec.dashboards',
     adapt: (response) => {
-      // Grafana /api/search shape: [{ id, uid, title, type:'dash-db', folderTitle, tags }]
-      // Generic shape: { dashboards: [{ id/uid, title, folder/folderTitle }] }
-      const list = Array.isArray(response) ? response : (response?.dashboards || response?.items || []);
+      // otel-mcp-server's grafana_dashboards_search returns:
+      //   { count: <n>, results: [{ id, uid, title, type:'dash-db'|'dash-folder', url, uri, tags, folderUid?, folderTitle? }] }
+      // Generic shapes also supported: bare array, {dashboards}, {items}.
+      const list = Array.isArray(response) ? response
+        : (response?.results || response?.dashboards || response?.items || []);
       return list
         .filter(d => (d.type ? d.type === 'dash-db' : true))
         .map(d => ({
-          id: String(d.uid || d.id || d.title || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || `dash-${Math.random().toString(36).slice(2, 8)}`,
+          id: String(d.uid || d.id || d.title || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || `dash-${(d.uid || d.id || 'x').toString().slice(0, 6)}`,
           provider: { kind: 'grafana', version: '12.0', schemaVersion: 41 },
           folder: d.folderTitle || d.folder || 'mcp-discovered',
           source: d.url ? `grafana://${d.url}` : `grafana://uid/${d.uid || d.id}`,
@@ -804,8 +806,18 @@ const PROBES = [
     candidates: ['metrics_targets', 'list_scrape_configs', 'prometheus_scrape_configs', 'prometheus_targets', 'metrics_scrape_jobs', 'list_metric_jobs'],
     target: 'spec.telemetry.scrape_evidence',   // annotation-only; no schema field
     adapt: (response) => {
-      // Prometheus /api/v1/targets shape: { activeTargets: [{ labels: { job, instance } }] }
-      const targets = response?.activeTargets || response?.data?.activeTargets || response?.targets || [];
+      // otel-mcp-server's metrics_targets returns:
+      //   { activeTargets: <number>, targets: [{ job, instance, health, lastScrape, lastError }] }
+      // Prometheus /api/v1/targets returns:
+      //   { data: { activeTargets: [{ labels: { job, instance } }] } }
+      // Generic: bare array of targets, or { targets: [...] }.
+      const candidateArrays = [
+        Array.isArray(response?.targets) && response.targets,
+        Array.isArray(response?.activeTargets) && response.activeTargets,
+        Array.isArray(response?.data?.activeTargets) && response.data.activeTargets,
+        Array.isArray(response) && response,
+      ];
+      const targets = candidateArrays.find(Boolean) || [];
       const jobs = new Set();
       for (const t of targets) {
         const j = t.labels?.job || t.job;
@@ -816,21 +828,39 @@ const PROBES = [
   },
   {
     name: 'metric_names',
-    // Candidates ordered by likelihood:
-    //   metrics_metadata    — canonical otel-mcp-server name (metrics skill)
-    //   metrics_label_values — fallback (returns __name__ label values)
+    // Candidates ordered by likelihood. Candidates can be either a bare
+    // tool name (no args needed) or `{ name, args }` when the tool
+    // requires arguments to enumerate metric names:
+    //   metrics_label_values  — canonical otel-mcp-server name; needs
+    //     { label: '__name__' } to enumerate metric names
+    //   metrics_metadata      — requires { metric: '<name>' } per metric,
+    //     so it's the FALLBACK only (chicken-and-egg)
     //   the rest are legacy / community-MCP names
-    candidates: ['metrics_metadata', 'metrics_label_values', 'list_metrics', 'prometheus_metric_names', 'metrics_inventory', 'mimir_metric_names'],
+    candidates: [
+      { name: 'metrics_label_values', args: { label: '__name__' } },
+      'list_metrics',
+      'prometheus_metric_names',
+      'metrics_inventory',
+      'mimir_metric_names',
+      'metrics_metadata',
+    ],
     target: 'spec.otel.metric_inventory',
     adapt: (response) => {
+      // otel-mcp-server metrics_label_values shape:
+      //   { label: "__name__", values: [<name>, ...] }
+      if (Array.isArray(response?.values)) {
+        return response.values.filter(s => typeof s === 'string');
+      }
+      // Prometheus /api/v1/label/<name>/values raw shape:
+      //   { status: "success", data: [<name>, ...] }
+      if (Array.isArray(response?.data)) {
+        return response.data.filter(s => typeof s === 'string');
+      }
       // metrics_metadata shape: { data: { <metric>: [{ type, help, unit }] } }
       if (response?.data && typeof response.data === 'object' && !Array.isArray(response.data)) {
         return Object.keys(response.data);
       }
-      // metrics_label_values shape: { data: [<name>, <name>, ...] }
-      if (Array.isArray(response?.data)) {
-        return response.data.filter(s => typeof s === 'string');
-      }
+      // Bare array
       const names = Array.isArray(response) ? response
         : (response?.metrics || response?.names || []);
       return Array.isArray(names) ? names.filter(s => typeof s === 'string') : [];
@@ -845,11 +875,40 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   const safe = async (name, fn) => {
     try { return await fn(); } catch (e) { errors[name] = e.message; return null; }
   };
+  // Per-probe failures recorded so the user can see WHY a probe didn't
+  // succeed (input validation, network, etc.) — distinct from the
+  // top-level `errors` map which is for the core tools.
+  const probeFailures = {};
+
+  // Single retry on transient 5xx — upstream observability backends
+  // (VictoriaMetrics, Grafana, Jaeger, …) occasionally drop a request
+  // when they're under load. The first retry usually succeeds.
+  const isTransient = (msg) =>
+    typeof msg === 'string' && /HTTP 50[0-9]|temporarily unavailable|timeout|ETIMEDOUT|ECONN/i.test(msg);
+
   const quiet = async (name, fn) => {
     // Like `safe`, but doesn't pollute `errors` — used for probes
     // because trying a candidate tool that doesn't exist isn't a
-    // failure, it's an expected miss.
-    try { return await fn(); } catch (_) { return null; }
+    // failure, it's an expected miss. Captures into probeFailures
+    // for diagnostics, and retries once on transient 5xx.
+    try { return await fn(); }
+    catch (e) {
+      if (isTransient(e.message)) {
+        try { return await fn(); }
+        catch (e2) {
+          if (!probeFailures[name]) probeFailures[name] = e2.message;
+          if (process.env.TOMOGRAPH_DEBUG) {
+            process.stderr.write(`[fetch-live-pack] probe ${name} failed twice: ${e2.message}\n`);
+          }
+          return null;
+        }
+      }
+      if (!probeFailures[name]) probeFailures[name] = e.message;
+      if (process.env.TOMOGRAPH_DEBUG) {
+        process.stderr.write(`[fetch-live-pack] probe ${name} failed: ${e.message}\n`);
+      }
+      return null;
+    }
   };
 
   await rpc('initialize', {
@@ -896,16 +955,23 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   // and skip the rest — no point hammering the server with names it
   // can't recognise. If tools/list returned nothing (old server), fall
   // back to the original candidate-cascade behaviour.
+  // Probe candidates may be either a bare tool name OR a `{name, args}`
+  // object when the tool requires arguments to do anything useful (e.g.
+  // metrics_label_values needs {label: '__name__'} to enumerate metric
+  // names). Normalise into a [{name, args}] list here.
+  const candName = (c) => (typeof c === 'string' ? c : c.name);
+  const candArgs = (c) => (typeof c === 'string' ? {} : (c.args || {}));
+
   const probeResults = {};
   await Promise.all(PROBES.map(async (probe) => {
     let candidates;
     if (discoveredToolNames.size > 0) {
       // Trust the server's advertisement: only try names it actually exposes.
-      candidates = probe.candidates.filter(c => discoveredToolNames.has(c));
+      candidates = probe.candidates.filter(c => discoveredToolNames.has(candName(c)));
       if (candidates.length === 0) {
         probeResults[probe.name] = {
           tool: null,
-          attempted: probe.candidates.slice(),
+          attempted: probe.candidates.map(candName),
           adapted: null,
           skippedReason: 'no candidate matched tools/list inventory',
         };
@@ -914,22 +980,25 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     } else {
       candidates = probe.candidates.slice();
     }
+    const attempted = [];
     for (const candidate of candidates) {
-      const response = await quiet(candidate, () => callTool(candidate));
+      const name = candName(candidate);
+      attempted.push(name);
+      const response = await quiet(name, () => callTool(name, candArgs(candidate)));
       if (response != null) {
         let adapted;
         try { adapted = probe.adapt(response); }
         catch (_) { adapted = null; }
         probeResults[probe.name] = {
-          tool: candidate,
-          attempted: candidates.slice(0, candidates.indexOf(candidate) + 1),
+          tool: name,
+          attempted: attempted.slice(),
           adapted,
           rawSize: JSON.stringify(response).length,
         };
         return;
       }
     }
-    probeResults[probe.name] = { tool: null, attempted: candidates, adapted: null };
+    probeResults[probe.name] = { tool: null, attempted, adapted: null };
   }));
 
   // Compute unmatched tool names — tools the MCP advertises that we
