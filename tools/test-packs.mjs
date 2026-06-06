@@ -2,8 +2,8 @@
 /**
  * tools/test-packs.mjs
  *
- * Round-trip + conformance suite for every bundled canonical pack
- * (packs/*.pack.yaml). For each pack:
+ * Round-trip + conformance suite for every archived canonical pack
+ * (examples/*.pack.yaml). For each pack:
  *   1. Parse the YAML.
  *   2. Validate against the vendored v1.2 schema.
  *   3. Adapt via the layered adapter.
@@ -26,7 +26,7 @@ import { evaluateConformance } from './lib/conformance.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
-const PACKS_DIR = resolve(ROOT, 'packs');
+const PACKS_DIR = resolve(ROOT, 'examples');
 const SCHEMA = JSON.parse(readFileSync(
   resolve(ROOT, 'vendor', 'observability-pack-spec', `v${SPEC_VERSION}`, 'observability-pack.schema.json'),
   'utf8'
@@ -65,7 +65,7 @@ function assert(cond, label, got, want) {
 }
 
 if (!existsSync(PACKS_DIR)) {
-  process.stderr.write(`packs directory missing: ${PACKS_DIR}\n`);
+  process.stderr.write(`examples directory missing: ${PACKS_DIR}\n`);
   process.exit(1);
 }
 
@@ -74,7 +74,7 @@ const packFiles = readdirSync(PACKS_DIR)
   .sort();
 
 if (!packFiles.length) {
-  process.stderr.write('no packs/*.pack.yaml files found\n');
+  process.stderr.write('no examples/*.pack.yaml files found\n');
   process.exit(1);
 }
 
