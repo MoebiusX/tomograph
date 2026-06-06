@@ -129,7 +129,7 @@ npm run validate -- payments.pack.yaml      # sanity check the draft
 ### Path B — interrogate a live MCP server
 
 ```bash
-MCP_URL=… npm run fetch-live           # writes packs/production-live.pack.yaml
+MCP_URL=… npm run fetch-live           # writes examples/production-live.pack.yaml
 ```
 
 See **MCP integration** below.
@@ -149,7 +149,7 @@ npm run adapt    -- path/to/pack.yaml --env staging --pretty
 
 ## MCP integration
 
-`npm run fetch-live` (and the [refresh-live-pack workflow](.github/workflows/refresh-live-pack.yml) cron) builds a canonical v1.2 manifest from MCP responses, validates it against the vendored schema, and writes it as YAML to `packs/production-live.pack.yaml`. The fetcher is wired up but inert unless `MCP_URL` (and optionally `MCP_AUTH`) point to a real MCP. See [`docs/MCP_INTEGRATION.md`](docs/MCP_INTEGRATION.md) for the wire details, what gets verified, and how to extend it.
+`npm run fetch-live` (and the [refresh-live-pack workflow](.github/workflows/refresh-live-pack.yml) cron) builds a canonical v1.2 manifest from MCP responses, validates it against the vendored schema, and writes it as YAML to `examples/production-live.pack.yaml`. The fetcher is wired up but inert unless `MCP_URL` (and optionally `MCP_AUTH`) point to a real MCP. See [`docs/MCP_INTEGRATION.md`](docs/MCP_INTEGRATION.md) for the wire details, what gets verified, and how to extend it.
 
 ## Local development
 
