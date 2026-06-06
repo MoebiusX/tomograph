@@ -818,6 +818,10 @@ function renderAtlasView(view) {
   view.appendChild(section);
 
   // Render — fetch packB lazily if missing
+  const atlasOpts = {
+    morph: state.atlasMorph,
+    onArtefactClick: (artefact, layerId) => openDrawer(artefact, { id: layerId }, null),
+  };
   const dataset = datasetFor();
   if (!dataset.b) {
     stage.innerHTML = '<div class="placeholder">Loading pack B…</div>';
@@ -825,10 +829,10 @@ function renderAtlasView(view) {
       state.packB ? Promise.resolve() : loadPackB(),
       state.diff  ? Promise.resolve() : loadDiff(),
     ]).then(() => {
-      renderAtlas(state.atlasVariant, stage, datasetFor(), { morph: state.atlasMorph });
+      renderAtlas(state.atlasVariant, stage, datasetFor(), atlasOpts);
     });
   } else {
-    renderAtlas(state.atlasVariant, stage, dataset, { morph: state.atlasMorph });
+    renderAtlas(state.atlasVariant, stage, dataset, atlasOpts);
   }
 }
 

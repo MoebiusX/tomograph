@@ -203,8 +203,10 @@ try {
   const js = await getText(base, '/app.mjs');
   assert(js.includes('LAYER_DEFS'), '/app.mjs served');
   const atlasJs = await getText(base, '/atlases.mjs');
-  assert(atlasJs.includes('renderStrata') && atlasJs.includes('renderArbor'),
-         '/atlases.mjs served with all 6 renderers');
+  // Phase 7c (re-port) ships strata + periodic faithfully. Constellation,
+  // Skyline, Transit, and Arbor return as their own restoration PRs.
+  assert(atlasJs.includes('renderStrata') && atlasJs.includes('renderPeriodic'),
+         '/atlases.mjs served with strata + periodic renderers');
 } finally {
   await new Promise(r => srv.close(r));
 }
