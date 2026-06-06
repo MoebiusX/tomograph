@@ -3688,82 +3688,92 @@ function setupHomeAffordance() {
 }
 
 // Hero / home screen — two big affordances. Mode-aware.
+// Default MCP endpoint shown on the home screen — points to Krystaline's
+// public reference MCP so a first-time visitor's one-click experience
+// is connecting to a real, live observability platform. localStorage
+// override (the user's last-used MCP URL) wins so returning users keep
+// their own configured endpoint. To rebrand for a different anchor MCP,
+// change this constant — the rest of the home is data-driven.
+const DEFAULT_MCP_URL = 'https://www.krystaline.io/mcp/public';
+
 function renderHomeView() {
   const view = $('#layer-view');
   if (!view) return;
 
-  // MCP-first home. The previous "Drop a pack to begin" undersold the
-  // studio for first-time visitors who don't yet HAVE a pack. The wow
-  // moment is the live MCP interrogation — paste a URL, click connect,
-  // watch the studio enumerate backends / services / topology / baselines
-  // / anomalies in real time. That's the demo Wednesday will lead with,
-  // so the home should mirror it. Manual paths (upload / crawl) stay
-  // available as secondary options below.
-  const lastMcpUrl = (() => { try { return localStorage.getItem('mcpUrl') || ''; } catch (_) { return ''; } })();
+  // Premium fintech-grade home. The previous draft was functional but
+  // crude — eyebrow numbering, four widget boxes, textbook-internal
+  // tone. This redesign assumes a sophisticated audience: confident
+  // serif headline, single primary action (URL already filled in, just
+  // hit Connect), capability surface presented as an executive summary
+  // not a dashboard. Auth + manual paths still reachable but quiet.
+  const mcpUrl = (() => {
+    try { return localStorage.getItem('mcpUrl') || DEFAULT_MCP_URL; }
+    catch (_) { return DEFAULT_MCP_URL; }
+  })();
 
   view.innerHTML = `
     <section class="home-hero">
-      <h2 class="home-hero-title">Connect your observability platform.</h2>
+      <div class="home-hero-eyebrow">canonical observability · spec v1.2</div>
+      <h2 class="home-hero-title">Map your observability platform in seconds.</h2>
       <p class="home-hero-lede">
-        The studio interrogates a live MCP server — backends, topology,
-        baselines, anomalies — and drafts a canonical v1.2 pack you can
-        review, refine, compile, and deploy. Type your MCP URL below and
-        connect.
+        Connect to any OpenTelemetry MCP server. The studio interrogates it
+        for backends, topology, baselines, and anomalies — and renders a
+        complete, conformant canonical v1.2 manifest you can compile and
+        deploy.
       </p>
 
       <div class="home-mcp-card">
-        <div class="home-mcp-eyebrow">① CONNECT</div>
-        <div class="home-mcp-form">
+        <label class="home-mcp-url-row">
+          <span class="home-mcp-url-label">MCP endpoint</span>
+          <input id="home-mcp-url" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(mcpUrl)}">
+        </label>
+        <div class="home-mcp-actions">
+          <button id="home-mcp-connect" type="button" class="home-mcp-connect-btn">
+            <span class="home-mcp-connect-label">Connect</span>
+            <span class="home-mcp-connect-arrow" aria-hidden="true">→</span>
+          </button>
+          <button id="home-mcp-advanced-toggle" type="button" class="home-mcp-advanced-toggle" aria-expanded="false">
+            Advanced
+          </button>
+          <span id="home-mcp-status" class="home-mcp-status"></span>
+        </div>
+        <div id="home-mcp-advanced" class="home-mcp-advanced" hidden>
           <label class="home-mcp-field">
-            <span class="home-mcp-key">MCP URL</span>
-            <input id="home-mcp-url" type="url" placeholder="https://your-mcp.example.com/observability" autocomplete="off" value="${escapeHtml(lastMcpUrl)}">
+            <span class="home-mcp-key">Auth token <em>not persisted</em></span>
+            <input id="home-mcp-auth" type="password" placeholder="bearer" autocomplete="off">
           </label>
-          <label class="home-mcp-field home-mcp-field-auth">
-            <span class="home-mcp-key">Auth token <em>(optional, not persisted)</em></span>
-            <input id="home-mcp-auth" type="password" placeholder="bearer token" autocomplete="off">
-          </label>
-          <div class="home-mcp-actions">
-            <button id="home-mcp-connect" type="button" class="home-mcp-connect-btn">Connect →</button>
-            <span id="home-mcp-status" class="home-mcp-status"></span>
-          </div>
         </div>
 
-        <!-- Capabilities surface here once the MCP responds. The summary
-             returned by /api/draft-from-mcp carries everything we need:
-             discovered.backends, discovered.services, toolsCalled, toolsFailed,
-             baselines computed, active anomalies. -->
+        <!-- Capabilities surface here once the MCP responds. -->
         <div id="home-mcp-capabilities" class="home-mcp-capabilities" hidden></div>
 
         <div id="home-mcp-adopt-bar" class="home-mcp-adopt-bar" hidden>
           <button id="home-mcp-adopt" type="button" class="home-mcp-adopt-btn">
-            <span class="home-mcp-adopt-arrow">→</span>
-            Draft a pack from this MCP
+            <span class="home-mcp-adopt-title">Render the manifest</span>
+            <span class="home-mcp-adopt-sub" id="home-mcp-adopt-hint">canonical v1.2 · ready to compile and deploy</span>
           </button>
-          <span id="home-mcp-adopt-hint" class="home-mcp-adopt-hint"></span>
         </div>
       </div>
 
-      <div class="home-alt">
-        <div class="home-alt-head"><span>or open a pack manually</span></div>
-        <div class="home-alt-buttons">
-          <button id="home-shortcut-upload" type="button" class="home-alt-btn">
-            <span class="home-alt-key" aria-hidden="true">▤</span>
-            <span class="home-alt-label">Drop a YAML / JSON pack</span>
-            <span class="home-alt-sub">canonical v1.2 manifest</span>
-          </button>
-          <button id="home-shortcut-crawl" type="button" class="home-alt-btn">
-            <span class="home-alt-key" aria-hidden="true">↻</span>
-            <span class="home-alt-label">Crawl a service repo</span>
-            <span class="home-alt-sub">walks Prom / OTel / Grafana / AM configs</span>
-          </button>
-        </div>
+      <div class="home-alt-row">
+        <span class="home-alt-prefix">Or work from</span>
+        <button id="home-shortcut-upload" type="button" class="home-alt-link">a YAML / JSON manifest</button>
+        <span class="home-alt-sep">·</span>
+        <button id="home-shortcut-crawl" type="button" class="home-alt-link">a service repository</button>
       </div>
     </section>
   `;
 
-  // Wire MCP connect.
   $('#home-mcp-connect').onclick = () => doHomeMcpConnect();
   $('#home-mcp-url').onkeydown = (e) => { if (e.key === 'Enter') doHomeMcpConnect(); };
+  $('#home-mcp-advanced-toggle').onclick = () => {
+    const adv = $('#home-mcp-advanced');
+    const tog = $('#home-mcp-advanced-toggle');
+    const shown = adv.hidden;
+    adv.hidden = !shown;
+    tog.setAttribute('aria-expanded', String(shown));
+    if (shown) $('#home-mcp-auth')?.focus();
+  };
   $('#home-shortcut-upload').onclick = () => $('#upload-btn')?.click();
   $('#home-shortcut-crawl').onclick  = () => $('#crawl-btn')?.click();
 }
@@ -3836,8 +3846,8 @@ function renderHomeMcpCapabilities(out, host) {
   const anomalies = parseInt(ann['mcp.activeAnomalies'] || '0', 10);
   const backends = s.backends ?? 0;
 
-  // Detect tools we recognise vs ones the studio doesn't know yet.
-  // Surfacing this honestly is what the user asked for several turns ago.
+  // Recognised vs unrecognised tools. Surfacing this honestly is part
+  // of the studio's integrity story.
   const knownTools = new Set([
     'system_health', 'system_topology',
     'anomalies_active', 'anomalies_baselines',
@@ -3845,38 +3855,56 @@ function renderHomeMcpCapabilities(out, host) {
   ]);
   const recognised   = tools.filter(t => knownTools.has(t));
   const unrecognised = tools.filter(t => !knownTools.has(t));
+  const mcpHost = (() => {
+    try { return new URL(out.summary?.mcpUrl || '').host || 'mcp'; }
+    catch (_) { return 'mcp'; }
+  })();
 
+  // Executive-summary layout: a narrative line up top, then a four-row
+  // signal report. Each row is a single metric with the number set in
+  // serif and a one-line interpretation in sans. No widget boxes.
   host.innerHTML = `
-    <div class="home-mcp-eyebrow home-mcp-eyebrow-2">② CAPABILITIES DISCOVERED</div>
-    <div class="home-mcp-cap-grid">
-      <div class="home-mcp-cap" data-cap="tools">
-        <div class="home-mcp-cap-num">${tools.length}</div>
-        <div class="home-mcp-cap-key">tools called</div>
-        <div class="home-mcp-cap-detail">${recognised.length ? recognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ') : '<em>none</em>'}</div>
-        ${unrecognised.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-unknown">+${unrecognised.length} unrecognised: ${unrecognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
-        ${failed.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-fail">⚠ failed: ${failed.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
+    <div class="home-mcp-report">
+      <div class="home-mcp-report-head">
+        <span class="home-mcp-report-dot" aria-hidden="true"></span>
+        Connected to <strong>${escapeHtml(mcpHost)}</strong>${out.tookMs ? ` <span class="home-mcp-report-meta">· ${out.tookMs}ms</span>` : ''}
       </div>
-      <div class="home-mcp-cap" data-cap="services">
-        <div class="home-mcp-cap-num">${services.length}</div>
-        <div class="home-mcp-cap-key">services discovered</div>
-        <div class="home-mcp-cap-detail">${services.length ? services.slice(0, 6).map(s => `<code>${escapeHtml(s)}</code>`).join(' ') + (services.length > 6 ? ` <em>+${services.length - 6} more</em>` : '') : '<em>none</em>'}</div>
+      <div class="home-mcp-report-body">
+        <div class="home-mcp-signal">
+          <div class="home-mcp-signal-num">${services.length}</div>
+          <div class="home-mcp-signal-text">
+            <span class="home-mcp-signal-label">services</span>
+            <span class="home-mcp-signal-detail">${services.length ? services.slice(0, 5).map(s => escapeHtml(s)).join(', ') + (services.length > 5 ? `, +${services.length - 5} more` : '') : 'none discovered'}</span>
+          </div>
+        </div>
+        <div class="home-mcp-signal">
+          <div class="home-mcp-signal-num">${backends}</div>
+          <div class="home-mcp-signal-text">
+            <span class="home-mcp-signal-label">backends</span>
+            <span class="home-mcp-signal-detail">${backends ? 'metrics, logs, traces — pipelines inferred from topology' : 'none observed'}</span>
+          </div>
+        </div>
+        <div class="home-mcp-signal">
+          <div class="home-mcp-signal-num">${tools.length}</div>
+          <div class="home-mcp-signal-text">
+            <span class="home-mcp-signal-label">tools exposed</span>
+            <span class="home-mcp-signal-detail">${recognised.length ? recognised.join(', ') : 'unrecognised set'}${unrecognised.length ? ` · <span class="home-mcp-signal-extra">+${unrecognised.length} unrecognised</span>` : ''}${failed.length ? ` · <span class="home-mcp-signal-fail">⚠ ${failed.length} failed</span>` : ''}</span>
+          </div>
+        </div>
+        <div class="home-mcp-signal">
+          <div class="home-mcp-signal-num">${anomalies}</div>
+          <div class="home-mcp-signal-text">
+            <span class="home-mcp-signal-label">active anomalies</span>
+            <span class="home-mcp-signal-detail">${baselines} baseline${baselines === 1 ? '' : 's'} computed from recent telemetry</span>
+          </div>
+        </div>
       </div>
-      <div class="home-mcp-cap" data-cap="backends">
-        <div class="home-mcp-cap-num">${backends}</div>
-        <div class="home-mcp-cap-key">backends inferred</div>
-        <div class="home-mcp-cap-detail">${backends ? 'metrics / logs / traces' : '<em>none</em>'}</div>
-      </div>
-      <div class="home-mcp-cap" data-cap="anomalies">
-        <div class="home-mcp-cap-num">${anomalies}</div>
-        <div class="home-mcp-cap-key">active anomalies</div>
-        <div class="home-mcp-cap-detail">${baselines} baseline${baselines === 1 ? '' : 's'} computed</div>
-      </div>
+      ${out.summary?.warnings?.length ? `
+        <div class="home-mcp-gaps">
+          <div class="home-mcp-gaps-head">Honest gaps</div>
+          <ul>${out.summary.warnings.slice(0, 5).map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul>
+        </div>` : ''}
     </div>
-    ${out.summary?.warnings?.length ? `
-      <div class="home-mcp-warnings">
-        <div class="home-mcp-warnings-head">⚠ honest gaps</div>
-        <ul>${out.summary.warnings.slice(0, 5).map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul>
-      </div>` : ''}
   `;
 }
 
