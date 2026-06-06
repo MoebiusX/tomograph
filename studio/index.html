@@ -42,6 +42,9 @@
     </label>
     <button id="upload-btn" class="ctrl-btn" type="button" title="Upload a canonical v1.2 pack (.yaml or .json)">upload</button>
     <input id="file-input" type="file" accept=".yaml,.yml,.json,application/json,text/yaml,application/x-yaml" hidden>
+    <button id="crawl-btn" class="ctrl-btn" type="button" title="Draft a pack from a service repo — drag a folder or pick files">new from repo</button>
+    <input id="crawl-file-input" type="file" multiple webkitdirectory hidden>
+    <button id="draft-mcp-btn" class="ctrl-btn" type="button" title="Draft a pack from a live MCP server — interrogate it for backends, baselines, anomalies">new from live</button>
     <button id="mcp-btn" class="ctrl-btn mcp-btn" type="button" aria-haspopup="true" aria-expanded="false" title="Refresh production-live from an MCP server">
       <span class="mcp-dot" aria-hidden="true"></span>
       <span class="mcp-btn-label">mcp</span>
@@ -79,7 +82,9 @@
   <div class="placeholder">Loading pack…</div>
 </main>
 
-<aside class="drawer" id="drawer" aria-hidden="true" aria-label="Artefact detail">
+<!-- "B" drawer — right-anchored. The single drawer used everywhere outside
+     the compare view. In compare mode it shows Pack B's artefact. -->
+<aside class="drawer drawer-b" id="drawer" aria-hidden="true" aria-label="Artefact detail (Pack B)">
   <div class="drawer-head">
     <div class="drawer-eyebrow" id="drawer-eyebrow">—</div>
     <h2 class="drawer-title" id="drawer-title">—</h2>
@@ -88,6 +93,262 @@
   <dl class="drawer-meta" id="drawer-meta"></dl>
   <div id="drawer-panels"></div>
 </aside>
+
+<!-- "A" drawer — left-anchored, only used in the compare view. Slides in
+     from the left to show Pack A's artefact, so the side-by-side
+     comparison can have BOTH packs' detail panels open at once. -->
+<aside class="drawer drawer-a" id="drawer-a" aria-hidden="true" aria-label="Artefact detail (Pack A)">
+  <div class="drawer-head">
+    <div class="drawer-eyebrow" id="drawer-a-eyebrow">—</div>
+    <h2 class="drawer-title" id="drawer-a-title">—</h2>
+    <button class="drawer-close" id="drawer-a-close" aria-label="Close detail">esc</button>
+  </div>
+  <dl class="drawer-meta" id="drawer-a-meta"></dl>
+  <div id="drawer-a-panels"></div>
+</aside>
+
+<div class="deploy-modal" id="deploy-modal" role="dialog" aria-labelledby="deploy-modal-title" hidden>
+  <div class="deploy-modal-head">
+    <div class="deploy-modal-title">
+      <span class="deploy-modal-arrow">↑</span>
+      <h2 id="deploy-modal-title"><em>Deploy to Grafana</em></h2>
+    </div>
+    <button class="drawer-close" id="deploy-modal-close" type="button" aria-label="Close deploy modal">esc</button>
+  </div>
+  <p class="deploy-modal-lede">Select artefacts and target, then deploy to a Grafana instance.</p>
+
+  <div class="deploy-modal-body">
+    <!-- Target section -->
+    <section class="deploy-section">
+      <div class="deploy-section-head">TARGET</div>
+      <div class="deploy-field-grid">
+        <label class="deploy-field">
+          <span class="deploy-field-key">Target profile</span>
+          <select id="deploy-target-profile"></select>
+        </label>
+        <label class="deploy-field deploy-field-actions">
+          <span class="deploy-field-key">&nbsp;</span>
+          <span class="deploy-profile-actions">
+            <button id="deploy-profile-save" type="button" class="ctrl-btn" title="Save current target settings as a profile">save</button>
+            <button id="deploy-profile-delete" type="button" class="ctrl-btn" title="Delete the selected profile">delete</button>
+          </span>
+        </label>
+      </div>
+      <label class="deploy-field">
+        <span class="deploy-field-key">Target URL</span>
+        <input id="deploy-target-url" type="url" placeholder="https://grafana.example.net" autocomplete="off">
+      </label>
+      <div class="deploy-field-grid">
+        <label class="deploy-field">
+          <span class="deploy-field-key">Auth <em>(user:password or token, not persisted)</em></span>
+          <input id="deploy-target-auth" type="password" placeholder="bearer token" autocomplete="off">
+        </label>
+        <label class="deploy-field">
+          <span class="deploy-field-key">Grafana folder</span>
+          <input id="deploy-target-folder" type="text" placeholder="observability-pack" autocomplete="off">
+        </label>
+      </div>
+      <div class="deploy-field-grid">
+        <label class="deploy-field">
+          <span class="deploy-field-key">Product</span>
+          <select id="deploy-target-product"></select>
+        </label>
+        <label class="deploy-field">
+          <span class="deploy-field-key">Version</span>
+          <select id="deploy-target-version"></select>
+        </label>
+        <label class="deploy-field">
+          <span class="deploy-field-key">MCP URL <em>(the gateway, not Grafana directly)</em></span>
+          <input id="deploy-target-mcp" type="url" placeholder="https://your-mcp.example.com/observability" autocomplete="off">
+        </label>
+      </div>
+      <div class="deploy-section-foot" id="deploy-target-summary">Target: —</div>
+    </section>
+
+    <!-- Source pack + type filters -->
+    <section class="deploy-section">
+      <div class="deploy-section-head">SOURCE PACK &amp; ARTEFACT TYPES</div>
+      <label class="deploy-field">
+        <span class="deploy-field-key">Pack</span>
+        <select id="deploy-source-pack"></select>
+      </label>
+      <div class="deploy-type-filters" id="deploy-type-filters">
+        <label class="deploy-type-checkbox"><input type="checkbox" value="alert"     checked><span class="type-pill type-pill-alert">Alert rule</span></label>
+        <label class="deploy-type-checkbox"><input type="checkbox" value="recording" checked><span class="type-pill type-pill-recording">Recording rule</span></label>
+        <label class="deploy-type-checkbox"><input type="checkbox" value="dashboard" checked><span class="type-pill type-pill-dashboard">Dashboard</span></label>
+      </div>
+    </section>
+
+    <!-- Manifest preview -->
+    <section class="deploy-section">
+      <div class="deploy-section-head deploy-manifest-head">
+        MANIFEST PREVIEW
+        <span class="deploy-manifest-counter" id="deploy-manifest-counter">0 of 0 artefacts selected</span>
+      </div>
+      <div class="deploy-manifest-toolbar">
+        <button id="deploy-manifest-all"  type="button" class="ctrl-btn">select all</button>
+        <button id="deploy-manifest-none" type="button" class="ctrl-btn">clear</button>
+      </div>
+      <div class="deploy-manifest-wrap">
+        <table class="deploy-manifest-table" id="deploy-manifest-table">
+          <thead>
+            <tr>
+              <th class="deploy-col-check"><input type="checkbox" id="deploy-manifest-toggle" aria-label="Select all"></th>
+              <th>Type</th>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody id="deploy-manifest-tbody">
+            <tr><td colspan="5" class="placeholder">Pick a pack to see its artefacts.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div class="deploy-modal-actions">
+    <span id="deploy-modal-status" class="mcp-refresh-status"></span>
+    <button id="deploy-modal-cancel" type="button" class="ctrl-btn">cancel</button>
+    <button id="deploy-modal-go"     type="button" class="mcp-refresh-btn"><span class="deploy-go-icon">↑</span> Deploy</button>
+  </div>
+
+  <div class="deploy-modal-result" id="deploy-modal-result" hidden></div>
+</div>
+
+<div class="crawl-panel" id="draft-mcp-panel" role="dialog" aria-labelledby="draft-mcp-panel-title" hidden>
+  <div class="crawl-panel-head">
+    <div id="draft-mcp-panel-title" class="mcp-panel-title">Draft a pack from a live MCP server</div>
+    <button id="draft-mcp-panel-close" class="drawer-close" type="button" aria-label="Close draft panel">esc</button>
+  </div>
+  <div class="crawl-panel-body">
+    <p class="crawl-lede">
+      Path B of pack creation. Interrogate a live OpenTelemetry MCP for the
+      backends it manages, the topology it observes, the baselines and anomalies
+      it tracks, and produce a <em>draft canonical v1.2 pack</em> grounded in
+      observed reality — not declared intent. Merge with a repo-derived draft
+      (Path A) for a complete pack.
+    </p>
+
+    <div class="crawl-controls">
+      <label class="mcp-field">
+        <span class="mcp-field-key">MCP URL</span>
+        <input id="draft-mcp-url" type="url" placeholder="https://your-mcp.example.com/observability" autocomplete="off">
+      </label>
+      <label class="mcp-field">
+        <span class="mcp-field-key">Auth token <em>(optional, not persisted)</em></span>
+        <input id="draft-mcp-auth" type="password" placeholder="bearer token" autocomplete="off">
+      </label>
+      <label class="mcp-field">
+        <span class="mcp-field-key">Pack name <em>(defaults to "live-draft")</em></span>
+        <input id="draft-mcp-name" type="text" placeholder="live-draft" autocomplete="off">
+      </label>
+    </div>
+
+    <div class="crawl-panel-actions">
+      <button id="draft-mcp-go-btn" class="mcp-refresh-btn" type="button">draft from mcp</button>
+      <button id="draft-mcp-reset-btn" class="ctrl-btn" type="button">reset</button>
+      <span id="draft-mcp-status" class="mcp-refresh-status"></span>
+    </div>
+
+    <div class="crawl-result" id="draft-mcp-result" hidden>
+      <div class="crawl-result-head">
+        <div class="crawl-result-title">Live draft — review before adopting</div>
+        <div class="crawl-result-sub" id="draft-mcp-result-sub"></div>
+      </div>
+      <div class="crawl-result-grid">
+        <pre class="crawl-result-yaml" id="draft-mcp-result-yaml"></pre>
+        <div class="crawl-result-side">
+          <div class="crawl-result-section" id="draft-mcp-result-validation"></div>
+          <div class="crawl-result-section" id="draft-mcp-result-summary"></div>
+          <div class="crawl-result-section" id="draft-mcp-result-warnings"></div>
+          <div class="crawl-result-section" id="draft-mcp-result-tools"></div>
+        </div>
+      </div>
+      <div class="crawl-result-actions">
+        <button id="draft-mcp-adopt-btn" class="mcp-refresh-btn" type="button">use this pack</button>
+        <a id="draft-mcp-download-btn" class="ctrl-btn" download="live-draft.pack.yaml">download yaml</a>
+        <button id="draft-mcp-result-close" class="ctrl-btn" type="button">close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="crawl-panel" id="crawl-panel" role="dialog" aria-labelledby="crawl-panel-title" hidden>
+  <div class="crawl-panel-head">
+    <div id="crawl-panel-title" class="mcp-panel-title">Draft a pack from a service repo</div>
+    <button id="crawl-panel-close" class="drawer-close" type="button" aria-label="Close crawl panel">esc</button>
+  </div>
+  <div class="crawl-panel-body">
+    <p class="crawl-lede">
+      Path A of pack creation. The crawler walks your repo's
+      <code>docker-compose.yml</code>, Prometheus rules, Alertmanager configs,
+      OTel Collector configs, and Grafana dashboard JSONs, then emits a
+      <em>draft canonical v1.2 pack</em> — a real, valid manifest you can
+      then refine.
+    </p>
+
+    <div class="crawl-controls">
+      <label class="mcp-field">
+        <span class="mcp-field-key">Service name</span>
+        <input id="crawl-name" type="text" placeholder="e.g. payments" autocomplete="off">
+      </label>
+      <label class="mcp-field">
+        <span class="mcp-field-key">Environment</span>
+        <input id="crawl-env" type="text" placeholder="prod" value="prod" autocomplete="off">
+      </label>
+      <label class="mcp-field">
+        <span class="mcp-field-key">Criticality <em>(blank = infer)</em></span>
+        <select id="crawl-criticality">
+          <option value="">(infer from what's discovered)</option>
+          <option value="tier-1">tier-1</option>
+          <option value="tier-2">tier-2</option>
+          <option value="tier-3">tier-3</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="crawl-dropzone" id="crawl-dropzone">
+      <div class="crawl-dropzone-icon">⬇</div>
+      <div class="crawl-dropzone-headline">Drop a folder here</div>
+      <div class="crawl-dropzone-sub">
+        or
+        <button id="crawl-pick-files-btn" type="button" class="crawl-link-btn">pick files</button>
+        ·
+        <button id="crawl-pick-folder-btn" type="button" class="crawl-link-btn">pick a folder</button>
+      </div>
+      <div class="crawl-dropzone-files" id="crawl-staged-files"></div>
+    </div>
+
+    <div class="crawl-panel-actions">
+      <button id="crawl-go-btn" class="mcp-refresh-btn" type="button" disabled>crawl</button>
+      <button id="crawl-reset-btn" class="ctrl-btn" type="button">reset</button>
+      <span id="crawl-status" class="mcp-refresh-status"></span>
+    </div>
+
+    <div class="crawl-result" id="crawl-result" hidden>
+      <div class="crawl-result-head">
+        <div class="crawl-result-title">Draft pack — review before adopting</div>
+        <div class="crawl-result-sub" id="crawl-result-sub"></div>
+      </div>
+      <div class="crawl-result-grid">
+        <pre class="crawl-result-yaml" id="crawl-result-yaml"></pre>
+        <div class="crawl-result-side">
+          <div class="crawl-result-section" id="crawl-result-validation"></div>
+          <div class="crawl-result-section" id="crawl-result-summary"></div>
+          <div class="crawl-result-section" id="crawl-result-warnings"></div>
+          <div class="crawl-result-section" id="crawl-result-evidence"></div>
+        </div>
+      </div>
+      <div class="crawl-result-actions">
+        <button id="crawl-adopt-btn" class="mcp-refresh-btn" type="button">use this pack</button>
+        <a id="crawl-download-btn" class="ctrl-btn" download="draft.pack.yaml">download yaml</a>
+        <button id="crawl-result-close" class="ctrl-btn" type="button">close</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="mcp-panel" id="mcp-panel" role="dialog" aria-labelledby="mcp-panel-title" hidden>
   <div class="mcp-panel-head">

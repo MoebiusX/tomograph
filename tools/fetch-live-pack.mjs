@@ -52,6 +52,8 @@ const PACK_NAME        = (process.env.PACK_NAME || 'production-live').toLowerCas
 // can drive it from the request body without spawning a subprocess.
 // ============================================================
 
+// createMcpClient is exported so the server can drive ad-hoc MCP
+// interactions (deploy, refresh) without spawning a subprocess.
 export function createMcpClient({ mcpUrl, mcpAuth = null } = {}) {
   if (!mcpUrl) throw new Error('createMcpClient: mcpUrl required');
   let session = null;
@@ -143,6 +145,82 @@ function defaultBaselines(criticality) {
   return { mttd_target_p50: '15m', mttr_target_p50: '1d' };
 }
 
+// Parse Prometheus-convention recording rules into SLI / SLO pairs.
+// Names that follow `service:metric:op` are a strong SLO signal —
+// the user pushed back that "SLIs will be reflected in recording rules"
+// and they're right: that's the convention. We only infer SLIs from
+// rules whose name expression matches the canonical ratio / latency
+// shape; anything ambiguous flows through to spec.queries verbatim
+// so the engineer can decide.
+function inferSlisFromRecordingRules(rules) {
+  if (!Array.isArray(rules)) return [];
+  // Group rules by (service, metric) — the `op` (good/total/ratio/...)
+  // tells us what KIND of SLI it likely encodes.
+  const byBase = new Map();
+  for (const r of rules) {
+    if (!r?.name) continue;
+    const m = /^([a-z][a-z0-9_]*):([a-z][a-z0-9_]*):([a-z0-9_]+)$/.exec(r.name);
+    if (!m) continue;
+    const [, service, metric, op] = m;
+    const key = `${service}:${metric}`;
+    if (!byBase.has(key)) byBase.set(key, { service, metric, ops: {} });
+    byBase.get(key).ops[op] = r;
+  }
+  const out = [];
+  for (const { service, metric, ops } of byBase.values()) {
+    const sliId = `${service}_${metric}`.toLowerCase();
+    let sli, slo;
+    // Ratio-shaped: we have good + total recording. The presence of
+    // `ratio_*` or `error_ratio_*` confirms the ratio family.
+    const goodKey = Object.keys(ops).find(k => /^good_/.test(k));
+    const totalKey = Object.keys(ops).find(k => /^total_/.test(k));
+    const ratioKey = Object.keys(ops).find(k => /^ratio_/.test(k) || /^error_ratio_/.test(k));
+    if (goodKey && totalKey) {
+      sli = {
+        id: sliId,
+        description: `Inferred from MCP-discovered recording rules ${service}:${metric}:good/total.`,
+        type: 'ratio',
+        good:  ops[goodKey].expr,
+        total: ops[totalKey].expr,
+      };
+    } else if (ratioKey) {
+      // We have a ratio recording rule directly. Treat it as the SLI's
+      // canonical expression (the engineer can decompose later).
+      sli = {
+        id: sliId,
+        description: `Inferred from MCP-discovered recording rule ${ops[ratioKey].name}.`,
+        type: 'ratio',
+        good:  ops[ratioKey].expr,
+        total: '1',   // placeholder; engineer to refine
+      };
+    } else {
+      // Threshold-shaped (latency p95, queue depth, etc).
+      const first = Object.values(ops)[0];
+      sli = {
+        id: sliId,
+        description: `Inferred from MCP-discovered recording rule ${first.name}.`,
+        type: 'threshold',
+        query: first.expr,
+        // Spec requires a numeric threshold; we can't infer it from a
+        // flat recording rule — engineer to set per the SLO objective.
+        // Use 1 as the conservative placeholder; the rule's `expr` is
+        // already preserved in spec.queries.recording_rules.
+        threshold: 1,
+        unit: 'ratio',
+      };
+    }
+    slo = {
+      id: `${sliId}_99`,
+      sli: sliId,
+      objective: 0.99,
+      window: '30d',
+      error_budget_policy: 'ref:platform/default-budget',
+    };
+    out.push({ sli, slo });
+  }
+  return out;
+}
+
 function durationFromMs(ms, fallback) {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return fallback;
   if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
@@ -157,6 +235,7 @@ export function buildCanonicalPack({
   topology = {},
   anomaliesActive = {},
   baselinesData = {},
+  probeResults = {},
   errors = {},
   packName = PACK_NAME,
 } = {}) {
@@ -166,16 +245,33 @@ export function buildCanonicalPack({
   const criticality = pickCriticality(services);
 
   // ---- metadata ----
+  // Core tools that were called regardless of probes.
+  const coreCalled = ['system_health','system_topology','anomalies_active','anomalies_baselines'].filter(n => !errors[n]);
+  // Probe tool that actually responded (per probe).
+  const probeAnswered = Object.entries(probeResults).filter(([_, v]) => v?.tool).map(([k, v]) => v.tool);
+  // Probes attempted (regardless of whether any candidate answered).
+  const probesAttempted = Object.keys(probeResults || {});
+  // Probes that responded successfully.
+  const probesSucceeded = Object.entries(probeResults || {}).filter(([_, v]) => v?.tool).map(([k]) => k);
+
   const annotations = {
     'mcp.refreshedAt':         refreshedAt,
     'mcp.url':                 mcpUrl,
-    'mcp.toolsCalled':         ['system_health','system_topology','anomalies_active','anomalies_baselines']
-                                 .filter(n => !errors[n]).join(','),
+    'mcp.toolsCalled':         [...coreCalled, ...probeAnswered].join(','),
     'mcp.toolsFailed':         Object.keys(errors).join(',') || '',
+    'mcp.probesAttempted':     probesAttempted.join(','),
+    'mcp.probesSucceeded':     probesSucceeded.join(','),
     'mcp.servicesDiscovered':  serviceNames.join(','),
     'mcp.baselinesComputed':   String((baselinesData.baselines || []).length),
     'mcp.activeAnomalies':     String(anomaliesActive?.traceAnomalies?.active?.length || 0),
   };
+  // Per-probe count annotations, ONLY for probes that responded — so an
+  // engineer reading the pack can see what came back from live state.
+  for (const [k, v] of Object.entries(probeResults || {})) {
+    if (v?.tool && Array.isArray(v.adapted)) {
+      annotations[`mcp.discovered.${k}`] = String(v.adapted.length);
+    }
+  }
 
   // Per-artefact verification markers (only for items derived from a tool that
   // actually responded).
@@ -206,10 +302,24 @@ export function buildCanonicalPack({
   pushBackend({ id: 'traces-jaeger', signal: 'traces', product: 'jaeger' },
               (topology?.dependencies || []).some(d => (d.child || '').includes('jaeger')) ? 'system_topology' : null);
 
+  // Probes drive multiple downstream sections — hoist their results.
+  const discoveredRules = probeResults?.recording_rules?.adapted || [];
+
   // ---- spec.slis + spec.slos ----
+  // We first try to infer SLIs from any discovered recording rules
+  // (their `ns:metric:op` names + exprs are SLO evidence — exactly the
+  // point the user pushed back on). Service-derived SLIs only fill the
+  // gap when rule discovery returned nothing.
   const slis = [];
   const slos = [];
-  if (serviceSlugs.length === 0) {
+  const inferredFromRules = inferSlisFromRecordingRules(discoveredRules || []);
+  if (inferredFromRules.length) {
+    for (const { sli, slo } of inferredFromRules) {
+      slis.push(sli);
+      slos.push(slo);
+      markVerified(`slis.${sli.id}`);
+    }
+  } else if (serviceSlugs.length === 0) {
     // Pack must have >= 1 SLI / SLO; stub a generic platform availability target.
     slis.push({
       id: 'platform_availability',
@@ -259,25 +369,49 @@ export function buildCanonicalPack({
     },
   };
 
-  // ---- spec.queries ----
-  const queries = {
-    recording_rules: slos.map(s => ({
+  // ---- spec.queries.recording_rules ----
+  // PREFER what the MCP attested via the recording_rules probe. Only
+  // fall back to the synthesised per-SLO stub if nothing came back.
+  let recordingRules;
+  if (Array.isArray(discoveredRules) && discoveredRules.length > 0) {
+    // Schema requires the rule NAME to match the prometheus convention
+    // ns:metric:op. Anything that doesn't can't go in spec.queries —
+    // skip those (and they'll surface in the warnings).
+    const RULE_NAME = /^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*:[a-z0-9_]+$/;
+    recordingRules = discoveredRules.filter(r => RULE_NAME.test(r.name));
+    markVerified('queries.recording_rules');
+  } else {
+    recordingRules = slos.map(s => ({
       name: `platform:${s.sli}:ratio_5m`,
       expr: `ref:slis.${s.sli}`,
       interval: '30s',
-    })),
-  };
-  if (queries.recording_rules.length === 0) delete queries.recording_rules;
+    }));
+  }
+  const queries = {};
+  if (recordingRules.length > 0) queries.recording_rules = recordingRules;
 
   // ---- spec.dashboards ----
-  const dashboards = [{
-    id: 'platform-overview',
-    provider: { kind: 'grafana' },
-    folder: 'platform',
-    source: 'file://dashboards/platform-overview.json',
-  }];
+  // PREFER what came back from the dashboards probe.
+  const discoveredDashboards = probeResults?.dashboards?.adapted;
+  let dashboards;
+  if (Array.isArray(discoveredDashboards) && discoveredDashboards.length > 0) {
+    dashboards = discoveredDashboards;
+    markVerified('dashboards');
+  } else {
+    dashboards = [{
+      id: 'platform-overview',
+      provider: { kind: 'grafana' },
+      folder: 'platform',
+      source: 'file://dashboards/platform-overview.json',
+    }];
+  }
 
-  // ---- spec.policy ----
+  // ---- spec.policy.burn_rate_alerts ----
+  // Per-SLO multi-window pattern is always synthesized — even when the
+  // MCP exposes flat alert rules, those rarely encode the short/long
+  // window decomposition the spec requires. We DO surface the
+  // discovered alert NAMES in metadata.annotations.mcp.discovered.alert_rules
+  // so the SRE can see what currently fires.
   const burnRateAlerts = slos.map(s => ({
     slo: s.id,
     windows: [
@@ -285,6 +419,30 @@ export function buildCanonicalPack({
       { short: '30m', long: '6h', factor: 6,  severity: 'SEV2' },
     ],
   }));
+  const discoveredAlertNames = (probeResults?.alert_rules?.adapted || []).map(a => a.name).filter(Boolean);
+  if (discoveredAlertNames.length) {
+    annotations['mcp.discovered.alert_rule_names'] = discoveredAlertNames.slice(0, 64).join(',');
+    markVerified('policy.burn_rate_alerts');
+  }
+
+  // ---- scrape evidence + metric inventory ----
+  // Both go into annotations (no schema field) so the SRE can see WHAT
+  // the MCP confirmed is currently exported / scraped. This is exactly
+  // what the user pushed back on: metrics being exported are observable
+  // and must be surfaced.
+  const scrapeJobs = probeResults?.scrape_configs?.adapted;
+  if (Array.isArray(scrapeJobs) && scrapeJobs.length) {
+    annotations['mcp.discovered.scrape_jobs'] = scrapeJobs.slice(0, 64).join(',');
+    markVerified('telemetry.scrape');
+  }
+  const metricNames = probeResults?.metric_names?.adapted;
+  if (Array.isArray(metricNames) && metricNames.length) {
+    // Cap to 200 names to keep annotation bytes sane; full inventory is
+    // a probe call away when the engineer needs it.
+    annotations['mcp.discovered.metric_names_count'] = String(metricNames.length);
+    annotations['mcp.discovered.metric_names_sample'] = metricNames.slice(0, 200).join(',');
+    markVerified('otel.metrics');
+  }
 
   // ---- spec.alerting ----
   const alerting = {
@@ -351,12 +509,119 @@ export function buildCanonicalPack({
 // Entrypoint
 // ============================================================
 
+// ============================================================
+// Discovery probes — narrow the gap between "MCP can attest" and
+// what the spec asks for. Each probe declares a CANDIDATE LIST of
+// tool names (MCPs in the wild use different conventions) and an
+// adapter that maps whatever shape comes back to the spec field.
+//
+// The fetcher tries the candidates in order; the first that responds
+// wins. If none respond, the probe is recorded as "attempted but
+// unanswered" so the draft can be honest about what was actually
+// missing vs what we never asked for.
+// ============================================================
+
+const PROBES = [
+  {
+    name: 'recording_rules',
+    candidates: ['list_recording_rules', 'prometheus_recording_rules', 'metrics_recording_rules', 'mimir_recording_rules', 'rules_list_recording', 'prometheus_rules', 'rules_list'],
+    target: 'spec.queries.recording_rules',
+    adapt: (response) => {
+      // Common shapes:
+      //   { groups: [{ name, rules: [{ record, expr, labels?, interval? }] }] }
+      //   { rules: [{ record/name, expr/query, interval? }] }
+      //   { data: { groups: [...] } }   (Prometheus /api/v1/rules)
+      const groups = response?.groups || response?.data?.groups || [];
+      const flat = response?.rules || groups.flatMap(g => (g.rules || []).map(r => ({ ...r, _group: g.name, _interval: g.interval })));
+      return flat
+        .filter(r => (r.record || r.name) && !r.alert)
+        .map(r => ({
+          name: r.record || r.name,
+          expr: r.expr || r.query || '',
+          ...(r._interval || r.interval ? { interval: r.interval || r._interval } : {}),
+          ...(r.labels ? { labels: r.labels } : {}),
+        }))
+        .filter(r => r.expr);
+    },
+  },
+  {
+    name: 'alert_rules',
+    candidates: ['list_alert_rules', 'prometheus_alert_rules', 'metrics_alert_rules', 'mimir_alert_rules', 'rules_list_alerting', 'prometheus_alerts'],
+    target: 'spec.policy.burn_rate_alerts',
+    adapt: (response) => {
+      const groups = response?.groups || response?.data?.groups || [];
+      const flat = response?.rules || groups.flatMap(g => (g.rules || []).map(r => ({ ...r, _group: g.name })));
+      // We can't fully reconstruct multi-window burn-rate semantics
+      // from a flat rule, but we CAN capture the alert as a forecast
+      // signal — the user can re-shape via the studio later.
+      return flat
+        .filter(r => r.alert || (r.name && !r.record))
+        .map(r => ({
+          name: r.alert || r.name,
+          expr: r.expr || r.query || '',
+          for: r.for || '5m',
+          labels: r.labels || {},
+          annotations: r.annotations || {},
+        }));
+    },
+  },
+  {
+    name: 'dashboards',
+    candidates: ['list_dashboards', 'grafana_dashboards', 'grafana_list_dashboards', 'grafana_search_dashboards', 'dashboards_list', 'grafana_search'],
+    target: 'spec.dashboards',
+    adapt: (response) => {
+      // Grafana /api/search shape: [{ id, uid, title, type:'dash-db', folderTitle, tags }]
+      // Generic shape: { dashboards: [{ id/uid, title, folder/folderTitle }] }
+      const list = Array.isArray(response) ? response : (response?.dashboards || response?.items || []);
+      return list
+        .filter(d => (d.type ? d.type === 'dash-db' : true))
+        .map(d => ({
+          id: String(d.uid || d.id || d.title || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || `dash-${Math.random().toString(36).slice(2, 8)}`,
+          provider: { kind: 'grafana', version: '12.0', schemaVersion: 41 },
+          folder: d.folderTitle || d.folder || 'mcp-discovered',
+          source: d.url ? `grafana://${d.url}` : `grafana://uid/${d.uid || d.id}`,
+        }));
+    },
+  },
+  {
+    name: 'scrape_configs',
+    candidates: ['list_scrape_configs', 'prometheus_scrape_configs', 'prometheus_targets', 'metrics_scrape_jobs', 'list_metric_jobs'],
+    target: 'spec.telemetry.scrape_evidence',   // annotation-only; no schema field
+    adapt: (response) => {
+      // Prometheus /api/v1/targets shape: { activeTargets: [{ labels: { job, instance } }] }
+      const targets = response?.activeTargets || response?.data?.activeTargets || response?.targets || [];
+      const jobs = new Set();
+      for (const t of targets) {
+        const j = t.labels?.job || t.job;
+        if (j) jobs.add(j);
+      }
+      return [...jobs];
+    },
+  },
+  {
+    name: 'metric_names',
+    candidates: ['list_metrics', 'prometheus_metric_names', 'metrics_inventory', 'mimir_metric_names'],
+    target: 'spec.otel.metric_inventory',   // annotation-only
+    adapt: (response) => {
+      const names = Array.isArray(response) ? response
+        : (response?.data || response?.metrics || response?.names || []);
+      return Array.isArray(names) ? names.filter(s => typeof s === 'string') : [];
+    },
+  },
+];
+
 export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   if (!mcpUrl) throw new Error('fetchMcp: mcpUrl required');
   const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth });
   const errors = {};
   const safe = async (name, fn) => {
     try { return await fn(); } catch (e) { errors[name] = e.message; return null; }
+  };
+  const quiet = async (name, fn) => {
+    // Like `safe`, but doesn't pollute `errors` — used for probes
+    // because trying a candidate tool that doesn't exist isn't a
+    // failure, it's an expected miss.
+    try { return await fn(); } catch (_) { return null; }
   };
 
   await rpc('initialize', {
@@ -375,7 +640,31 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   if (!health || !topology) {
     throw new Error(`core MCP tools unavailable. errors: ${JSON.stringify(errors)}`);
   }
-  return { health, topology, anomaliesActive, baselinesData, errors };
+
+  // Run discovery probes in parallel. Each probe tries multiple
+  // candidate tool names and stops at the first response.
+  const probeResults = {};
+  await Promise.all(PROBES.map(async (probe) => {
+    for (const candidate of probe.candidates) {
+      const response = await quiet(candidate, () => callTool(candidate));
+      if (response != null) {
+        let adapted;
+        try { adapted = probe.adapt(response); }
+        catch (_) { adapted = null; }
+        probeResults[probe.name] = {
+          tool: candidate,
+          attempted: probe.candidates.slice(0, probe.candidates.indexOf(candidate) + 1),
+          adapted,
+          rawSize: JSON.stringify(response).length,
+        };
+        return;
+      }
+    }
+    // None of the candidates responded — record that we tried.
+    probeResults[probe.name] = { tool: null, attempted: probe.candidates.slice(), adapted: null };
+  }));
+
+  return { health, topology, anomaliesActive, baselinesData, probeResults, errors };
 }
 
 // Convenience entrypoint used by the CLI + the server: end-to-end build,

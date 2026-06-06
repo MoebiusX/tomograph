@@ -34,9 +34,10 @@ import { parse as parseYaml, emit as emitYaml } from '../tools/lib/mini-yaml.mjs
 import { adapt, listEnvironments, applyEnvironmentOverlay } from '../tools/lib/adapter.mjs';
 import { validateCanonical, SPEC_VERSION } from '../tools/lib/validator.mjs';
 import { evaluateConformance, RUBRIC } from '../tools/lib/conformance.mjs';
-import { fetchMcp, buildCanonicalPack } from '../tools/fetch-live-pack.mjs';
+import { crawlFiles, crawlToYaml } from '../tools/lib/crawler.mjs';
+import { fetchMcp, buildCanonicalPack, createMcpClient } from '../tools/fetch-live-pack.mjs';
 import { diffPacks } from '../tools/lib/diff.mjs';
-import { compile, listTargets } from '../tools/lib/compile.mjs';
+import { compile, listTargets, compileCatalog, compileArtifact } from '../tools/lib/compile.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -47,36 +48,54 @@ const SCHEMA_PATH = resolve(
 const SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'));
 
 // ---------- pack catalog ----------
+//
+// The studio boots EMPTY by design (Phase 7q). No packs are auto-loaded.
+// The user opens a pack from disk via:
+//   - Upload (drag-drop or file picker)
+//   - "New from repo" (Path A — crawler)
+//   - "New from live" (Path B — MCP draft)
+//   - GET /api/examples to browse archived reference packs in examples/
+//
+// The five previously bundled packs (Payment service, Target advanced,
+// Production curated, Production live, Demo skeleton) now live under
+// examples/ as reference material, surfaced via /api/examples but not
+// auto-loaded into the catalog.
 
-const PACK_CATALOG = [
+const PACK_CATALOG = [];
+
+// Examples directory — archived reference packs. Browsed on demand via
+// the home screen's "Browse examples" link. Each entry mirrors the
+// catalog shape so the existing /api/packs/:id paths keep working when
+// the user opens an example.
+const EXAMPLE_PACKS = [
   {
     id: 'payment-service',
     label: 'Payment service (canonical example)',
-    path: 'vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml',
+    path: 'examples/payment-service.pack.yaml',
     description: "The spec repo's reference tier-1 pack — HTTP API + Kafka consumer.",
   },
   {
     id: 'target-advanced',
     label: 'Target advanced (tier-1 reference)',
-    path: 'packs/target-advanced.pack.yaml',
+    path: 'examples/target-advanced.pack.yaml',
     description: 'Aspirational tier-1 — 100% MUST conformance, all 5 SHOULDs pass.',
   },
   {
     id: 'production-curated',
     label: 'Production curated (tier-2 BAU)',
-    path: 'packs/production-curated.pack.yaml',
+    path: 'examples/production-curated.pack.yaml',
     description: 'Hand-curated tier-2 baseline with intentional gaps the conformance panel surfaces.',
   },
   {
     id: 'production-live',
     label: 'Production live (MCP fetcher)',
-    path: 'packs/production-live.pack.yaml',
+    path: 'examples/production-live.pack.yaml',
     description: 'Refreshed by the refresh-live-pack workflow. Reflects MCP-verifiable state.',
   },
   {
     id: 'demo-skeleton',
     label: 'Demo skeleton (tier-3 minimum)',
-    path: 'packs/demo-skeleton.pack.yaml',
+    path: 'examples/demo-skeleton.pack.yaml',
     description: "Smallest valid canonical v1.2 pack — every schema-required section with the leanest content.",
   },
 ];
@@ -138,8 +157,26 @@ function overlaidCanonical(canonical, envName) {
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', false);
-app.use(express.json({ limit: '4mb' }));
+app.use(express.json({ limit: '16mb' }));   // /api/crawl can carry a whole repo's worth of YAML
 app.use(express.text({ type: ['application/x-yaml', 'text/yaml', 'text/plain'], limit: '4mb' }));
+
+// Express's PayloadTooLargeError is thrown by the body parsers BEFORE
+// any of our handlers run, and the default error path returns HTML.
+// /api/* always wants JSON so the client can show a clean error and
+// hint the user toward client-side filtering instead of dumping a stack
+// trace into the dropzone.
+app.use((err, req, res, next) => {
+  if (err?.type === 'entity.too.large' || err?.status === 413) {
+    if ((req.path || '').startsWith('/api/')) {
+      const limit = err.limit ? Math.round(err.limit / 1024 / 1024) + 'MB' : '16MB';
+      return res.status(413).json({
+        ok: false,
+        error: `Request body too large (cap ${limit}). The crawler should filter to observability artefacts only — drop a large repo and the client will pre-classify; if you're hitting this you may have an in-flight build.`,
+      });
+    }
+  }
+  return next(err);
+});
 
 app.get('/healthz', (req, res) => {
   res.json({
@@ -153,8 +190,21 @@ app.get('/api/packs', (req, res) => {
   res.json({ packs: PACK_CATALOG.map(catalogEntry) });
 });
 
+// Opt-in lookup across catalog + examples — used by all the /api/packs/:id/*
+// routes so opening an example doesn't require a separate code path.
+function findPackMeta(id) {
+  return PACK_CATALOG.find(p => p.id === id)
+      || EXAMPLE_PACKS.find(p => p.id === id);
+}
+
+// Browse the archived reference packs without auto-loading them. The
+// home screen renders these as a small "Browse examples" affordance.
+app.get('/api/examples', (req, res) => {
+  res.json({ examples: EXAMPLE_PACKS.map(catalogEntry) });
+});
+
 app.get('/api/packs/:id', (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
     const canonical = loadPackFile(meta.path);
@@ -169,7 +219,7 @@ app.get('/api/packs/:id', (req, res) => {
 });
 
 app.get('/api/packs/:id/canonical', (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
     const canonical = loadPackFile(meta.path);
@@ -182,7 +232,7 @@ app.get('/api/packs/:id/canonical', (req, res) => {
 });
 
 app.get('/api/packs/:id/conformance', (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
     const canonical = loadPackFile(meta.path);
@@ -199,8 +249,8 @@ app.get('/api/diff', (req, res) => {
   const aId = typeof req.query.a === 'string' ? req.query.a : null;
   const bId = typeof req.query.b === 'string' ? req.query.b : null;
   if (!aId || !bId) return res.status(400).json({ error: 'query params `a` and `b` (pack ids) required' });
-  const aMeta = PACK_CATALOG.find(p => p.id === aId);
-  const bMeta = PACK_CATALOG.find(p => p.id === bId);
+  const aMeta = findPackMeta(aId);
+  const bMeta = findPackMeta(bId);
   if (!aMeta) return res.status(404).json({ error: `unknown pack: ${aId}` });
   if (!bMeta) return res.status(404).json({ error: `unknown pack: ${bId}` });
   const aEnv = typeof req.query.aEnv === 'string' && req.query.aEnv ? req.query.aEnv : null;
@@ -226,8 +276,345 @@ app.get('/api/compile/targets', (req, res) => {
   res.json({ targets: listTargets() });
 });
 
+// ----------------------------------------------------------------
+// /api/packs/:id/compile-catalog — enumerate every individually
+// compilable artifact in this pack. The studio renders this as a
+// left-nav tree; each leaf is then compiled via /api/packs/:id/
+// compile-artifact?group=&flavor=&artifact= below.
+// ----------------------------------------------------------------
+app.get('/api/packs/:id/compile-catalog', (req, res) => {
+  const meta = findPackMeta(req.params.id);
+  if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
+  try {
+    const canonical = loadPackFile(meta.path);
+    const env = readEnv(req.query);
+    const { canonical: overlaid } = overlaidCanonical(canonical, env);
+    const catalog = compileCatalog(overlaid);
+    res.json({
+      pack: meta.id,
+      env: env || null,
+      ...catalog,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------
+// /api/packs/:id/compile-artifact?group=&flavor=&artifact=
+// Per-artifact compilation. Returns the same content-type/body
+// shape as /api/packs/:id/compile/:target so the client can reuse
+// the existing display path.
+// ----------------------------------------------------------------
+app.get('/api/packs/:id/compile-artifact', (req, res) => {
+  const meta = findPackMeta(req.params.id);
+  if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
+  const group = String(req.query.group || '');
+  const flavor = req.query.flavor ? String(req.query.flavor) : undefined;
+  const artifact = req.query.artifact ? String(req.query.artifact) : 'all';
+  if (!group) return res.status(400).json({ ok: false, error: 'group query param required' });
+  try {
+    const canonical = loadPackFile(meta.path);
+    const env = readEnv(req.query);
+    const { canonical: overlaid } = overlaidCanonical(canonical, env);
+    const out = compileArtifact(overlaid, { group, flavor, artifact });
+    res.setHeader('Content-Type', out.contentType + '; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.setHeader('X-Pack-Source', `${meta.id}@${overlaid?.metadata?.version || '?'}`);
+    res.setHeader('X-Compile-Group', group);
+    if (flavor)   res.setHeader('X-Compile-Flavor', flavor);
+    if (artifact) res.setHeader('X-Compile-Artifact', artifact);
+    res.send(out.content);
+  } catch (e) {
+    res.status(500).type('application/json').send(JSON.stringify({ ok: false, error: e.message }));
+  }
+});
+
+// Deploy matrix — what's deployable, to which products, with what default
+// MCP tool. Spec §9's reference table lists more targets but for now we
+// only ship deploy paths to Grafana 12/13 (the version floor the spec
+// requires and the only platform where the rules + dashboards land
+// through a single unified API). OTel Collector + standalone
+// Alertmanager remain download-only; the compile output is still
+// emitted for hand-off, just not deployable from the UI.
+
+const DEPLOY_PRODUCTS = ['grafana'];
+const DEPLOY_VERSIONS = {
+  grafana: ['12', '13'],
+};
+const RULES_SCOPES = ['both', 'recording', 'alerting'];
+
+// (product, target) → default MCP tool name. The server lets the client
+// override via body.mcpTool; this dispatch supplies the convention.
+function defaultDeployTool({ product, target, scope }) {
+  if (product === 'grafana') {
+    if (target === 'prometheus-rules') {
+      if (scope === 'recording') return 'apply_grafana_recording_rules';
+      if (scope === 'alerting')  return 'apply_grafana_alerting_rules';
+      return 'apply_grafana_rules';   // both
+    }
+    if (target === 'grafana-dashboard') return 'apply_grafana_dashboard';
+  }
+  return null;   // not deployable
+}
+
+function targetIsDeployable(target) {
+  return target === 'prometheus-rules' || target === 'grafana-dashboard';
+}
+
+app.get('/api/deploy/matrix', (req, res) => {
+  // Surface the deployable targets + products + versions so the client
+  // can drive the UI from one source of truth.
+  res.json({
+    products: DEPLOY_PRODUCTS,
+    versions: DEPLOY_VERSIONS,
+    scopes: RULES_SCOPES,
+    targets: {
+      'prometheus-rules': {
+        deployable: true,
+        products: ['grafana'],
+        scopable: true,
+        scopes: RULES_SCOPES,
+        description: 'Recording + multi-window burn-rate alerting rules, applied via Grafana\'s unified alerting (Mimir-compatible) ruler.',
+      },
+      'grafana-dashboard': {
+        deployable: true,
+        products: ['grafana'],
+        scopable: false,
+        description: 'Grafana 12/13 dashboard JSON, applied via the dashboards API.',
+      },
+      'otel-collector': {
+        deployable: false,
+        reason: 'OTel Collector configs are environment-specific; emit and apply via your own deploy pipeline (kustomize / helm).',
+      },
+      'alertmanager': {
+        deployable: false,
+        reason: 'Standalone Alertmanager deploys are handled out-of-band; routes are folded into Grafana unified alerting for now.',
+      },
+    },
+  });
+});
+
+// Filter a prometheus-rules YAML payload down to recording rules only or
+// alerting rules only. This lives in the deploy path (not in compile)
+// because the compiled output remains canonical; scope is a deploy-time
+// concern.
+function filterPromRulesScope(yamlText, scope) {
+  if (!scope || scope === 'both') return yamlText;
+  // Parse with our mini YAML, drop rules of the other kind, re-emit.
+  // We keep the comment banner the compiler put at the top.
+  const headerMatch = yamlText.match(/^(\s*#[^\n]*\n)+/);
+  const header = headerMatch ? headerMatch[0] : '';
+  const obj = parseYaml(yamlText.replace(/^(\s*#[^\n]*\n)+/, ''));
+  if (!obj?.groups) return yamlText;
+  const wantKey = scope === 'recording' ? 'record' : 'alert';
+  obj.groups = obj.groups
+    .map(g => ({ ...g, rules: (g.rules || []).filter(r => wantKey in r) }))
+    .filter(g => (g.rules || []).length > 0);
+  return header + emitYaml(obj);
+}
+
+// ----------------------------------------------------------------
+// POST /api/packs/:id/deploy-bulk — multi-artefact deploy.
+// Body: {
+//   mcpUrl, mcpAuth?,
+//   targetProduct, targetVersion, targetFolder?,
+//   items: [{ group, flavor?, artifact?, dashboardId?, scope? }, ...]
+// }
+// Iterates items, compiling each via compileArtifact() and pushing
+// to the MCP tool the dispatcher chooses based on group + flavor.
+// Returns per-item ok/error so the UI can show partial success
+// instead of failing the whole batch.
+// ----------------------------------------------------------------
+app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
+  const meta = findPackMeta(req.params.id);
+  if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
+  const body = req.body || {};
+  const mcpUrl  = typeof body.mcpUrl  === 'string' ? body.mcpUrl.trim() : '';
+  const mcpAuth = typeof body.mcpAuth === 'string' ? body.mcpAuth : null;
+  const product = (typeof body.targetProduct === 'string' && body.targetProduct.trim()) ? body.targetProduct.trim() : 'grafana';
+  const version = (typeof body.targetVersion === 'string' && body.targetVersion.trim()) ? body.targetVersion.trim() : '12';
+  const folder  = typeof body.targetFolder === 'string' ? body.targetFolder.trim() : '';
+  const items = Array.isArray(body.items) ? body.items : null;
+  const env = readEnv(req.query);
+
+  if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  if (!items || items.length === 0) return res.status(400).json({ ok: false, error: 'items array required and must be non-empty' });
+  if (!DEPLOY_PRODUCTS.includes(product)) return res.status(400).json({ ok: false, error: `unsupported target product: ${product}` });
+  if (!DEPLOY_VERSIONS[product]?.includes(version)) return res.status(400).json({ ok: false, error: `unsupported ${product} version: ${version}` });
+
+  const t0 = Date.now();
+  const canonical = loadPackFile(meta.path);
+  const { canonical: overlaid } = overlaidCanonical(canonical, env);
+
+  // Map item.group → legacy target id used by defaultDeployTool.
+  const targetFor = (group) => {
+    if (group === 'rules') return 'prometheus-rules';
+    if (group === 'dashboards') return 'grafana-dashboard';
+    return group;
+  };
+
+  const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth });
+  await rpc('initialize', {
+    protocolVersion: '2025-06-18',
+    capabilities: {},
+    clientInfo: { name: 'observabilitypack-studio-deploy-bulk', version: '0.3.0' },
+  }).catch(() => {});
+
+  const results = [];
+  process.stderr.write(`[deploy-bulk] ${meta.id} -> ${mcpUrl} (${items.length} item${items.length === 1 ? '' : 's'}, ${product} ${version})\n`);
+
+  for (const item of items) {
+    const itStart = Date.now();
+    const itemTarget = targetFor(item.group);
+    try {
+      const compiled = compileArtifact(overlaid, {
+        group: item.group,
+        flavor: item.flavor,
+        artifact: item.artifact || 'all',
+        dashboardId: item.dashboardId,
+      });
+      const scope = item.scope || (itemTarget === 'prometheus-rules' ? 'both' : undefined);
+      const tool = defaultDeployTool({ product, target: itemTarget, scope });
+      if (!tool) {
+        results.push({ item, ok: false, error: `no default deploy tool for (${product}, ${itemTarget})`, tookMs: Date.now() - itStart });
+        continue;
+      }
+      // Filter rules to scope if applicable.
+      const payload = (itemTarget === 'prometheus-rules' && scope && scope !== 'both')
+        ? filterPromRulesScope(compiled.content, scope)
+        : compiled.content;
+      const result = await callTool(tool, {
+        payload,
+        content_type: compiled.contentType,
+        environment: env || undefined,
+        filename: compiled.filename,
+        pack_source: `${meta.id}@${overlaid?.metadata?.version || '?'}`,
+        target: itemTarget,
+        target_product: product,
+        target_version: version,
+        scope,
+        folder: folder || undefined,
+        artifact_group: item.group,
+        artifact_flavor: item.flavor,
+        artifact_id: item.artifact,
+      });
+      results.push({ item, ok: true, tool, bytes: payload.length, tookMs: Date.now() - itStart, result });
+    } catch (e) {
+      results.push({ item, ok: false, error: e.message, tookMs: Date.now() - itStart });
+    }
+  }
+  const totalMs = Date.now() - t0;
+  const okCount = results.filter(r => r.ok).length;
+  const failCount = results.length - okCount;
+  process.stderr.write(`[deploy-bulk]   done in ${totalMs}ms: ${okCount} ok / ${failCount} failed\n`);
+  res.status(failCount > 0 && okCount === 0 ? 502 : 200).json({
+    ok: failCount === 0,
+    results,
+    summary: { total: results.length, ok: okCount, failed: failCount },
+    targetProduct: product,
+    targetVersion: version,
+    targetFolder: folder || null,
+    env,
+    tookMs: totalMs,
+  });
+});
+
+app.post('/api/packs/:id/deploy/:target', async (req, res) => {
+  const meta = findPackMeta(req.params.id);
+  if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
+
+  const target = req.params.target;
+  if (!targetIsDeployable(target)) {
+    return res.status(400).json({
+      ok: false, target,
+      error: `deploy not supported for target '${target}'. Deploy is currently limited to Grafana 12/13 — see GET /api/deploy/matrix.`,
+    });
+  }
+
+  const body = req.body || {};
+  const mcpUrl  = typeof body.mcpUrl  === 'string' ? body.mcpUrl.trim()  : '';
+  const mcpAuth = typeof body.mcpAuth === 'string' ? body.mcpAuth        : null;
+  const product = (typeof body.targetProduct === 'string' && body.targetProduct.trim())
+    ? body.targetProduct.trim() : 'grafana';
+  const version = (typeof body.targetVersion === 'string' && body.targetVersion.trim())
+    ? body.targetVersion.trim() : '12';
+  const scope = (target === 'prometheus-rules' && typeof body.scope === 'string' && RULES_SCOPES.includes(body.scope))
+    ? body.scope : (target === 'prometheus-rules' ? 'both' : undefined);
+
+  if (!DEPLOY_PRODUCTS.includes(product)) {
+    return res.status(400).json({ ok: false, error: `unsupported target product: ${product}. Known: ${DEPLOY_PRODUCTS.join(', ')}.` });
+  }
+  if (!DEPLOY_VERSIONS[product]?.includes(version)) {
+    return res.status(400).json({ ok: false, error: `unsupported ${product} version: ${version}. Known: ${(DEPLOY_VERSIONS[product] || []).join(', ')}.` });
+  }
+
+  const mcpTool = (typeof body.mcpTool === 'string' && body.mcpTool.trim())
+    ? body.mcpTool.trim()
+    : defaultDeployTool({ product, target, scope });
+  if (!mcpTool) {
+    return res.status(400).json({ ok: false, error: 'no default deploy tool for this (product, target) combination; pass mcpTool in body.' });
+  }
+
+  const env = readEnv(req.query);
+  const dashboardId = typeof req.query.dashboardId === 'string' ? req.query.dashboardId : undefined;
+  if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+
+  const t0 = Date.now();
+  try {
+    const canonical = loadPackFile(meta.path);
+    const { canonical: overlaid } = overlaidCanonical(canonical, env);
+    const compiled = compile(overlaid, target, { dashboardId });
+
+    // For rules deploy, apply the scope filter (recording-only / alerting-only).
+    const payload = (target === 'prometheus-rules')
+      ? filterPromRulesScope(compiled.content, scope)
+      : compiled.content;
+
+    process.stderr.write(`[deploy] ${meta.id}@${canonical.metadata?.version || '?'} -> ${mcpUrl} via ${mcpTool} ` +
+      `(${product} ${version}, target=${target}, scope=${scope || '—'}, env=${env || 'none'}, ${payload.length}b)\n`);
+
+    const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth });
+    await rpc('initialize', {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'observabilitypack-studio-deploy', version: '0.3.0' },
+    }).catch(() => {});
+
+    const args = {
+      payload,
+      content_type: compiled.contentType,
+      environment: env || undefined,
+      filename: compiled.filename,
+      pack_source: `${meta.id}@${canonical.metadata?.version || '?'}`,
+      target,
+      target_product: product,
+      target_version: version,
+      scope: scope || undefined,
+    };
+    const result = await callTool(mcpTool, args);
+
+    const tookMs = Date.now() - t0;
+    process.stderr.write(`[deploy]   ok in ${tookMs}ms\n`);
+    res.json({
+      ok: true,
+      target, env, tool: mcpTool, mcpUrl,
+      targetProduct: product, targetVersion: version, scope: scope || null,
+      filename: compiled.filename,
+      bytes: payload.length,
+      tookMs,
+      result,
+    });
+  } catch (e) {
+    const tookMs = Date.now() - t0;
+    process.stderr.write(`[deploy]   error in ${tookMs}ms: ${e.message}\n`);
+    res.status(502).json({ ok: false, error: e.message, tool: mcpTool, target,
+      targetProduct: product, targetVersion: version, scope: scope || null, env, tookMs });
+  }
+});
+
 app.get('/api/packs/:id/compile/:target', (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
     const canonical = loadPackFile(meta.path);
@@ -290,6 +677,136 @@ app.get('/api/live-status', (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------
+// POST /api/draft-from-mcp — Path B of the pack-creation journey.
+//
+// Parallel to POST /api/crawl, but the source is a live MCP server
+// instead of a repo file map. Builds a canonical v1.2 pack from what
+// the MCP can attest to (system_health, system_topology, baselines,
+// active anomalies) and returns it for review WITHOUT writing it to
+// disk. The studio shows the preview + summary; "use this pack"
+// round-trips it through /api/validate just like the crawler flow.
+//
+// Body: { mcpUrl, mcpAuth?, packName? }
+// Response: { ok, canonical, canonicalYaml, summary, validation,
+//             conformance, annotations, tookMs }
+// ----------------------------------------------------------------
+app.post('/api/draft-from-mcp', async (req, res) => {
+  const body = req.body || {};
+  const mcpUrl  = typeof body.mcpUrl  === 'string' && body.mcpUrl.trim() ? body.mcpUrl.trim() : null;
+  const mcpAuth = typeof body.mcpAuth === 'string' && body.mcpAuth ? body.mcpAuth : null;
+  const packName = typeof body.packName === 'string' && body.packName.trim()
+    ? body.packName.trim()
+    : null;
+  if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+
+  const t0 = Date.now();
+  try {
+    process.stderr.write(`[draft-from-mcp] POST -> ${mcpUrl}\n`);
+    const fetched = await fetchMcp({ mcpUrl, mcpAuth });
+    const refreshedAt = new Date().toISOString();
+    const pack = buildCanonicalPack({ refreshedAt, mcpUrl, packName, ...fetched });
+    const errors = validateCanonical(pack, SCHEMA);
+
+    // Build a discovery summary in the same shape the crawler returns,
+    // so the client can render BOTH path A and path B drafts with the
+    // same review component.
+    const ann = pack.metadata?.annotations || {};
+    const probesAttempted = (ann['mcp.probesAttempted'] || '').split(',').filter(Boolean);
+    const probesSucceeded = (ann['mcp.probesSucceeded'] || '').split(',').filter(Boolean);
+    const summary = {
+      source: 'mcp',
+      mcpUrl,
+      refreshedAt,
+      discovered: {
+        backends:        (pack.spec?.telemetry?.backends || []).length,
+        servicesDiscovered: (ann['mcp.servicesDiscovered'] || '').split(',').filter(Boolean),
+        toolsCalled:    (ann['mcp.toolsCalled']    || '').split(',').filter(Boolean),
+        toolsFailed:    (ann['mcp.toolsFailed']    || '').split(',').filter(Boolean),
+        activeAnomalies: Number(ann['mcp.activeAnomalies'] || 0),
+        // Probe-discovered facts — counts only, full data lives in the
+        // pack itself (spec.queries.recording_rules etc.)
+        recordingRules:  Number(ann['mcp.discovered.recording_rules'] || (pack.spec?.queries?.recording_rules || []).length),
+        alertRules:      Number(ann['mcp.discovered.alert_rules'] || 0),
+        dashboards:      Number(ann['mcp.discovered.dashboards'] || (pack.spec?.dashboards || []).length),
+        scrapeJobs:     (ann['mcp.discovered.scrape_jobs'] || '').split(',').filter(Boolean),
+        metricNamesCount: Number(ann['mcp.discovered.metric_names_count'] || 0),
+        probesAttempted, probesSucceeded,
+      },
+      warnings: [],
+      tier: pack.metadata?.bindings?.criticality || 'tier-3',
+    };
+
+    // Warnings — only flag a gap when we ASKED and got nothing, never
+    // when we never asked. The MCP probe table is the contract for
+    // "what we tried."
+    if ((summary.discovered.toolsFailed || []).length) {
+      summary.warnings.push(`MCP tools that failed: ${summary.discovered.toolsFailed.join(', ')}`);
+    }
+    const attemptedNothing = (k) => probesAttempted.includes(k) && !probesSucceeded.includes(k);
+    if (attemptedNothing('recording_rules')) {
+      summary.warnings.push('Recording-rule probes returned empty. The SLI/SLO sections were synthesised from system_health — if your platform has Prometheus/Mimir rules, the MCP isn\'t exposing them yet.');
+    }
+    if (attemptedNothing('alert_rules')) {
+      summary.warnings.push('Alert-rule probes returned empty. Burn-rate alerts are synthesized from SLOs; existing fired alerts couldn\'t be surfaced.');
+    }
+    if (attemptedNothing('dashboards')) {
+      summary.warnings.push('Dashboard probes returned empty. The dashboards section is a stub — point the MCP at Grafana\'s /api/search to populate it.');
+    }
+    if (attemptedNothing('scrape_configs')) {
+      summary.warnings.push('Scrape-config probes returned empty. spec.telemetry.scrape_evidence is unknown — declare scrape jobs in the pack by hand if you can.');
+    }
+    if (attemptedNothing('metric_names')) {
+      summary.warnings.push('Metric-inventory probes returned empty. The metrics actually exported by the platform couldn\'t be enumerated.');
+    }
+    // Hard guards regardless of probes (the live state has to satisfy SOMETHING).
+    if ((pack.spec?.slis || []).length === 0) {
+      summary.warnings.push('No SLIs at all — recording rules + system_health both came up empty.');
+    }
+
+    const conformance = evaluateConformance(pack);
+    const canonicalYaml = banner(pack) + emitYaml(pack);
+    process.stderr.write(`[draft-from-mcp]   ok in ${Date.now() - t0}ms; ` +
+      `valid=${errors.length === 0}; ` +
+      `services=${summary.discovered.backends}; ` +
+      `failed=${summary.discovered.toolsFailed.join(',') || 'none'}\n`);
+
+    res.json({
+      ok: true,
+      canonical: pack,
+      canonicalYaml,
+      summary,
+      annotations: ann,
+      validation: { ok: errors.length === 0, errors },
+      conformance,
+      tookMs: Date.now() - t0,
+    });
+  } catch (e) {
+    process.stderr.write(`[draft-from-mcp]   error in ${Date.now() - t0}ms: ${e.message}\n`);
+    res.status(502).json({ ok: false, error: e.message, tookMs: Date.now() - t0 });
+  }
+});
+
+function banner(pack) {
+  return [
+    `# =============================================================================`,
+    `# ObservabilityPack: ${pack.metadata?.name || 'unnamed'}  (drafted from live MCP)`,
+    `# Source         : ${pack.metadata?.annotations?.['mcp.url'] || 'unknown'}`,
+    `# Drafted at     : ${pack.metadata?.annotations?.['mcp.refreshedAt'] || new Date().toISOString()}`,
+    `# Tools called   : ${pack.metadata?.annotations?.['mcp.toolsCalled']    || '(none)'}`,
+    `# Tools failed   : ${pack.metadata?.annotations?.['mcp.toolsFailed']    || 'none'}`,
+    `# Services found : ${pack.metadata?.annotations?.['mcp.servicesDiscovered'] || 0}`,
+    `# -----------------------------------------------------------------------------`,
+    `# This is a DRAFT. The MCP can attest to what's live (backends, topology,`,
+    `# baselines, active anomalies). It CANNOT supply your declared SLIs/SLOs,`,
+    `# dashboards, policy, or remediation — those belong in the pack you author or`,
+    `# crawl from the repo. Merge this draft with a repo-derived draft to get a`,
+    `# tier-2-complete pack.`,
+    `# =============================================================================`,
+    '',
+  ].join('\n');
+}
+
 app.post('/api/refresh-live', async (req, res) => {
   const body = req.body || {};
   const mcpUrl = typeof body.mcpUrl === 'string' && body.mcpUrl.trim() ? body.mcpUrl.trim() : null;
@@ -324,6 +841,81 @@ app.post('/api/refresh-live', async (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------
+// POST /api/crawl — Path A of the pack-creation user journey.
+//
+// Accepts an in-memory file map (the client uploads or drags in
+// files; the server never touches disk) and returns a draft
+// canonical pack plus the validation + conformance reports.
+//
+// Body: {
+//   files: { [relPath]: contentString },
+//   repoName?: string,
+//   environment?: string,
+//   criticality?: 'tier-1'|'tier-2'|'tier-3',
+//   binding?: string,
+//   owners?: string[]
+// }
+//
+// Response: { ok, canonical, canonicalYaml, summary, evidence,
+//             validation: { ok, errors }, conformance }
+//
+// The crawler library is shared with tools/crawl-repo.mjs (the
+// CLI form); both feed crawlFiles() the same in-memory map shape.
+// ----------------------------------------------------------------
+app.post('/api/crawl', (req, res) => {
+  const body = req.body || {};
+  const files = body.files;
+  if (!files || typeof files !== 'object' || Array.isArray(files)) {
+    return res.status(400).json({ ok: false, error: 'expected JSON body { files: { <relPath>: <content> } }' });
+  }
+  const entries = Object.entries(files);
+  if (entries.length === 0) {
+    return res.status(400).json({ ok: false, error: 'no files provided' });
+  }
+  for (const [k, v] of entries) {
+    if (typeof k !== 'string' || typeof v !== 'string') {
+      return res.status(400).json({ ok: false, error: `each file entry must be string→string (offending key: ${JSON.stringify(k)})` });
+    }
+  }
+  // Cap total payload to 16 MB so a runaway repo can't OOM the server.
+  let total = 0;
+  for (const [_, v] of entries) total += v.length;
+  if (total > 16 * 1024 * 1024) {
+    return res.status(413).json({ ok: false, error: `payload too large (${total} bytes; cap is 16MB). Drop large files like build artefacts or vendored binaries.` });
+  }
+
+  const opts = {
+    repoName: typeof body.repoName === 'string' ? body.repoName : undefined,
+    environment: typeof body.environment === 'string' ? body.environment : undefined,
+    criticality: typeof body.criticality === 'string' ? body.criticality : undefined,
+    binding: typeof body.binding === 'string' ? body.binding : undefined,
+    owners: Array.isArray(body.owners) ? body.owners.map(String) : undefined,
+  };
+
+  const t0 = Date.now();
+  try {
+    const { yaml, summary, evidence } = crawlToYaml(files, opts);
+    const { canonical } = crawlFiles(files, opts);
+    const validationErrors = validateCanonical(canonical, SCHEMA);
+    const conformance = evaluateConformance(canonical);
+    process.stderr.write(`[crawl] ${entries.length} files, ${summary.files.classified} classified, ${Object.keys(evidence).length} evidence, tier=${summary.inferred.tier}, valid=${validationErrors.length === 0}, ${Date.now() - t0}ms\n`);
+    res.json({
+      ok: true,
+      canonical,
+      canonicalYaml: yaml,
+      summary,
+      evidence,
+      validation: { ok: validationErrors.length === 0, errors: validationErrors },
+      conformance,
+      tookMs: Date.now() - t0,
+    });
+  } catch (e) {
+    process.stderr.write(`[crawl] error: ${e.message}\n`);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/validate', (req, res) => {
   try {
     let canonical;
@@ -347,6 +939,18 @@ app.post('/api/validate', (req, res) => {
 });
 
 // Static studio shell + assets.
+// Expose the shared crawler + YAML libraries so the browser can do
+// client-side artefact detection (filtering the staged file map BEFORE
+// posting to /api/crawl). Single source of truth — same module the
+// CLI and the server use.
+app.use('/lib', express.static(resolve(ROOT, 'tools/lib'), {
+  extensions: ['mjs', 'js'],
+  setHeaders: (res) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+  },
+}));
+
 app.use(express.static(STUDIO_DIR, { extensions: ['html'], index: 'index.html' }));
 
 // SPA-style fallback: any unknown GET returns the studio shell so the client

@@ -33,25 +33,51 @@ const COMPARE_TAB     = { id: 'COMPARE', num: 'CMP',  name: 'Compare' };
 const ATLAS_TAB       = { id: 'ATLAS',   num: 'ATL',  name: 'Atlas' };
 
 const state = {
+  // 'home' starts the studio empty; user picks Analyze (one pack) or
+  // Compare (two packs). Once chosen, mode becomes 'single' or 'compare'
+  // and the header bar + tabs appear. Logo click returns to 'home'.
+  mode: 'home',
   catalog: [],
   selectedPackId: null,
   selectedEnv: null,
   pack: null,
   conformance: null,
   symbolTable: null,
+  // Primary view selector (top nav). One of: layers, conformance,
+  // compile, atlas, schema. Compare mode hides conformance + compile.
+  view: 'layers',
+  // Secondary layer filter chips (only visible on view='layers').
+  // 'all' stacks every layer; the layer ids narrow to one.
+  layerFilter: 'all',
+  // Legacy: kept for back-compat with code that still reads it
+  // (drawer card highlight on per-layer cards, etc.). Mirrors view.
   activeLayer: 'L1',
   activeCardKey: null,
+  activeCardKeyA: null,        // side-A card highlight (compare view)
+  activeCardKeyB: null,        // side-B card highlight (compare view)
   uploadedSource: null,        // set when user uploaded a pack instead of using the catalog
   compareBId: null,            // second pack id for the COMPARE view
   compareBEnv: null,
+  compareSlice: 'all',         // 'all' | 'onlyA' | 'onlyB' | 'both' | 'a-b' | 'a+b'
+  compareSearch: '',           // text filter applied to card id/title
   diff: null,                  // last fetched /api/diff result
   packB: null,                 // B's full layered pack (for atlases)
   atlasVariant: 'strata',      // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit' | 'arbor'
   atlasMorph: 0,               // 0..1 for the constellation slider
+  arborView: 'A',              // 'A' | 'B' | 'both' — arbor side-by-side toggle
   compileTarget: 'prometheus-rules',
   compileDashId: null,
   compileContent: null,        // { filename, contentType, text, source } | { error }
-  compileTargets: null,        // catalog from /api/compile/targets
+  compileTargets: null,        // legacy catalog from /api/compile/targets
+  // Per-artifact compile state (Phase 7m).
+  compileCatalog: null,        // { groups: [...] } from /api/packs/:id/compile-catalog
+  compileGroup: 'rules',       // 'rules' | 'dashboards' | 'pipelines' | 'alertmanager'
+  compileFlavor: 'prometheus', // chosen flavor for the active group
+  compileArtifact: 'all',      // chosen leaf in the artifact tree
+  deployMatrix: null,          // catalog from /api/deploy/matrix
+  deployProduct: 'grafana',    // chosen target product
+  deployVersion: '12',         // chosen target version (string — matches matrix.versions)
+  deployScope: 'both',         // for prometheus-rules: both | recording | alerting
   mcpStatus: null,
 };
 
@@ -242,49 +268,111 @@ function layerArtefactCount(layerId) {
   return (layers[layerId] || []).length;
 }
 
+// ============================================================
+// Two-level navigation
+//
+// LEVEL 1 (primary view selector, top nav strip):
+//   Layers · Conformance · Compile · Atlas · Schema     (single mode)
+//   Layers · Atlas · Schema                              (compare mode)
+//
+// LEVEL 2 (layer filter chip strip, only visible on Layers view):
+//   All · L1 · L2 · L2X · L3 · L4 · L5 · GOV
+//
+// The previous design crammed everything in one row — layer tabs
+// L1..GOV mixed with the primary views CONF / BLD / CMP / ATL — which
+// meant filters fought primary navigation for screen space and the
+// user couldn't tell which was which. User feedback was unambiguous:
+// "filters are displayed mixed with the main Studio functions, that
+// you can't even see."
+// ============================================================
+
 function renderTabs() {
   const tabs = $('#layer-tabs');
+  if (!tabs) return;
   tabs.innerHTML = '';
-  for (const def of LAYER_DEFS) {
-    const count = layerArtefactCount(def.id);
-    if (def.id === 'L2X' && count === 0) continue;
-    tabs.appendChild(renderTab(def, count));
-  }
-  if (state.conformance) {
-    const def = CONFORMANCE_TAB;
-    const conf = state.conformance;
-    const label = `${conf.mustPercent}% MUST`;
-    tabs.appendChild(renderTab(def, label, true));
-  }
-  if (state.pack?.meta?.apiVersion) {
-    const shortLabel = (state.compileTarget || '').split('-')[0] || 'targets';
-    tabs.appendChild(renderTab(COMPILE_TAB, shortLabel, true));
-  }
-  if (state.catalog.filter(p => p.ok).length >= 2) {
-    const def = COMPARE_TAB;
-    // state.diff may be null (not yet loaded), {error: '...'} (fetch
-    // failed — e.g. stale dev server without /api/diff), or the real
-    // result. Guard against the error shape.
-    const sum = state.diff?.summary;
-    const label = sum ? `${sum.inBoth}/${sum.union}` : (state.diff?.error ? 'err' : 'pick');
-    tabs.appendChild(renderTab(def, label, true));
-    const aDef = ATLAS_TAB;
-    tabs.appendChild(renderTab(aDef, state.atlasVariant, true));
-  }
+  tabs.appendChild(renderPrimaryViewNav());
+  tabs.appendChild(renderLayerFilterChips());
 }
 
-function renderTab(def, countOrLabel, isMeta = false) {
-  const btn = document.createElement('button');
-  btn.className = 'tab' + (isMeta ? ' tab-meta' : '');
-  btn.dataset.layer = def.id;
-  btn.setAttribute('aria-selected', def.id === state.activeLayer ? 'true' : 'false');
-  btn.innerHTML = `
-    <span class="tab-num">${def.num}</span>
-    <span class="tab-name">${def.name}</span>
-    <span class="tab-count">${countOrLabel}</span>
-  `;
-  btn.onclick = () => { state.activeLayer = def.id; state.activeCardKey = null; renderTabs(); renderMainView(); };
-  return btn;
+function renderPrimaryViewNav() {
+  const nav = document.createElement('div');
+  nav.className = 'view-nav';
+
+  // Decide which views are available for the current mode.
+  const views = (state.mode === 'compare')
+    ? [
+        { id: 'layers',     label: 'Layers',     hint: 'Side-by-side per-layer comparison.' },
+        { id: 'atlas',      label: 'Atlas',      hint: 'Side-by-side atlas variants — Stratigraphy, Periodic, Constellation, Skyline, Transit, Arbor.' },
+        { id: 'schema',     label: 'Schema',     hint: 'Maturity rubric + spec compliance.' },
+      ]
+    : [
+        { id: 'layers',     label: 'Layers',     hint: 'Browse artefacts by layer (L1..GOV).' },
+        { id: 'conformance',label: 'Conformance',hint: 'Maturity rubric per tier with pass/fail.' },
+        { id: 'compile',    label: 'Compile',    hint: 'Per-artefact compilation to native platform format.' },
+        { id: 'schema',     label: 'Schema',     hint: 'Maturity score + canonical schema view.' },
+        // Atlas omitted from single mode — the variants are diff-driven
+        // (A vs B). To use them, pick "Compare two packs" from the home
+        // screen and choose this pack as side A.
+      ];
+  const active = state.view || 'layers';
+
+  for (const v of views) {
+    const b = document.createElement('button');
+    b.className = 'view-nav-btn' + (v.id === active ? ' is-active' : '');
+    b.type = 'button';
+    b.title = v.hint;
+    b.textContent = v.label;
+    b.onclick = () => {
+      state.view = v.id;
+      // Mirror to activeLayer for legacy code paths.
+      state.activeLayer = ({ conformance: 'CONF', compile: 'COMPILE', atlas: 'ATLAS', schema: 'CONF', layers: state.layerFilter !== 'all' ? state.layerFilter : 'L1' })[v.id] || 'L1';
+      state.activeCardKey = null;
+      renderTabs();
+      renderMainView();
+    };
+    nav.appendChild(b);
+  }
+  return nav;
+}
+
+function renderLayerFilterChips() {
+  const wrap = document.createElement('div');
+  wrap.className = 'layer-chips';
+  // Only show layer filter chips on the Layers view.
+  if (state.view !== 'layers' && state.view !== undefined && state.view !== null) {
+    wrap.hidden = true;
+    return wrap;
+  }
+  // 'All' first, then each layer in order.
+  const filterOptions = [{ id: 'all', label: 'All', count: null }];
+  for (const def of LAYER_DEFS) {
+    const count = state.pack ? layerArtefactCount(def.id) : 0;
+    if (def.id === 'L2X' && count === 0 && state.mode === 'single') continue;
+    filterOptions.push({ id: def.id, label: def.id, name: def.name, count });
+  }
+  const active = state.layerFilter || 'all';
+  for (const opt of filterOptions) {
+    const c = document.createElement('button');
+    c.type = 'button';
+    c.className = 'layer-chip' + (opt.id === active ? ' is-active' : '');
+    c.dataset.layer = opt.id;
+    if (opt.name) c.title = `${opt.id} · ${opt.name}${opt.count != null ? ' · ' + opt.count + ' artefact' + (opt.count === 1 ? '' : 's') : ''}`;
+    c.innerHTML = `
+      ${opt.id === 'all' ? '' : `<span class="lc-num">${opt.id}</span>`}
+      <span class="lc-label">${escapeHtml(opt.id === 'all' ? 'All' : (opt.name || opt.id))}</span>
+      ${opt.count != null ? `<span class="lc-count">${opt.count}</span>` : ''}
+    `;
+    c.onclick = () => {
+      state.layerFilter = opt.id;
+      // Mirror to activeLayer for renderLayerView et al.
+      state.activeLayer = opt.id === 'all' ? 'L1' : opt.id;
+      state.activeCardKey = null;
+      renderTabs();
+      renderMainView();
+    };
+    wrap.appendChild(c);
+  }
+  return wrap;
 }
 
 // ---------- main view ----------
@@ -292,35 +380,55 @@ function renderTab(def, countOrLabel, isMeta = false) {
 function renderMainView() {
   const view = $('#layer-view');
   view.innerHTML = '';
+  if (state.mode === 'home') { renderHomeView(); return; }
   if (!state.pack) { view.innerHTML = '<div class="placeholder">Loading pack…</div>'; return; }
 
-  if (state.activeLayer === 'CONF') {
-    view.appendChild(renderConformanceView());
+  // Compare mode always renders the side-by-side compare view, with
+  // its own sub-views (Layers / Atlas / Schema) selected via the
+  // primary view nav above.
+  if (state.mode === 'compare') {
+    if (state.view === 'atlas')   { renderAtlasView(view); return; }
+    if (state.view === 'schema')  { view.appendChild(renderConformanceView()); return; }
+    renderCompareView(view);   // 'layers' (default)
     return;
   }
 
-  if (state.activeLayer === 'COMPILE') {
-    renderCompileView(view);
-    return;
+  // Single mode — dispatch on view.
+  switch (state.view) {
+    case 'conformance': view.appendChild(renderConformanceView()); return;
+    case 'compile':     renderCompileView(view); return;
+    case 'atlas':       renderAtlasView(view); return;
+    case 'schema':      view.appendChild(renderConformanceView()); return;
+    case 'layers':
+    default:
+      renderLayersView(view);
+      return;
   }
+}
 
-  if (state.activeLayer === 'COMPARE') {
-    renderCompareView(view);
-    return;
-  }
+// Layers view — stacks every layer when filter='all', narrows to one
+// otherwise. Replaces the old per-layer-tab navigation.
+function renderLayersView(view) {
+  const filter = state.layerFilter || 'all';
+  const layersToShow = (filter === 'all')
+    ? LAYER_DEFS
+    : LAYER_DEFS.filter(d => d.id === filter);
 
-  if (state.activeLayer === 'ATLAS') {
-    renderAtlasView(view);
-    return;
+  let rendered = 0;
+  for (const def of layersToShow) {
+    // Skip L2X if empty (it's optional per spec v1.2).
+    if (def.id === 'L2X' && layerArtefactCount('L2X') === 0) continue;
+    if (def.id === 'L4') {
+      renderLayer4(view);
+    } else {
+      const items = state.pack.layers[def.id] || [];
+      view.appendChild(renderSection(def, items));
+    }
+    rendered++;
   }
-
-  const def = LAYER_DEFS.find(d => d.id === state.activeLayer) || LAYER_DEFS[0];
-  if (def.id === 'L4') {
-    renderLayer4(view);
-    return;
+  if (rendered === 0) {
+    view.innerHTML = '<div class="placeholder">No artefacts on this layer.</div>';
   }
-  const items = state.pack.layers[def.id] || [];
-  view.appendChild(renderSection(def, items));
 }
 
 function renderSection(def, items, opts = {}) {
@@ -534,12 +642,65 @@ async function loadCompileTargets() {
   return state.compileTargets;
 }
 
-async function loadCompiled() {
-  if (!state.selectedPackId || !state.compileTarget) { state.compileContent = null; return; }
+async function loadDeployMatrix() {
+  if (state.deployMatrix) return state.deployMatrix;
+  try { state.deployMatrix = await api('/api/deploy/matrix'); }
+  catch (_) { state.deployMatrix = { products: [], versions: {}, scopes: [], targets: {} }; }
+  return state.deployMatrix;
+}
+
+function isDeployable(target) {
+  return !!state.deployMatrix?.targets?.[target]?.deployable;
+}
+function targetScopable(target) {
+  return !!state.deployMatrix?.targets?.[target]?.scopable;
+}
+
+async function loadCompileCatalog() {
+  if (!state.selectedPackId) return null;
   const params = new URLSearchParams();
-  if (state.selectedEnv)   params.set('env', state.selectedEnv);
-  if (state.compileDashId) params.set('dashboardId', state.compileDashId);
-  const url = `/api/packs/${encodeURIComponent(state.selectedPackId)}/compile/${encodeURIComponent(state.compileTarget)}?${params}`;
+  if (state.selectedEnv) params.set('env', state.selectedEnv);
+  try {
+    const r = await fetch(`/api/packs/${encodeURIComponent(state.selectedPackId)}/compile-catalog?${params}`);
+    if (!r.ok) return null;
+    state.compileCatalog = await r.json();
+    // Reconcile current selection with what's available (the pack may
+    // have changed since last view).
+    const groups = state.compileCatalog.groups || [];
+    const g = groups.find(x => x.id === state.compileGroup) || groups[0];
+    if (!g) return state.compileCatalog;
+    state.compileGroup = g.id;
+    if (!g.flavors?.some(f => f.id === state.compileFlavor)) {
+      state.compileFlavor = g.flavors?.[0]?.id || null;
+    }
+    if (!g.items?.some(it => it.id === state.compileArtifact)) {
+      state.compileArtifact = g.items?.[0]?.id || 'all';
+    }
+  } catch (_) { state.compileCatalog = null; }
+  return state.compileCatalog;
+}
+
+// Map (group, flavor) → legacy deploy target id used by isDeployable() and the
+// deploy panel. Until per-artifact deploy lands, deploys are still
+// per-target (whole-file) so we resolve the active selection to the
+// closest legacy target name.
+function legacyDeployTargetFor(group) {
+  if (group === 'rules')        return 'prometheus-rules';
+  if (group === 'dashboards')   return 'grafana-dashboard';
+  if (group === 'pipelines')    return 'otel-collector';
+  if (group === 'alertmanager') return 'alertmanager';
+  return null;
+}
+
+async function loadCompiled() {
+  if (!state.selectedPackId) { state.compileContent = null; return; }
+  // Reset cached content so a switch between artifacts/flavors re-fetches.
+  const params = new URLSearchParams();
+  if (state.selectedEnv) params.set('env', state.selectedEnv);
+  params.set('group', state.compileGroup);
+  if (state.compileFlavor)   params.set('flavor', state.compileFlavor);
+  if (state.compileArtifact) params.set('artifact', state.compileArtifact);
+  const url = `/api/packs/${encodeURIComponent(state.selectedPackId)}/compile-artifact?${params}`;
   try {
     const r = await fetch(url);
     const ct = r.headers.get('content-type') || '';
@@ -555,10 +716,13 @@ async function loadCompiled() {
     const text = await r.text();
     state.compileContent = {
       filename: parseCdFilename(r.headers.get('content-disposition'))
-        || `${state.selectedPackId}.${state.compileTarget}`,
+        || `${state.selectedPackId}.${state.compileGroup}.${state.compileArtifact}`,
       contentType: ct.split(';')[0].trim(),
       text,
       source: r.headers.get('x-pack-source'),
+      group: r.headers.get('x-compile-group'),
+      flavor: r.headers.get('x-compile-flavor'),
+      artifact: r.headers.get('x-compile-artifact'),
     };
   } catch (e) {
     state.compileContent = { error: e.message };
@@ -588,83 +752,152 @@ function renderCompileView(host) {
   const lede = document.createElement('div');
   lede.className = 'compile-lede';
   lede.innerHTML = `
-    The pack is the contract; this is what it becomes when compiled. Change the YAML, regenerate everything below.
-    Each output is real and ingestible by its target — drop the rules into Prometheus's <code>rule_files:</code>,
-    the OTel Collector YAML into <code>--config</code>, the dashboard JSON into <code>grafana-cli dashboards import</code>,
-    the Alertmanager file into <code>--config.file</code>.
+    Pick an artifact on the left and choose its target flavor. Each leaf compiles individually — one SLO's rules,
+    one dashboard, or the full file. Every output declares its platform explicitly so you know whether you're
+    holding a <em>Prometheus / Mimir</em> rules file or a <em>Grafana-managed</em> provisioning YAML.
   `;
   section.appendChild(lede);
 
-  const pills = document.createElement('div');
-  pills.className = 'compile-targets';
-  if (!state.compileTargets) {
-    pills.innerHTML = '<span class="compile-loading">Loading targets…</span>';
-    loadCompileTargets().then(() => { renderTabs(); renderMainView(); });
-  } else {
-    for (const t of state.compileTargets) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'compile-target' + (t.id === state.compileTarget ? ' is-active' : '');
-      b.innerHTML = `
-        <span class="ct-label">${escapeHtml(t.label)}</span>
-        <span class="ct-ext">${escapeHtml(t.extension)}</span>
-      `;
-      b.title = t.description;
-      b.onclick = () => {
-        state.compileTarget = t.id;
-        state.compileContent = null;
-        if (t.id === 'grafana-dashboard' && !state.compileDashId) {
-          const first = state.pack?.layers?.L3?.find(a => /^DASH-/.test(a.id));
-          state.compileDashId = first?.spec?.id || null;
-        }
-        renderTabs(); renderMainView();
-      };
-      pills.appendChild(b);
-    }
-  }
-  section.appendChild(pills);
-
-  // Grafana sub-selector
-  if (state.compileTarget === 'grafana-dashboard' && state.pack) {
-    const dashWrap = document.createElement('div');
-    dashWrap.className = 'compile-subselect';
-    dashWrap.innerHTML = `<label class="ctrl"><span class="ctrl-key">DASHBOARD</span><select id="compile-dash"></select></label>`;
-    const sel = dashWrap.querySelector('#compile-dash');
-    const dashboards = (state.pack.layers?.L3 || []).filter(a => /^DASH-/.test(a.id));
-    if (!dashboards.length) {
-      const opt = document.createElement('option');
-      opt.textContent = '— no dashboards declared —'; opt.disabled = true;
-      sel.appendChild(opt); sel.disabled = true;
-    } else {
-      if (!state.compileDashId) state.compileDashId = dashboards[0].spec?.id || dashboards[0].title;
-      for (const d of dashboards) {
-        const id = d.spec?.id || d.title;
-        const opt = document.createElement('option');
-        opt.value = id; opt.textContent = id + (d.spec?.folder ? ` · ${d.spec.folder}` : '');
-        sel.appendChild(opt);
-      }
-      sel.value = state.compileDashId;
-      sel.onchange = () => { state.compileDashId = sel.value; state.compileContent = null; renderMainView(); };
-    }
-    section.appendChild(dashWrap);
-  }
-
-  const stage = document.createElement('div');
-  stage.className = 'compile-stage';
-  section.appendChild(stage);
+  // ---- Grid: left nav (artifact tree) + right stage ----
+  const grid = document.createElement('div');
+  grid.className = 'compile-grid';
+  section.appendChild(grid);
   host.appendChild(section);
 
+  const nav = document.createElement('aside');
+  nav.className = 'compile-nav';
+  grid.appendChild(nav);
+  const stage = document.createElement('div');
+  stage.className = 'compile-stage';
+  grid.appendChild(stage);
+
+  // Fetch catalog if missing.
+  if (!state.compileCatalog) {
+    nav.innerHTML = '<div class="compile-loading">Loading artifacts…</div>';
+    stage.innerHTML = '<div class="placeholder">Loading the artifact catalog…</div>';
+    loadCompileCatalog().then(() => { state.compileContent = null; renderMainView(); });
+    return;
+  }
+
+  const catalog = state.compileCatalog;
+  const groups = catalog.groups || [];
+  if (!groups.length) {
+    nav.innerHTML = '<div class="placeholder">This pack has nothing compilable yet — add SLOs, dashboards, or pipelines to the source.</div>';
+    return;
+  }
+
+  // ---- Left nav: artifact tree ----
+  for (const g of groups) {
+    const groupEl = document.createElement('div');
+    groupEl.className = 'compile-group' + (g.id === state.compileGroup ? ' is-active-group' : '');
+    groupEl.innerHTML = `
+      <div class="compile-group-head">
+        <span class="compile-group-label">${escapeHtml(g.label)}</span>
+        <span class="compile-group-count">${(g.items || []).length}</span>
+      </div>
+    `;
+    const list = document.createElement('ul');
+    list.className = 'compile-item-list';
+    for (const it of (g.items || [])) {
+      const li = document.createElement('li');
+      const selected = (g.id === state.compileGroup) && (it.id === state.compileArtifact);
+      li.className = 'compile-item' + (selected ? ' is-active' : '');
+      li.innerHTML = `
+        <button type="button" class="compile-item-btn" title="${escapeHtml(it.subtitle || '')}">
+          <span class="compile-item-bullet" aria-hidden="true">${selected ? '●' : '○'}</span>
+          <span class="compile-item-body">
+            <span class="compile-item-label">${escapeHtml(it.label)}</span>
+            ${it.subtitle ? `<span class="compile-item-sub">${escapeHtml(it.subtitle)}</span>` : ''}
+          </span>
+        </button>
+      `;
+      li.querySelector('button').onclick = () => {
+        state.compileGroup = g.id;
+        state.compileArtifact = it.id;
+        // Reconcile flavor with the chosen group.
+        if (!g.flavors?.some(f => f.id === state.compileFlavor)) {
+          state.compileFlavor = g.flavors?.[0]?.id || null;
+        }
+        state.compileContent = null;
+        renderMainView();
+      };
+      list.appendChild(li);
+    }
+    groupEl.appendChild(list);
+    nav.appendChild(groupEl);
+  }
+
+  // ---- Right stage: flavor pills + platform badge + compiled output ----
+  const activeGroup = groups.find(g => g.id === state.compileGroup) || groups[0];
+  const activeFlavor = activeGroup?.flavors?.find(f => f.id === state.compileFlavor) || activeGroup?.flavors?.[0];
+  const activeItem = (activeGroup?.items || []).find(it => it.id === state.compileArtifact);
+
+  // Platform callout — the explicit answer to "where does this land?"
+  const callout = document.createElement('div');
+  callout.className = 'compile-callout';
+  callout.innerHTML = `
+    <div class="compile-callout-head">
+      <span class="compile-callout-label">TARGET PLATFORM</span>
+      <span class="compile-callout-platform">${escapeHtml(activeFlavor?.platform || '—')}</span>
+    </div>
+    <div class="compile-callout-body">${escapeHtml(activeFlavor?.description || '')}</div>
+  `;
+  stage.appendChild(callout);
+
+  // Flavor pills (if multiple)
+  if ((activeGroup?.flavors || []).length > 1) {
+    const flavorBar = document.createElement('div');
+    flavorBar.className = 'compile-flavor-bar';
+    flavorBar.innerHTML = `<span class="compile-flavor-key">FLAVOR</span>`;
+    for (const f of activeGroup.flavors) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'compile-flavor-pill' + (f.id === state.compileFlavor ? ' is-active' : '');
+      b.innerHTML = `${escapeHtml(f.label)}`;
+      b.title = `${f.platform} · ${f.description}`;
+      b.onclick = () => {
+        if (state.compileFlavor === f.id) return;
+        state.compileFlavor = f.id;
+        state.compileContent = null;
+        renderMainView();
+      };
+      flavorBar.appendChild(b);
+    }
+    stage.appendChild(flavorBar);
+  }
+
+  // Active artifact heading
+  if (activeItem) {
+    const head2 = document.createElement('div');
+    head2.className = 'compile-artifact-head';
+    head2.innerHTML = `
+      <span class="compile-artifact-label">${escapeHtml(activeItem.label)}</span>
+      ${activeItem.subtitle ? `<span class="compile-artifact-sub">${escapeHtml(activeItem.subtitle)}</span>` : ''}
+    `;
+    stage.appendChild(head2);
+  }
+
+  // Content
   if (!state.compileContent) {
-    stage.innerHTML = '<div class="placeholder">Compiling…</div>';
+    const ph = document.createElement('div');
+    ph.className = 'placeholder';
+    ph.textContent = 'Compiling…';
+    stage.appendChild(ph);
     loadCompiled().then(() => renderMainView());
     return;
   }
   if (state.compileContent.error) {
-    stage.innerHTML = `<div class="error">Compile failed: ${escapeHtml(state.compileContent.error)}</div>`;
+    const err = document.createElement('div');
+    err.className = 'error';
+    err.textContent = `Compile failed: ${state.compileContent.error}`;
+    stage.appendChild(err);
     return;
   }
   const c = state.compileContent;
+  // Map current selection to the legacy target name the deploy path expects.
+  state.compileTarget = legacyDeployTargetFor(state.compileGroup) || state.compileTarget;
 
+  const envLabel = state.selectedEnv || 'none';
   const actions = document.createElement('div');
   actions.className = 'compile-actions';
   actions.innerHTML = `
@@ -677,9 +910,27 @@ function renderCompileView(host) {
     <div class="compile-buttons">
       <button class="ctrl-btn" id="copy-compiled" type="button">copy</button>
       <a class="ctrl-btn ctrl-link" id="download-compiled" download="${escapeHtml(c.filename)}">download</a>
+      ${isDeployable(state.compileTarget) ? `
+        <button class="ctrl-btn ctrl-deploy" id="deploy-compiled" type="button" title="Push this artefact to the live platform via MCP write tools">
+          deploy → <em>${escapeHtml(envLabel)}</em>
+        </button>` : `
+        <span class="ctrl-btn ctrl-deploy-disabled" title="${escapeHtml(state.deployMatrix?.targets?.[state.compileTarget]?.reason || 'No deploy path configured for this target')}">
+          deploy ✕
+        </span>`}
     </div>
   `;
   stage.appendChild(actions);
+
+  // Inline deploy panel — collapsed by default; expands when the
+  // user clicks deploy. Reuses the MCP URL the refresh panel already
+  // persisted in localStorage so the engineer doesn't have to retype.
+  const deployPanel = document.createElement('div');
+  deployPanel.className = 'deploy-panel';
+  deployPanel.hidden = true;
+  if (isDeployable(state.compileTarget)) {
+    deployPanel.innerHTML = renderDeployPanelMarkup(state.compileTarget);
+  }
+  stage.appendChild(deployPanel);
 
   const codeWrap = document.createElement('div');
   codeWrap.className = 'compile-code-wrap';
@@ -696,6 +947,179 @@ function renderCompileView(host) {
   const dl = actions.querySelector('#download-compiled');
   const blob = new Blob([c.text], { type: c.contentType });
   dl.href = URL.createObjectURL(blob);
+
+  const deployBtn = actions.querySelector('#deploy-compiled');
+  if (deployBtn) deployBtn.onclick = () => openDeployModal({ packId: state.selectedPackId });
+
+  // Live re-derive the default tool name as the user changes product /
+  // version / scope. We DON'T overwrite a user-typed override — only when
+  // the input still matches the previous default do we refresh it.
+  function rewireDefaults() {
+    const toolInput = deployPanel.querySelector('#deploy-mcp-tool');
+    if (!toolInput) return;
+    const newDefault = computeDeployTool(state.compileTarget);
+    if (toolInput.value === toolInput.dataset.lastDefault || !toolInput.value) {
+      toolInput.value = newDefault;
+    }
+    toolInput.dataset.lastDefault = newDefault;
+  }
+  const prodSel = deployPanel.querySelector('#deploy-product');
+  if (prodSel) prodSel.addEventListener('change', () => { state.deployProduct = prodSel.value; rewireDefaults(); });
+  const verSel = deployPanel.querySelector('#deploy-version');
+  if (verSel) verSel.addEventListener('change', () => { state.deployVersion = verSel.value; rewireDefaults(); });
+  const scopeSel = deployPanel.querySelector('#deploy-scope');
+  if (scopeSel) scopeSel.addEventListener('change', () => { state.deployScope = scopeSel.value; rewireDefaults(); });
+
+  const goBtn2 = deployPanel.querySelector('#deploy-go-btn');
+  if (goBtn2) goBtn2.onclick = () => doDeploy(deployPanel);
+  const cancelBtn = deployPanel.querySelector('#deploy-cancel-btn');
+  if (cancelBtn) cancelBtn.onclick = () => { deployPanel.hidden = true; };
+}
+
+// Mirror the server's defaultDeployTool function. Kept in sync with
+// server/index.mjs::defaultDeployTool.
+function computeDeployTool(target) {
+  const product = state.deployProduct;
+  const scope   = state.deployScope;
+  if (product === 'grafana') {
+    if (target === 'prometheus-rules') {
+      if (scope === 'recording') return 'apply_grafana_recording_rules';
+      if (scope === 'alerting')  return 'apply_grafana_alerting_rules';
+      return 'apply_grafana_rules';
+    }
+    if (target === 'grafana-dashboard') return 'apply_grafana_dashboard';
+  }
+  return `apply_${String(target || '').replace(/-/g, '_')}`;
+}
+
+function renderDeployPanelMarkup(target) {
+  const matrix = state.deployMatrix || { products: ['grafana'], versions: { grafana: ['12', '13'] }, scopes: ['both', 'recording', 'alerting'] };
+  const products = matrix.products.length ? matrix.products : ['grafana'];
+  const versions = matrix.versions[state.deployProduct] || matrix.versions[products[0]] || ['12', '13'];
+  const scopes = matrix.scopes || ['both', 'recording', 'alerting'];
+  const scopable = targetScopable(target);
+
+  const scopeLabels = {
+    both:      'both — recording + alerting rules',
+    recording: 'recording rules only',
+    alerting:  'alerting rules only',
+  };
+
+  return `
+    <div class="deploy-panel-head">
+      <div class="deploy-panel-title">Deploy via MCP write tool</div>
+      <div class="deploy-panel-sub">Target a specific product + version. The pack stays the source of truth — re-deploy any time by re-emitting from the pack.</div>
+    </div>
+    <div class="deploy-panel-body">
+      <div class="deploy-trio">
+        <label class="mcp-field deploy-field">
+          <span class="mcp-field-key">Target product</span>
+          <select id="deploy-product">
+            ${products.map(p => `<option value="${escapeHtml(p)}" ${p === state.deployProduct ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('')}
+          </select>
+        </label>
+        <label class="mcp-field deploy-field">
+          <span class="mcp-field-key">Target version</span>
+          <select id="deploy-version">
+            ${versions.map(v => `<option value="${escapeHtml(v)}" ${v === state.deployVersion ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
+          </select>
+        </label>
+        ${scopable ? `
+          <label class="mcp-field deploy-field">
+            <span class="mcp-field-key">Rules scope</span>
+            <select id="deploy-scope">
+              ${scopes.map(s => `<option value="${escapeHtml(s)}" ${s === state.deployScope ? 'selected' : ''}>${escapeHtml(scopeLabels[s] || s)}</option>`).join('')}
+            </select>
+          </label>` : ''}
+      </div>
+      <label class="mcp-field">
+        <span class="mcp-field-key">MCP URL</span>
+        <input id="deploy-mcp-url" type="url" placeholder="https://your-mcp.example.com/observability" autocomplete="off">
+      </label>
+      <label class="mcp-field">
+        <span class="mcp-field-key">Tool name <em>(default per product · version · scope)</em></span>
+        <input id="deploy-mcp-tool" type="text" placeholder="apply_*" autocomplete="off">
+      </label>
+      <label class="mcp-field">
+        <span class="mcp-field-key">Auth token <em>(optional, not persisted)</em></span>
+        <input id="deploy-mcp-auth" type="password" placeholder="bearer token" autocomplete="off">
+      </label>
+      <div class="deploy-panel-actions">
+        <button id="deploy-go-btn" class="mcp-refresh-btn" type="button">deploy</button>
+        <button id="deploy-cancel-btn" class="ctrl-btn" type="button">cancel</button>
+        <span id="deploy-status" class="mcp-refresh-status"></span>
+      </div>
+      <div id="deploy-result" class="deploy-result" hidden></div>
+    </div>
+  `;
+}
+
+async function doDeploy(panel) {
+  const url  = panel.querySelector('#deploy-mcp-url').value.trim();
+  const tool = panel.querySelector('#deploy-mcp-tool').value.trim() || computeDeployTool(state.compileTarget);
+  const auth = panel.querySelector('#deploy-mcp-auth').value;
+  const product = panel.querySelector('#deploy-product')?.value || state.deployProduct;
+  const version = panel.querySelector('#deploy-version')?.value || state.deployVersion;
+  const scope   = panel.querySelector('#deploy-scope')?.value   || (targetScopable(state.compileTarget) ? state.deployScope : undefined);
+  const statusEl = panel.querySelector('#deploy-status');
+  const resultEl = panel.querySelector('#deploy-result');
+  const setStatus = (msg, kind) => {
+    statusEl.textContent = msg;
+    statusEl.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
+  };
+  if (!url) { setStatus('mcp url required', 'error'); return; }
+  try { localStorage.setItem('mcpUrl', url); } catch (_) {}
+
+  const goBtn = panel.querySelector('#deploy-go-btn');
+  goBtn.disabled = true;
+  setStatus(`deploying to ${product} ${version}${scope && scope !== 'both' ? ' · ' + scope : ''}…`);
+  resultEl.hidden = true;
+
+  const qs = new URLSearchParams();
+  if (state.selectedEnv) qs.set('env', state.selectedEnv);
+  if (state.compileDashId) qs.set('dashboardId', state.compileDashId);
+  const target = state.compileTarget;
+  const path = `/api/packs/${encodeURIComponent(state.selectedPackId)}/deploy/${encodeURIComponent(target)}?${qs}`;
+
+  try {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mcpUrl: url,
+        mcpAuth: auth || undefined,
+        mcpTool: tool,
+        targetProduct: product,
+        targetVersion: version,
+        scope,
+      }),
+    });
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    let body;
+    if (!ct.includes('application/json')) {
+      setStatus(`error: server returned ${r.status} ${ct || 'no content-type'}`, 'error');
+      console.error('[deploy] non-JSON response:', raw.slice(0, 400));
+      return;
+    }
+    try { body = JSON.parse(raw); }
+    catch (e) { setStatus(`error: malformed JSON (${e.message})`, 'error'); return; }
+
+    if (!body.ok) {
+      setStatus(`error: ${body.error || 'unknown'}`, 'error');
+      resultEl.textContent = JSON.stringify(body, null, 2);
+      resultEl.hidden = false;
+      return;
+    }
+    setStatus(`deployed in ${body.tookMs}ms via ${escapeHtml(body.tool)}`, 'ok');
+    resultEl.textContent = JSON.stringify(body.result, null, 2);
+    resultEl.hidden = false;
+    toast(`Deployed ${body.filename} to ${body.env || 'mcp'}`);
+  } catch (e) {
+    setStatus(`error: ${e.message}`, 'error');
+  } finally {
+    goBtn.disabled = false;
+  }
 }
 
 // ---------- compare view ----------
@@ -750,39 +1174,710 @@ function renderCompareView(view) {
     return;
   }
 
-  // Render scaffold immediately so the picker is responsive even before
-  // the diff arrives.
   const scaffold = document.createElement('section');
   scaffold.className = 'section compare-view';
   scaffold.dataset.layer = 'COMPARE';
-  scaffold.appendChild(renderCompareHead());
-  scaffold.appendChild(renderComparePicker());
   view.appendChild(scaffold);
 
-  if (!state.diff) {
+  const haveA = !!state.pack;
+  const haveB = !!state.packB;
+  const haveDiff = !!state.diff && !state.diff.error;
+  if (!haveA || !haveB || !haveDiff) {
+    if (state.diff?.error) {
+      const err = document.createElement('div');
+      err.className = 'error';
+      err.textContent = `Diff failed: ${state.diff.error}`;
+      scaffold.appendChild(err);
+      return;
+    }
     const loading = document.createElement('div');
     loading.className = 'placeholder';
-    loading.textContent = 'Loading diff…';
+    loading.textContent = 'Loading both packs…';
     scaffold.appendChild(loading);
-    loadDiff().then(() => { renderTabs(); renderMainView(); });
-    return;
-  }
-  if (state.diff.error) {
-    const err = document.createElement('div');
-    err.className = 'error';
-    err.textContent = `Diff failed: ${state.diff.error}`;
-    scaffold.appendChild(err);
+    Promise.all([
+      haveB    ? Promise.resolve() : loadPackB(),
+      haveDiff ? Promise.resolve() : loadDiff(),
+    ]).then(() => { renderTabs(); renderMainView(); });
     return;
   }
 
+  // Tall header band: two pack-summary cards (A on left, B on right)
+  // with name + tier + version + env + count. Always visible — answers
+  // "what am I comparing" at a glance.
+  scaffold.appendChild(renderComparePackHeaders());
+
+  // Set-arithmetic summary + slice filter pills + search.
   scaffold.appendChild(renderCompareSummary());
-  for (const def of COMPARE_LAYERS) {
-    const bucket = state.diff.layers[def.id];
-    if (!bucket) continue;
-    const total = bucket.onlyInA.length + bucket.inBoth.length + bucket.onlyInB.length;
-    if (total === 0) continue;
-    scaffold.appendChild(renderCompareLayer(def, bucket));
+  scaffold.appendChild(renderCompareFilters());
+
+  // Build per-layer key-set lookups once.
+  const sets = buildCompareKeySets();
+
+  // Stack per-layer rows. Each row has the layer header SPANNING both
+  // columns, then a left grid (A) + right grid (B) aligned beneath it.
+  for (const L of LAYERS_FOR_DIFF) {
+    const row = renderCompareLayerRow(L, sets);
+    if (row) scaffold.appendChild(row);
   }
+}
+
+function buildCompareKeySets() {
+  const keysOnlyInA = {}, keysInBoth = {}, keysOnlyInB = {};
+  for (const L of LAYERS_FOR_DIFF) {
+    const bucket = state.diff.layers[L] || { onlyInA: [], onlyInB: [], inBoth: [] };
+    keysOnlyInA[L] = new Set(bucket.onlyInA.map(x => x.key));
+    keysOnlyInB[L] = new Set(bucket.onlyInB.map(x => x.key));
+    keysInBoth[L]  = new Set(bucket.inBoth.map(x => x.key));
+  }
+  return { keysOnlyInA, keysInBoth, keysOnlyInB };
+}
+
+// New: stacked PACK A + PACK B header band, side-by-side.
+function renderComparePackHeaders() {
+  const wrap = document.createElement('div');
+  wrap.className = 'compare-pack-headers';
+  wrap.appendChild(renderComparePackHeader('a', state.pack,  state.diff?.a));
+
+  // Swap button BETWEEN the two cards — visually anchors the
+  // "A vs B" relationship and removes the need for a separate
+  // picker band. Disabled when there's nothing to swap to.
+  const swapWrap = document.createElement('div');
+  swapWrap.className = 'compare-swap-wrap';
+  swapWrap.innerHTML = `
+    <button class="compare-swap-btn" type="button" id="compare-swap-btn" title="Swap PACK A and PACK B (and their envs)" aria-label="Swap packs">
+      <span class="csb-arrow">⇄</span>
+      <span class="csb-label">swap</span>
+    </button>
+  `;
+  swapWrap.querySelector('#compare-swap-btn').onclick = () => {
+    const aId  = state.selectedPackId;
+    const aEnv = state.selectedEnv;
+    if (!state.compareBId) return;
+    state.selectedPackId = state.compareBId;
+    state.selectedEnv    = state.compareBEnv;
+    state.compareBId  = aId;
+    state.compareBEnv = aEnv;
+    state.diff = null; state.packB = null;
+    refresh();
+    refreshDiff();
+  };
+  wrap.appendChild(swapWrap);
+
+  wrap.appendChild(renderComparePackHeader('b', state.packB, state.diff?.b));
+  return wrap;
+}
+
+// Return the catalog entry for a pack id — the source of truth for
+// the human-readable label, version, criticality, environments. The
+// per-pack metadata.name in the YAML may DIFFER from the catalog
+// label (e.g. catalog "Target advanced (tier-1 reference)" vs YAML
+// metadata.name "platform-edge"); the catalog label is what the
+// user picked from the dropdown, so it wins for display.
+function catalogEntryFor(packId) {
+  return (state.catalog || []).find(p => p.id === packId) || null;
+}
+
+function renderComparePackHeader(side, pack, diffMeta) {
+  const card = document.createElement('div');
+  card.className = `compare-pack-card compare-pack-card-${side}`;
+  const tier = pack?.meta?.criticality || '?';
+  const sourcePill = inferPackSource(pack);   // 'Repo' | 'Live' | 'Target' | 'Pack'
+  // Artefact count: sum across all layers (L4 has sub-buckets).
+  let count = 0;
+  for (const L of LAYERS_FOR_DIFF) {
+    if (L === 'L4') {
+      const L4 = pack?.layers?.L4 || {};
+      count += (L4.policy?.length || 0) + (L4.alerting?.length || 0) + (L4.healing?.length || 0);
+    } else {
+      count += (pack?.layers?.[L] || []).length;
+    }
+  }
+  // Resolve the active id + env per side, plus the catalog entry so we
+  // use the catalog label (what the user PICKED) rather than the YAML's
+  // metadata.name (which can differ — bug surfaced by user feedback).
+  const activeId  = (side === 'a') ? state.selectedPackId : state.compareBId;
+  const activeEnv = (side === 'a') ? state.selectedEnv   : state.compareBEnv;
+  const catalogEntry = catalogEntryFor(activeId);
+  const displayLabel = catalogEntry?.label || pack?.name || activeId || '?';
+  const envOptions   = catalogEntry?.environments || [];
+  const tierResolved = catalogEntry?.criticality || tier;
+  const versionResolved = catalogEntry?.version || pack?.meta?.version || '?';
+
+  // Build the pack + env picker options from the live catalog.
+  const packOptionsHtml = (state.catalog || [])
+    .filter(p => p.ok)
+    .map(p => `<option value="${escapeHtml(p.id)}" ${p.id === activeId ? 'selected' : ''}>${escapeHtml(p.label)}</option>`)
+    .join('');
+  const envOptionsHtml = (envOptions.length ? envOptions : (activeEnv ? [activeEnv] : []))
+    .map(e => `<option value="${escapeHtml(e)}" ${e === activeEnv ? 'selected' : ''}>${escapeHtml(e)}</option>`)
+    .join('');
+
+  card.innerHTML = `
+    <div class="cpc-eyebrow">PACK ${side.toUpperCase()}</div>
+    <div class="cpc-pickers">
+      <label class="cpc-pickfield">
+        <span class="cpc-pickfield-key">pack</span>
+        <select class="cpc-pack-select" data-side="${side}">${packOptionsHtml}</select>
+      </label>
+      <label class="cpc-pickfield cpc-pickfield-env">
+        <span class="cpc-pickfield-key">env</span>
+        <select class="cpc-env-select" data-side="${side}" ${envOptions.length ? '' : 'disabled'}>${envOptionsHtml || '<option>—</option>'}</select>
+      </label>
+    </div>
+    <div class="cpc-row">
+      <span class="cpc-source-pill" data-source="${escapeHtml(sourcePill)}">${escapeHtml(sourcePill)}</span>
+      <span class="cpc-name" title="catalog label">${escapeHtml(displayLabel)}</span>
+    </div>
+    <div class="cpc-meta">
+      <span class="cpc-meta-pill" data-tier="${escapeHtml(tierResolved)}">${escapeHtml(tierResolved)}</span>
+      <span class="cpc-meta-pill">v${escapeHtml(versionResolved)}</span>
+      <span class="cpc-meta-pill cpc-count">${count} artefact${count === 1 ? '' : 's'}</span>
+    </div>
+    <div class="cpc-actions">
+      <button class="cpc-action-btn" data-action="evaluate" title="Show maturity score: per-tier conformance breakdown">
+        <span class="cpc-action-icon">✓</span> evaluate
+      </button>
+      <button class="cpc-action-btn" data-action="coverage" title="Show coverage breakdown by layer + sub-bucket">
+        <span class="cpc-action-icon">∑</span> coverage
+      </button>
+      <button class="cpc-action-btn cpc-action-deploy" data-action="deploy" title="Open the deploy modal scoped to this pack">
+        <span class="cpc-action-icon">↑</span> deploy
+      </button>
+    </div>
+  `;
+
+  // Wire the pickers — changes trigger a reload of the affected side
+  // and re-fetch the diff.
+  const packSel = card.querySelector('.cpc-pack-select');
+  if (packSel) packSel.onchange = () => {
+    const newId = packSel.value;
+    if (side === 'a') {
+      state.selectedPackId = newId;
+      state.selectedEnv    = defaultEnvFor(newId);
+      state.diff = null;
+      refresh();
+      refreshDiff();
+    } else {
+      state.compareBId = newId;
+      state.compareBEnv = defaultEnvFor(newId);
+      state.diff = null; state.packB = null;
+      refreshDiff();
+      renderTabs(); renderMainView();
+    }
+  };
+  const envSel = card.querySelector('.cpc-env-select');
+  if (envSel) envSel.onchange = () => {
+    if (side === 'a') { state.selectedEnv = envSel.value || null; refresh(); }
+    else { state.compareBEnv = envSel.value || null; state.packB = null; state.diff = null; refreshDiff(); renderTabs(); renderMainView(); }
+  };
+  // Wire the action buttons. Evaluate opens the maturity popover;
+  // coverage opens a layer-by-layer count breakdown.
+  const evalBtn = card.querySelector('[data-action="evaluate"]');
+  if (evalBtn) evalBtn.onclick = (e) => { e.stopPropagation(); openMaturityPopover(side, pack, card); };
+  const covBtn = card.querySelector('[data-action="coverage"]');
+  if (covBtn) covBtn.onclick = (e) => { e.stopPropagation(); openCoveragePopover(side, pack, card); };
+  const depBtn = card.querySelector('[data-action="deploy"]');
+  if (depBtn) depBtn.onclick = (e) => {
+    e.stopPropagation();
+    const packId = (side === 'a') ? state.selectedPackId : state.compareBId;
+    openDeployModal({ packId });
+  };
+  return card;
+}
+
+// ------------------------------------------------------------
+// Maturity score popover — score with per-clause pass/fail
+// grouped by tier. Drives off /api/packs/:id/conformance which
+// returns the rubric evaluation the studio already uses on the
+// SCHEMA tab.
+// ------------------------------------------------------------
+
+async function openMaturityPopover(side, pack, anchor) {
+  // Resolve which pack id to fetch conformance for.
+  const packId = (side === 'a') ? state.selectedPackId : state.compareBId;
+  const env    = (side === 'a') ? state.selectedEnv   : state.compareBEnv;
+  // Tear down any open popover first.
+  document.querySelectorAll('.maturity-popover, .coverage-popover').forEach(n => n.remove());
+
+  const pop = document.createElement('div');
+  pop.className = 'maturity-popover';
+  pop.dataset.side = side;
+  pop.innerHTML = `
+    <div class="mp-head">
+      <div class="mp-eyebrow">MATURITY SCORE</div>
+      <button class="mp-close" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="mp-body"><div class="placeholder">Evaluating…</div></div>
+  `;
+  anchor.appendChild(pop);
+  pop.querySelector('.mp-close').onclick = () => pop.remove();
+
+  // Outside-click dismiss.
+  setTimeout(() => {
+    const onDoc = (e) => {
+      if (!pop.contains(e.target) && !anchor.querySelector('[data-action="evaluate"]')?.contains(e.target)) {
+        pop.remove();
+        document.removeEventListener('click', onDoc);
+      }
+    };
+    document.addEventListener('click', onDoc);
+  }, 50);
+
+  try {
+    const qs = env ? `?env=${encodeURIComponent(env)}` : '';
+    const conf = await api(`/api/packs/${encodeURIComponent(packId)}/conformance${qs}`);
+    pop.querySelector('.mp-body').innerHTML = renderMaturityPopoverBody(conf, pack?.name);
+  } catch (e) {
+    pop.querySelector('.mp-body').innerHTML = `<div class="error">Could not evaluate: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderMaturityPopoverBody(conf, packName) {
+  // Conformance shape:
+  //   declaredTier, conformant, scorePercent, mustPercent, must {passed,total}, should{...},
+  //   clauses: [{ id, dimension, severity, minTier, description, applies, passed }]
+  const score = Math.round(conf.scorePercent || 0);
+  const verdict = conf.conformant ? 'conformant' : 'non-conformant';
+  const verdictClass = conf.conformant ? 'mp-verdict-ok' : 'mp-verdict-err';
+  // Group clauses by minTier. Display order: tier-3 first (the floor), then tier-2, then tier-1.
+  // The conformance lib's clause shape is { id, dimension, severity, minTier,
+  // description, applies, pass } — `pass` is null when applies=false.
+  const tiers = ['tier-3', 'tier-2', 'tier-1'];
+  const tierLabels = {
+    'tier-3': 'TIER 3 — MINIMUM CONFORMANCE',
+    'tier-2': 'TIER 2 — INTERNAL CRITICAL',
+    'tier-1': 'TIER 1 — CUSTOMER-FACING',
+  };
+  const sections = tiers.map(t => {
+    const items = (conf.clauses || []).filter(c => c.minTier === t);
+    if (!items.length) return '';
+    const applicable = items.filter(c => c.applies);
+    const passed     = items.filter(c => c.pass === true).length;
+    const countLabel = applicable.length === items.length
+      ? `${passed}/${items.length}`
+      : `${passed}/${applicable.length}<span class="mp-tier-na"> (${items.length - applicable.length} N/A)</span>`;
+    return `
+      <div class="mp-tier">
+        <div class="mp-tier-head">
+          <span class="mp-tier-label">${tierLabels[t]}</span>
+          <span class="mp-tier-count">${countLabel}</span>
+        </div>
+        <ul class="mp-clauses">
+          ${items.map(c => {
+            const cls = !c.applies ? 'is-na' : (c.pass ? 'is-passed' : 'is-failed');
+            return `
+              <li class="mp-clause ${cls}" title="${escapeHtml(c.description || '')}">
+                <span class="mp-clause-num">${escapeHtml(c.id)}</span>
+                <span class="mp-clause-desc">${escapeHtml(c.dimension || c.description || c.id)}</span>
+                <span class="mp-clause-sev">${escapeHtml(c.severity || '')}</span>
+              </li>`;
+          }).join('')}
+        </ul>
+      </div>`;
+  }).join('');
+  return `
+    <div class="mp-score-row">
+      <div class="mp-score-big">${score}<span class="mp-score-denom">/100</span></div>
+      <div class="mp-score-side">
+        <div class="mp-pack-name">${escapeHtml(packName || '')}</div>
+        <div class="mp-verdict ${verdictClass}">${escapeHtml(verdict)}</div>
+        <div class="mp-score-mini">MUST ${conf.must?.passed || 0}/${conf.must?.total || 0} · SHOULD ${conf.should?.passed || 0}/${conf.should?.total || 0}</div>
+      </div>
+    </div>
+    ${sections}
+  `;
+}
+
+// ------------------------------------------------------------
+// Coverage popover — per-layer breakdown with sub-buckets so the
+// SRE can see "26 L3 = 19 dashboards + 7 recording rules", etc.
+// ------------------------------------------------------------
+
+function openCoveragePopover(side, pack, anchor) {
+  document.querySelectorAll('.maturity-popover, .coverage-popover').forEach(n => n.remove());
+  const pop = document.createElement('div');
+  pop.className = 'coverage-popover';
+  pop.dataset.side = side;
+  pop.innerHTML = `
+    <div class="mp-head">
+      <div class="mp-eyebrow">COVERAGE BREAKDOWN</div>
+      <button class="mp-close" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="mp-body">${renderCoveragePopoverBody(pack)}</div>
+  `;
+  anchor.appendChild(pop);
+  pop.querySelector('.mp-close').onclick = () => pop.remove();
+  setTimeout(() => {
+    const onDoc = (e) => {
+      if (!pop.contains(e.target) && !anchor.querySelector('[data-action="coverage"]')?.contains(e.target)) {
+        pop.remove();
+        document.removeEventListener('click', onDoc);
+      }
+    };
+    document.addEventListener('click', onDoc);
+  }, 50);
+}
+
+function renderCoveragePopoverBody(pack) {
+  // Sub-bucket each layer the same way the spec breaks them down.
+  const breakdown = [];
+  let total = 0;
+  const layers = pack?.layers || {};
+
+  function countAndAdd(layerLabel, layerKey, items, subBuckets) {
+    const n = items.length;
+    total += n;
+    const subRows = subBuckets ? Object.entries(subBuckets).map(([k, v]) => `
+      <tr class="cv-sub">
+        <td class="cv-key">${escapeHtml(k)}</td>
+        <td class="cv-val">${v}</td>
+      </tr>`).join('') : '';
+    breakdown.push(`
+      <tr class="cv-row" data-layer="${escapeHtml(layerKey)}">
+        <td class="cv-key"><span class="cv-pill" data-layer="${escapeHtml(layerKey)}">${escapeHtml(layerKey)}</span> ${escapeHtml(layerLabel)}</td>
+        <td class="cv-val">${n}</td>
+      </tr>${subRows}`);
+  }
+
+  // L1: SLIs + SLOs
+  const l1 = layers.L1 || [];
+  const l1Sub = {
+    'SLIs':  l1.filter(x => /^SLI-/.test(x.id)).length,
+    'SLOs':  l1.filter(x => /^SLO-/.test(x.id)).length,
+  };
+  countAndAdd('SLI/SLO', 'L1', l1, Object.values(l1Sub).reduce((a,b)=>a+b,0) > 0 ? l1Sub : null);
+
+  // L2: Backends + Pipelines + Storage + Otel
+  const l2 = layers.L2 || [];
+  const l2Sub = {
+    'Backends':     l2.filter(x => /^BAK-/.test(x.id)).length,
+    'Pipelines':    l2.filter(x => /^PIP-/.test(x.id)).length,
+    'Storage':      l2.filter(x => /^STO-/.test(x.id)).length,
+    'OTel':         l2.filter(x => /^OTEL-/.test(x.id)).length,
+  };
+  countAndAdd('Metrics/Logs/Traces', 'L2', l2, l2Sub);
+
+  // L2X: extended
+  if ((layers.L2X || []).length) countAndAdd('Extended surfaces', 'L2X', layers.L2X);
+
+  // L3: Queries + Views + Dashboards
+  const l3 = layers.L3 || [];
+  const l3Sub = {
+    'Dashboards':       l3.filter(x => /^DASH-/.test(x.id)).length,
+    'Recording rules':  l3.filter(x => /^QRY-/.test(x.id)).length,
+    'Derived views':    l3.filter(x => /^VIEW-/.test(x.id)).length,
+  };
+  countAndAdd('Dashboards/Queries', 'L3', l3, l3Sub);
+
+  // L4: policy + alerting + healing
+  const l4 = layers.L4 || {};
+  const l4Items = [...(l4.policy || []), ...(l4.alerting || []), ...(l4.healing || [])];
+  const l4Sub = {
+    'Burn-rate alerts': (l4.policy || []).filter(x => /^POL-/.test(x.id)).length,
+    'Forecast alerts':  (l4.policy || []).filter(x => /^FCST-/.test(x.id)).length,
+    'Alert routes':     (l4.alerting || []).length,
+    'Remediation':      (l4.healing || []).length,
+  };
+  countAndAdd('Alerts + remediation', 'L4', l4Items, l4Sub);
+
+  // L5: baselines + chaos + synthetic
+  const l5 = layers.L5 || [];
+  const l5Sub = {
+    'Baselines':       l5.filter(x => /^BASE-/.test(x.id)).length,
+    'Chaos':           l5.filter(x => /^CHAOS-/.test(x.id)).length,
+    'Synthetic':       l5.filter(x => /^SYN-/.test(x.id)).length,
+  };
+  countAndAdd('Self-check', 'L5', l5, l5Sub);
+
+  // GOV
+  if ((layers.GOV || []).length) countAndAdd('Governance', 'GOV', layers.GOV);
+
+  return `
+    <table class="cv-table">
+      ${breakdown.join('')}
+      <tr class="cv-total">
+        <td class="cv-key"><strong>Total</strong></td>
+        <td class="cv-val"><strong>${total}</strong></td>
+      </tr>
+    </table>
+    <div class="cv-foot">Sub-buckets count by id prefix (SLI-, BAK-, DASH-, etc.). Pack generated from canonical v1.2 manifest.</div>
+  `;
+}
+
+function inferPackSource(pack) {
+  // The studio's source taxonomy is per-artefact, not per-pack. We
+  // infer the pack-level label from id + dominant artefact source.
+  if (!pack) return 'Pack';
+  const id = (pack.id || '').toLowerCase();
+  if (id.includes('live'))     return 'Live';
+  if (id.includes('target'))   return 'Target';
+  if (id.includes('curated'))  return 'Repo';
+  if (id.includes('skeleton')) return 'Demo';
+  // Fallback: look at the artefact sources
+  const first = (pack?.layers?.L1 || [])[0];
+  if (first?.source === 'Verified') return 'Live';
+  return 'Repo';
+}
+
+// Slice filter pills + search input.
+function renderCompareFilters() {
+  const wrap = document.createElement('div');
+  wrap.className = 'compare-filters';
+  const slices = [
+    { id: 'all',   label: 'All',       hint: 'Every artefact from both packs, side by side.' },
+    { id: 'onlyA', label: 'Only in A', hint: 'Artefacts present in pack A but not in pack B. Right column is empty.' },
+    { id: 'onlyB', label: 'Only in B', hint: 'Artefacts present in pack B but not in pack A. Left column is empty.' },
+    { id: 'both',  label: 'In both',   hint: 'Artefacts present in both packs (matched by `defines` symbol or id).' },
+    { id: 'a-b',   label: 'A − B',     hint: 'Set difference: every artefact in A, minus anything also in B.' },
+    { id: 'a+b',   label: 'A + B',     hint: 'Union: combined view of both packs without duplication.' },
+  ];
+  const active = state.compareSlice || 'all';
+  for (const s of slices) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'compare-slice-pill' + (s.id === active ? ' is-active' : '');
+    b.dataset.slice = s.id;
+    b.textContent = s.label;
+    b.title = s.hint;
+    b.onclick = () => { state.compareSlice = s.id; renderMainView(); };
+    wrap.appendChild(b);
+  }
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'compare-search-input';
+  search.placeholder = 'search id or title…';
+  search.value = state.compareSearch || '';
+  // Use input event for live filter; debounce via requestAnimationFrame.
+  let pending = null;
+  search.addEventListener('input', () => {
+    if (pending) cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(() => {
+      state.compareSearch = search.value;
+      renderMainView();
+      // After re-render, restore focus + cursor (renderMainView wipes the DOM).
+      const fresh = document.querySelector('.compare-search-input');
+      if (fresh) { fresh.focus(); fresh.setSelectionRange(search.value.length, search.value.length); }
+    });
+  });
+  wrap.appendChild(search);
+  return wrap;
+}
+
+// Per-layer ROW: layer head spans both columns, then two aligned grids.
+function renderCompareLayerRow(L, sets) {
+  const aItems = layerItemsFor(state.pack, L);
+  const bItems = layerItemsFor(state.packB, L);
+  if (aItems.length === 0 && bItems.length === 0) return null;
+
+  const layerNames = {L1:'Contract',L2:'Telemetry',L2X:'Extended',L3:'Insight',L4:'Action',L5:'Validation',GOV:'Governance'};
+  const row = document.createElement('section');
+  row.className = 'compare-layer-row';
+  row.dataset.layer = L;
+  // Counts after slice + search filtering.
+  const filteredA = filterCompareItems(aItems, L, 'a', sets);
+  const filteredB = filterCompareItems(bItems, L, 'b', sets);
+  if (filteredA.length === 0 && filteredB.length === 0) return null;
+
+  const head = document.createElement('div');
+  head.className = 'compare-layer-head';
+  head.innerHTML = `
+    <span class="section-num">${L}</span>
+    <span class="section-name">${escapeHtml(layerNames[L] || L)}</span>
+    <span class="section-count">
+      <span class="cli-pill cli-a">${filteredA.length}</span>
+      <span class="cli-vs">vs</span>
+      <span class="cli-pill cli-b">${filteredB.length}</span>
+    </span>
+  `;
+  row.appendChild(head);
+
+  const grid = document.createElement('div');
+  grid.className = 'compare-layer-grid';
+  grid.appendChild(renderCompareLayerColumn('a', L, filteredA, sets));
+  grid.appendChild(renderCompareLayerColumn('b', L, filteredB, sets));
+  row.appendChild(grid);
+  return row;
+}
+
+function layerItemsFor(pack, L) {
+  if (!pack?.layers) return [];
+  if (L === 'L4') {
+    const L4 = pack.layers.L4 || {};
+    const out = [];
+    for (const sg of L4_SUBGROUPS) for (const it of (L4[sg.key] || [])) out.push({ ...it, _sub: sg.key });
+    return out;
+  }
+  return pack.layers[L] || [];
+}
+
+// Apply slice + text search to a side's items.
+function filterCompareItems(items, L, side, sets) {
+  const slice = state.compareSlice || 'all';
+  const search = (state.compareSearch || '').trim().toLowerCase();
+  return items.filter(art => {
+    const k = compareKeyOf(art);
+    const inBoth = sets.keysInBoth[L]?.has(k);
+    const onlySide = side === 'a' ? sets.keysOnlyInA[L]?.has(k) : sets.keysOnlyInB[L]?.has(k);
+    let sliceOk = true;
+    switch (slice) {
+      case 'onlyA': sliceOk = side === 'a' && onlySide; break;
+      case 'onlyB': sliceOk = side === 'b' && onlySide; break;
+      case 'both':  sliceOk = inBoth; break;
+      case 'a-b':   sliceOk = side === 'a' && (onlySide || !inBoth); break;   // items in A not in B
+      case 'a+b':   sliceOk = true; break;                                     // union
+      default:      sliceOk = true;
+    }
+    if (!sliceOk) return false;
+    if (!search) return true;
+    const hay = `${art.id || ''} ${art.title || ''}`.toLowerCase();
+    return hay.includes(search);
+  });
+}
+
+function renderCompareLayerColumn(side, L, items, sets) {
+  const col = document.createElement('div');
+  col.className = `compare-layer-col compare-layer-col-${side}`;
+  if (items.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'compare-layer-empty';
+    empty.textContent = '— nothing matches —';
+    col.appendChild(empty);
+    return col;
+  }
+  for (const art of items) {
+    const def = { id: L, num: L, name: L };
+    col.appendChild(renderCompareCard(art, def, art._sub || null, side, sets));
+  }
+  return col;
+}
+
+const LAYERS_FOR_DIFF = ['L1', 'L2', 'L2X', 'L3', 'L4', 'L5', 'GOV'];
+
+function compareKeyOf(art) {
+  return art?.defines || art?.id || '';
+}
+
+function renderComparePackSide(side, pack, sets) {
+  const col = document.createElement('div');
+  col.className = 'compare-side compare-side-' + side;
+
+  const head = document.createElement('div');
+  head.className = 'compare-side-head';
+  const tier = pack?.meta?.criticality || '?';
+  const env  = pack?.meta?.environment || '—';
+  head.innerHTML = `
+    <div class="compare-side-eyebrow">${side === 'a' ? 'PACK A' : 'PACK B'}</div>
+    <div class="compare-side-name">${escapeHtml(pack?.name || '?')}</div>
+    <div class="compare-side-meta">
+      <span class="meta-pill" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
+      <span class="meta-pill">env: ${escapeHtml(env)}</span>
+      <span class="meta-pill">v${escapeHtml(pack?.meta?.version || '?')}</span>
+    </div>
+  `;
+  col.appendChild(head);
+
+  // Render each layer as a stacked section.
+  for (const L of LAYERS_FOR_DIFF) {
+    if (L === 'L4') {
+      const L4 = pack?.layers?.L4 || { policy: [], alerting: [], healing: [] };
+      const total = (L4.policy?.length || 0) + (L4.alerting?.length || 0) + (L4.healing?.length || 0);
+      if (total === 0) continue;
+      const sec = renderCompareSideLayer({ id: 'L4', num: 'L4', name: 'Action' }, [], side, sets, true);
+      col.appendChild(sec);
+      // Sub-groups
+      const grid = sec.querySelector('.compare-side-grid');
+      for (const sg of L4_SUBGROUPS) {
+        const items = L4[sg.key] || [];
+        if (!items.length) continue;
+        const h = document.createElement('div');
+        h.className = 'compare-side-subhead';
+        h.textContent = `L4.${sg.key} · ${sg.label}`;
+        grid.appendChild(h);
+        for (const a of items) grid.appendChild(renderCompareCard(a, { id: 'L4' }, sg.key, side, sets));
+      }
+      continue;
+    }
+    const items = pack?.layers?.[L] || [];
+    if (!items.length) continue;
+    const def = { id: L, num: L, name: ({L1:'Contract',L2:'Telemetry',L2X:'Extended',L3:'Insight',L5:'Validation',GOV:'Governance'})[L] || L };
+    const sec = renderCompareSideLayer(def, items, side, sets, false);
+    col.appendChild(sec);
+  }
+
+  return col;
+}
+
+function renderCompareSideLayer(def, items, side, sets, isL4) {
+  const sec = document.createElement('section');
+  sec.className = 'compare-side-layer section';
+  sec.dataset.layer = def.id;
+  const head = document.createElement('div');
+  head.className = 'compare-side-layer-head';
+  head.innerHTML = `
+    <span class="section-num">${def.num}</span>
+    <span class="section-name">${escapeHtml(def.name)}</span>
+    <span class="section-count">${isL4 ? '' : items.length}</span>
+  `;
+  sec.appendChild(head);
+  const grid = document.createElement('div');
+  grid.className = 'compare-side-grid';
+  if (!isL4) for (const a of items) grid.appendChild(renderCompareCard(a, def, null, side, sets));
+  sec.appendChild(grid);
+  return sec;
+}
+
+function renderCompareCard(artefact, def, sublayerKey, side, sets) {
+  const k = compareKeyOf(artefact);
+  const inBoth   = sets.keysInBoth[def.id]?.has(k);
+  const onlyA    = sets.keysOnlyInA?.[def.id]?.has(k);
+  const onlyB    = sets.keysOnlyInB?.[def.id]?.has(k);
+  const isOnlySide = side === 'a' ? onlyA : onlyB;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'card compare-side-card';
+  if (inBoth) btn.classList.add('is-both');
+  if (isOnlySide) btn.classList.add('is-only', `is-only-${side}`);
+  const ckey = cardKey(def.id, sublayerKey, artefact.id);
+  btn.dataset.key = ckey;
+  if ((side === 'a' && ckey === state.activeCardKeyA) ||
+      (side === 'b' && ckey === state.activeCardKeyB)) {
+    btn.classList.add('is-active');
+  }
+
+  // Comparison status pill — what this card means in the diff.
+  let statusPill = '';
+  if (inBoth) statusPill = '<span class="diff-chip chip-both">in both</span>';
+  else if (onlyA) statusPill = `<span class="diff-chip chip-only-a">only in A</span>`;
+  else if (onlyB) statusPill = `<span class="diff-chip chip-only-b">only in B</span>`;
+
+  // Source pill — Declared/Verified/Missing (what the studio's
+  // per-artefact taxonomy already says about this card's status in
+  // its own pack, independent of the comparison).
+  const src = artefact.source || 'Declared';
+  const sourcePill = `<span class="source-chip" data-source="${escapeHtml(src)}">${escapeHtml(src)}</span>`;
+
+  // Gating chip for backend cards
+  let gatingChip = '';
+  if (/^BAK-/.test(artefact.id) && artefact.spec?.version?.gating) {
+    const g = artefact.spec.version.gating;
+    gatingChip = `<span class="gating-chip" data-gating="${escapeHtml(g)}">${escapeHtml(g)}</span>`;
+  }
+
+  btn.innerHTML = `
+    <div class="card-head">
+      <span class="card-id">${escapeHtml(artefact.id)}</span>
+      ${statusPill}
+      ${gatingChip}
+    </div>
+    <div class="card-title">${escapeHtml(artefact.title || artefact.id)}</div>
+    ${artefact.desc ? `<div class="card-desc">${escapeHtml(artefact.desc)}</div>` : ''}
+    <div class="card-foot card-foot-compare">
+      ${sourcePill}
+      ${artefact.tool ? `<span class="tool">${escapeHtml(artefact.tool)}</span>` : ''}
+    </div>
+  `;
+  btn.onclick = () => openDrawer(artefact, def, sublayerKey, side);
+  return btn;
 }
 
 function renderCompareHead() {
@@ -875,7 +1970,10 @@ function renderCompareSummary() {
   return wrap;
 }
 
-function renderCompareLayer(def, bucket) {
+// (The 3-column "only-in-A / both / only-in-B" layer renderer was
+// replaced by the side-by-side renderComparePackSide above. The diff
+// summary cells at the top of the view still surface the set arithmetic.)
+function renderCompareLayer_DEPRECATED(def, bucket) {
   const section = document.createElement('section');
   section.className = 'compare-layer';
   section.dataset.layer = def.id;
@@ -1014,6 +2112,8 @@ function renderAtlasView(view) {
   // Render — fetch packB lazily if missing
   const atlasOpts = {
     morph: state.atlasMorph,
+    arborView: state.arborView || 'A',
+    onArborViewChange: (v) => { state.arborView = v; renderMainView(); },
     onArtefactClick: (artefact, layerId) => openDrawer(artefact, { id: layerId }, null),
   };
   const dataset = datasetFor();
@@ -1036,20 +2136,42 @@ function datasetFor() {
 
 // ---------- drawer ----------
 
-function openDrawer(artefact, def, sublayerKey) {
-  const drawer = $('#drawer');
+// Map: side → element ids. drawerB (right) is the legacy drawer used
+// everywhere outside the compare view. drawerA (left) is only used in
+// the compare view to surface Pack A's artefact alongside Pack B's.
+const DRAWER_ELS = {
+  a: { drawer: '#drawer-a', eyebrow: '#drawer-a-eyebrow', title: '#drawer-a-title',
+       meta: '#drawer-a-meta', panels: '#drawer-a-panels', close: '#drawer-a-close' },
+  b: { drawer: '#drawer',   eyebrow: '#drawer-eyebrow',   title: '#drawer-title',
+       meta: '#drawer-meta', panels: '#drawer-panels',   close: '#drawer-close' },
+};
+
+function openDrawer(artefact, def, sublayerKey, side = 'b') {
+  const els = DRAWER_ELS[side];
+  if (!els) return;
+  const drawer = $(els.drawer);
   drawer.setAttribute('aria-hidden', 'false');
   drawer.dataset.layer = def.id;
-  document.body.classList.add('no-scroll');
+  // Don't lock body scroll in compare view — both sides can scroll while
+  // the user reads from both drawers. We only no-scroll for single-side
+  // detail panels.
+  if (state.activeLayer !== 'COMPARE') document.body.classList.add('no-scroll');
 
-  state.activeCardKey = cardKey(def.id, sublayerKey, artefact.id);
-  $$('.card').forEach(c => c.classList.toggle('is-active', c.dataset.key === state.activeCardKey));
+  const ckey = cardKey(def.id, sublayerKey, artefact.id);
+  if (side === 'a') state.activeCardKeyA = ckey;
+  else if (side === 'b' && state.activeLayer === 'COMPARE') state.activeCardKeyB = ckey;
+  else state.activeCardKey = ckey;
+  $$('.card').forEach(c => {
+    const k = c.dataset.key;
+    c.classList.toggle('is-active',
+      k === state.activeCardKey || k === state.activeCardKeyA || k === state.activeCardKeyB);
+  });
 
-  $('#drawer-eyebrow').textContent = `${def.num}${sublayerKey ? `.${sublayerKey}` : ''} · ${artefact.id}`;
-  $('#drawer-title').textContent = artefact.title || artefact.id;
+  $(els.eyebrow).textContent = `${def.num}${sublayerKey ? `.${sublayerKey}` : ''} · ${artefact.id}`;
+  $(els.title).textContent   = artefact.title || artefact.id;
 
   // Meta strip (always shown)
-  const meta = $('#drawer-meta');
+  const meta = $(els.meta);
   meta.innerHTML = '';
   const rows = [];
   if (artefact.tool)         rows.push(['tool', artefact.tool]);
@@ -1066,10 +2188,11 @@ function openDrawer(artefact, def, sublayerKey) {
     meta.appendChild(dt); meta.appendChild(dd);
   }
 
-  // Broken refs warning (if any)
-  const panels = $('#drawer-panels');
+  // Broken refs warning (if any) — only meaningful for the right (B)
+  // drawer in single-pack views; in compare we check both packs.
+  const panels = $(els.panels);
   panels.innerHTML = '';
-  const broken = state.symbolTable?.broken?.get(state.activeCardKey);
+  const broken = state.symbolTable?.broken?.get(ckey);
   if (broken && broken.length) {
     const sec = panel('Broken references', 'broken-refs');
     sec.innerHTML += '<div class="broken-list">' +
@@ -1568,12 +2691,25 @@ function subpanel(title) {
   return sec;
 }
 
-function closeDrawer() {
-  const drawer = $('#drawer');
-  drawer.setAttribute('aria-hidden', 'true');
-  document.body.classList.remove('no-scroll');
-  state.activeCardKey = null;
-  $$('.card').forEach(c => c.classList.remove('is-active'));
+function closeDrawer(side) {
+  // No side passed = close all (Esc key / external triggers).
+  const sides = side ? [side] : ['a', 'b'];
+  for (const s of sides) {
+    const els = DRAWER_ELS[s];
+    if (!els) continue;
+    $(els.drawer).setAttribute('aria-hidden', 'true');
+    if (s === 'a') state.activeCardKeyA = null;
+    else if (state.activeLayer === 'COMPARE') state.activeCardKeyB = null;
+    else state.activeCardKey = null;
+  }
+  // Only release body scroll lock when both drawers are closed.
+  const anyOpen = ['a', 'b'].some(s => $(DRAWER_ELS[s].drawer).getAttribute('aria-hidden') === 'false');
+  if (!anyOpen) document.body.classList.remove('no-scroll');
+  $$('.card').forEach(c => {
+    const k = c.dataset.key;
+    c.classList.toggle('is-active',
+      k === state.activeCardKey || k === state.activeCardKeyA || k === state.activeCardKeyB);
+  });
 }
 
 // ---------- toast ----------
@@ -1613,6 +2749,8 @@ async function handleFile(file) {
     state.uploadedSource = file.name;
     state.activeLayer = 'L1';
     state.activeCardKey = null;
+    state.mode = 'single';
+    applyModeChrome();
     renderPackSelect();
     renderEnvSelect();
     renderMeta();
@@ -1655,6 +2793,10 @@ function setupUpload() {
 async function refresh() {
   try {
     await loadPack(state.selectedPackId, state.selectedEnv);
+    // Compile catalog is pack/env-specific — invalidate on switch so the
+    // tree re-fetches the new pack's artifacts.
+    state.compileCatalog = null;
+    state.compileContent = null;
     renderEnvSelect();
     renderPackSelect();
     renderMeta();
@@ -1673,18 +2815,14 @@ async function boot() {
     document.body.innerHTML = `<pre class="json" style="margin:48px;max-width:800px">Failed to reach the studio API.\n\n${escapeHtml(e.message)}\n\nMake sure the server is running: \`node server/index.mjs\` or \`npm run serve\`.</pre>`;
     return;
   }
-  const firstOk = state.catalog.find(p => p.ok);
-  if (!firstOk) {
-    $('#layer-view').innerHTML = '<div class="error">No pack in the catalog could be loaded. Check the server logs.</div>';
-    renderPackSelect();
-    return;
-  }
-  state.selectedPackId = firstOk.id;
-  state.selectedEnv = firstOk.environments?.[0] || null;
-  renderPackSelect();
+
   setupUpload();
   setupTheme();
   setupMcpPanel();
+  setupCrawlPanel();
+  setupDraftFromMcpPanel();
+  setupDeployModal();
+  setupHomeAffordance();   // logo click returns home
 
   // Initial live-status load + 60s soft-refresh of the badge so "3m ago"
   // ticks forward without manual reload.
@@ -1693,10 +2831,253 @@ async function boot() {
   renderMcpStatusBody(state.mcpStatus);
   setInterval(() => renderMcpBadge(state.mcpStatus), 60_000);
 
-  await refresh();
+  // Deploy matrix loaded eagerly; used by the compile view.
+  loadDeployMatrix().then(() => {
+    if (state.mode !== 'home' && state.activeLayer === 'COMPILE') renderMainView();
+  });
+
+  // Land on the empty home screen — user picks Analyze or Compare.
+  goHome();
 }
 
-$('#drawer-close').onclick = closeDrawer;
+// ============================================================
+// Home / Analyze / Compare mode transitions
+// ============================================================
+
+function goHome() {
+  state.mode = 'home';
+  state.pack = null;
+  state.packB = null;
+  state.diff = null;
+  state.compileCatalog = null;
+  state.compileContent = null;
+  applyModeChrome();
+  renderHomeView();
+}
+
+function enterAnalyzeMode(packId, env) {
+  if (!packId) return;
+  state.mode = 'single';
+  state.selectedPackId = packId;
+  state.selectedEnv    = env || defaultEnvFor(packId);
+  state.activeLayer = 'L1';
+  state.activeCardKey = null;
+  applyModeChrome();
+  renderPackSelect();
+  refresh();
+}
+
+function enterCompareMode(aId, aEnv, bId, bEnv) {
+  if (!aId || !bId) return;
+  state.mode = 'compare';
+  state.selectedPackId = aId;
+  state.selectedEnv    = aEnv || defaultEnvFor(aId);
+  state.compareBId     = bId;
+  state.compareBEnv    = bEnv || defaultEnvFor(bId);
+  state.activeLayer    = 'COMPARE';
+  applyModeChrome();
+  renderPackSelect();
+  refresh();
+  refreshDiff();
+}
+
+// Show/hide global chrome based on mode. Home hides the pack-select,
+// env-select, meta strip and tabs — only the brand + the corner
+// utility buttons (upload, new from repo, new from live, mcp, theme,
+// api) stay visible because they're the entry points to creating a
+// new pack.
+function applyModeChrome() {
+  const isHome = state.mode === 'home';
+  document.body.dataset.mode = state.mode;
+  const packSel = $('#pack-select')?.parentElement;
+  const envSel  = $('#env-select')?.parentElement;
+  if (packSel) packSel.hidden = isHome;
+  if (envSel)  envSel.hidden  = isHome;
+  const meta = $('#meta');   if (meta) meta.hidden = isHome;
+  const tabs = $('#layer-tabs'); if (tabs) tabs.hidden = isHome;
+}
+
+// Logo click returns home.
+function setupHomeAffordance() {
+  const brand = document.querySelector('.hdr-brand h1');
+  if (!brand) return;
+  brand.style.cursor = 'pointer';
+  brand.title = 'Return home';
+  brand.onclick = () => goHome();
+}
+
+// Hero / home screen — two big affordances. Mode-aware.
+function renderHomeView() {
+  const view = $('#layer-view');
+  if (!view) return;
+  const catalogPacks = (state.catalog || []).filter(p => p.ok);
+  const hasCatalog = catalogPacks.length > 0;
+  const live   = catalogPacks.find(p => p.id === 'production-live');
+  const repoOk = catalogPacks.filter(p => p.id !== 'production-live');
+  const defaultA = repoOk[0]?.id || catalogPacks[0]?.id || '';
+  const defaultB = live?.id || repoOk[1]?.id || defaultA;
+  const catalogOptions = catalogPacks
+    .map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')} · ${escapeHtml(p.criticality || '?')}</option>`).join('');
+
+  view.innerHTML = `
+    <section class="home-hero">
+      <h2 class="home-hero-title"><em>What do you want to do?</em></h2>
+      <p class="home-hero-lede">
+        The studio starts empty. Open a pack from disk — drop a YAML/JSON,
+        crawl your service repo, or draft from a live MCP — then analyze it
+        on its own or compare two side by side (typically repo vs live).
+      </p>
+
+      <div class="home-cards">
+        <!-- Analyze a single pack -->
+        <article class="home-card home-card-analyze">
+          <header class="home-card-head">
+            <span class="home-card-num">①</span>
+            <h3>Analyze a pack</h3>
+          </header>
+          <p>Open one canonical v1.2 pack — score its conformance, browse its
+             layers, compile it to native artefacts, deploy.</p>
+          <div class="home-card-shortcuts home-card-shortcuts-primary">
+            <button id="home-shortcut-upload" type="button" class="home-shortcut home-shortcut-primary">
+              <span class="home-shortcut-key">▤</span>
+              <span><strong>Upload a YAML / JSON pack</strong><br><em>drop a file, or pick from disk</em></span>
+            </button>
+            <button id="home-shortcut-crawl"  type="button" class="home-shortcut">
+              <span class="home-shortcut-key">↻</span>
+              <span><strong>New from repo</strong> <em>(Path A · crawler)</em></span>
+            </button>
+            <button id="home-shortcut-live"   type="button" class="home-shortcut">
+              <span class="home-shortcut-key">○</span>
+              <span><strong>New from live MCP</strong> <em>(Path B)</em></span>
+            </button>
+          </div>
+          ${hasCatalog ? `
+            <div class="home-card-divider"><span>or reopen a recent pack</span></div>
+            <div class="home-card-form">
+              <label class="home-card-field">
+                <span class="home-card-key">Pack</span>
+                <select id="home-analyze-pack">
+                  <option value="">— pick from catalog —</option>
+                  ${catalogOptions}
+                </select>
+              </label>
+              <button id="home-analyze-go" type="button" class="home-card-cta" disabled>Open →</button>
+            </div>` : ''}
+        </article>
+
+        <!-- Compare two packs -->
+        <article class="home-card home-card-compare">
+          <header class="home-card-head">
+            <span class="home-card-num">②</span>
+            <h3>Compare two packs</h3>
+          </header>
+          <p>Diff <em>repo vs live</em>, declared vs observed. See gaps,
+             drift, and unverified declarations in context.</p>
+          ${hasCatalog && catalogPacks.length >= 2 ? `
+            <div class="home-card-form">
+              <label class="home-card-field">
+                <span class="home-card-key">PACK A <em>(typically the repo-derived draft)</em></span>
+                <select id="home-compare-a">${catalogOptions}</select>
+              </label>
+              <label class="home-card-field">
+                <span class="home-card-key">PACK B <em>(typically the live MCP snapshot)</em></span>
+                <select id="home-compare-b">${catalogOptions}</select>
+              </label>
+              <button id="home-compare-go" type="button" class="home-card-cta">Compare →</button>
+            </div>` : `
+            <p class="home-card-hint home-card-empty">
+              <em>Open at least two packs first — upload, crawl, or draft from a live MCP.
+              You'll be able to compare them once both are loaded.</em>
+            </p>`}
+        </article>
+      </div>
+
+      <!-- Browse archived examples -->
+      <details class="home-examples" id="home-examples-details">
+        <summary>Browse archived reference packs <span class="home-examples-count" id="home-examples-count">(checking…)</span></summary>
+        <p class="home-examples-lede">
+          Five reference packs shipped with the studio for demos and as
+          conformance benchmarks. Click one to open it like any other pack.
+        </p>
+        <div class="home-examples-list" id="home-examples-list">
+          <div class="placeholder">Loading examples…</div>
+        </div>
+      </details>
+    </section>
+  `;
+
+  // Wire catalog-driven controls (only present when catalog is non-empty)
+  const analyzeSel = $('#home-analyze-pack');
+  const analyzeGo  = $('#home-analyze-go');
+  if (analyzeSel && analyzeGo) {
+    analyzeSel.onchange = () => { analyzeGo.disabled = !analyzeSel.value; };
+    analyzeGo.onclick = () => enterAnalyzeMode(analyzeSel.value);
+  }
+  const compA = $('#home-compare-a');
+  const compB = $('#home-compare-b');
+  const compGo = $('#home-compare-go');
+  if (compA && compB && compGo) {
+    if (defaultA) compA.value = defaultA;
+    if (defaultB) compB.value = defaultB;
+    compGo.onclick = () => {
+      if (!compA.value || !compB.value || compA.value === compB.value) return;
+      enterCompareMode(compA.value, defaultEnvFor(compA.value), compB.value, defaultEnvFor(compB.value));
+    };
+  }
+
+  // Creation shortcuts — open the existing modals
+  $('#home-shortcut-upload').onclick = () => $('#upload-btn')?.click();
+  $('#home-shortcut-crawl').onclick  = () => $('#crawl-btn')?.click();
+  $('#home-shortcut-live').onclick   = () => $('#draft-mcp-btn')?.click();
+
+  // Examples list — fetched lazily so an empty catalog doesn't block paint.
+  loadAndRenderHomeExamples();
+}
+
+async function loadAndRenderHomeExamples() {
+  try {
+    const r = await api('/api/examples');
+    const examples = r.examples || [];
+    // Cache for openExampleAsPack so it can populate state.catalog with
+    // the same catalog-entry shape (label/version/criticality/etc.) that
+    // /api/packs returns — not the adapted-pack shape.
+    state._examplesCache = examples;
+    $('#home-examples-count').textContent = `(${examples.length})`;
+    $('#home-examples-list').innerHTML = examples.length
+      ? examples.map(e => `
+          <button type="button" class="home-example-row" data-id="${escapeHtml(e.id)}" title="${escapeHtml(e.description || '')}">
+            <span class="home-example-name">${escapeHtml(e.label)}</span>
+            <span class="home-example-meta">v${escapeHtml(e.version || '?')} · ${escapeHtml(e.criticality || '?')}</span>
+            <span class="home-example-desc">${escapeHtml(e.description || '')}</span>
+          </button>`).join('')
+      : '<div class="placeholder">No archived examples available.</div>';
+    $('#home-examples-list').querySelectorAll('.home-example-row').forEach(b => {
+      b.onclick = () => openExampleAsPack(b.dataset.id);
+    });
+  } catch (e) {
+    $('#home-examples-list').innerHTML = `<div class="error">Could not load examples: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function openExampleAsPack(exampleId) {
+  // The server's /api/packs/:id/* routes look up examples via
+  // findPackMeta(), so we can just enter Analyze mode against the
+  // example id directly. We do need to inject the example into
+  // state.catalog so the pack-select dropdown + the catalog-entry
+  // resolver have a label to display.
+  state.catalog = state.catalog || [];
+  const cached = (state._examplesCache || []).find(p => p.id === exampleId);
+  if (!cached) {
+    toast(`Example not found: ${exampleId}`, 'error');
+    return;
+  }
+  const exists = state.catalog.find(p => p.id === exampleId);
+  if (!exists) state.catalog.push(cached);
+  enterAnalyzeMode(exampleId);
+}
+
+$('#drawer-close').onclick   = () => closeDrawer('b');
+$('#drawer-a-close').onclick = () => closeDrawer('a');
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeDrawer(); closeMcpPanel(); } });
 
 // ---------- MCP refresh panel ----------
@@ -1853,6 +3234,967 @@ function setRefreshStatus(msg, kind = '') {
   if (!el) return;
   el.textContent = msg;
   el.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
+}
+
+// ============================================================
+// Crawler panel — Path A of pack creation.
+//
+// Engineer drops a service repo (or picks files) → studio reads them
+// in the browser → POSTs to /api/crawl → server returns a draft
+// canonical pack + validation + conformance → we render the review.
+// "Use this pack" hands the draft to the existing upload flow so it
+// loads into the active session just like any other pack.
+// ============================================================
+
+const CRAWL_SCAN_EXT = /\.(ya?ml|json)$/i;
+const CRAWL_IGNORE_DIRS = new Set([
+  '.git', '.github', '.gitlab', '.circleci',     // CI and version control
+  'node_modules', 'vendor', 'venv', '.venv',
+  'dist', 'build', 'out', 'target', '.cache',
+  '.next', '.nuxt', '.svelte-kit',
+  '.terraform', '.serverless',
+  '__pycache__', '.pytest_cache', '.mypy_cache',
+  '.idea', '.vscode',
+  'coverage',
+]);
+const CRAWL_MAX_FILE_BYTES = 5 * 1024 * 1024;
+const CRAWL_PAYLOAD_SOFT_CAP = 15 * 1024 * 1024;  // leave 1 MB headroom under the 16 MB server cap
+
+// Lazy-loaded reference to the shared crawler library (also used by
+// the CLI and server). Importing it here lets us classify files in the
+// browser BEFORE posting — keeping payloads small and the user honest
+// about what's being sent.
+let _crawlerLib = null;
+async function getCrawlerLib() {
+  if (!_crawlerLib) _crawlerLib = await import('/lib/crawler.mjs');
+  return _crawlerLib;
+}
+
+const crawlState = {
+  files: new Map(),       // relPath → string content (ALL staged files)
+  classified: new Map(),  // relPath → kind (only files that match an artefact)
+  skipped: [],            // [{relPath, reason}] for the "what was skipped" disclosure
+  rootName: null,
+  lastResult: null,
+};
+
+function setupCrawlPanel() {
+  const btn = $('#crawl-btn');
+  if (!btn) return;
+  const panel = $('#crawl-panel');
+  const dropzone = $('#crawl-dropzone');
+  const pickFilesBtn = $('#crawl-pick-files-btn');
+  const pickFolderBtn = $('#crawl-pick-folder-btn');
+  const goBtn = $('#crawl-go-btn');
+  const resetBtn = $('#crawl-reset-btn');
+  const closeBtn = $('#crawl-panel-close');
+  const resultCloseBtn = $('#crawl-result-close');
+  const adoptBtn = $('#crawl-adopt-btn');
+  const folderInput = $('#crawl-file-input');
+  // We add a separate non-webkitdirectory input lazily for "pick files".
+  let multiInput = null;
+
+  btn.onclick = () => { panel.hidden = !panel.hidden; if (!panel.hidden) $('#crawl-name')?.focus(); };
+  closeBtn.onclick = () => { panel.hidden = true; };
+  resultCloseBtn.onclick = () => { $('#crawl-result').hidden = true; };
+  resetBtn.onclick = () => { resetCrawlStaged(); };
+
+  pickFolderBtn.onclick = () => folderInput.click();
+  pickFilesBtn.onclick = () => {
+    if (!multiInput) {
+      multiInput = document.createElement('input');
+      multiInput.type = 'file';
+      multiInput.multiple = true;
+      multiInput.accept = '.yaml,.yml,.json';
+      multiInput.style.display = 'none';
+      multiInput.addEventListener('change', () => {
+        if (multiInput.files?.length) stageFileList(multiInput.files, null);
+        multiInput.value = '';
+      });
+      document.body.appendChild(multiInput);
+    }
+    multiInput.click();
+  };
+  folderInput.onchange = () => {
+    if (folderInput.files?.length) stageFileList(folderInput.files, null);
+    folderInput.value = '';
+  };
+
+  // Drag-and-drop. We accept both files (FileList) and DataTransferItem
+  // entries (so a directory drag works in Chromium/Edge/Firefox via
+  // webkitGetAsEntry).
+  ['dragenter', 'dragover'].forEach(ev => dropzone.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation();
+    dropzone.classList.add('is-dragover');
+  }));
+  ['dragleave', 'dragend', 'drop'].forEach(ev => dropzone.addEventListener(ev, e => {
+    if (ev === 'drop') return;
+    if (e.target === dropzone || !dropzone.contains(e.target)) dropzone.classList.remove('is-dragover');
+  }));
+  dropzone.addEventListener('drop', async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    dropzone.classList.remove('is-dragover');
+    const dt = e.dataTransfer;
+    const entries = dt?.items
+      ? [...dt.items].map(i => i.webkitGetAsEntry?.()).filter(Boolean)
+      : [];
+    if (entries.length) {
+      for (const ent of entries) await readEntry(ent, '');
+      finalizeStaging();
+    } else if (dt?.files?.length) {
+      stageFileList(dt.files, null);
+    }
+  });
+
+  goBtn.onclick = () => doCrawl();
+  adoptBtn.onclick = () => adoptCrawlResult();
+}
+
+// Read a single FileSystemEntry recursively into the staged map.
+async function readEntry(entry, prefix) {
+  if (!entry) return;
+  if (entry.isFile) {
+    if (!CRAWL_SCAN_EXT.test(entry.name)) return;
+    const file = await new Promise((res, rej) => entry.file(res, rej));
+    if (file.size > CRAWL_MAX_FILE_BYTES) return;
+    const rel = (prefix ? `${prefix}/` : '') + entry.name;
+    const text = await file.text();
+    crawlState.files.set(rel, text);
+    if (!crawlState.rootName) crawlState.rootName = entry.fullPath?.split('/')[1] || null;
+  } else if (entry.isDirectory) {
+    if (CRAWL_IGNORE_DIRS.has(entry.name)) return;
+    const reader = entry.createReader();
+    let batch;
+    do {
+      batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+      for (const ent of batch) await readEntry(ent, (prefix ? `${prefix}/` : '') + entry.name);
+    } while (batch.length > 0);
+  }
+}
+
+async function stageFileList(fileList, _rootHint) {
+  for (const f of fileList) {
+    if (!CRAWL_SCAN_EXT.test(f.name)) continue;
+    if (f.size > CRAWL_MAX_FILE_BYTES) continue;
+    // webkitRelativePath populated when picked via webkitdirectory.
+    const rel = f.webkitRelativePath || f.name;
+    crawlState.files.set(rel, await f.text());
+    if (!crawlState.rootName && f.webkitRelativePath) {
+      crawlState.rootName = f.webkitRelativePath.split('/')[0];
+    }
+  }
+  finalizeStaging();
+}
+
+async function finalizeStaging() {
+  const list = $('#crawl-staged-files');
+  const go = $('#crawl-go-btn');
+  const n = crawlState.files.size;
+  if (n === 0) {
+    list.innerHTML = '<span class="crawl-staged-empty">nothing staged yet</span>';
+    go.disabled = true;
+    return;
+  }
+  // Run the shared classifier in the browser. Same heuristic the server
+  // uses — filename hints first, content sniff for ambiguous YAML.
+  list.innerHTML = '<span class="crawl-staged-empty">classifying…</span>';
+  crawlState.classified.clear();
+  crawlState.skipped = [];
+  let lib;
+  try { lib = await getCrawlerLib(); }
+  catch (e) {
+    list.innerHTML = `<span class="crawl-staged-empty">classifier unavailable (${escapeHtml(e.message)}); sending raw set</span>`;
+    // Fallback: treat every staged file as classified so behaviour
+    // degrades gracefully.
+    for (const k of crawlState.files.keys()) crawlState.classified.set(k, 'unknown');
+    go.disabled = false;
+    return;
+  }
+  let totalBytes = 0;
+  for (const [path, content] of crawlState.files) {
+    let kind = 'unknown';
+    try { kind = lib.detectArtefactKind(path, content); }
+    catch (_) { kind = 'unknown'; }
+    if (kind === 'unknown') {
+      crawlState.skipped.push({ relPath: path, reason: 'not an observability artefact' });
+      continue;
+    }
+    crawlState.classified.set(path, kind);
+    totalBytes += content.length;
+  }
+  if (totalBytes > CRAWL_PAYLOAD_SOFT_CAP) {
+    list.innerHTML = `<span class="crawl-staged-empty">payload too large after classification (${(totalBytes/1024/1024).toFixed(1)} MB). Reduce scope — drop a subdirectory instead.</span>`;
+    go.disabled = true;
+    return;
+  }
+  renderStagedList(totalBytes);
+  go.disabled = crawlState.classified.size === 0;
+  if (crawlState.rootName && !$('#crawl-name').value) $('#crawl-name').value = crawlState.rootName;
+}
+
+function renderStagedList(totalBytes) {
+  const list = $('#crawl-staged-files');
+  const total = crawlState.files.size;
+  const classified = crawlState.classified.size;
+  const skipped = crawlState.skipped.length;
+
+  // Group classified by kind for a count-by-kind line.
+  const byKind = {};
+  for (const k of crawlState.classified.values()) byKind[k] = (byKind[k] || 0) + 1;
+  const kindCounts = Object.entries(byKind).sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `<strong>${n}</strong>&nbsp;${escapeHtml(k)}`).join(' · ');
+
+  const sample = [...crawlState.classified.keys()].slice(0, 8);
+  const sampleHtml = sample.length
+    ? sample.map(p => `<code>${escapeHtml(p)}</code>`).join('  ·  ')
+    + (classified > sample.length ? ` <em>… and ${classified - sample.length} more</em>` : '')
+    : '<em>nothing matched — drop a folder with docker-compose, Prometheus rules, Grafana dashboards, etc.</em>';
+
+  list.innerHTML = `
+    <div class="crawl-staged-counts">
+      <strong>${classified}</strong> observability artefact${classified === 1 ? '' : 's'} found
+      from <strong>${total}</strong> staged file${total === 1 ? '' : 's'}
+      ${crawlState.rootName ? ` (root <code>${escapeHtml(crawlState.rootName)}/</code>)` : ''}.
+      ${totalBytes ? `<span class="crawl-staged-bytes">${(totalBytes/1024).toFixed(1)} KB will be sent.</span>` : ''}
+    </div>
+    ${kindCounts ? `<div class="crawl-staged-kinds">${kindCounts}</div>` : ''}
+    <div class="crawl-staged-sample">${sampleHtml}</div>
+    ${skipped ? `
+      <details class="crawl-staged-skipped">
+        <summary>${skipped} file${skipped === 1 ? '' : 's'} skipped — not an observability artefact</summary>
+        <div class="crawl-skipped-list">${
+          crawlState.skipped.slice(0, 40)
+            .map(s => `<code>${escapeHtml(s.relPath)}</code>`).join('  ·  ')
+          + (skipped > 40 ? ` <em>… and ${skipped - 40} more</em>` : '')
+        }</div>
+      </details>` : ''}
+  `;
+}
+
+function resetCrawlStaged() {
+  crawlState.files.clear();
+  crawlState.classified.clear();
+  crawlState.skipped = [];
+  crawlState.rootName = null;
+  crawlState.lastResult = null;
+  finalizeStaging();
+  $('#crawl-result').hidden = true;
+  $('#crawl-status').textContent = '';
+}
+
+async function doCrawl() {
+  const statusEl = $('#crawl-status');
+  const setStatus = (msg, kind) => {
+    statusEl.textContent = msg;
+    statusEl.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
+  };
+  if (crawlState.classified.size === 0) {
+    if (crawlState.files.size > 0) setStatus('no observability artefacts in the staged set; nothing to crawl', 'error');
+    else setStatus('drop a folder or pick files first', 'error');
+    return;
+  }
+
+  // Only send the classified subset. This is the key change — even when
+  // the user drops a 3000-file repo, we transmit just the few
+  // observability artefacts the crawler will actually use.
+  const files = {};
+  for (const k of crawlState.classified.keys()) {
+    files[k] = crawlState.files.get(k);
+  }
+
+  const body = {
+    files,
+    repoName:   $('#crawl-name').value.trim() || crawlState.rootName || 'crawled-service',
+    environment:$('#crawl-env').value.trim() || 'prod',
+  };
+  const crit = $('#crawl-criticality').value;
+  if (crit) body.criticality = crit;
+
+  const goBtn = $('#crawl-go-btn');
+  goBtn.disabled = true;
+  setStatus(`crawling ${crawlState.classified.size} artefact${crawlState.classified.size === 1 ? '' : 's'}…`);
+
+  try {
+    const r = await fetch('/api/crawl', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    if (!ct.includes('application/json')) {
+      setStatus(`server returned ${r.status} ${ct || 'no content-type'} — restart \`npm run dev\` if you just changed server code`, 'error');
+      return;
+    }
+    const out = JSON.parse(raw);
+    if (!out.ok) { setStatus(`error: ${out.error || 'unknown'}`, 'error'); return; }
+    crawlState.lastResult = out;
+    renderCrawlResult(out);
+    setStatus(`done in ${out.tookMs}ms · ${out.summary.files.classified}/${out.summary.files.scanned} files classified`, 'ok');
+  } catch (e) {
+    setStatus(`error: ${e.message}`, 'error');
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+function renderCrawlResult(out) {
+  const resBox = $('#crawl-result');
+  resBox.hidden = false;
+
+  $('#crawl-result-sub').textContent =
+    `${out.canonical.metadata.name} · ${out.canonical.metadata.bindings.criticality} (inferred ${out.summary.inferred.tier})`;
+  $('#crawl-result-yaml').textContent = out.canonicalYaml;
+
+  // Validation
+  const vBox = $('#crawl-result-validation');
+  vBox.innerHTML = `
+    <h4>schema validation</h4>
+    ${out.validation.ok
+      ? `<div class="crawl-pill crawl-pill-ok">✓ valid v1.2</div>`
+      : `<div class="crawl-pill crawl-pill-err">✗ ${out.validation.errors.length} schema error(s)</div>
+         <ul class="crawl-result-errs">${out.validation.errors.slice(0, 8).map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`}
+  `;
+
+  // Discovery summary
+  const s = out.summary.discovered;
+  $('#crawl-result-summary').innerHTML = `
+    <h4>what we found</h4>
+    <table class="crawl-summary-table">
+      <tr><td>backends</td><td>${s.backends}</td></tr>
+      <tr><td>recording rules</td><td>${s.recordingRules}</td></tr>
+      <tr><td>burn-rate alerts</td><td>${s.burnRateAlerts}</td></tr>
+      <tr><td>dashboards</td><td>${s.dashboards}</td></tr>
+      <tr><td>alerting routes</td><td>${s.alertingRoutes}</td></tr>
+      <tr><td>pipelines</td><td>${s.pipelines}</td></tr>
+    </table>
+    <div class="crawl-inferred">
+      <em>inferred</em>: ${out.summary.inferred.slis} SLI(s) · ${out.summary.inferred.slos} SLO(s) · tier ${out.summary.inferred.tier}
+    </div>
+  `;
+
+  // Warnings — these are the bits we stubbed.
+  const w = out.summary.warnings || [];
+  $('#crawl-result-warnings').innerHTML = w.length
+    ? `<h4>what to refine</h4><ul class="crawl-warnings">${w.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>`
+    : `<h4>what to refine</h4><div class="crawl-pill crawl-pill-ok">nothing flagged — review the YAML and ship</div>`;
+
+  // Evidence
+  const ev = out.evidence || {};
+  const evEntries = Object.entries(ev).slice(0, 12);
+  $('#crawl-result-evidence').innerHTML = evEntries.length
+    ? `<h4>evidence (top ${evEntries.length})</h4><ul class="crawl-evidence">${evEntries.map(([id, path]) => `<li><code>${escapeHtml(id)}</code> ← <code>${escapeHtml(path)}</code></li>`).join('')}</ul>`
+    : '';
+
+  // Download link
+  const dl = $('#crawl-download-btn');
+  const blob = new Blob([out.canonicalYaml], { type: 'application/x-yaml' });
+  if (dl.href.startsWith('blob:')) URL.revokeObjectURL(dl.href);
+  dl.href = URL.createObjectURL(blob);
+  dl.download = `${out.canonical.metadata.name}.pack.yaml`;
+}
+
+async function adoptCrawlResult() {
+  const out = crawlState.lastResult;
+  if (!out) return;
+  // Reuse the upload flow: POST /api/validate → if ok, load into the
+  // active state and re-render. Same path as drag-dropping a yaml file
+  // onto the studio shell.
+  try {
+    const res = await validateUploaded(out.canonicalYaml, 'application/x-yaml', state.selectedEnv);
+    if (!res.ok) {
+      toast(`Could not adopt — ${res.errors.length} validation error(s)`, 'error');
+      return;
+    }
+    state.pack = res.adapted;
+    state.conformance = res.conformance;
+    state.symbolTable = buildSymbolTable(res.adapted);
+    state.uploadedSource = `${out.canonical.metadata.name} (crawled draft)`;
+    state.activeLayer = 'L1';
+    state.activeCardKey = null;
+    state.mode = 'single';
+    applyModeChrome();
+    renderPackSelect();
+    renderEnvSelect();
+    renderMeta();
+    renderTabs();
+    renderMainView();
+    $('#crawl-panel').hidden = true;
+    toast(`Loaded crawled draft for ${out.canonical.metadata.name}`);
+  } catch (e) {
+    toast(`Adopt failed: ${e.message}`, 'error');
+  }
+}
+
+// ============================================================
+// Draft-from-MCP panel — Path B of pack creation.
+//
+// Parallel to the crawler (Path A). The SRE enters their MCP URL,
+// optionally an auth token, and a pack name; the server hits the
+// MCP, builds a canonical pack from what the MCP can attest to, and
+// returns it for review. Adoption round-trips through /api/validate
+// like every other pack path.
+// ============================================================
+
+const draftMcpState = {
+  lastResult: null,
+};
+
+// ============================================================
+// Deploy modal — full per-artefact picker. Replaces the inline
+// deploy panel that used to live below the compile output.
+//
+// Drives off /api/packs/:id/compile-catalog to enumerate every
+// individually deployable artefact in the active pack, surfaces a
+// type-filter row (Alert rule / Recording rule / Dashboard) +
+// per-row checkboxes, and POSTs to /api/packs/:id/deploy-bulk
+// with the selected items.
+// ============================================================
+
+const DEPLOY_PROFILES_KEY = 'deployProfiles.v1';
+
+const deployModalState = {
+  manifest: null,        // [{id, type, name, group, flavor, artifact, dashboardId, scope}]
+  packId: null,
+  selected: new Set(),
+  inflight: false,
+};
+
+function setupDeployModal() {
+  const modal = $('#deploy-modal');
+  if (!modal) return;
+  $('#deploy-modal-close').onclick   = () => closeDeployModal();
+  $('#deploy-modal-cancel').onclick  = () => closeDeployModal();
+  $('#deploy-modal-go').onclick      = () => doDeployBulk();
+
+  $('#deploy-profile-save').onclick  = () => saveDeployProfile();
+  $('#deploy-profile-delete').onclick = () => deleteDeployProfile();
+  $('#deploy-target-profile').onchange = () => loadDeployProfile($('#deploy-target-profile').value);
+
+  // Recompute the target summary line on any target field change.
+  for (const id of ['deploy-target-profile','deploy-target-url','deploy-target-folder','deploy-target-product','deploy-target-version','deploy-target-mcp']) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input',  updateDeployTargetSummary);
+    if (el) el.addEventListener('change', updateDeployTargetSummary);
+  }
+
+  // Pack picker rebuilds the manifest.
+  $('#deploy-source-pack').onchange = () => loadDeployManifest($('#deploy-source-pack').value);
+
+  // Type filter checkboxes hide rows.
+  $('#deploy-type-filters').addEventListener('change', () => renderDeployManifestTable());
+
+  // Manifest toolbar
+  $('#deploy-manifest-toggle').onchange = (e) => bulkSelectVisibleManifest(e.target.checked);
+  $('#deploy-manifest-all').onclick     = () => bulkSelectVisibleManifest(true);
+  $('#deploy-manifest-none').onclick    = () => bulkSelectVisibleManifest(false);
+
+  // Esc closes
+  modal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDeployModal(); });
+}
+
+function openDeployModal({ packId, packLabel } = {}) {
+  const modal = $('#deploy-modal');
+  if (!modal) return;
+  if (!state.deployMatrix) loadDeployMatrix().then(() => populateDeployTargetSelects());
+  else populateDeployTargetSelects();
+  populateDeploySourcePackSelect(packId || state.selectedPackId);
+  populateDeployProfileSelect();
+  modal.hidden = false;
+  modal.focus?.();
+  $('#deploy-modal-status').textContent = '';
+  $('#deploy-modal-result').hidden = true;
+  loadDeployManifest(packId || state.selectedPackId);
+  updateDeployTargetSummary();
+}
+
+function closeDeployModal() {
+  const modal = $('#deploy-modal');
+  if (modal) modal.hidden = true;
+}
+
+function populateDeployTargetSelects() {
+  const matrix = state.deployMatrix || { products: ['grafana'], versions: { grafana: ['12', '13'] } };
+  const prodSel = $('#deploy-target-product');
+  prodSel.innerHTML = matrix.products.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+  prodSel.value = state.deployProduct || matrix.products[0];
+  const verSel = $('#deploy-target-version');
+  const versions = matrix.versions[prodSel.value] || ['12'];
+  verSel.innerHTML = versions.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+  verSel.value = state.deployVersion || versions[0];
+}
+
+function populateDeploySourcePackSelect(activeId) {
+  const sel = $('#deploy-source-pack');
+  sel.innerHTML = '';
+  for (const p of (state.catalog || [])) {
+    if (!p.ok) continue;
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = `${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`;
+    sel.appendChild(opt);
+  }
+  sel.value = activeId || state.selectedPackId;
+}
+
+function updateDeployTargetSummary() {
+  const prof = $('#deploy-target-profile').selectedOptions?.[0]?.textContent?.trim() || '(no profile)';
+  const url  = $('#deploy-target-url').value.trim() || '—';
+  const prod = $('#deploy-target-product').value || '—';
+  const ver  = $('#deploy-target-version').value || '—';
+  $('#deploy-target-summary').textContent = `Target: ${prof}  |  ${prod} ${ver}  |  ${url}`;
+}
+
+// ----- Profiles in localStorage -----
+
+function loadDeployProfiles() {
+  try { return JSON.parse(localStorage.getItem(DEPLOY_PROFILES_KEY) || '{}'); }
+  catch { return {}; }
+}
+function saveDeployProfiles(profiles) {
+  try { localStorage.setItem(DEPLOY_PROFILES_KEY, JSON.stringify(profiles)); } catch (_) {}
+}
+function populateDeployProfileSelect() {
+  const sel = $('#deploy-target-profile');
+  const profiles = loadDeployProfiles();
+  sel.innerHTML = '<option value="">(no profile — fill manually)</option>'
+    + Object.keys(profiles).sort().map(k => `<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`).join('');
+}
+function loadDeployProfile(name) {
+  if (!name) return;
+  const p = loadDeployProfiles()[name];
+  if (!p) return;
+  $('#deploy-target-url').value     = p.targetUrl || '';
+  $('#deploy-target-folder').value  = p.folder || '';
+  $('#deploy-target-product').value = p.product || 'grafana';
+  $('#deploy-target-version').value = p.version || '12';
+  $('#deploy-target-mcp').value     = p.mcpUrl || '';
+  updateDeployTargetSummary();
+}
+function saveDeployProfile() {
+  const name = prompt('Profile name (e.g. "Prod Grafana"):', $('#deploy-target-profile').selectedOptions?.[0]?.value || '');
+  if (!name) return;
+  const profiles = loadDeployProfiles();
+  profiles[name] = {
+    targetUrl: $('#deploy-target-url').value.trim(),
+    folder:    $('#deploy-target-folder').value.trim(),
+    product:   $('#deploy-target-product').value,
+    version:   $('#deploy-target-version').value,
+    mcpUrl:    $('#deploy-target-mcp').value.trim(),
+  };
+  saveDeployProfiles(profiles);
+  populateDeployProfileSelect();
+  $('#deploy-target-profile').value = name;
+  updateDeployTargetSummary();
+  toast(`Saved deploy profile: ${name}`);
+}
+function deleteDeployProfile() {
+  const name = $('#deploy-target-profile').value;
+  if (!name) return;
+  if (!confirm(`Delete deploy profile "${name}"?`)) return;
+  const profiles = loadDeployProfiles();
+  delete profiles[name];
+  saveDeployProfiles(profiles);
+  populateDeployProfileSelect();
+  toast(`Deleted profile: ${name}`);
+}
+
+// ----- Manifest (per-artefact rows) -----
+
+async function loadDeployManifest(packId) {
+  deployModalState.packId = packId;
+  deployModalState.selected = new Set();
+  const tbody = $('#deploy-manifest-tbody');
+  tbody.innerHTML = '<tr><td colspan="5" class="placeholder">Loading manifest…</td></tr>';
+  try {
+    const params = new URLSearchParams();
+    if (state.selectedEnv) params.set('env', state.selectedEnv);
+    const cat = await api(`/api/packs/${encodeURIComponent(packId)}/compile-catalog?${params}`);
+    deployModalState.manifest = catalogToManifest(cat);
+    // Default-select all deployable rows.
+    for (const row of deployModalState.manifest) {
+      if (row.deployable) deployModalState.selected.add(row.key);
+    }
+    renderDeployManifestTable();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="error">Could not load manifest: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+// Map a compile catalog (groups → items) to a flat manifest with
+// per-row deploy semantics. Rules' per-SLO items expand into separate
+// recording + alerting rows so the type filter is meaningful.
+function catalogToManifest(catalog) {
+  const out = [];
+  for (const g of (catalog.groups || [])) {
+    const deployable = g.flavors?.some(f => f.deployable);
+    if (g.id === 'rules') {
+      // Per-SLO items: each becomes TWO rows (recording + alerting).
+      // The 'all' bundle becomes one row of each flavor as well.
+      for (const it of g.items) {
+        if (it.kind === 'rules-slo') {
+          out.push({
+            key: `rules:recording:slo:${it.sloId}`,
+            type: 'recording',
+            name: `${it.label} (recording rules)`,
+            id: it.sloId,
+            group: 'rules', flavor: 'prometheus', artifact: `slo:${it.sloId}`, scope: 'recording',
+            deployable, source: 'Repo',
+          });
+          out.push({
+            key: `rules:alert:slo:${it.sloId}`,
+            type: 'alert',
+            name: `${it.label} (burn-rate alerts)`,
+            id: it.sloId,
+            group: 'rules', flavor: 'prometheus', artifact: `slo:${it.sloId}`, scope: 'alerting',
+            deployable, source: 'Repo',
+          });
+        } else if (it.kind === 'rules-declared') {
+          out.push({
+            key: `rules:recording:declared:${it.ruleIndex}`,
+            type: 'recording',
+            name: it.label,
+            id: it.ruleName || it.id,
+            group: 'rules', flavor: 'prometheus', artifact: `declared:${it.ruleIndex}`, scope: 'recording',
+            deployable, source: 'Repo',
+          });
+        }
+      }
+    } else if (g.id === 'dashboards') {
+      for (const it of g.items) {
+        if (it.kind !== 'dashboard') continue;
+        out.push({
+          key: `dashboards:${it.dashboardId}`,
+          type: 'dashboard',
+          name: it.label,
+          id: it.dashboardId,
+          subtitle: it.subtitle,
+          group: 'dashboards', flavor: 'grafana', dashboardId: it.dashboardId,
+          deployable, source: 'Repo',
+        });
+      }
+    }
+    // pipelines + alertmanager are excluded from the Grafana deploy
+    // surface — they're emitted by compile but not deployable here.
+  }
+  return out;
+}
+
+function renderDeployManifestTable() {
+  const tbody = $('#deploy-manifest-tbody');
+  const types = new Set([...document.querySelectorAll('#deploy-type-filters input:checked')].map(i => i.value));
+  const rows = (deployModalState.manifest || []).filter(r => types.has(r.type));
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="placeholder">No artefacts of the selected types in this pack.</td></tr>';
+    updateManifestCounter(0, 0);
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `
+    <tr class="${deployModalState.selected.has(r.key) ? 'is-checked' : ''}" data-key="${escapeHtml(r.key)}">
+      <td class="deploy-col-check"><input type="checkbox" ${deployModalState.selected.has(r.key) ? 'checked' : ''}></td>
+      <td><span class="type-pill type-pill-${escapeHtml(r.type)}">${escapeHtml(r.type === 'recording' ? 'Recording rule' : r.type === 'alert' ? 'Alert rule' : 'Dashboard')}</span></td>
+      <td><code>${escapeHtml(r.id)}</code></td>
+      <td>${escapeHtml(r.name)}</td>
+      <td><span class="source-chip" data-source="${escapeHtml(r.source)}">${escapeHtml(r.source)}</span></td>
+    </tr>
+  `).join('');
+  // Per-row toggle
+  tbody.querySelectorAll('tr').forEach(tr => {
+    const cb = tr.querySelector('input[type=checkbox]');
+    cb.onchange = () => {
+      const k = tr.dataset.key;
+      if (cb.checked) deployModalState.selected.add(k);
+      else deployModalState.selected.delete(k);
+      tr.classList.toggle('is-checked', cb.checked);
+      updateManifestCounter(rows.filter(r => deployModalState.selected.has(r.key)).length, rows.length);
+    };
+  });
+  updateManifestCounter(rows.filter(r => deployModalState.selected.has(r.key)).length, rows.length);
+}
+
+function bulkSelectVisibleManifest(checked) {
+  const types = new Set([...document.querySelectorAll('#deploy-type-filters input:checked')].map(i => i.value));
+  for (const r of (deployModalState.manifest || [])) {
+    if (!types.has(r.type)) continue;
+    if (checked) deployModalState.selected.add(r.key);
+    else deployModalState.selected.delete(r.key);
+  }
+  renderDeployManifestTable();
+}
+
+function updateManifestCounter(selected, total) {
+  $('#deploy-manifest-counter').textContent = `${selected} of ${total} artefact${total === 1 ? '' : 's'} selected`;
+  const goBtn = $('#deploy-modal-go');
+  if (goBtn) goBtn.disabled = selected === 0;
+  const toggle = $('#deploy-manifest-toggle');
+  if (toggle) {
+    toggle.checked = total > 0 && selected === total;
+    toggle.indeterminate = selected > 0 && selected < total;
+  }
+}
+
+async function doDeployBulk() {
+  if (deployModalState.inflight) return;
+  const url  = $('#deploy-target-mcp').value.trim();
+  const auth = $('#deploy-target-auth').value;
+  const folder = $('#deploy-target-folder').value.trim();
+  const product = $('#deploy-target-product').value;
+  const version = $('#deploy-target-version').value;
+  const statusEl = $('#deploy-modal-status');
+  const setStatus = (msg, kind) => {
+    statusEl.textContent = msg;
+    statusEl.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
+  };
+  if (!url) { setStatus('mcp url required', 'error'); return; }
+  if (deployModalState.selected.size === 0) { setStatus('select at least one artefact', 'error'); return; }
+
+  const items = [...deployModalState.selected].map(k => {
+    const row = (deployModalState.manifest || []).find(r => r.key === k);
+    return row && {
+      group:       row.group,
+      flavor:      row.flavor,
+      artifact:    row.artifact,
+      dashboardId: row.dashboardId,
+      scope:       row.scope,
+    };
+  }).filter(Boolean);
+
+  deployModalState.inflight = true;
+  const goBtn = $('#deploy-modal-go');
+  goBtn.disabled = true;
+  setStatus(`deploying ${items.length} artefact${items.length === 1 ? '' : 's'}…`);
+
+  try {
+    const qs = new URLSearchParams();
+    if (state.selectedEnv) qs.set('env', state.selectedEnv);
+    const path = `/api/packs/${encodeURIComponent(deployModalState.packId)}/deploy-bulk?${qs}`;
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mcpUrl: url, mcpAuth: auth || undefined,
+        targetProduct: product, targetVersion: version, targetFolder: folder || undefined,
+        items,
+      }),
+    });
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    if (!ct.includes('application/json')) {
+      setStatus(`server returned ${r.status} ${ct || 'no content-type'}`, 'error');
+      return;
+    }
+    const body = JSON.parse(raw);
+    if (body.summary) {
+      const { ok, failed, total } = body.summary;
+      setStatus(`${ok}/${total} deployed in ${body.tookMs}ms · ${failed} failed`, failed === 0 ? 'ok' : 'error');
+    }
+    renderDeployBulkResult(body);
+  } catch (e) {
+    setStatus(`error: ${e.message}`, 'error');
+  } finally {
+    deployModalState.inflight = false;
+    goBtn.disabled = false;
+  }
+}
+
+function renderDeployBulkResult(body) {
+  const el = $('#deploy-modal-result');
+  el.hidden = false;
+  const rows = (body.results || []).map(r => `
+    <tr class="${r.ok ? 'is-ok' : 'is-err'}">
+      <td>${r.ok ? '✓' : '✗'}</td>
+      <td><code>${escapeHtml(r.item?.group || '')}/${escapeHtml(r.item?.artifact || '')}</code></td>
+      <td>${r.ok ? `${r.bytes || 0} b · ${r.tool || ''}` : escapeHtml(r.error || 'failed')}</td>
+      <td>${r.tookMs || 0} ms</td>
+    </tr>
+  `).join('');
+  el.innerHTML = `
+    <h4>Deploy result</h4>
+    <table class="deploy-result-table">
+      <thead><tr><th></th><th>Artefact</th><th>Detail</th><th>Took</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function setupDraftFromMcpPanel() {
+  const btn = $('#draft-mcp-btn');
+  if (!btn) return;
+  const panel    = $('#draft-mcp-panel');
+  const closeBtn = $('#draft-mcp-panel-close');
+  const goBtn    = $('#draft-mcp-go-btn');
+  const resetBtn = $('#draft-mcp-reset-btn');
+  const resultCloseBtn = $('#draft-mcp-result-close');
+  const adoptBtn = $('#draft-mcp-adopt-btn');
+
+  btn.onclick = () => {
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) {
+      // Pre-fill URL from the same localStorage slot the MCP refresh
+      // panel uses, so the SRE doesn't have to retype.
+      const urlInput = $('#draft-mcp-url');
+      if (!urlInput.value) {
+        try { urlInput.value = localStorage.getItem('mcpUrl') || ''; } catch (_) {}
+      }
+      urlInput.focus();
+    }
+  };
+  closeBtn.onclick = () => { panel.hidden = true; };
+  resultCloseBtn.onclick = () => { $('#draft-mcp-result').hidden = true; };
+  resetBtn.onclick = () => {
+    $('#draft-mcp-url').value = '';
+    $('#draft-mcp-auth').value = '';
+    $('#draft-mcp-name').value = '';
+    $('#draft-mcp-result').hidden = true;
+    $('#draft-mcp-status').textContent = '';
+    draftMcpState.lastResult = null;
+  };
+  goBtn.onclick = () => doDraftFromMcp();
+  adoptBtn.onclick = () => adoptDraftFromMcpResult();
+}
+
+async function doDraftFromMcp() {
+  const url  = $('#draft-mcp-url').value.trim();
+  const auth = $('#draft-mcp-auth').value;
+  const name = $('#draft-mcp-name').value.trim();
+  const statusEl = $('#draft-mcp-status');
+  const setStatus = (msg, kind) => {
+    statusEl.textContent = msg;
+    statusEl.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
+  };
+  if (!url) { setStatus('mcp url required', 'error'); return; }
+  try { localStorage.setItem('mcpUrl', url); } catch (_) {}
+
+  const goBtn = $('#draft-mcp-go-btn');
+  goBtn.disabled = true;
+  setStatus('contacting mcp…');
+  $('#draft-mcp-result').hidden = true;
+
+  try {
+    const r = await fetch('/api/draft-from-mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined, packName: name || undefined }),
+    });
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    if (!ct.includes('application/json')) {
+      setStatus(`server returned ${r.status} ${ct || 'no content-type'} — restart \`npm run dev\` if you just changed server code`, 'error');
+      return;
+    }
+    const out = JSON.parse(raw);
+    if (!out.ok) { setStatus(`error: ${out.error || 'unknown'}`, 'error'); return; }
+    draftMcpState.lastResult = out;
+    renderDraftMcpResult(out);
+    setStatus(`drafted in ${out.tookMs}ms · ${out.summary.discovered.backends} backend(s) discovered`, 'ok');
+  } catch (e) {
+    setStatus(`error: ${e.message}`, 'error');
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+function renderDraftMcpResult(out) {
+  const resBox = $('#draft-mcp-result');
+  resBox.hidden = false;
+
+  $('#draft-mcp-result-sub').textContent =
+    `${out.canonical.metadata.name} · ${out.canonical.metadata.bindings?.criticality || 'tier-3'} · MCP @ ${out.summary.mcpUrl}`;
+  $('#draft-mcp-result-yaml').textContent = out.canonicalYaml;
+
+  // Validation
+  const v = out.validation;
+  $('#draft-mcp-result-validation').innerHTML = `
+    <h4>schema validation</h4>
+    ${v.ok
+      ? `<div class="crawl-pill crawl-pill-ok">✓ valid v1.2</div>`
+      : `<div class="crawl-pill crawl-pill-err">✗ ${v.errors.length} schema error(s)</div>
+         <ul class="crawl-result-errs">${v.errors.slice(0, 8).map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`}
+  `;
+
+  // Discovery summary — show what the MCP actually attested, not just
+  // raw tool counts. Rows are present only when the value is non-zero
+  // or the probe was attempted (so the SRE sees what was asked vs found).
+  const d = out.summary.discovered;
+  const row = (label, value, dim = false) =>
+    `<tr${dim ? ' class="is-dim"' : ''}><td>${escapeHtml(label)}</td><td>${typeof value === 'number' ? value : escapeHtml(String(value))}</td></tr>`;
+  const probesA = new Set(d.probesAttempted || []);
+  const probesS = new Set(d.probesSucceeded || []);
+  const probeRow = (label, key, value) => {
+    if (!probesA.has(key)) return '';
+    const succeeded = probesS.has(key);
+    if (!succeeded) return row(label, '— probed, none found', true);
+    return row(label, value || 0);
+  };
+  $('#draft-mcp-result-summary').innerHTML = `
+    <h4>what the MCP attested</h4>
+    <table class="crawl-summary-table">
+      ${row('services', (d.servicesDiscovered || []).length)}
+      ${row('backends', d.backends)}
+      ${row('active anomalies', d.activeAnomalies)}
+      ${probeRow('recording rules', 'recording_rules', d.recordingRules)}
+      ${probeRow('alert rules',     'alert_rules',     d.alertRules)}
+      ${probeRow('dashboards',      'dashboards',      d.dashboards)}
+      ${probeRow('scrape jobs',     'scrape_configs',  (d.scrapeJobs || []).length)}
+      ${probeRow('metric names',    'metric_names',    d.metricNamesCount)}
+    </table>
+    <div class="crawl-inferred">
+      <em>refreshed</em>: ${escapeHtml(out.summary.refreshedAt)}
+    </div>
+  `;
+
+  // Warnings
+  const w = out.summary.warnings || [];
+  $('#draft-mcp-result-warnings').innerHTML = w.length
+    ? `<h4>what to refine</h4><ul class="crawl-warnings">${w.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>`
+    : `<h4>what to refine</h4><div class="crawl-pill crawl-pill-ok">nothing flagged</div>`;
+
+  // Tools chip
+  const tools = d.toolsCalled || [];
+  const fails = d.toolsFailed || [];
+  $('#draft-mcp-result-tools').innerHTML = `
+    <h4>mcp tools</h4>
+    <div class="draft-mcp-tools">
+      ${tools.map(t => `<code class="draft-mcp-tool ${fails.includes(t) ? 'is-failed' : 'is-ok'}">${escapeHtml(t)}</code>`).join(' ')}
+      ${tools.length === 0 ? '<em class="crawl-staged-empty">no tools called</em>' : ''}
+    </div>
+  `;
+
+  // Download link
+  const dl = $('#draft-mcp-download-btn');
+  const blob = new Blob([out.canonicalYaml], { type: 'application/x-yaml' });
+  if (dl.href.startsWith('blob:')) URL.revokeObjectURL(dl.href);
+  dl.href = URL.createObjectURL(blob);
+  dl.download = `${out.canonical.metadata.name}.pack.yaml`;
+}
+
+async function adoptDraftFromMcpResult() {
+  const out = draftMcpState.lastResult;
+  if (!out) return;
+  try {
+    const res = await validateUploaded(out.canonicalYaml, 'application/x-yaml', state.selectedEnv);
+    if (!res.ok) {
+      toast(`Could not adopt — ${res.errors.length} validation error(s)`, 'error');
+      return;
+    }
+    state.pack = res.adapted;
+    state.conformance = res.conformance;
+    state.symbolTable = buildSymbolTable(res.adapted);
+    state.uploadedSource = `${out.canonical.metadata.name} (live draft)`;
+    state.activeLayer = 'L1';
+    state.activeCardKey = null;
+    state.mode = 'single';
+    applyModeChrome();
+    renderPackSelect();
+    renderEnvSelect();
+    renderMeta();
+    renderTabs();
+    renderMainView();
+    $('#draft-mcp-panel').hidden = true;
+    toast(`Loaded live draft for ${out.canonical.metadata.name}`);
+  } catch (e) {
+    toast(`Adopt failed: ${e.message}`, 'error');
+  }
 }
 
 function setupMcpPanel() {

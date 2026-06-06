@@ -39,28 +39,33 @@ try {
   assert(health.ok === true, 'GET /healthz returns ok');
   assert(health.specVersion === '1.2', 'GET /healthz reports specVersion 1.2');
 
-  // /api/packs catalog
+  // /api/packs catalog — empty by design as of Phase 7q (the studio
+  // boots empty; user opens packs from disk via Upload / crawler /
+  // MCP draft / examples browser).
   const catalog = await getJson(base, '/api/packs');
   assert(Array.isArray(catalog.packs), 'GET /api/packs returns packs[]');
-  assert(catalog.packs.length >= 4, 'GET /api/packs returns at least 4 packs (Phase 5 catalog)', catalog.packs.length, '>= 4');
+  assert(catalog.packs.length === 0, 'GET /api/packs returns empty catalog (Phase 7q)', catalog.packs.length, 0);
+
+  // /api/examples — the 5 archived reference packs
+  const examples = await getJson(base, '/api/examples');
+  assert(Array.isArray(examples.examples), 'GET /api/examples returns examples[]');
+  assert(examples.examples.length === 5, 'examples lists all 5 archived packs', examples.examples.length, 5);
   for (const id of ['payment-service', 'target-advanced', 'production-curated', 'demo-skeleton']) {
-    const entry = catalog.packs.find(p => p.id === id);
-    assert(!!entry && entry.ok === true, `catalog entry '${id}' loads ok`, entry?.error, 'ok');
+    const entry = examples.examples.find(p => p.id === id);
+    assert(!!entry && entry.ok === true, `example '${id}' loads ok from examples/`, entry?.error, 'ok');
   }
-  const target = catalog.packs.find(p => p.id === 'target-advanced');
+  const target = examples.examples.find(p => p.id === 'target-advanced');
   assert(target?.criticality === 'tier-1', 'target-advanced declares tier-1');
-  const demo = catalog.packs.find(p => p.id === 'demo-skeleton');
+  const demo = examples.examples.find(p => p.id === 'demo-skeleton');
   assert(demo?.criticality === 'tier-3', 'demo-skeleton declares tier-3');
-  const example = catalog.packs.find(p => p.id === 'payment-service');
-  assert(!!example, 'catalog includes payment-service');
-  assert(example?.ok === true, 'payment-service loaded ok');
-  assert(example?.name === 'payment-service', 'payment-service name');
+  const example = examples.examples.find(p => p.id === 'payment-service');
+  assert(!!example, 'examples include payment-service');
   assert(example?.criticality === 'tier-1', 'payment-service criticality');
   assert(example?.environments?.length === 2, 'payment-service environments count');
-  const live = catalog.packs.find(p => p.id === 'production-live');
-  assert(!!live, 'catalog includes production-live entry');
-  // The cron writes packs/production-live.pack.yaml; in CI the file may not
-  // exist yet, in which case catalog reports ok:false with an error message.
+  const live = examples.examples.find(p => p.id === 'production-live');
+  assert(!!live, 'examples include production-live entry');
+  // The cron writes examples/production-live.pack.yaml; in CI the file
+  // may not exist yet, in which case the entry reports ok:false.
   if (live.ok) {
     assert(live.name === 'production-live', 'production-live pack name when present');
   } else {
@@ -172,9 +177,169 @@ try {
   const badTarget = await fetch(`${base}/api/packs/payment-service/compile/no-such-target`);
   assert(badTarget.status === 400, 'unknown compile target → 400');
 
+  // --- Compile redesign (Phase 7m): per-artifact catalog + endpoint ---
+  const compCat = await getJson(base, '/api/packs/payment-service/compile-catalog');
+  assert(Array.isArray(compCat.groups), 'compile-catalog returns groups');
+  const groupIds = compCat.groups.map(g => g.id);
+  assert(groupIds.includes('rules'), 'catalog has a rules group');
+  assert(groupIds.includes('dashboards'), 'catalog has a dashboards group');
+  assert(groupIds.includes('pipelines'), 'catalog has a pipelines group');
+  assert(groupIds.includes('alertmanager'), 'catalog has an alertmanager group');
+  const rulesGroup = compCat.groups.find(g => g.id === 'rules');
+  const rulesFlavorIds = rulesGroup.flavors.map(f => f.id);
+  assert(rulesFlavorIds.includes('prometheus'), 'rules group has Prometheus flavor');
+  assert(rulesFlavorIds.includes('grafana-managed'), 'rules group has Grafana-managed flavor');
+  for (const f of rulesGroup.flavors) {
+    assert(typeof f.platform === 'string' && f.platform.length > 5,
+           `flavor "${f.id}" declares an explicit target platform string`);
+    assert(typeof f.description === 'string' && f.description.length > 10,
+           `flavor "${f.id}" declares a description`);
+  }
+  const rulesItemIds = rulesGroup.items.map(it => it.id);
+  assert(rulesItemIds.includes('all'),                    'rules items include "all"');
+  assert(rulesItemIds.some(id => id.startsWith('slo:')),  'rules items include per-SLO entries');
+  const firstSloId = rulesItemIds.find(id => id.startsWith('slo:'));
+
+  // Per-artifact compile: Prometheus per-SLO
+  const promSloRes = await fetch(`${base}/api/packs/payment-service/compile-artifact?group=rules&flavor=prometheus&artifact=${encodeURIComponent(firstSloId)}`);
+  assert(promSloRes.status === 200, 'per-SLO Prometheus compile → 200');
+  assert((promSloRes.headers.get('content-type') || '').includes('application/x-yaml'),
+         'per-SLO Prometheus content-type is yaml');
+  assert(promSloRes.headers.get('x-compile-flavor') === 'prometheus',
+         'per-SLO Prometheus echoes X-Compile-Flavor');
+  assert(promSloRes.headers.get('x-compile-artifact') === firstSloId,
+         'per-SLO Prometheus echoes X-Compile-Artifact');
+  const promSloText = await promSloRes.text();
+  const sloIdOnly = firstSloId.slice(4);
+  assert(promSloText.includes(sloIdOnly), `per-SLO Prometheus contains the SLO id (${sloIdOnly})`);
+  assert(!promSloText.includes('apiVersion: 1'),
+         'per-SLO Prometheus does NOT use the Grafana-managed apiVersion header');
+
+  // Per-artifact compile: Grafana-managed per-SLO
+  const grafSloRes = await fetch(`${base}/api/packs/payment-service/compile-artifact?group=rules&flavor=grafana-managed&artifact=${encodeURIComponent(firstSloId)}`);
+  assert(grafSloRes.status === 200, 'per-SLO Grafana-managed compile → 200');
+  const grafSloText = await grafSloRes.text();
+  assert(grafSloText.includes('apiVersion: 1'),
+         'per-SLO Grafana-managed uses Grafana provisioning apiVersion: 1');
+  assert(grafSloText.includes('folder: observability-pack'),
+         'per-SLO Grafana-managed declares the folder');
+  assert(grafSloText.includes('refId'),
+         'per-SLO Grafana-managed emits Grafana query data with refIds');
+
+  // Per-artifact compile: single dashboard
+  const dashRes2 = await fetch(`${base}/api/packs/payment-service/compile-artifact?group=dashboards&flavor=grafana&artifact=dash:payment-overview`);
+  assert(dashRes2.status === 200, 'per-artifact dashboard compile → 200');
+  assert((dashRes2.headers.get('content-type') || '').includes('application/json'),
+         'per-artifact dashboard content-type is json');
+
+  // Catalog reflects the env overlay
+  const compCatStaging = await getJson(base, '/api/packs/payment-service/compile-catalog?env=staging');
+  assert(compCatStaging.env === 'staging', 'catalog echoes env when provided');
+
+  // Bad group → 500-with-message (handled as JSON)
+  const badGroup = await fetch(`${base}/api/packs/payment-service/compile-artifact?group=does-not-exist`);
+  assert(badGroup.status === 500, 'unknown compile group → 500 (error JSON)');
+  const badGroupBody = await badGroup.json();
+  assert(/unknown compile group/.test(badGroupBody.error || ''),
+         'unknown group error message names the bad group kind');
+
   // /api/packs/<unknown>/compile/prometheus-rules → 404
   const badPack = await fetch(`${base}/api/packs/does-not-exist/compile/prometheus-rules`);
   assert(badPack.status === 404, 'unknown pack on compile → 404');
+
+  // POST /api/packs/:id/deploy/:target — missing mcpUrl → 400
+  const deployNoUrl = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert(deployNoUrl.status === 400, 'deploy without mcpUrl → 400');
+  const deployBody = await deployNoUrl.json();
+  assert(/mcpUrl/.test(deployBody.error || ''), 'deploy 400 mentions mcpUrl');
+
+  // POST /api/packs/:id/deploy/:target — unknown pack → 404
+  const deployBadPack = await fetch(`${base}/api/packs/does-not-exist/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no' }),
+  });
+  assert(deployBadPack.status === 404, 'deploy unknown pack → 404');
+
+  // POST /api/packs/:id/deploy/:target — unreachable MCP → 502 (still JSON)
+  const deployBadMcp = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no-mcp' }),
+  });
+  assert(deployBadMcp.status === 502, 'deploy unreachable MCP → 502');
+  const deployErr = await deployBadMcp.json();
+  // Default deploy is to Grafana 12 with scope=both → apply_grafana_rules.
+  assert(deployErr.tool === 'apply_grafana_rules',
+         'deploy 502 echoes the default tool for prometheus-rules → Grafana 12 + scope=both');
+  assert(deployErr.target === 'prometheus-rules', 'deploy 502 echoes the target');
+  assert(deployErr.targetProduct === 'grafana', 'deploy 502 echoes targetProduct');
+  assert(deployErr.targetVersion === '12', 'deploy 502 echoes targetVersion');
+  assert(deployErr.scope === 'both', 'deploy 502 echoes scope (both)');
+
+  // Deploy v2 — target product / version / scope wiring
+  const matrix = await getJson(base, '/api/deploy/matrix');
+  assert(Array.isArray(matrix.products) && matrix.products.includes('grafana'),
+         '/api/deploy/matrix lists grafana as a product');
+  assert(Array.isArray(matrix.versions?.grafana) && matrix.versions.grafana.includes('12') && matrix.versions.grafana.includes('13'),
+         '/api/deploy/matrix lists Grafana versions 12 and 13');
+  assert(matrix.targets?.['prometheus-rules']?.deployable === true,
+         'matrix marks prometheus-rules deployable');
+  assert(matrix.targets?.['grafana-dashboard']?.deployable === true,
+         'matrix marks grafana-dashboard deployable');
+  assert(matrix.targets?.['otel-collector']?.deployable === false,
+         'matrix marks otel-collector NOT deployable');
+  assert(matrix.targets?.['alertmanager']?.deployable === false,
+         'matrix marks alertmanager NOT deployable');
+
+  // Deploy on a non-deployable target → 400 with a clear message
+  const deployUndeployable = await fetch(`${base}/api/packs/payment-service/deploy/otel-collector`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no' }),
+  });
+  assert(deployUndeployable.status === 400, 'deploy to undeployable target → 400');
+  const undeployableBody = await deployUndeployable.json();
+  assert(/not supported/.test(undeployableBody.error || ''),
+         'undeployable error mentions "not supported"');
+
+  // Deploy with unknown target version → 400
+  const deployBadVer = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no', targetVersion: '11' }),
+  });
+  assert(deployBadVer.status === 400, 'deploy with bad target version → 400');
+  const badVerBody = await deployBadVer.json();
+  assert(/unsupported.*version/i.test(badVerBody.error || ''),
+         'bad-version error names the unsupported version');
+
+  // Deploy with scope=recording → default tool flips to recording variant
+  const deployRecording = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no', scope: 'recording' }),
+  });
+  assert(deployRecording.status === 502, 'deploy with scope=recording → 502 from unreachable mcp');
+  const recBody = await deployRecording.json();
+  assert(recBody.tool === 'apply_grafana_recording_rules',
+         'scope=recording defaults to apply_grafana_recording_rules');
+  assert(recBody.scope === 'recording', 'echoes scope=recording');
+
+  // Deploy with scope=alerting → default tool flips again
+  const deployAlerting = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no', scope: 'alerting', targetVersion: '13' }),
+  });
+  const alrBody = await deployAlerting.json();
+  assert(alrBody.tool === 'apply_grafana_alerting_rules',
+         'scope=alerting defaults to apply_grafana_alerting_rules');
+  assert(alrBody.targetVersion === '13', 'echoes Grafana 13');
 
   // /api/maturity-rubric
   const rubric = await getJson(base, '/api/maturity-rubric');
@@ -239,16 +404,134 @@ try {
   assert(html.includes('/app.mjs'), 'shell loads app.mjs');
   assert(html.includes('/app.css'), 'shell loads app.css');
 
+  // POST /api/crawl — Path A of pack creation. Real fixture: docker-compose
+  // + Prometheus rules + Alertmanager + Grafana dashboard. Output must pass
+  // canonical schema and surface evidence pointers.
+  const crawlBody = {
+    repoName: 'smoke-crawl',
+    files: {
+      'docker-compose.yml': `version: '3.8'\nservices:\n  prometheus:\n    image: prom/prometheus:v2.51.0\n    ports: ["9090:9090"]\n  grafana:\n    image: grafana/grafana:12.0.0\n    ports: ["3000:3000"]\n`,
+      'rules.yml': `groups:\n  - name: g\n    rules:\n      - record: smoke:availability:ratio\n        expr: sum(rate(req_total[5m]))\n`,
+      'dashboards/svc.json': JSON.stringify({ title: 'svc', uid: 'svc', schemaVersion: 41, version: 1, panels: [{ title: 'p', type: 'stat' }] }),
+      'alertmanager.yml': `route:\n  receiver: oncall\nreceivers:\n  - name: oncall\n    msteams_configs:\n      - channel_url: '#oncall'\n`,
+    },
+  };
+  const crawlRes = await fetch(`${base}/api/crawl`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(crawlBody),
+  });
+  assert(crawlRes.status === 200, 'POST /api/crawl returns 200 on valid input');
+  const crawlOut = await crawlRes.json();
+  assert(crawlOut.ok === true, 'crawl ok');
+  assert(crawlOut.canonical?.apiVersion === 'observability.platform/v1', 'crawl emits canonical v1');
+  assert(crawlOut.canonical?.metadata?.name === 'smoke-crawl', 'crawl honors repoName');
+  assert(Array.isArray(crawlOut.canonical?.spec?.telemetry?.backends), 'crawl emits telemetry.backends');
+  assert(crawlOut.canonical.spec.telemetry.backends.some(b => b.product === 'prometheus'),
+         'crawl discovers prometheus backend from docker-compose');
+  assert(crawlOut.canonical.spec.queries.recording_rules.some(r => r.name === 'smoke:availability:ratio'),
+         'crawl preserves recording rule name');
+  assert(crawlOut.canonical.spec.dashboards.some(d => d.provider?.kind === 'grafana'),
+         'crawl emits grafana dashboard');
+  assert(crawlOut.validation?.ok === true,
+         `crawl output passes v1.2 schema (errors: ${JSON.stringify(crawlOut.validation?.errors || []).slice(0, 200)})`);
+  assert(typeof crawlOut.canonicalYaml === 'string' && crawlOut.canonicalYaml.includes('apiVersion'),
+         'crawl returns canonical YAML');
+  assert(crawlOut.summary?.discovered?.backends >= 2, 'crawl summary counts ≥2 backends');
+  assert(crawlOut.evidence && Object.keys(crawlOut.evidence).length >= 3,
+         'crawl returns evidence pointers');
+  assert(typeof crawlOut.conformance?.declaredTier === 'string',
+         'crawl includes conformance report');
+
+  // POST /api/crawl — empty body → 400
+  const crawlEmpty = await fetch(`${base}/api/crawl`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert(crawlEmpty.status === 400, 'POST /api/crawl rejects empty body with 400');
+
+  // POST /api/crawl — non-string value → 400
+  const crawlBad = await fetch(`${base}/api/crawl`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files: { 'x.yml': 123 } }),
+  });
+  assert(crawlBad.status === 400, 'POST /api/crawl rejects non-string content with 400');
+
+  // Shell carries the crawler panel scaffolding (Phase 7j-2)
+  const shell = await getText(base, '/');
+  assert(shell.includes('id="crawl-panel"'), 'shell includes #crawl-panel');
+  assert(shell.includes('id="crawl-dropzone"'), 'shell includes the dropzone');
+  assert(shell.includes('id="crawl-btn"'), 'shell includes the "new from repo" button');
+
+  // Shell carries the Path B "new from live" surface (Phase 7n)
+  assert(shell.includes('id="draft-mcp-panel"'), 'shell includes #draft-mcp-panel');
+  assert(shell.includes('id="draft-mcp-btn"'), 'shell includes the "new from live" button');
+  assert(shell.includes('id="draft-mcp-go-btn"'), 'shell includes the draft submit button');
+
+  // /api/draft-from-mcp — empty body
+  const draftEmpty = await fetch(`${base}/api/draft-from-mcp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert(draftEmpty.status === 400, 'POST /api/draft-from-mcp without mcpUrl → 400');
+  const draftEmptyBody = await draftEmpty.json();
+  assert(/mcpUrl/.test(draftEmptyBody.error || ''),
+         'draft-from-mcp 400 mentions mcpUrl');
+
+  // /api/draft-from-mcp — unreachable MCP returns 502 with JSON
+  const draftBad = await fetch(`${base}/api/draft-from-mcp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no-mcp' }),
+  });
+  assert(draftBad.status === 502, 'POST /api/draft-from-mcp unreachable → 502');
+  assert((draftBad.headers.get('content-type') || '').includes('application/json'),
+         'draft-from-mcp 502 is JSON');
+
+  // /lib/* — shared crawler + YAML library exposed to the browser so it
+  // can do classification BEFORE blasting a 3000-file repo at the
+  // server. Same module the CLI + server use.
+  const libCrawler = await fetch(`${base}/lib/crawler.mjs`);
+  assert(libCrawler.status === 200, '/lib/crawler.mjs served');
+  assert((libCrawler.headers.get('content-type') || '').includes('javascript'),
+         '/lib/crawler.mjs served as application/javascript');
+  const libCrawlerBody = await libCrawler.text();
+  assert(libCrawlerBody.includes('export function detectArtefactKind'),
+         '/lib/crawler.mjs exports detectArtefactKind for the browser');
+  const libMini = await fetch(`${base}/lib/mini-yaml.mjs`);
+  assert(libMini.status === 200, '/lib/mini-yaml.mjs served (transitive import target)');
+
+  // 413 PayloadTooLarge on /api/* must come back as JSON, not HTML.
+  // Build a body just over the 16 MB cap by repeating the smallest valid
+  // crawl shape.
+  const huge = '{"files":{' + Array.from({ length: 100 }, (_, i) =>
+    `"f${i}.yml":"${'x'.repeat(180 * 1024)}"`
+  ).join(',') + '}}';
+  const tooBig = await fetch(`${base}/api/crawl`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: huge,
+  });
+  assert(tooBig.status === 413, 'oversize /api/crawl request → 413');
+  const tooBigCt = tooBig.headers.get('content-type') || '';
+  assert(tooBigCt.includes('application/json'),
+         `413 response carries JSON content-type (got ${tooBigCt})`);
+  const tooBigBody = await tooBig.json();
+  assert(/too large/i.test(tooBigBody.error || ''),
+         '413 error message names the size problem');
+
   // Static assets
   const css = await getText(base, '/app.css');
   assert(css.includes('--L2X:'), '/app.css served with L2X palette');
+  assert(css.includes('.crawl-dropzone'), '/app.css ships crawl-dropzone styles');
   const js = await getText(base, '/app.mjs');
   assert(js.includes('LAYER_DEFS'), '/app.mjs served');
+  assert(js.includes('setupCrawlPanel'), '/app.mjs wires setupCrawlPanel');
+  assert(js.includes('renderCrawlResult'), '/app.mjs ships renderCrawlResult');
+  assert(js.includes('setupDraftFromMcpPanel'), '/app.mjs wires setupDraftFromMcpPanel (Phase 7n)');
+  assert(js.includes('renderDraftMcpResult'), '/app.mjs ships renderDraftMcpResult');
   const atlasJs = await getText(base, '/atlases.mjs');
-  // Phase 7c (re-port) ships strata + periodic faithfully. Constellation,
-  // Skyline, Transit, and Arbor return as their own restoration PRs.
-  assert(atlasJs.includes('renderStrata') && atlasJs.includes('renderPeriodic'),
-         '/atlases.mjs served with strata + periodic renderers');
+  // The full atlas roster is restored as of Phase 7h.
+  for (const fn of ['renderStrata', 'renderPeriodic', 'renderConstellation', 'renderSkyline', 'renderTransit', 'renderArbor']) {
+    assert(atlasJs.includes(fn), `/atlases.mjs includes ${fn}`);
+  }
 } finally {
   await new Promise(r => srv.close(r));
 }

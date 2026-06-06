@@ -279,6 +279,479 @@ function shortFor(d) {
   return '10m';
 }
 
+// ----------------------------------------------------------------
+// Per-SLO rules builders — used by both Prometheus and
+// Grafana-managed compilers, and by the per-artifact selection UI.
+// Returned arrays are the same in-memory rule shape the dispatcher
+// then formats for each platform.
+// ----------------------------------------------------------------
+
+function buildRecordingRulesForSlo(canonical, slo) {
+  const sli = findSli(canonical, slo.sli);
+  if (!sli) return [];
+  const svc = serviceSlug(canonical);
+  const expr = sliExpression(sli);
+  if (!expr) return [];
+  const labels = { slo: slo.id, sli: sli.id, service: nameOf(canonical) };
+
+  if (sli.type === 'ratio') {
+    return [
+      { record: `${svc}:${sli.id}:good_${RATE_WINDOW_RECORD}`, expr: strip(sli.good), labels },
+      { record: `${svc}:${sli.id}:total_${RATE_WINDOW_RECORD}`, expr: strip(sli.total), labels },
+      { record: `${svc}:${sli.id}:ratio_${RATE_WINDOW_RECORD}`, expr: `${svc}:${sli.id}:good_${RATE_WINDOW_RECORD} / ${svc}:${sli.id}:total_${RATE_WINDOW_RECORD}`, labels },
+      { record: `${svc}:${sli.id}:error_ratio_${RATE_WINDOW_RECORD}`, expr: `1 - ${svc}:${sli.id}:ratio_${RATE_WINDOW_RECORD}`, labels },
+    ];
+  }
+  return [{ record: `${svc}:${sli.id}:value_${RATE_WINDOW_RECORD}`, expr, labels }];
+}
+
+function buildBurnRateAlertsForSlo(canonical, slo, burnRateBlock) {
+  const sli = findSli(canonical, slo.sli);
+  if (!sli || sli.type !== 'ratio') return [];
+  const budget = 1 - slo.objective;
+  if (!(budget > 0)) return [];
+  const svc = serviceSlug(canonical);
+  const out = [];
+  for (const w of burnRateBlock?.windows || []) {
+    const short = w.short, long = w.long;
+    const factor = w.factor || 1;
+    const sev = w.severity || 'SEV3';
+    const alertName = `${slo.id}_burn_${factor}x_${short}_${long}`.replace(/[^a-zA-Z0-9_]/g, '_');
+    const shortErr = `(1 - sum(rate(${strip(sli.good)}[${short}])) / sum(rate(${strip(sli.total)}[${short}])))`;
+    const longErr  = `(1 - sum(rate(${strip(sli.good)}[${long}])) / sum(rate(${strip(sli.total)}[${long}])))`;
+    const threshold = (factor * budget).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+    out.push({
+      alert: alertName,
+      expr: `(${shortErr} > ${threshold}) and (${longErr} > ${threshold})`,
+      for: shortFor(short),
+      labels: { severity: sev, slo: slo.id, sli: sli.id, service: nameOf(canonical), burn_rate: String(factor), window_short: short, window_long: long },
+      annotations: {
+        summary: `Burn rate ${factor}× on ${slo.id}`,
+        description: `Both the ${short} and ${long} error rates exceed ${factor}× of the ${(budget * 100).toFixed(3)}% error budget for ${slo.id}.`,
+        slo_objective: `${(slo.objective * 100).toFixed(3)}%`,
+        slo_window: slo.window,
+        runbook: '(supply runbook URL)',
+      },
+    });
+  }
+  return out;
+}
+
+function buildForecastAlertForSlo(canonical, slo, forecast) {
+  const sli = findSli(canonical, slo.sli);
+  if (!sli || sli.type !== 'ratio') return null;
+  const svc = serviceSlug(canonical);
+  const horizonSec = durationSeconds(forecast.horizon || '7d') || (7 * 86400);
+  const budget = (1 - slo.objective).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+  return {
+    alert: `${slo.id}_forecast_breach`,
+    expr: `predict_linear(${svc}:${sli.id}:error_ratio_${RATE_WINDOW_RECORD}[1h], ${horizonSec}) > ${budget}`,
+    for: '15m',
+    labels: { severity: 'SEV3', slo: slo.id, kind: 'forecast', service: nameOf(canonical) },
+    annotations: {
+      summary: `${slo.id} projected to breach within ${forecast.horizon || '7d'}`,
+      method: forecast.method || 'linear',
+      on_projected_breach: forecast.on_projected_breach || 'open_ticket',
+    },
+  };
+}
+
+// ----------------------------------------------------------------
+// Per-artifact Prometheus compilers — emit a SUBSET of the
+// rules file scoped to one SLO or one author-declared rule.
+// The output is still a valid Prometheus rules YAML file so it
+// drops into Mimir/Prometheus ruler the same way.
+// ----------------------------------------------------------------
+
+export function compileSloPrometheusRules(canonical, sloId) {
+  const slo = findSlo(canonical, sloId);
+  if (!slo) throw new Error(`SLO not found: ${sloId}`);
+  const svc = serviceSlug(canonical);
+  const groups = [];
+
+  const recording = buildRecordingRulesForSlo(canonical, slo);
+  if (recording.length) groups.push({ name: `${svc}_${slo.id}_recording`, interval: '30s', rules: recording });
+
+  for (const ba of (canonical?.spec?.policy?.burn_rate_alerts || []).filter(b => b.slo === slo.id)) {
+    const alerts = buildBurnRateAlertsForSlo(canonical, slo, ba);
+    if (alerts.length) groups.push({ name: `${svc}_${slo.id}_burn`, interval: '30s', rules: alerts });
+  }
+  for (const f of (canonical?.spec?.policy?.forecasts || []).filter(x => x.slo === slo.id)) {
+    const fa = buildForecastAlertForSlo(canonical, slo, f);
+    if (fa) groups.push({ name: `${svc}_${slo.id}_forecast`, interval: '5m', rules: [fa] });
+  }
+
+  return banner(`Prometheus rules — SLO ${slo.id}`, canonical) + emitYaml({ groups });
+}
+
+export function compileDeclaredPrometheusRule(canonical, indexOrName) {
+  const decl = canonical?.spec?.queries?.recording_rules || [];
+  const rule = typeof indexOrName === 'number' ? decl[indexOrName] : decl.find(r => r.name === indexOrName);
+  if (!rule) throw new Error(`Declared recording rule not found: ${indexOrName}`);
+  const svc = serviceSlug(canonical);
+  const groups = [{
+    name: `${svc}_declared`,
+    interval: '30s',
+    rules: [{ record: rule.name, expr: resolveRefs(rule.expr, canonical), ...(rule.labels ? { labels: rule.labels } : {}) }],
+  }];
+  return banner(`Prometheus rule — ${rule.name}`, canonical) + emitYaml({ groups });
+}
+
+// ----------------------------------------------------------------
+// Grafana-managed rules — emitted as Grafana provisioning YAML
+// (the format Grafana 9+ accepts under provisioning/alerting/*.yaml
+// and the unified-alerting `/api/ruler/grafana/api/v1/rules/<ns>`
+// endpoint).
+//
+// Recording rules use the modern Grafana-managed `record:` block
+// (metric + from refId). Alerting rules use the `condition` + `data`
+// shape with a threshold expression on a refId.
+// ----------------------------------------------------------------
+
+const GRAFANA_FOLDER_DEFAULT = 'observability-pack';
+
+function grafanaRuleUid(prefix, name) {
+  // Grafana wants stable, ≤40-char alphanumeric uids. Deterministic from
+  // name so re-emits don't churn.
+  const base = `${prefix}-${slug(name)}`.slice(0, 40);
+  return base;
+}
+
+function grafanaPromQuery(refId, expr, instant = true) {
+  return {
+    refId,
+    queryType: '',
+    relativeTimeRange: { from: 600, to: 0 },
+    datasourceUid: DEFAULT_DATASOURCE_UID,
+    model: {
+      refId,
+      expr,
+      instant,
+      range: !instant,
+      intervalMs: 1000,
+      maxDataPoints: 43200,
+    },
+  };
+}
+
+function grafanaThresholdExpr(refId, target, gt) {
+  return {
+    refId,
+    queryType: '',
+    relativeTimeRange: { from: 0, to: 0 },
+    datasourceUid: '__expr__',
+    model: {
+      refId,
+      type: 'threshold',
+      expression: target,
+      conditions: [{ type: 'query', evaluator: { type: 'gt', params: [gt] } }],
+    },
+  };
+}
+
+function buildGrafanaRecordingRule(rec) {
+  // Grafana-managed recording rule: title + record block + a single
+  // Prometheus query that returns the materialised metric.
+  return {
+    uid: grafanaRuleUid('rec', rec.record),
+    title: rec.record,
+    condition: 'A',
+    data: [grafanaPromQuery('A', rec.expr, false)],
+    no_data_state: 'OK',
+    exec_err_state: 'Error',
+    for: '0s',
+    labels: rec.labels || {},
+    annotations: {},
+    record: { metric: rec.record, from: 'A' },
+    is_paused: false,
+  };
+}
+
+function buildGrafanaAlertRule(alert) {
+  // Grafana-managed alert rule: a Prometheus query in refId A and a
+  // threshold expression in refId B that evaluates A > 0. The original
+  // expr already encodes the threshold, so we test "result > 0".
+  return {
+    uid: grafanaRuleUid('alr', alert.alert),
+    title: alert.alert,
+    condition: 'B',
+    data: [
+      grafanaPromQuery('A', alert.expr, true),
+      grafanaThresholdExpr('B', 'A', 0),
+    ],
+    no_data_state: 'OK',
+    exec_err_state: 'Error',
+    for: alert.for || '5m',
+    labels: alert.labels || {},
+    annotations: alert.annotations || {},
+    is_paused: false,
+  };
+}
+
+function grafanaGroupOf(name, rules, interval = '30s') {
+  return {
+    orgId: 1,
+    name,
+    folder: GRAFANA_FOLDER_DEFAULT,
+    interval,
+    rules,
+  };
+}
+
+function bannerForGrafana(target, canonical) {
+  return (
+    `# ${target} compiled from ObservabilityPack v1.2\n` +
+    `# Pack: ${nameOf(canonical)} · version ${canonical?.metadata?.version || '?'}\n` +
+    `# Format: Grafana 9+ provisioning YAML (apiVersion: 1).\n` +
+    `# Apply via: copy under provisioning/alerting/ OR POST to /api/v1/provisioning/alert-rules\n` +
+    `# Source of truth — DO NOT hand-edit. Re-emit from the pack.\n`
+  );
+}
+
+export function compileGrafanaManagedRules(canonical) {
+  const svc = serviceSlug(canonical);
+  const groups = [];
+
+  // Recording rules (per-SLO ratios + author-declared)
+  const recordingRules = [];
+  for (const slo of canonical?.spec?.slos || []) {
+    for (const r of buildRecordingRulesForSlo(canonical, slo)) {
+      recordingRules.push(buildGrafanaRecordingRule(r));
+    }
+  }
+  for (const decl of canonical?.spec?.queries?.recording_rules || []) {
+    recordingRules.push(buildGrafanaRecordingRule({
+      record: decl.name,
+      expr: resolveRefs(decl.expr, canonical),
+      labels: decl.labels || {},
+    }));
+  }
+  if (recordingRules.length) groups.push(grafanaGroupOf(`${svc}_recording`, recordingRules, '30s'));
+
+  // Burn-rate alerts (per SLO)
+  for (const ba of canonical?.spec?.policy?.burn_rate_alerts || []) {
+    const slo = findSlo(canonical, ba.slo);
+    if (!slo) continue;
+    const rules = buildBurnRateAlertsForSlo(canonical, slo, ba).map(buildGrafanaAlertRule);
+    if (rules.length) groups.push(grafanaGroupOf(`${svc}_${slo.id}_burn`, rules, '30s'));
+  }
+
+  // Forecast alerts
+  const forecastRules = [];
+  for (const f of canonical?.spec?.policy?.forecasts || []) {
+    const slo = findSlo(canonical, f.slo);
+    if (!slo) continue;
+    const fa = buildForecastAlertForSlo(canonical, slo, f);
+    if (fa) forecastRules.push(buildGrafanaAlertRule(fa));
+  }
+  if (forecastRules.length) groups.push(grafanaGroupOf(`${svc}_forecast`, forecastRules, '5m'));
+
+  return bannerForGrafana('Grafana-managed rules', canonical) + emitYaml({ apiVersion: 1, groups });
+}
+
+export function compileSloGrafanaManagedRules(canonical, sloId) {
+  const slo = findSlo(canonical, sloId);
+  if (!slo) throw new Error(`SLO not found: ${sloId}`);
+  const svc = serviceSlug(canonical);
+  const groups = [];
+
+  const recording = buildRecordingRulesForSlo(canonical, slo).map(buildGrafanaRecordingRule);
+  if (recording.length) groups.push(grafanaGroupOf(`${svc}_${slo.id}_recording`, recording, '30s'));
+
+  for (const ba of (canonical?.spec?.policy?.burn_rate_alerts || []).filter(b => b.slo === slo.id)) {
+    const rules = buildBurnRateAlertsForSlo(canonical, slo, ba).map(buildGrafanaAlertRule);
+    if (rules.length) groups.push(grafanaGroupOf(`${svc}_${slo.id}_burn`, rules, '30s'));
+  }
+  for (const f of (canonical?.spec?.policy?.forecasts || []).filter(x => x.slo === slo.id)) {
+    const fa = buildForecastAlertForSlo(canonical, slo, f);
+    if (fa) groups.push(grafanaGroupOf(`${svc}_${slo.id}_forecast`, [buildGrafanaAlertRule(fa)], '5m'));
+  }
+
+  return bannerForGrafana(`Grafana-managed rules — SLO ${slo.id}`, canonical) + emitYaml({ apiVersion: 1, groups });
+}
+
+// ----------------------------------------------------------------
+// Compile catalog — enumerates every individually compilable
+// artifact in the pack. The studio renders this as a left-nav tree;
+// each leaf identifies its target platform explicitly so the
+// engineer can SEE whether they're looking at Prometheus or
+// Grafana-managed output before they ship it.
+// ----------------------------------------------------------------
+
+export function compileCatalog(canonical) {
+  const sloIds = (canonical?.spec?.slos || []).map(s => s.id);
+  const declared = canonical?.spec?.queries?.recording_rules || [];
+  const dashboards = canonical?.spec?.dashboards || [];
+
+  const groups = [];
+
+  // ---- Rules group: two flavors, multiple selectable items ----
+  if (sloIds.length || declared.length) {
+    const rulesItems = [
+      { id: 'all', kind: 'rules-bundle', label: 'All rules · full file', subtitle: `${sloIds.length} SLO(s) · ${declared.length} declared` },
+    ];
+    for (const slo of canonical.spec.slos || []) {
+      const sli = findSli(canonical, slo.sli);
+      const recCount = sli ? (sli.type === 'ratio' ? 4 : 1) : 0;
+      const burnCount = (canonical?.spec?.policy?.burn_rate_alerts || [])
+        .filter(b => b.slo === slo.id)
+        .reduce((s, b) => s + (b.windows?.length || 0), 0);
+      const forecastCount = (canonical?.spec?.policy?.forecasts || [])
+        .filter(f => f.slo === slo.id).length;
+      rulesItems.push({
+        id: `slo:${slo.id}`,
+        kind: 'rules-slo',
+        label: `SLO · ${slo.id}`,
+        subtitle: `${recCount} recording · ${burnCount} burn-rate · ${forecastCount} forecast`,
+        sloId: slo.id,
+        objective: slo.objective,
+        window: slo.window,
+      });
+    }
+    for (let i = 0; i < declared.length; i++) {
+      rulesItems.push({
+        id: `declared:${i}`,
+        kind: 'rules-declared',
+        label: `declared · ${declared[i].name}`,
+        subtitle: 'author-declared recording rule',
+        ruleIndex: i,
+        ruleName: declared[i].name,
+      });
+    }
+    groups.push({
+      id: 'rules',
+      label: 'Recording + alerting rules',
+      blurb: 'PromQL recording rules and multi-window burn-rate alerts derived from each SLO.',
+      flavors: [
+        { id: 'prometheus',      label: 'Prometheus (Mimir-compatible)', platform: 'Prometheus / Mimir / Grafana Cloud Metrics',
+          description: 'Standard Prometheus rules YAML. Drop into `rule_files:` on a Prometheus server, or POST to Mimir’s ruler API.',
+          contentType: 'application/x-yaml', extension: 'yaml', deployable: true },
+        { id: 'grafana-managed', label: 'Grafana-managed (12 / 13)',     platform: 'Grafana 9+ unified alerting',
+          description: 'Grafana provisioning YAML (apiVersion: 1). Copy under provisioning/alerting/ or POST to /api/v1/provisioning/alert-rules.',
+          contentType: 'application/x-yaml', extension: 'yaml', deployable: true },
+      ],
+      items: rulesItems,
+    });
+  }
+
+  // ---- Dashboards group ----
+  if (dashboards.length) {
+    const dashItems = [
+      { id: 'all', kind: 'dashboards-bundle', label: 'All dashboards · bundle', subtitle: `${dashboards.length} dashboard(s)` },
+    ];
+    for (const d of dashboards) {
+      dashItems.push({
+        id: `dash:${d.id}`,
+        kind: 'dashboard',
+        label: d.id,
+        subtitle: `${d.folder || 'unfiled'} · schemaVersion ${d.provider?.schemaVersion || '—'}`,
+        dashboardId: d.id,
+      });
+    }
+    groups.push({
+      id: 'dashboards',
+      label: 'Dashboards',
+      blurb: 'Grafana 12/13 dashboard JSON, one per spec.dashboards[] entry.',
+      flavors: [{ id: 'grafana', label: 'Grafana 12 / 13', platform: 'Grafana dashboards API',
+                  description: 'Native Grafana dashboard JSON. Import via Grafana UI, dashboards API, or grafana-cli.',
+                  contentType: 'application/json', extension: 'json', deployable: true }],
+      items: dashItems,
+    });
+  }
+
+  // ---- Pipelines (OTel Collector) ----
+  if (canonical?.spec?.pipelines) {
+    groups.push({
+      id: 'pipelines',
+      label: 'OTel Collector',
+      blurb: 'OpenTelemetry Collector configuration — receivers, processors, exporters, pipelines.',
+      flavors: [{ id: 'collector-yaml', label: 'Collector YAML', platform: 'OpenTelemetry Collector (contrib or core)',
+                  description: 'Single collector config file. Mount and pass via `--config`. Not directly deployable via Grafana — env-specific.',
+                  contentType: 'application/x-yaml', extension: 'yaml', deployable: false }],
+      items: [{ id: 'all', kind: 'collector', label: 'Full collector config', subtitle: 'receivers · processors · exporters · service.pipelines' }],
+    });
+  }
+
+  // ---- Alertmanager (standalone) ----
+  if (canonical?.spec?.alerting) {
+    groups.push({
+      id: 'alertmanager',
+      label: 'Alertmanager',
+      blurb: 'Standalone Alertmanager configuration. Folded into Grafana unified alerting at deploy time — emit here for hand-off.',
+      flavors: [{ id: 'alertmanager-yaml', label: 'Alertmanager YAML', platform: 'Prometheus Alertmanager (standalone)',
+                  description: 'Standalone Alertmanager config — route tree + receivers. Not deployable from the studio for now; Grafana unified alerting routes are configured in Grafana itself.',
+                  contentType: 'application/x-yaml', extension: 'yaml', deployable: false }],
+      items: [{ id: 'all', kind: 'alertmanager', label: 'Full routes + receivers', subtitle: `${(canonical.spec.alerting.routes || []).length} route(s)` }],
+    });
+  }
+
+  return { groups };
+}
+
+// ----------------------------------------------------------------
+// Dispatch: compile a (group, flavor, artifact) tuple to bytes.
+// This is the new entry the per-artifact UI uses.
+// ----------------------------------------------------------------
+
+export function compileArtifact(canonical, { group, flavor, artifact, dashboardId }) {
+  if (group === 'rules') {
+    if (flavor === 'prometheus' || !flavor) {
+      if (!artifact || artifact === 'all') {
+        return { contentType: 'application/x-yaml', filename: `${serviceSlug(canonical)}.rules.yaml`, content: compilePrometheusRules(canonical) };
+      }
+      if (artifact.startsWith('slo:')) {
+        const sloId = artifact.slice(4);
+        return { contentType: 'application/x-yaml', filename: `${serviceSlug(canonical)}.${slug(sloId)}.rules.yaml`, content: compileSloPrometheusRules(canonical, sloId) };
+      }
+      if (artifact.startsWith('declared:')) {
+        const idx = parseInt(artifact.slice(9), 10);
+        return { contentType: 'application/x-yaml', filename: `${serviceSlug(canonical)}.declared-${idx}.rules.yaml`, content: compileDeclaredPrometheusRule(canonical, idx) };
+      }
+    }
+    if (flavor === 'grafana-managed') {
+      if (!artifact || artifact === 'all') {
+        return { contentType: 'application/x-yaml', filename: `${serviceSlug(canonical)}.grafana-rules.yaml`, content: compileGrafanaManagedRules(canonical) };
+      }
+      if (artifact.startsWith('slo:')) {
+        const sloId = artifact.slice(4);
+        return { contentType: 'application/x-yaml', filename: `${serviceSlug(canonical)}.${slug(sloId)}.grafana-rules.yaml`, content: compileSloGrafanaManagedRules(canonical, sloId) };
+      }
+      if (artifact.startsWith('declared:')) {
+        const idx = parseInt(artifact.slice(9), 10);
+        const decl = (canonical?.spec?.queries?.recording_rules || [])[idx];
+        if (!decl) throw new Error(`Declared rule not found: ${idx}`);
+        const rule = buildGrafanaRecordingRule({ record: decl.name, expr: resolveRefs(decl.expr, canonical), labels: decl.labels || {} });
+        const body = { apiVersion: 1, groups: [grafanaGroupOf(`${serviceSlug(canonical)}_declared`, [rule], '30s')] };
+        return { contentType: 'application/x-yaml', filename: `${serviceSlug(canonical)}.declared-${idx}.grafana-rules.yaml`, content: bannerForGrafana(`Grafana-managed rule — ${decl.name}`, canonical) + emitYaml(body) };
+      }
+    }
+  }
+  if (group === 'dashboards') {
+    if (artifact === 'all' || !artifact) {
+      // Bundle: concatenate every dashboard as a multi-doc with header
+      // comments naming each. The output is one file the engineer can
+      // split, not multi-file (kept simple for the v1 of per-artifact UI).
+      const parts = [];
+      for (const d of canonical?.spec?.dashboards || []) {
+        parts.push(`/* === ${d.id} === */`);
+        parts.push(compileGrafanaDashboard(canonical, d.id));
+      }
+      return { contentType: 'application/json', filename: `${serviceSlug(canonical)}.dashboards.bundle.json`, content: parts.join('\n\n') };
+    }
+    if (artifact.startsWith('dash:')) {
+      const id = artifact.slice(5);
+      return { contentType: 'application/json', filename: `${serviceSlug(canonical)}.${slug(id)}.json`, content: compileGrafanaDashboard(canonical, id) };
+    }
+  }
+  if (group === 'pipelines') {
+    return { contentType: 'application/x-yaml', filename: `${serviceSlug(canonical)}.otel-collector.yaml`, content: compileOtelCollector(canonical) };
+  }
+  if (group === 'alertmanager') {
+    return { contentType: 'application/x-yaml', filename: `${serviceSlug(canonical)}.alertmanager.yaml`, content: compileAlertmanager(canonical) };
+  }
+  throw new Error(`unknown compile group: ${group}`);
+}
+
 // ============================================================
 // 2) Alertmanager routes + receivers
 // ============================================================

@@ -150,6 +150,130 @@ assert(empty.metadata.annotations['mcp.toolsFailed'].includes('anomalies_baselin
 assert(empty.metadata.annotations['mcp.verified.baselines'] === undefined,
        'baselines NOT marked verified when anomalies_baselines failed');
 
+// ---------- case 3: probes return real data — recording rules, dashboards, scrape jobs, metrics ----------
+//
+// This is the case the user pushed back on: "metrics we're exporting or
+// scraping MUST be declared there when present." Verifies the fetcher
+// uses probe-discovered data instead of stubbing.
+
+const probed = buildCanonicalPack({
+  refreshedAt,
+  mcpUrl: 'https://fake-mcp.test/observability',
+  health: { services: [{ name: 'svc-checkout', criticality: 'tier-1' }] },
+  topology: { dependencies: [{ child: 'svc-jaeger-agent' }] },
+  anomaliesActive: {},
+  baselinesData: { baselines: [{ service: 'svc-checkout', sampleCount: 1000, thresholdMs: 90 }] },
+  probeResults: {
+    recording_rules: {
+      tool: 'list_recording_rules',
+      adapted: [
+        { name: 'svc_checkout:availability:good_5m',  expr: 'sum(rate(http_requests_total{status_code!~"5.."}[5m]))', interval: '30s' },
+        { name: 'svc_checkout:availability:total_5m', expr: 'sum(rate(http_requests_total[5m]))',                       interval: '30s' },
+        { name: 'svc_checkout:availability:ratio_5m', expr: 'svc_checkout:availability:good_5m / svc_checkout:availability:total_5m', interval: '30s' },
+        { name: 'svc_checkout:latency_p95:value_5m',  expr: 'histogram_quantile(0.95, rate(http_request_duration_ms_bucket[5m]))', interval: '30s' },
+      ],
+    },
+    alert_rules: {
+      tool: 'list_alert_rules',
+      adapted: [{ name: 'CheckoutHighErrorRate', expr: 'svc_checkout:availability:ratio_5m < 0.99', for: '5m', labels: {}, annotations: {} }],
+    },
+    dashboards: {
+      tool: 'grafana_search',
+      adapted: [
+        { id: 'checkout-overview', provider: { kind: 'grafana', version: '12.0', schemaVersion: 41 }, folder: 'checkout', source: 'grafana://uid/checkout-overview' },
+        { id: 'platform-health',   provider: { kind: 'grafana', version: '12.0', schemaVersion: 41 }, folder: 'platform', source: 'grafana://uid/platform-health' },
+      ],
+    },
+    scrape_configs: { tool: 'list_scrape_configs', adapted: ['checkout', 'platform', 'collector'] },
+    metric_names:   { tool: 'list_metrics',         adapted: ['http_requests_total', 'http_request_duration_ms_bucket', 'queue_depth'] },
+  },
+  errors: {},
+});
+
+{
+  const errors = validateCanonical(probed, SCHEMA);
+  assert(errors.length === 0, 'probed pack validates against canonical schema', errors, []);
+}
+
+// SLIs INFERRED from recording rules (not service-derived stubs).
+assert(probed.spec.slis.some(s => s.id === 'svc_checkout_availability'),
+       'SLI inferred from recording rules (svc_checkout_availability)');
+assert(probed.spec.slis.some(s => s.id === 'svc_checkout_latency_p95'),
+       'threshold SLI inferred from latency_p95 rule (svc_checkout_latency_p95)');
+assert(probed.spec.slis.find(s => s.id === 'svc_checkout_availability')?.type === 'ratio',
+       'ratio SLI inferred when good + total rules present');
+assert(probed.spec.slis.find(s => s.id === 'svc_checkout_latency_p95')?.type === 'threshold',
+       'threshold SLI inferred from single-value rule');
+
+// queries.recording_rules carries the DISCOVERED rules, not the
+// synthesised stubs.
+const ruleNames = probed.spec.queries.recording_rules.map(r => r.name);
+assert(ruleNames.includes('svc_checkout:availability:ratio_5m'),
+       'queries.recording_rules carries discovered rules verbatim');
+assert(!ruleNames.includes('platform:platform_availability:ratio_5m'),
+       'queries.recording_rules does NOT include the synth stub when probe responded');
+
+// dashboards: discovered ones replace the platform-overview stub.
+const dashIds = probed.spec.dashboards.map(d => d.id);
+assert(dashIds.includes('checkout-overview') && dashIds.includes('platform-health'),
+       'dashboards section carries discovered dashboards');
+assert(!dashIds.includes('platform-overview'),
+       'dashboards section does NOT include the stub when probe responded');
+
+// alert rule names surface as annotation (we can't reshape multi-window from a flat alert).
+assert(probed.metadata.annotations['mcp.discovered.alert_rule_names']?.includes('CheckoutHighErrorRate'),
+       'discovered alert rule names annotated');
+
+// scrape jobs + metric inventory surfaced as annotations.
+assert(probed.metadata.annotations['mcp.discovered.scrape_jobs'] === 'checkout,platform,collector',
+       'scrape jobs annotated');
+assert(probed.metadata.annotations['mcp.discovered.metric_names_count'] === '3',
+       'metric inventory count annotated');
+assert(probed.metadata.annotations['mcp.discovered.metric_names_sample']?.includes('http_requests_total'),
+       'metric inventory sample annotated');
+
+// probesAttempted + probesSucceeded reflect what we asked vs what answered.
+assert(probed.metadata.annotations['mcp.probesAttempted']?.includes('recording_rules'),
+       'probesAttempted lists recording_rules');
+assert(probed.metadata.annotations['mcp.probesSucceeded']?.includes('dashboards'),
+       'probesSucceeded lists dashboards');
+
+// verified.* tags for the discovered surfaces.
+assert(typeof probed.metadata.annotations['mcp.verified.queries.recording_rules'] === 'string',
+       'recording rules verified by MCP');
+assert(typeof probed.metadata.annotations['mcp.verified.dashboards'] === 'string',
+       'dashboards verified by MCP');
+assert(typeof probed.metadata.annotations['mcp.verified.telemetry.scrape'] === 'string',
+       'scrape evidence verified by MCP');
+assert(typeof probed.metadata.annotations['mcp.verified.otel.metrics'] === 'string',
+       'metric inventory verified by MCP');
+
+// ---------- case 4: probes attempted but came back empty — honest gap ----------
+//
+// Confirms the "what to refine" narrative. probesAttempted records the
+// kind, but no `tool` field means nothing answered. The fetcher must
+// fall back to stubs without claiming verification.
+
+const probedEmpty = buildCanonicalPack({
+  refreshedAt,
+  mcpUrl: 'https://fake-mcp.test/observability',
+  health: { services: [{ name: 'svc-checkout', criticality: 'tier-2' }] },
+  topology: { dependencies: [] },
+  anomaliesActive: {},
+  baselinesData: { baselines: [] },
+  probeResults: {
+    recording_rules: { tool: null, attempted: ['list_recording_rules', 'prometheus_recording_rules'], adapted: null },
+    dashboards:      { tool: null, attempted: ['grafana_search'], adapted: null },
+  },
+  errors: {},
+});
+assert(probedEmpty.metadata.annotations['mcp.probesAttempted']?.includes('recording_rules'),
+       'probesAttempted lists recording_rules even when none answered');
+assert(!probedEmpty.metadata.annotations['mcp.probesSucceeded']?.includes('recording_rules'),
+       'probesSucceeded does NOT list recording_rules when none answered');
+assert(probedEmpty.metadata.annotations['mcp.verified.queries.recording_rules'] === undefined,
+       'recording rules NOT marked verified when probes returned empty');
+
 // ---------- summary ----------
 
 if (failures.length) {
