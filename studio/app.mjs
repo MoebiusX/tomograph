@@ -33,6 +33,10 @@ const COMPARE_TAB     = { id: 'COMPARE', num: 'CMP',  name: 'Compare' };
 const ATLAS_TAB       = { id: 'ATLAS',   num: 'ATL',  name: 'Atlas' };
 
 const state = {
+  // 'home' starts the studio empty; user picks Analyze (one pack) or
+  // Compare (two packs). Once chosen, mode becomes 'single' or 'compare'
+  // and the header bar + tabs appear. Logo click returns to 'home'.
+  mode: 'home',
   catalog: [],
   selectedPackId: null,
   selectedEnv: null,
@@ -2655,6 +2659,8 @@ async function handleFile(file) {
     state.uploadedSource = file.name;
     state.activeLayer = 'L1';
     state.activeCardKey = null;
+    state.mode = 'single';
+    applyModeChrome();
     renderPackSelect();
     renderEnvSelect();
     renderMeta();
@@ -2719,21 +2725,14 @@ async function boot() {
     document.body.innerHTML = `<pre class="json" style="margin:48px;max-width:800px">Failed to reach the studio API.\n\n${escapeHtml(e.message)}\n\nMake sure the server is running: \`node server/index.mjs\` or \`npm run serve\`.</pre>`;
     return;
   }
-  const firstOk = state.catalog.find(p => p.ok);
-  if (!firstOk) {
-    $('#layer-view').innerHTML = '<div class="error">No pack in the catalog could be loaded. Check the server logs.</div>';
-    renderPackSelect();
-    return;
-  }
-  state.selectedPackId = firstOk.id;
-  state.selectedEnv = firstOk.environments?.[0] || null;
-  renderPackSelect();
+
   setupUpload();
   setupTheme();
   setupMcpPanel();
   setupCrawlPanel();
   setupDraftFromMcpPanel();
   setupDeployModal();
+  setupHomeAffordance();   // logo click returns home
 
   // Initial live-status load + 60s soft-refresh of the badge so "3m ago"
   // ticks forward without manual reload.
@@ -2742,15 +2741,189 @@ async function boot() {
   renderMcpStatusBody(state.mcpStatus);
   setInterval(() => renderMcpBadge(state.mcpStatus), 60_000);
 
-  // Deploy matrix is small, static-ish, and used by the compile view; load
-  // it in parallel with the first render so the deploy panel has it ready.
+  // Deploy matrix loaded eagerly; used by the compile view.
   loadDeployMatrix().then(() => {
-    // If the compile view is already mounted, re-render to pick up the
-    // newly-known deployable flag.
-    if (state.activeLayer === 'COMPILE') renderMainView();
+    if (state.mode !== 'home' && state.activeLayer === 'COMPILE') renderMainView();
   });
 
-  await refresh();
+  // Land on the empty home screen — user picks Analyze or Compare.
+  goHome();
+}
+
+// ============================================================
+// Home / Analyze / Compare mode transitions
+// ============================================================
+
+function goHome() {
+  state.mode = 'home';
+  state.pack = null;
+  state.packB = null;
+  state.diff = null;
+  state.compileCatalog = null;
+  state.compileContent = null;
+  applyModeChrome();
+  renderHomeView();
+}
+
+function enterAnalyzeMode(packId, env) {
+  if (!packId) return;
+  state.mode = 'single';
+  state.selectedPackId = packId;
+  state.selectedEnv    = env || defaultEnvFor(packId);
+  state.activeLayer = 'L1';
+  state.activeCardKey = null;
+  applyModeChrome();
+  renderPackSelect();
+  refresh();
+}
+
+function enterCompareMode(aId, aEnv, bId, bEnv) {
+  if (!aId || !bId) return;
+  state.mode = 'compare';
+  state.selectedPackId = aId;
+  state.selectedEnv    = aEnv || defaultEnvFor(aId);
+  state.compareBId     = bId;
+  state.compareBEnv    = bEnv || defaultEnvFor(bId);
+  state.activeLayer    = 'COMPARE';
+  applyModeChrome();
+  renderPackSelect();
+  refresh();
+  refreshDiff();
+}
+
+// Show/hide global chrome based on mode. Home hides the pack-select,
+// env-select, meta strip and tabs — only the brand + the corner
+// utility buttons (upload, new from repo, new from live, mcp, theme,
+// api) stay visible because they're the entry points to creating a
+// new pack.
+function applyModeChrome() {
+  const isHome = state.mode === 'home';
+  document.body.dataset.mode = state.mode;
+  const packSel = $('#pack-select')?.parentElement;
+  const envSel  = $('#env-select')?.parentElement;
+  if (packSel) packSel.hidden = isHome;
+  if (envSel)  envSel.hidden  = isHome;
+  const meta = $('#meta');   if (meta) meta.hidden = isHome;
+  const tabs = $('#layer-tabs'); if (tabs) tabs.hidden = isHome;
+}
+
+// Logo click returns home.
+function setupHomeAffordance() {
+  const brand = document.querySelector('.hdr-brand h1');
+  if (!brand) return;
+  brand.style.cursor = 'pointer';
+  brand.title = 'Return home';
+  brand.onclick = () => goHome();
+}
+
+// Hero / home screen — two big affordances. Mode-aware.
+function renderHomeView() {
+  const view = $('#layer-view');
+  if (!view) return;
+  // Default the compare-mode pickers to "repo vs live" when those packs exist.
+  const live = (state.catalog || []).find(p => p.ok && p.id === 'production-live');
+  const repoOk = (state.catalog || []).filter(p => p.ok && p.id !== 'production-live');
+  const defaultA = repoOk[0]?.id || (state.catalog.find(p => p.ok)?.id);
+  const defaultB = live?.id || repoOk[1]?.id || defaultA;
+
+  const packOptions = (state.catalog || [])
+    .filter(p => p.ok)
+    .map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')} · ${escapeHtml(p.criticality || '?')}</option>`).join('');
+
+  view.innerHTML = `
+    <section class="home-hero">
+      <h2 class="home-hero-title"><em>What do you want to do?</em></h2>
+      <p class="home-hero-lede">
+        Start by picking one pack to analyze, or two packs to compare —
+        usually the repo-derived draft (A) against the live MCP snapshot (B).
+      </p>
+
+      <div class="home-cards">
+        <!-- Analyze a single pack -->
+        <article class="home-card home-card-analyze">
+          <header class="home-card-head">
+            <span class="home-card-num">①</span>
+            <h3>Analyze a pack</h3>
+          </header>
+          <p>Open one canonical v1.2 pack — score its conformance, browse its
+             layers, compile it to native artefacts, deploy.</p>
+          <div class="home-card-form">
+            <label class="home-card-field">
+              <span class="home-card-key">Pack</span>
+              <select id="home-analyze-pack">
+                <option value="">— pick a pack —</option>
+                ${packOptions}
+              </select>
+            </label>
+            <button id="home-analyze-go" type="button" class="home-card-cta" disabled>
+              Open →
+            </button>
+          </div>
+          <div class="home-card-divider"><span>or create a new one</span></div>
+          <div class="home-card-shortcuts">
+            <button id="home-shortcut-upload" type="button" class="home-shortcut">
+              <span class="home-shortcut-key">▤</span>
+              <span>Upload a YAML / JSON pack</span>
+            </button>
+            <button id="home-shortcut-crawl"  type="button" class="home-shortcut">
+              <span class="home-shortcut-key">↻</span>
+              <span>New from repo <em>(Path A · crawler)</em></span>
+            </button>
+            <button id="home-shortcut-live"   type="button" class="home-shortcut">
+              <span class="home-shortcut-key">○</span>
+              <span>New from live MCP <em>(Path B)</em></span>
+            </button>
+          </div>
+        </article>
+
+        <!-- Compare two packs -->
+        <article class="home-card home-card-compare">
+          <header class="home-card-head">
+            <span class="home-card-num">②</span>
+            <h3>Compare two packs</h3>
+          </header>
+          <p>Diff <em>repo vs live</em>, declared vs observed. See gaps,
+             drift, and unverified declarations in context.</p>
+          <div class="home-card-form">
+            <label class="home-card-field">
+              <span class="home-card-key">PACK A <em>(typically the repo-derived draft)</em></span>
+              <select id="home-compare-a">${packOptions}</select>
+            </label>
+            <label class="home-card-field">
+              <span class="home-card-key">PACK B <em>(typically the live MCP snapshot)</em></span>
+              <select id="home-compare-b">${packOptions}</select>
+            </label>
+            <button id="home-compare-go" type="button" class="home-card-cta">
+              Compare →
+            </button>
+          </div>
+          ${live ? '' : `<p class="home-card-hint"><em>No production-live pack found yet. <button type="button" class="link-btn" id="home-hint-live">Refresh from MCP</button> to populate it, or pick any two packs to compare.</em></p>`}
+        </article>
+      </div>
+    </section>
+  `;
+
+  // Wire: Analyze
+  const analyzeSel = $('#home-analyze-pack');
+  const analyzeGo  = $('#home-analyze-go');
+  analyzeSel.onchange = () => { analyzeGo.disabled = !analyzeSel.value; };
+  analyzeGo.onclick = () => enterAnalyzeMode(analyzeSel.value);
+
+  // Compare
+  const compA = $('#home-compare-a');
+  const compB = $('#home-compare-b');
+  if (defaultA) compA.value = defaultA;
+  if (defaultB) compB.value = defaultB;
+  $('#home-compare-go').onclick = () => {
+    if (!compA.value || !compB.value || compA.value === compB.value) return;
+    enterCompareMode(compA.value, defaultEnvFor(compA.value), compB.value, defaultEnvFor(compB.value));
+  };
+
+  // Shortcuts — open the existing modals
+  $('#home-shortcut-upload').onclick = () => $('#upload-btn')?.click();
+  $('#home-shortcut-crawl').onclick  = () => $('#crawl-btn')?.click();
+  $('#home-shortcut-live').onclick   = () => $('#draft-mcp-btn')?.click();
+  $('#home-hint-live')?.addEventListener('click', () => $('#mcp-btn')?.click());
 }
 
 $('#drawer-close').onclick   = () => closeDrawer('b');
@@ -3289,6 +3462,8 @@ async function adoptCrawlResult() {
     state.uploadedSource = `${out.canonical.metadata.name} (crawled draft)`;
     state.activeLayer = 'L1';
     state.activeCardKey = null;
+    state.mode = 'single';
+    applyModeChrome();
     renderPackSelect();
     renderEnvSelect();
     renderMeta();
@@ -3858,6 +4033,8 @@ async function adoptDraftFromMcpResult() {
     state.uploadedSource = `${out.canonical.metadata.name} (live draft)`;
     state.activeLayer = 'L1';
     state.activeCardKey = null;
+    state.mode = 'single';
+    applyModeChrome();
     renderPackSelect();
     renderEnvSelect();
     renderMeta();
