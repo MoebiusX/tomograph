@@ -41,6 +41,8 @@ const state = {
   symbolTable: null,
   activeLayer: 'L1',
   activeCardKey: null,
+  activeCardKeyA: null,        // side-A card highlight (compare view)
+  activeCardKeyB: null,        // side-B card highlight (compare view)
   uploadedSource: null,        // set when user uploaded a pack instead of using the catalog
   compareBId: null,            // second pack id for the COMPARE view
   compareBEnv: null,
@@ -879,8 +881,6 @@ function renderCompareView(view) {
     return;
   }
 
-  // Render scaffold immediately so the picker is responsive even before
-  // the diff arrives.
   const scaffold = document.createElement('section');
   scaffold.className = 'section compare-view';
   scaffold.dataset.layer = 'COMPARE';
@@ -888,30 +888,164 @@ function renderCompareView(view) {
   scaffold.appendChild(renderComparePicker());
   view.appendChild(scaffold);
 
-  if (!state.diff) {
+  // Compare view needs both: state.pack (A — already loaded for the
+  // single-pack views), state.packB (B — for the right column), and
+  // state.diff (for set-membership chips on each card).
+  const haveA = !!state.pack;
+  const haveB = !!state.packB;
+  const haveDiff = !!state.diff && !state.diff.error;
+  if (!haveA || !haveB || !haveDiff) {
+    if (state.diff?.error) {
+      const err = document.createElement('div');
+      err.className = 'error';
+      err.textContent = `Diff failed: ${state.diff.error}`;
+      scaffold.appendChild(err);
+      return;
+    }
     const loading = document.createElement('div');
     loading.className = 'placeholder';
-    loading.textContent = 'Loading diff…';
+    loading.textContent = 'Loading both packs…';
     scaffold.appendChild(loading);
-    loadDiff().then(() => { renderTabs(); renderMainView(); });
-    return;
-  }
-  if (state.diff.error) {
-    const err = document.createElement('div');
-    err.className = 'error';
-    err.textContent = `Diff failed: ${state.diff.error}`;
-    scaffold.appendChild(err);
+    Promise.all([
+      haveB    ? Promise.resolve() : loadPackB(),
+      haveDiff ? Promise.resolve() : loadDiff(),
+    ]).then(() => { renderTabs(); renderMainView(); });
     return;
   }
 
   scaffold.appendChild(renderCompareSummary());
-  for (const def of COMPARE_LAYERS) {
-    const bucket = state.diff.layers[def.id];
-    if (!bucket) continue;
-    const total = bucket.onlyInA.length + bucket.inBoth.length + bucket.onlyInB.length;
-    if (total === 0) continue;
-    scaffold.appendChild(renderCompareLayer(def, bucket));
+
+  // Build per-layer key-set lookups so each side's card can mark its
+  // diff membership in O(1).
+  const keysOnlyInA = {}, keysInBoth = {}, keysOnlyInB = {};
+  for (const L of LAYERS_FOR_DIFF) {
+    const bucket = state.diff.layers[L] || { onlyInA: [], onlyInB: [], inBoth: [] };
+    keysOnlyInA[L] = new Set(bucket.onlyInA.map(x => x.key));
+    keysOnlyInB[L] = new Set(bucket.onlyInB.map(x => x.key));
+    keysInBoth[L]  = new Set(bucket.inBoth.map(x => x.key));
   }
+
+  const sxs = document.createElement('div');
+  sxs.className = 'compare-sxs';
+  sxs.appendChild(renderComparePackSide('a', state.pack,  { keysInBoth, keysOnly: keysOnlyInA }));
+  sxs.appendChild(renderComparePackSide('b', state.packB, { keysInBoth, keysOnly: keysOnlyInB }));
+  scaffold.appendChild(sxs);
+}
+
+const LAYERS_FOR_DIFF = ['L1', 'L2', 'L2X', 'L3', 'L4', 'L5', 'GOV'];
+
+function compareKeyOf(art) {
+  return art?.defines || art?.id || '';
+}
+
+function renderComparePackSide(side, pack, sets) {
+  const col = document.createElement('div');
+  col.className = 'compare-side compare-side-' + side;
+
+  const head = document.createElement('div');
+  head.className = 'compare-side-head';
+  const tier = pack?.meta?.criticality || '?';
+  const env  = pack?.meta?.environment || '—';
+  head.innerHTML = `
+    <div class="compare-side-eyebrow">${side === 'a' ? 'PACK A' : 'PACK B'}</div>
+    <div class="compare-side-name">${escapeHtml(pack?.name || '?')}</div>
+    <div class="compare-side-meta">
+      <span class="meta-pill" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
+      <span class="meta-pill">env: ${escapeHtml(env)}</span>
+      <span class="meta-pill">v${escapeHtml(pack?.meta?.version || '?')}</span>
+    </div>
+  `;
+  col.appendChild(head);
+
+  // Render each layer as a stacked section.
+  for (const L of LAYERS_FOR_DIFF) {
+    if (L === 'L4') {
+      const L4 = pack?.layers?.L4 || { policy: [], alerting: [], healing: [] };
+      const total = (L4.policy?.length || 0) + (L4.alerting?.length || 0) + (L4.healing?.length || 0);
+      if (total === 0) continue;
+      const sec = renderCompareSideLayer({ id: 'L4', num: 'L4', name: 'Action' }, [], side, sets, true);
+      col.appendChild(sec);
+      // Sub-groups
+      const grid = sec.querySelector('.compare-side-grid');
+      for (const sg of L4_SUBGROUPS) {
+        const items = L4[sg.key] || [];
+        if (!items.length) continue;
+        const h = document.createElement('div');
+        h.className = 'compare-side-subhead';
+        h.textContent = `L4.${sg.key} · ${sg.label}`;
+        grid.appendChild(h);
+        for (const a of items) grid.appendChild(renderCompareCard(a, { id: 'L4' }, sg.key, side, sets));
+      }
+      continue;
+    }
+    const items = pack?.layers?.[L] || [];
+    if (!items.length) continue;
+    const def = { id: L, num: L, name: ({L1:'Contract',L2:'Telemetry',L2X:'Extended',L3:'Insight',L5:'Validation',GOV:'Governance'})[L] || L };
+    const sec = renderCompareSideLayer(def, items, side, sets, false);
+    col.appendChild(sec);
+  }
+
+  return col;
+}
+
+function renderCompareSideLayer(def, items, side, sets, isL4) {
+  const sec = document.createElement('section');
+  sec.className = 'compare-side-layer section';
+  sec.dataset.layer = def.id;
+  const head = document.createElement('div');
+  head.className = 'compare-side-layer-head';
+  head.innerHTML = `
+    <span class="section-num">${def.num}</span>
+    <span class="section-name">${escapeHtml(def.name)}</span>
+    <span class="section-count">${isL4 ? '' : items.length}</span>
+  `;
+  sec.appendChild(head);
+  const grid = document.createElement('div');
+  grid.className = 'compare-side-grid';
+  if (!isL4) for (const a of items) grid.appendChild(renderCompareCard(a, def, null, side, sets));
+  sec.appendChild(grid);
+  return sec;
+}
+
+function renderCompareCard(artefact, def, sublayerKey, side, sets) {
+  const k = compareKeyOf(artefact);
+  const isBoth = sets.keysInBoth[def.id]?.has(k);
+  const isOnly = sets.keysOnly[def.id]?.has(k);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'card compare-side-card';
+  if (isBoth) btn.classList.add('is-both');
+  if (isOnly) btn.classList.add('is-only');
+  const ckey = cardKey(def.id, sublayerKey, artefact.id);
+  btn.dataset.key = ckey;
+  if ((side === 'a' && ckey === state.activeCardKeyA) ||
+      (side === 'b' && ckey === state.activeCardKeyB)) {
+    btn.classList.add('is-active');
+  }
+
+  const chip = isBoth
+    ? '<span class="diff-chip chip-both">both</span>'
+    : (isOnly ? `<span class="diff-chip chip-only">only ${side.toUpperCase()}</span>` : '');
+
+  // Gating chip for backend cards (preserved from the regular renderCard)
+  let gatingChip = '';
+  if (/^BAK-/.test(artefact.id) && artefact.spec?.version?.gating) {
+    const g = artefact.spec.version.gating;
+    gatingChip = `<span class="gating-chip" data-gating="${escapeHtml(g)}">${escapeHtml(g)}</span>`;
+  }
+
+  btn.innerHTML = `
+    <div class="card-head">
+      <span class="card-id">${escapeHtml(artefact.id)}</span>
+      ${chip}
+      ${gatingChip}
+    </div>
+    <div class="card-title">${escapeHtml(artefact.title || artefact.id)}</div>
+    ${artefact.desc ? `<div class="card-desc">${escapeHtml(artefact.desc)}</div>` : ''}
+    ${artefact.tool ? `<div class="card-foot"><span class="tool">${escapeHtml(artefact.tool)}</span></div>` : ''}
+  `;
+  btn.onclick = () => openDrawer(artefact, def, sublayerKey, side);
+  return btn;
 }
 
 function renderCompareHead() {
@@ -1004,7 +1138,10 @@ function renderCompareSummary() {
   return wrap;
 }
 
-function renderCompareLayer(def, bucket) {
+// (The 3-column "only-in-A / both / only-in-B" layer renderer was
+// replaced by the side-by-side renderComparePackSide above. The diff
+// summary cells at the top of the view still surface the set arithmetic.)
+function renderCompareLayer_DEPRECATED(def, bucket) {
   const section = document.createElement('section');
   section.className = 'compare-layer';
   section.dataset.layer = def.id;
@@ -1165,20 +1302,42 @@ function datasetFor() {
 
 // ---------- drawer ----------
 
-function openDrawer(artefact, def, sublayerKey) {
-  const drawer = $('#drawer');
+// Map: side → element ids. drawerB (right) is the legacy drawer used
+// everywhere outside the compare view. drawerA (left) is only used in
+// the compare view to surface Pack A's artefact alongside Pack B's.
+const DRAWER_ELS = {
+  a: { drawer: '#drawer-a', eyebrow: '#drawer-a-eyebrow', title: '#drawer-a-title',
+       meta: '#drawer-a-meta', panels: '#drawer-a-panels', close: '#drawer-a-close' },
+  b: { drawer: '#drawer',   eyebrow: '#drawer-eyebrow',   title: '#drawer-title',
+       meta: '#drawer-meta', panels: '#drawer-panels',   close: '#drawer-close' },
+};
+
+function openDrawer(artefact, def, sublayerKey, side = 'b') {
+  const els = DRAWER_ELS[side];
+  if (!els) return;
+  const drawer = $(els.drawer);
   drawer.setAttribute('aria-hidden', 'false');
   drawer.dataset.layer = def.id;
-  document.body.classList.add('no-scroll');
+  // Don't lock body scroll in compare view — both sides can scroll while
+  // the user reads from both drawers. We only no-scroll for single-side
+  // detail panels.
+  if (state.activeLayer !== 'COMPARE') document.body.classList.add('no-scroll');
 
-  state.activeCardKey = cardKey(def.id, sublayerKey, artefact.id);
-  $$('.card').forEach(c => c.classList.toggle('is-active', c.dataset.key === state.activeCardKey));
+  const ckey = cardKey(def.id, sublayerKey, artefact.id);
+  if (side === 'a') state.activeCardKeyA = ckey;
+  else if (side === 'b' && state.activeLayer === 'COMPARE') state.activeCardKeyB = ckey;
+  else state.activeCardKey = ckey;
+  $$('.card').forEach(c => {
+    const k = c.dataset.key;
+    c.classList.toggle('is-active',
+      k === state.activeCardKey || k === state.activeCardKeyA || k === state.activeCardKeyB);
+  });
 
-  $('#drawer-eyebrow').textContent = `${def.num}${sublayerKey ? `.${sublayerKey}` : ''} · ${artefact.id}`;
-  $('#drawer-title').textContent = artefact.title || artefact.id;
+  $(els.eyebrow).textContent = `${def.num}${sublayerKey ? `.${sublayerKey}` : ''} · ${artefact.id}`;
+  $(els.title).textContent   = artefact.title || artefact.id;
 
   // Meta strip (always shown)
-  const meta = $('#drawer-meta');
+  const meta = $(els.meta);
   meta.innerHTML = '';
   const rows = [];
   if (artefact.tool)         rows.push(['tool', artefact.tool]);
@@ -1195,10 +1354,11 @@ function openDrawer(artefact, def, sublayerKey) {
     meta.appendChild(dt); meta.appendChild(dd);
   }
 
-  // Broken refs warning (if any)
-  const panels = $('#drawer-panels');
+  // Broken refs warning (if any) — only meaningful for the right (B)
+  // drawer in single-pack views; in compare we check both packs.
+  const panels = $(els.panels);
   panels.innerHTML = '';
-  const broken = state.symbolTable?.broken?.get(state.activeCardKey);
+  const broken = state.symbolTable?.broken?.get(ckey);
   if (broken && broken.length) {
     const sec = panel('Broken references', 'broken-refs');
     sec.innerHTML += '<div class="broken-list">' +
@@ -1697,12 +1857,25 @@ function subpanel(title) {
   return sec;
 }
 
-function closeDrawer() {
-  const drawer = $('#drawer');
-  drawer.setAttribute('aria-hidden', 'true');
-  document.body.classList.remove('no-scroll');
-  state.activeCardKey = null;
-  $$('.card').forEach(c => c.classList.remove('is-active'));
+function closeDrawer(side) {
+  // No side passed = close all (Esc key / external triggers).
+  const sides = side ? [side] : ['a', 'b'];
+  for (const s of sides) {
+    const els = DRAWER_ELS[s];
+    if (!els) continue;
+    $(els.drawer).setAttribute('aria-hidden', 'true');
+    if (s === 'a') state.activeCardKeyA = null;
+    else if (state.activeLayer === 'COMPARE') state.activeCardKeyB = null;
+    else state.activeCardKey = null;
+  }
+  // Only release body scroll lock when both drawers are closed.
+  const anyOpen = ['a', 'b'].some(s => $(DRAWER_ELS[s].drawer).getAttribute('aria-hidden') === 'false');
+  if (!anyOpen) document.body.classList.remove('no-scroll');
+  $$('.card').forEach(c => {
+    const k = c.dataset.key;
+    c.classList.toggle('is-active',
+      k === state.activeCardKey || k === state.activeCardKeyA || k === state.activeCardKeyB);
+  });
 }
 
 // ---------- toast ----------
@@ -1825,7 +1998,8 @@ async function boot() {
   await refresh();
 }
 
-$('#drawer-close').onclick = closeDrawer;
+$('#drawer-close').onclick   = () => closeDrawer('b');
+$('#drawer-a-close').onclick = () => closeDrawer('a');
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeDrawer(); closeMcpPanel(); } });
 
 // ---------- MCP refresh panel ----------

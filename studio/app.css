@@ -629,18 +629,31 @@ a:hover { color: var(--ink); }
 
 /* ===================== DRAWER ===================== */
 .drawer {
-  position: fixed; top: 0; right: 0; bottom: 0;
-  width: min(560px, 100vw);
+  position: fixed; top: 0; bottom: 0;
+  width: min(560px, 50vw);
   background: var(--card);
-  border-left: 1px solid var(--ink);
-  box-shadow: -16px 0 32px rgba(15,27,45,0.10);
-  transform: translateX(100%);
-  transition: transform .22s ease-out;
   overflow-y: auto;
   z-index: 50;
   padding-bottom: 24px;
+  transition: transform .22s ease-out;
 }
-.drawer[aria-hidden="false"] { transform: translateX(0); }
+/* Right-anchored — pack B in compare view, single-pack view everywhere else. */
+.drawer-b {
+  right: 0;
+  border-left: 1px solid var(--ink);
+  box-shadow: -16px 0 32px rgba(15,27,45,0.10);
+  transform: translateX(100%);
+}
+.drawer-b[aria-hidden="false"] { transform: translateX(0); }
+/* Left-anchored — pack A in compare view. Slides from the left so both
+   drawers can be open at once for side-by-side artefact comparison. */
+.drawer-a {
+  left: 0;
+  border-right: 1px solid var(--ink);
+  box-shadow: 16px 0 32px rgba(15,27,45,0.10);
+  transform: translateX(-100%);
+}
+.drawer-a[aria-hidden="false"] { transform: translateX(0); }
 .drawer-head {
   position: sticky; top: 0; z-index: 1;
   display: grid; grid-template-columns: 1fr auto;
@@ -1094,6 +1107,141 @@ a:hover { color: var(--ink); }
 @media (max-width: 760px) {
   .compare-summary { grid-template-columns: 1fr 1fr; }
   .compare-grid { grid-template-columns: 1fr; }
+}
+
+/* ===================== COMPARE — SIDE-BY-SIDE ===================== */
+.compare-sxs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+.compare-side {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--card);
+  overflow: hidden;
+}
+.compare-side-a { border-top: 3px solid var(--cmp-a); }
+.compare-side-b { border-top: 3px solid var(--cmp-b); }
+
+.compare-side-head {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+  display: grid; gap: 4px;
+}
+.compare-side-eyebrow {
+  font: 10px/1 var(--mono);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-4);
+}
+.compare-side-a .compare-side-eyebrow { color: var(--cmp-a); }
+.compare-side-b .compare-side-eyebrow { color: var(--cmp-b); }
+.compare-side-name {
+  font: 500 16px/1.2 var(--serif);
+  font-style: italic;
+  color: var(--ink);
+}
+.compare-side-meta {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  margin-top: 2px;
+}
+.compare-side-meta .meta-pill {
+  font: 10px/1.4 var(--mono);
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: var(--hover);
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+}
+.compare-side-meta .meta-pill[data-tier="tier-1"] { color: var(--crit-tier-1); border-color: var(--crit-tier-1); }
+.compare-side-meta .meta-pill[data-tier="tier-2"] { color: var(--crit-tier-2); border-color: var(--crit-tier-2); }
+.compare-side-meta .meta-pill[data-tier="tier-3"] { color: var(--crit-tier-3); border-color: var(--crit-tier-3); }
+
+.compare-side-layer {
+  border-bottom: 1px solid var(--line-2);
+}
+.compare-side-layer:last-child { border-bottom: 0; }
+.compare-side-layer-head {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 8px 12px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line-2);
+}
+.compare-side-layer[data-layer="L1"]  .compare-side-layer-head { background: var(--L1-tint);  }
+.compare-side-layer[data-layer="L2"]  .compare-side-layer-head { background: var(--L2-tint);  }
+.compare-side-layer[data-layer="L2X"] .compare-side-layer-head { background: var(--L2X-tint); }
+.compare-side-layer[data-layer="L3"]  .compare-side-layer-head { background: var(--L3-tint);  }
+.compare-side-layer[data-layer="L4"]  .compare-side-layer-head { background: var(--L4-tint);  }
+.compare-side-layer[data-layer="L5"]  .compare-side-layer-head { background: var(--L5-tint);  }
+.compare-side-layer[data-layer="GOV"] .compare-side-layer-head { background: var(--GOV-tint); }
+.compare-side-layer-head .section-num {
+  font: 700 11px/1 var(--mono);
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+.compare-side-layer-head .section-name {
+  font: 500 13px/1 var(--serif);
+  font-style: italic;
+  color: var(--ink);
+}
+.compare-side-layer-head .section-count {
+  margin-left: auto;
+  font: 10px/1 var(--mono);
+  color: var(--ink-4);
+}
+
+.compare-side-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+.compare-side-subhead {
+  padding: 6px 12px;
+  background: var(--paper);
+  font: 9px/1 var(--mono);
+  letter-spacing: 0.10em; text-transform: uppercase;
+  color: var(--ink-4);
+  border-top: 1px solid var(--line-2);
+}
+
+/* Override the default card grid styling for the compare context —
+   these cards are single-column inside their narrow side panel. */
+.compare-side-card {
+  border-right: 0;
+  border-bottom: 1px solid var(--line-2);
+}
+.compare-side-card.is-both {
+  /* shared with both packs — neutral, ungraded */
+  background: var(--card);
+}
+.compare-side-card.is-only {
+  /* differential — tinted by the side */
+}
+.compare-side-a .compare-side-card.is-only { background: linear-gradient(to right, rgba(46, 117, 182, 0.06), var(--card) 50%); }
+.compare-side-b .compare-side-card.is-only { background: linear-gradient(to left,  rgba(217, 119, 6, 0.06), var(--card) 50%); }
+
+.diff-chip {
+  margin-left: auto;
+  font: 9px/1 var(--mono); font-weight: 700;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 99px;
+}
+.diff-chip.chip-both { background: var(--cmp-both-bg); color: var(--cmp-both); }
+.diff-chip.chip-only { background: var(--cmp-a-bg);    color: var(--cmp-a);    }
+.compare-side-b .diff-chip.chip-only { background: var(--cmp-b-bg); color: var(--cmp-b); }
+
+/* When both drawers are open, narrow the drawer width slightly so the
+   user sees a sliver of context between them. */
+.drawer-a[aria-hidden="false"] + * .drawer-b[aria-hidden="false"],
+.drawer-b[aria-hidden="false"] {
+  /* baseline width already capped at min(560px, 50vw); fine */
+}
+
+@media (max-width: 980px) {
+  .compare-sxs { grid-template-columns: 1fr; }
 }
 
 /* ===================== ATLAS VIEW ===================== */

@@ -79,7 +79,9 @@
   <div class="placeholder">Loading pack…</div>
 </main>
 
-<aside class="drawer" id="drawer" aria-hidden="true" aria-label="Artefact detail">
+<!-- "B" drawer — right-anchored. The single drawer used everywhere outside
+     the compare view. In compare mode it shows Pack B's artefact. -->
+<aside class="drawer drawer-b" id="drawer" aria-hidden="true" aria-label="Artefact detail (Pack B)">
   <div class="drawer-head">
     <div class="drawer-eyebrow" id="drawer-eyebrow">—</div>
     <h2 class="drawer-title" id="drawer-title">—</h2>
@@ -87,6 +89,19 @@
   </div>
   <dl class="drawer-meta" id="drawer-meta"></dl>
   <div id="drawer-panels"></div>
+</aside>
+
+<!-- "A" drawer — left-anchored, only used in the compare view. Slides in
+     from the left to show Pack A's artefact, so the side-by-side
+     comparison can have BOTH packs' detail panels open at once. -->
+<aside class="drawer drawer-a" id="drawer-a" aria-hidden="true" aria-label="Artefact detail (Pack A)">
+  <div class="drawer-head">
+    <div class="drawer-eyebrow" id="drawer-a-eyebrow">—</div>
+    <h2 class="drawer-title" id="drawer-a-title">—</h2>
+    <button class="drawer-close" id="drawer-a-close" aria-label="Close detail">esc</button>
+  </div>
+  <dl class="drawer-meta" id="drawer-a-meta"></dl>
+  <div id="drawer-a-panels"></div>
 </aside>
 
 <div class="mcp-panel" id="mcp-panel" role="dialog" aria-labelledby="mcp-panel-title" hidden>
