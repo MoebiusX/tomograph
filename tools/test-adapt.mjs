@@ -55,7 +55,7 @@ assert(prod.badge === 'TIER-1',                              'badge derived from
 assert(prod.layers.L1.length === 10,           'L1 = 5 SLIs + 5 SLOs', prod.layers.L1.length, 10);
 assert(prod.layers.L2.length === 24,           'L2 = 1 otel + 9 backends + 8 pipelines + 3 exporters + 3 storage', prod.layers.L2.length, 24);
 assert(prod.layers.L2X.length === 7,           'L2X = profiling + network + policy_engine + 2 mesh + 2 collection', prod.layers.L2X.length, 7);
-assert(prod.layers.L3.length === 10,           'L3 = 4 recording + 2 derived + 4 dashboards', prod.layers.L3.length, 10);
+assert(prod.layers.L3.length === 14,           'L3 = 4 recording + 2 derived + 4 dashboards + 4 panels (expand)', prod.layers.L3.length, 14);
 assert(prod.layers.L4.policy.length === 6,    'L4.policy = 4 burn-rate + 2 forecasts', prod.layers.L4.policy.length, 6);
 assert(prod.layers.L4.alerting.length === 3,  'L4.alerting = SEV1/SEV2/SEV3 routes', prod.layers.L4.alerting.length, 3);
 assert(prod.layers.L4.healing.length === 3,   'L4.healing = 3 remediations', prod.layers.L4.healing.length, 3);

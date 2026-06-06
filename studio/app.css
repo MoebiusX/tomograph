@@ -963,6 +963,49 @@ a:hover { color: var(--ink); }
   font-size: 11px;
   color: var(--ink-4);
 }
+/* L2/L3 Expand toggle — flips between high-level artefacts (backends,
+   pipelines, dashboards) and the full inventory (metric_inventory in
+   L2, dashboard panels in L3). The +N badge shows how many expand-level
+   items are currently hidden. */
+.section-expand-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: 12px;
+  padding: 4px 10px;
+  font: 600 11px/1.2 var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.section-expand-toggle:hover {
+  color: var(--ink);
+  border-color: var(--ink-4);
+}
+.section-expand-toggle.is-on {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.section-expand-glyph {
+  font-size: 13px;
+  line-height: 1;
+}
+.section-expand-count {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 4px;
+  font-size: 10px;
+  background: var(--line-2);
+  border-radius: 4px;
+  color: var(--ink-4);
+}
+.section-expand-toggle.is-on .section-expand-count {
+  background: var(--accent);
+  color: var(--paper);
+}
 
 .section-grid {
   display: grid;

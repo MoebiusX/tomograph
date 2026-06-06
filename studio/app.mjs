@@ -64,6 +64,12 @@ const state = {
   // are hidden from their bucket; resolved findings render as resolved.
   tracePrefs: { suppressed: [], resolved: [] },
   traceOpen: { aligned: false, declaredNotVerified: true, verifiedNotDeclared: true, stale: true },
+  // Per-layer Expand toggle — flips between high-level artefacts (default)
+  // and full inventory. L2 expand reveals metric_inventory entries (METRIC-NN)
+  // discovered from the live MCP; L3 expand reveals per-dashboard PANEL-NN
+  // bindings. Persisted so the user's choice survives refresh.
+  expandL2: false,
+  expandL3: false,
   // Secondary layer filter chips (only visible on view='layers').
   // 'all' stacks every layer; the layer ids narrow to one.
   layerFilter: 'all',
@@ -182,6 +188,7 @@ const PERSIST_FIELDS = [
   'compileGroup', 'compileFlavor', 'compileArtifact',
   'compileGroupB', 'compileFlavorB', 'compileArtifactB',
   'tracePrefs',
+  'expandL2', 'expandL3',
 ];
 const persistence = {
   _suspended: true,  // boot-phase guard — flipped to false once rehydrate finishes
@@ -246,6 +253,8 @@ async function rehydrateFromPersistence() {
       resolved:   Array.isArray(saved.tracePrefs.resolved)   ? saved.tracePrefs.resolved   : [],
     };
   }
+  if (typeof saved.expandL2 === 'boolean') state.expandL2 = saved.expandL2;
+  if (typeof saved.expandL3 === 'boolean') state.expandL3 = saved.expandL3;
 
   // Make sure the picker can label an archived example by pushing the
   // catalog-entry shape into state.catalog (same trick renderPackBSelect uses).
@@ -738,26 +747,56 @@ function renderSection(def, items, opts = {}) {
   section.className = 'section';
   section.dataset.layer = def.id;
 
+  // Expand toggle: L2 and L3 layers carry "expand-level" artefacts
+  // (metric inventory, dashboard panels) which the user prior prototype
+  // surfaced behind a checkbox. Default-collapsed so the high-level
+  // surface stays readable; flip to see everything.
+  const expandableLayer = (def.id === 'L2' || def.id === 'L3');
+  const expandKey = def.id === 'L2' ? 'expandL2' : (def.id === 'L3' ? 'expandL3' : null);
+  const expandOn = expandKey ? !!state[expandKey] : false;
+  const expandItems = items.filter(a => a.expand);
+  const baseItems   = items.filter(a => !a.expand);
+  const visible = (expandableLayer && !expandOn) ? baseItems : items;
+
   const head = document.createElement('div');
   head.className = 'section-head';
+  const countLabel = expandableLayer && expandItems.length
+    ? `${visible.length} of ${items.length} artefact${items.length === 1 ? '' : 's'}`
+    : `${items.length} artefact${items.length === 1 ? '' : 's'}`;
   head.innerHTML = `
     <span class="section-num">${def.num}</span>
     <span class="section-name">${escapeHtml(opts.subtitle || def.name)}</span>
-    <span class="section-count">${items.length} artefact${items.length === 1 ? '' : 's'}</span>
+    <span class="section-count">${countLabel}</span>
   `;
+  if (expandableLayer && expandItems.length) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'section-expand-toggle' + (expandOn ? ' is-on' : '');
+    toggle.title = def.id === 'L2'
+      ? `Toggle the metric inventory — ${expandItems.length} discovered metric${expandItems.length === 1 ? '' : 's'} from live MCP`
+      : `Toggle dashboard panels — ${expandItems.length} panel binding${expandItems.length === 1 ? '' : 's'}`;
+    toggle.innerHTML = `<span class="section-expand-glyph" aria-hidden="true">${expandOn ? '⊟' : '⊞'}</span> ${expandOn ? 'Collapse' : 'Expand'} <span class="section-expand-count">+${expandItems.length}</span>`;
+    toggle.onclick = () => {
+      state[expandKey] = !state[expandKey];
+      renderMainView();
+    };
+    head.appendChild(toggle);
+  }
   section.appendChild(head);
 
-  if (!items.length) {
+  if (!visible.length) {
     const empty = document.createElement('div');
     empty.className = 'empty';
-    empty.textContent = 'no artefacts declared in this section';
+    empty.textContent = expandableLayer && expandItems.length
+      ? 'collapsed — click Expand to reveal'
+      : 'no artefacts declared in this section';
     section.appendChild(empty);
     return section;
   }
 
   const grid = document.createElement('div');
   grid.className = 'section-grid';
-  for (const a of items) grid.appendChild(renderCard(a, def, opts.sublayerKey));
+  for (const a of visible) grid.appendChild(renderCard(a, def, opts.sublayerKey));
   section.appendChild(grid);
   return section;
 }

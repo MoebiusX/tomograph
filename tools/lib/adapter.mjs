@@ -69,6 +69,7 @@ export function adapt(canonical, opts = {}) {
   const ctx = {
     spec,
     annotations,
+    canonical,    // adaptMetricInventory + adaptDashboardPanels read metadata.annotations directly
     sourceOf: (id) => (annotations[`${verifyPrefix}${id}`] ? 'Verified' : 'Declared'),
     mcpEvidence: (id) => annotations[`${verifyPrefix}${id}`] ?? undefined,
   };
@@ -100,6 +101,7 @@ export function adapt(canonical, opts = {}) {
         ...adaptBackends(ctx),
         ...adaptPipelines(ctx),
         ...adaptStorage(ctx),
+        ...adaptMetricInventory(ctx),
       ],
       L2X: [
         ...adaptProfiling(ctx),
@@ -111,6 +113,7 @@ export function adapt(canonical, opts = {}) {
       L3: [
         ...adaptQueries(ctx),
         ...adaptDashboards(ctx),
+        ...adaptDashboardPanels(ctx),
       ],
       L4: {
         policy: [
@@ -420,6 +423,62 @@ function adaptDashboards(ctx) {
     defines: `dashboards.${d.id}`,
     refs: (d.panel_bindings || []).map(b => b.binds_to),
     spec: d,
+  }));
+}
+
+// L3 EXPAND: per-panel artefacts projected from each dashboard's panel_bindings.
+// Each panel becomes an artefact with `expand: true` so renderers can choose
+// to hide it behind an "Expand" toggle (default: hidden, only DASH-NN cards
+// shown). This is the L3 mirror of the L2 metric inventory below.
+function adaptDashboardPanels(ctx) {
+  const out = [];
+  let n = 0;
+  for (const d of (ctx.spec.dashboards || [])) {
+    for (const b of (d.panel_bindings || [])) {
+      n++;
+      out.push({
+        id: `PANEL-${pad(n)}`,
+        title: b.panel || `panel-${n}`,
+        desc: b.binds_to ? `binds: ${b.binds_to}` : '(unbound)',
+        tool: 'dashboard panel',
+        tags: ['panel', d.provider?.kind].filter(Boolean),
+        source: ctx.sourceOf(`dashboards.${d.id}.panels.${b.panel}`),
+        refs: b.binds_to ? [b.binds_to] : [],
+        expand: true,   // hidden behind L3 Expand toggle
+        parent: `dashboards.${d.id}`,
+        spec: b,
+      });
+    }
+  }
+  return out;
+}
+
+// L2 EXPAND: metric inventory projected from
+// metadata.annotations.mcp.discovered.metric_names_sample. When the MCP
+// returns the metric inventory (via metrics_metadata / metrics_label_values
+// or any compatible tool), the fetcher writes the names into an annotation;
+// here we project them as expand-level artefacts so the layer view can
+// display them behind a toggle.
+function adaptMetricInventory(ctx) {
+  const ann = ctx.canonical?.metadata?.annotations || {};
+  const sample = ann['mcp.discovered.metric_names_sample'] || '';
+  if (!sample) return [];
+  const names = sample.split(',').map(s => s.trim()).filter(Boolean);
+  if (!names.length) return [];
+  const totalCount = parseInt(ann['mcp.discovered.metric_names_count'] || String(names.length), 10);
+  return names.map((name, i) => ({
+    id: `METRIC-${pad(i + 1)}`,
+    title: name,
+    desc: 'discovered metric (live MCP)',
+    tool: 'Prometheus metric',
+    tags: ['metric', 'inferred'],
+    source: 'Verified',
+    refs: [],
+    expand: true,    // hidden behind L2 Expand toggle
+    parent: 'telemetry.metric_inventory',
+    spec: { name, source: 'mcp.discovered' },
+    mcp: { tool: 'metrics_metadata', when: ann['mcp.refreshedAt'] },
+    _meta: i === 0 ? { totalCount } : undefined,
   }));
 }
 
