@@ -1,9 +1,18 @@
-# otel-observability-pack-studio
+# Tomograph — the Observability Compiler
 
-> Engineering studio for **ObservabilityPack spec v1.2** manifests. Express
-> server + thin vanilla-JS client. Validates canonical packs, projects them
-> into a layered display, scores them against the maturity rubric, and
-> surfaces broken references — all from a single npm install.
+> Write one **ObservabilityPack** manifest. Compile it into Prometheus
+> rules, Grafana dashboards, OTel Collector pipelines, and Alertmanager
+> routes. Scan any service's observability posture and score it against
+> the spec. **Trust what your eyes see.**
+
+Every observability program drifts. Dashboards reference dead metrics;
+alerts fire on yesterday's topology; the SLOs live in a wiki nobody opens.
+Tomograph makes the observability of a service a single declarative pack,
+then *compiles* it. Change the pack, recompile the platform. Re-target
+between vendors by recompiling. And because a scan is only worth acting
+on if the instrument is calibrated, Tomograph scores conformance and flags
+miscalibration — so when you defend an OLA, you're defending what you can
+actually prove.
 
 The canonical spec lives at [MoebiusX/otel-observability-pack](https://github.com/MoebiusX/otel-observability-pack);
 a checksumed copy is vendored under [`vendor/observability-pack-spec/v1.2/`](vendor/observability-pack-spec/v1.2/).
@@ -11,18 +20,27 @@ a checksumed copy is vendored under [`vendor/observability-pack-spec/v1.2/`](ven
 ## Quickstart
 
 ```bash
-git clone <this repo>
-cd otel-observability-pack-studio
+git clone https://github.com/MoebiusX/tomograph.git
+cd tomograph
 npm install            # single runtime dep: express
 npm run dev            # http://127.0.0.1:8000
 ```
 
-Open the URL. The studio loads the five bundled packs (one canonical
-example, one tier-1 reference, one tier-2 partial baseline, one tier-3
-minimum, plus the cron-managed live snapshot) and renders the first one
-across the layered tabs L1 → L2 / L2X → L3 → L4 (policy · alerting ·
-healing) → L5 → GOV, plus a **CONF** tab scoring it against the maturity
-rubric.
+Open the URL. Connect to a live MCP server, x-ray a service repo, or drop
+a YAML manifest — Tomograph renders the pack across layered tabs L1 → L2 /
+L2X → L3 → L4 (policy · alerting · healing) → L5 → GOV, plus a **CONF** tab
+scoring it against the maturity rubric.
+
+## Vocabulary
+
+| Term | What it means |
+|---|---|
+| **`pack`** | The declarative source of truth. Canonical YAML, vendor-neutral. |
+| **`packc`** | The pack compiler. Reads a pack, emits native artefacts. |
+| **x-ray** | Verb. To crawl a service repo and draft a pack from existing configs. |
+| **scan** | The conformance score + posture report for a pack. |
+| **miscalibration** | Drift — declared no longer matches verified, or intent no longer matches live. |
+| **Krystaline** | The proving-ground demo. Institutional crypto-exchange, fully observed. |
 
 ## Architecture
 

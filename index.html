@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ObservabilityPack Studio</title>
-  <meta name="description" content="Engineering bench for ObservabilityPack canonical spec v1.2 — analyze a pack, compare repo vs live, score conformance, compile to native artefacts.">
+  <title>Tomograph — the Observability Compiler</title>
+  <meta name="description" content="Tomograph — write one ObservabilityPack manifest, compile to Prometheus / Grafana / OTel Collector / Alertmanager. Scan your observability posture, score conformance against the spec. Trust what your eyes see.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
@@ -172,36 +172,36 @@
 </head>
 <body>
   <main class="page">
-    <div class="eyebrow">ObservabilityPack · canonical spec v1.2</div>
-    <h1><em>ObservabilityPack Studio</em></h1>
+    <div class="eyebrow">the observability compiler</div>
+    <h1><em>Tomograph</em></h1>
     <p class="lede">
-      An engineering bench for canonical <a href="https://github.com/MoebiusX/otel-observability-pack">ObservabilityPack</a> manifests — analyze a pack, compare your repo against live MCP signal, score against the maturity rubric, and compile to native Prometheus, OTel Collector, Alertmanager, and Grafana artefacts.
+      Write one <a href="https://github.com/MoebiusX/otel-observability-pack">ObservabilityPack</a> manifest — Tomograph compiles it into Prometheus rules, Grafana dashboards, OTel Collector pipelines, and Alertmanager routes. Scan any service's observability posture and score it against the spec. <strong>Trust what your eyes see.</strong>
     </p>
 
     <h2>What it does</h2>
     <div class="use-grid">
       <div class="use-card" data-accent="L1">
-        <div class="use-card-num">① ANALYZE</div>
-        <div class="use-card-title">One pack, end to end</div>
-        <div class="use-card-body">Browse by layer (L1–GOV), score conformance against the tier rubric, compile per artefact to the native platform format.</div>
+        <div class="use-card-num">① DECLARE</div>
+        <div class="use-card-title">One spec, every backend</div>
+        <div class="use-card-body">A versioned YAML pack: one service = one declaration. Layers L1–L5 for contract, telemetry, insight, action, validation. Vendor-neutral binding.</div>
       </div>
       <div class="use-card" data-accent="L2">
-        <div class="use-card-num">② COMPARE</div>
-        <div class="use-card-title">Repo vs live, side by side</div>
-        <div class="use-card-body">Diff two packs across every layer. Slice pills, atlas variants (Stratigraphy, Periodic Table, Constellation, Skyline, Transit, Arbor).</div>
+        <div class="use-card-num">② COMPILE</div>
+        <div class="use-card-title">Pack → real artefacts</div>
+        <div class="use-card-body">Compile the pack to Prometheus / Mimir rules, Grafana dashboards, OTel Collector pipelines, and Alertmanager routes. Re-target between vendors by recompiling. X-ray an existing repo to draft a pack.</div>
       </div>
       <div class="use-card" data-accent="CMP">
-        <div class="use-card-num">③ TRACEABILITY</div>
-        <div class="use-card-title">What to do about the drift</div>
-        <div class="use-card-body">Every artefact binned into Aligned / Declared-not-verified / Verified-not-declared / Stale. Per-row resolve and suppress, persisted locally.</div>
+        <div class="use-card-num">③ VERIFY</div>
+        <div class="use-card-title">Calibration, not vibes</div>
+        <div class="use-card-body">Score conformance against the maturity rubric. Detect miscalibration: declared vs verified, intent vs live. When you defend an OLA, you're defending what you can prove.</div>
       </div>
     </div>
 
     <h2>Run it locally</h2>
-    <p>The studio is an Express server plus a thin browser client. One install, one command — boots on <code>http://127.0.0.1:8000</code>.</p>
+    <p>Tomograph is an Express server plus a thin browser client. One install, one command — boots on <code>http://127.0.0.1:8000</code>.</p>
     <pre><span class="comment"># clone, install, run</span>
-git clone https://github.com/MoebiusX/otel-observability-pack-studio.git
-cd otel-observability-pack-studio
+git clone https://github.com/MoebiusX/tomograph.git
+cd tomograph
 npm install
 npm run dev
 <span class="comment"># open http://127.0.0.1:8000 in a browser</span></pre>
@@ -209,19 +209,19 @@ npm run dev
     <p>Five reference packs ship under <code>examples/</code> — payment-service (the spec's canonical tier-1 example), a tier-2 partial BAU, a tier-1 aspirational target, a tier-3 minimum, and a cron-refreshed live snapshot.</p>
 
     <div class="note">
-      <strong>No hosted demo yet.</strong> Earlier studio versions were a single static HTML file we could publish on GitHub Pages; v0.3 split into a client + Node server for the live MCP fetcher, crawler, and conformance/compile endpoints. Hosting that needs a real Node runtime — coming after the current milestone.
+      <strong>No hosted demo yet.</strong> Earlier versions were a single static HTML file we could publish on GitHub Pages; v0.3 split into a client + Node server for the live MCP fetcher, the x-ray crawler, and the conformance / compile endpoints. Hosting that needs a real Node runtime — coming after the current milestone.
     </div>
 
     <h2>Reference</h2>
     <div class="links">
-      <a href="https://github.com/MoebiusX/otel-observability-pack-studio">Studio repo on GitHub</a>
-      <a href="https://github.com/MoebiusX/otel-observability-pack">Canonical ObservabilityPack spec</a>
+      <a href="https://github.com/MoebiusX/tomograph">Tomograph on GitHub</a>
+      <a href="https://github.com/MoebiusX/otel-observability-pack">ObservabilityPack spec</a>
       <a href="https://github.com/MoebiusX/otel-observability-pack/blob/main/docs/maturity-model.md">Maturity model</a>
       <a href="https://github.com/MoebiusX/otel-observability-pack/blob/main/spec/ObservabilityPack-Spec.md">Spec v1.2</a>
     </div>
 
     <footer>
-      ObservabilityPack Studio · v0.3 · MIT licensed
+      Tomograph · the Observability Compiler · v0.3 · MIT licensed
     </footer>
   </main>
 </body>

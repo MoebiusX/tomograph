@@ -3514,7 +3514,7 @@ async function refresh() {
 async function boot() {
   try { await loadCatalog(); }
   catch (e) {
-    document.body.innerHTML = `<pre class="json" style="margin:48px;max-width:800px">Failed to reach the studio API.\n\n${escapeHtml(e.message)}\n\nMake sure the server is running: \`node server/index.mjs\` or \`npm run serve\`.</pre>`;
+    document.body.innerHTML = `<pre class="json" style="margin:48px;max-width:800px">Failed to reach Tomograph's API.\n\n${escapeHtml(e.message)}\n\nMake sure the server is running: \`node server/index.mjs\` or \`npm run serve\`.</pre>`;
     return;
   }
 
@@ -3674,7 +3674,7 @@ function setupResetButton() {
   const btn = $('#reset-btn');
   if (!btn) return;
   btn.onclick = async () => {
-    const ok = confirm('Reset the studio?\n\n' +
+    const ok = confirm('Reset Tomograph?\n\n' +
       'This will:\n' +
       '  • drop every uploaded / crawled / drafted pack from the server\n' +
       '  • clear saved view + filter + focus + trace preferences from localStorage\n' +
@@ -3737,13 +3737,13 @@ function renderHomeView() {
 
   view.innerHTML = `
     <section class="home-hero">
-      <div class="home-hero-eyebrow">canonical observability · spec v1.2</div>
+      <div class="home-hero-eyebrow">tomograph · the observability compiler</div>
       <h2 class="home-hero-title">Map your observability platform in seconds.</h2>
       <p class="home-hero-lede">
-        Connect to any OpenTelemetry MCP server. The studio interrogates it
+        Connect to any OpenTelemetry MCP server. Tomograph interrogates it
         for backends, topology, baselines, and anomalies — and renders a
-        complete, conformant canonical v1.2 manifest you can compile and
-        deploy.
+        complete, conformant ObservabilityPack v1.2 manifest you can compile
+        and deploy. Trust what your eyes see.
       </p>
 
       <div class="home-mcp-card">
@@ -3798,11 +3798,11 @@ function renderHomeView() {
       <div class="home-cycle">
         <div class="home-cycle-head"><span>the assurance loop</span></div>
         <p class="home-cycle-lede">
-          The studio runs a continuous-improvement cycle. Generate or load a
+          Tomograph runs a continuous-improvement cycle. Generate or load a
           pack to gauge initial state, then take either path: interrogate
           the live MCP to deploy / retro-feed the delta, or benchmark against
           a reference and save the delta back to the repo. Validate the new
-          state and iterate.
+          state and iterate — so the image keeps matching the system.
         </p>
         <svg class="home-cycle-svg" viewBox="0 0 880 280" role="img" aria-label="The assurance loop: generate/load pack → live MCP delta or benchmark delta → validate → iterate">
           <style>

@@ -1,8 +1,8 @@
 {
-  "name": "otel-observability-pack-studio",
+  "name": "tomograph",
   "version": "0.3.0",
   "private": true,
-  "description": "Engineering studio for ObservabilityPack spec v1.2 manifests. Express server + thin client.",
+  "description": "Tomograph — the Observability Compiler. Write one ObservabilityPack manifest, compile to Prometheus / Grafana / OTel Collector / Alertmanager. Scan posture, score conformance, regenerate the platform.",
   "type": "module",
   "engines": {
     "node": ">=18"
