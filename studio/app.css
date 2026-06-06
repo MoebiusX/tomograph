@@ -230,6 +230,20 @@ a:hover { color: var(--ink); }
   min-width: 12ch;
 }
 .ctrl select:focus { outline: 2px solid var(--ink-2); outline-offset: 2px; }
+.ctrl[hidden] { display: none; }
+.ctrl-pack-b { border-left: 1px dashed var(--line); padding-left: 12px; }
+.ctrl-pack-b .ctrl-key { color: var(--CMP); }
+.ctrl-key-clear {
+  margin-left: 4px;
+  background: none; border: none;
+  font: 700 14px/1 var(--mono);
+  color: var(--ink-4);
+  cursor: pointer;
+  vertical-align: -1px;
+  padding: 0 4px;
+}
+.ctrl-key-clear:hover { color: var(--err-text, #991B1B); }
+.ctrl-key-clear[hidden] { display: none; }
 .ctrl-link {
   font: 500 11px/1 var(--mono);
   text-decoration: none;

@@ -161,6 +161,85 @@ function renderPackSelect() {
   };
 }
 
+// Pack B picker — sits next to Pack A in the header. Empty by default
+// (shows "— none —"). Picking a pack here loads Pack B in place; the
+// view nav grows to include Compare + Atlas without leaving single mode.
+// Sources of pack options: state.catalog (live + crawled + uploaded)
+// PLUS the archived /api/examples list (fetched once, cached).
+function renderPackBSelect() {
+  const sel = $('#pack-b-select');
+  if (!sel) return;
+  // Merge catalog + cached examples, dedup by id, drop the active Pack A.
+  const cat = state.catalog || [];
+  const ex  = state._examplesCache || [];
+  const seen = new Set();
+  const options = [];
+  for (const p of [...cat, ...ex]) {
+    if (!p?.id || !p.ok) continue;
+    if (p.id === state.selectedPackId) continue;
+    if (seen.has(p.id)) continue;
+    seen.add(p.id);
+    options.push(p);
+  }
+  // Sort by label so the list is stable across re-renders.
+  options.sort((a, b) => (a.label || a.id).localeCompare(b.label || b.id));
+  sel.innerHTML = '<option value="">— none —</option>'
+    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')} · ${escapeHtml(p.criticality || '?')}</option>`).join('');
+  sel.value = state.compareBId || '';
+  sel.onchange = () => {
+    const newId = sel.value || null;
+    if (newId === state.compareBId) return;
+    state.compareBId = newId;
+    state.compareBEnv = newId ? defaultEnvFor(newId) : null;
+    state.packB = null; state.diff = null;
+    if (!newId) {
+      // User cleared Pack B — back to single-pack focus. If the active
+      // view was a cross-pack one, fall back to Layers.
+      if (state.view === 'compare' || state.view === 'atlas') state.view = 'layers';
+      applyModeChrome();
+      renderTabs();
+      renderMainView();
+      return;
+    }
+    // Push the chosen pack into state.catalog (if not already present)
+    // so loadPackB() + the catalog-entry resolver have a label to read.
+    if (!state.catalog.find(p => p.id === newId)) {
+      const ex = (state._examplesCache || []).find(p => p.id === newId);
+      if (ex) state.catalog.push(ex);
+    }
+    // Lazy-load B then refresh tabs + view.
+    loadPackB().then(() => { refreshDiff(); applyModeChrome(); renderEnvBSelect(); renderTabs(); renderMainView(); });
+  };
+  renderEnvBSelect();
+}
+
+function renderEnvBSelect() {
+  const sel = $('#env-b-select');
+  if (!sel) return;
+  sel.innerHTML = '';
+  const entry = state.catalog.find(p => p.id === state.compareBId);
+  const envs = entry?.environments || [];
+  if (!envs.length) {
+    const opt = document.createElement('option');
+    opt.value = ''; opt.textContent = '— none —';
+    sel.appendChild(opt);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  for (const e of envs) {
+    const opt = document.createElement('option');
+    opt.value = e; opt.textContent = e;
+    sel.appendChild(opt);
+  }
+  sel.value = state.compareBEnv || envs[0];
+  sel.onchange = () => {
+    state.compareBEnv = sel.value || null;
+    state.packB = null; state.diff = null;
+    loadPackB().then(() => { refreshDiff(); renderTabs(); renderMainView(); });
+  };
+}
+
 function renderEnvSelect() {
   const sel = $('#env-select');
   sel.innerHTML = '';
@@ -299,21 +378,21 @@ function renderPrimaryViewNav() {
   nav.className = 'view-nav';
 
   // Decide which views are available for the current mode.
-  const views = (state.mode === 'compare')
-    ? [
-        { id: 'layers',     label: 'Layers',     hint: 'Side-by-side per-layer comparison.' },
-        { id: 'atlas',      label: 'Atlas',      hint: 'Side-by-side atlas variants — Stratigraphy, Periodic, Constellation, Skyline, Transit, Arbor.' },
-        { id: 'schema',     label: 'Schema',     hint: 'Maturity rubric + spec compliance.' },
-      ]
-    : [
-        { id: 'layers',     label: 'Layers',     hint: 'Browse artefacts by layer (L1..GOV).' },
-        { id: 'conformance',label: 'Conformance',hint: 'Maturity rubric per tier with pass/fail.' },
-        { id: 'compile',    label: 'Compile',    hint: 'Per-artefact compilation to native platform format.' },
-        { id: 'schema',     label: 'Schema',     hint: 'Maturity score + canonical schema view.' },
-        // Atlas omitted from single mode — the variants are diff-driven
-        // (A vs B). To use them, pick "Compare two packs" from the home
-        // screen and choose this pack as side A.
-      ];
+  // View nav adapts to what's loaded — no rigid mode locking.
+  //   Pack A only  → Layers · Conformance · Compile · Schema
+  //   Pack B added → adds Compare + Atlas (cross-pack views)
+  // User toggles Pack B from the header picker; the view nav refreshes.
+  const hasB = !!state.packB;
+  const views = [
+    { id: 'layers',     label: 'Layers',     hint: 'Browse artefacts by layer (L1..GOV).' },
+    { id: 'conformance',label: 'Conformance',hint: 'Maturity rubric per tier with pass/fail.' },
+    { id: 'compile',    label: 'Compile',    hint: 'Per-artefact compilation to native platform format.' },
+    ...(hasB ? [
+      { id: 'compare',  label: 'Compare',    hint: 'Side-by-side per-layer comparison of PACK A vs PACK B.' },
+      { id: 'atlas',    label: 'Atlas',      hint: 'Cross-pack atlas variants — Stratigraphy, Periodic, Constellation, Skyline, Transit, Arbor.' },
+    ] : []),
+    { id: 'schema',     label: 'Schema',     hint: 'Maturity score + canonical schema view.' },
+  ];
   const active = state.view || 'layers';
 
   for (const v of views) {
@@ -383,21 +462,15 @@ function renderMainView() {
   if (state.mode === 'home') { renderHomeView(); return; }
   if (!state.pack) { view.innerHTML = '<div class="placeholder">Loading pack…</div>'; return; }
 
-  // Compare mode always renders the side-by-side compare view, with
-  // its own sub-views (Layers / Atlas / Schema) selected via the
-  // primary view nav above.
-  if (state.mode === 'compare') {
-    if (state.view === 'atlas')   { renderAtlasView(view); return; }
-    if (state.view === 'schema')  { view.appendChild(renderConformanceView()); return; }
-    renderCompareView(view);   // 'layers' (default)
-    return;
-  }
-
-  // Single mode — dispatch on view.
+  // Mode-free dispatch (Phase 7r): the view nav decides what to render
+  // based on what's loaded. 'compare' and 'atlas' only appear in the
+  // nav when state.packB is truthy, so we can reach them here without
+  // needing a separate 'compare' mode.
   switch (state.view) {
+    case 'compare':     renderCompareView(view); return;
+    case 'atlas':       renderAtlasView(view); return;
     case 'conformance': view.appendChild(renderConformanceView()); return;
     case 'compile':     renderCompileView(view); return;
-    case 'atlas':       renderAtlasView(view); return;
     case 'schema':      view.appendChild(renderConformanceView()); return;
     case 'layers':
     default:
@@ -1159,8 +1232,12 @@ async function loadDiff() {
 
 async function refreshDiff() {
   await loadDiff();
-  // Invalidate B's full layered pack so the atlas refetches.
-  state.packB = null;
+  // Don't nullify state.packB here — earlier code paths set it and rely
+  // on the diff being decoupled from the pack itself. The previous
+  // "invalidate B so the atlas refetches" comment was wrong: the atlas
+  // dispatches on state.packB directly, so nulling it here just forced
+  // a redundant network round-trip AND silently broke the view nav's
+  // "Compare/Atlas appear when B is loaded" rule on every diff refresh.
   renderTabs();
   renderMainView();
 }
@@ -2752,6 +2829,7 @@ async function handleFile(file) {
     state.mode = 'single';
     applyModeChrome();
     renderPackSelect();
+    renderPackBSelect();
     renderEnvSelect();
     renderMeta();
     renderTabs();
@@ -2799,6 +2877,7 @@ async function refresh() {
     state.compileContent = null;
     renderEnvSelect();
     renderPackSelect();
+    renderPackBSelect();
     renderMeta();
     renderTabs();
     renderMainView();
@@ -2818,6 +2897,21 @@ async function boot() {
 
   setupUpload();
   setupTheme();
+  // Eagerly fetch /api/examples so the Pack B picker has the archived
+  // reference packs available even before the user visits the home
+  // examples disclosure.
+  loadAndCacheExamples();
+  // Wire the Pack B "×" clear button.
+  $('#pack-b-clear')?.addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    state.compareBId = null; state.compareBEnv = null;
+    state.packB = null; state.diff = null;
+    if (state.view === 'compare' || state.view === 'atlas') state.view = 'layers';
+    applyModeChrome();
+    renderPackBSelect();
+    renderTabs();
+    renderMainView();
+  });
   setupMcpPanel();
   setupCrawlPanel();
   setupDraftFromMcpPanel();
@@ -2893,6 +2987,16 @@ function applyModeChrome() {
   const envSel  = $('#env-select')?.parentElement;
   if (packSel) packSel.hidden = isHome;
   if (envSel)  envSel.hidden  = isHome;
+  // Pack B picker stays visible whenever we're not on home — empty until
+  // the user picks something. This is the unlock: no more rigid single
+  // vs compare mode.
+  const packBCtrl = $('#ctrl-pack-b');
+  const envBCtrl  = $('#ctrl-env-b');
+  if (packBCtrl) packBCtrl.hidden = isHome;
+  if (envBCtrl)  envBCtrl.hidden  = isHome || !state.packB;
+  // Clear-B button only when B is loaded.
+  const clearB = $('#pack-b-clear');
+  if (clearB) clearB.hidden = !state.packB;
   const meta = $('#meta');   if (meta) meta.hidden = isHome;
   const tabs = $('#layer-tabs'); if (tabs) tabs.hidden = isHome;
 }
@@ -3032,6 +3136,17 @@ function renderHomeView() {
 
   // Examples list — fetched lazily so an empty catalog doesn't block paint.
   loadAndRenderHomeExamples();
+}
+
+async function loadAndCacheExamples() {
+  if (state._examplesCache?.length) return state._examplesCache;
+  try {
+    const r = await api('/api/examples');
+    state._examplesCache = r.examples || [];
+    // Re-render the Pack B picker so the newly available options appear.
+    renderPackBSelect();
+  } catch (_) { state._examplesCache = []; }
+  return state._examplesCache;
 }
 
 async function loadAndRenderHomeExamples() {
@@ -3220,6 +3335,7 @@ async function refreshLive() {
       // Refresh the catalog so the production-live entry's ok-state updates.
       await loadCatalog();
       renderPackSelect();
+    renderPackBSelect();
     }
   } catch (e) {
     setRefreshStatus(`error: ${e.message}`, 'error');
@@ -3615,6 +3731,7 @@ async function adoptCrawlResult() {
     state.mode = 'single';
     applyModeChrome();
     renderPackSelect();
+    renderPackBSelect();
     renderEnvSelect();
     renderMeta();
     renderTabs();
@@ -4186,6 +4303,7 @@ async function adoptDraftFromMcpResult() {
     state.mode = 'single';
     applyModeChrome();
     renderPackSelect();
+    renderPackBSelect();
     renderEnvSelect();
     renderMeta();
     renderTabs();

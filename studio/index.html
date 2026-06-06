@@ -33,12 +33,20 @@
   </div>
   <div class="hdr-controls">
     <label class="ctrl">
-      <span class="ctrl-key">PACK</span>
-      <select id="pack-select" aria-label="Select pack"></select>
+      <span class="ctrl-key">PACK A</span>
+      <select id="pack-select" aria-label="Select pack A"></select>
     </label>
     <label class="ctrl">
-      <span class="ctrl-key">ENV</span>
-      <select id="env-select" aria-label="Select environment"></select>
+      <span class="ctrl-key">ENV A</span>
+      <select id="env-select" aria-label="Select environment A"></select>
+    </label>
+    <label class="ctrl ctrl-pack-b" id="ctrl-pack-b">
+      <span class="ctrl-key">PACK B <button id="pack-b-clear" class="ctrl-key-clear" type="button" hidden title="Remove Pack B">×</button></span>
+      <select id="pack-b-select" aria-label="Select pack B"></select>
+    </label>
+    <label class="ctrl ctrl-pack-b" id="ctrl-env-b" hidden>
+      <span class="ctrl-key">ENV B</span>
+      <select id="env-b-select" aria-label="Select environment B"></select>
     </label>
     <button id="upload-btn" class="ctrl-btn" type="button" title="Upload a canonical v1.2 pack (.yaml or .json)">upload</button>
     <input id="file-input" type="file" accept=".yaml,.yml,.json,application/json,text/yaml,application/x-yaml" hidden>
