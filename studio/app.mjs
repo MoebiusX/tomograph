@@ -301,24 +301,17 @@ function renderPackSelect() {
   for (const p of state.catalog) {
     const opt = document.createElement('option');
     opt.value = p.id;
+    // Uploaded packs lead with a folder glyph so the user can tell
+    // them apart from file-backed catalog entries at a glance.
+    const prefix = p.source === 'uploaded' ? '📂 ' : '';
     opt.textContent = p.ok
-      ? `${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`
+      ? `${prefix}${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`
       : `${p.label} (error)`;
     if (!p.ok) opt.disabled = true;
     sel.appendChild(opt);
   }
-  if (state.uploadedSource) {
-    const opt = document.createElement('option');
-    opt.value = '__uploaded__';
-    opt.textContent = `📂 ${state.uploadedSource} (uploaded)`;
-    opt.selected = true;
-    sel.appendChild(opt);
-    sel.disabled = false;
-  } else {
-    sel.value = state.selectedPackId || (state.catalog.find(p => p.ok)?.id ?? '');
-  }
+  sel.value = state.selectedPackId || (state.catalog.find(p => p.ok)?.id ?? '');
   sel.onchange = () => {
-    if (sel.value === '__uploaded__') return;
     state.selectedPackId = sel.value;
     state.selectedEnv = defaultEnvFor(state.selectedPackId);
     refresh();
@@ -943,10 +936,11 @@ async function loadCompileCatalog() {
   const env = focusedEnv();
   // No pack id available — fall through to the error sentinel so
   // renderCompileView shows a message instead of looping. Uploaded /
-  // crawled / drafted packs hit this path because the upload flow sets
-  // state.pack directly without registering a server-side id.
+  // crawled / drafted packs now register server-side and get a real id;
+  // hitting this branch means something else went wrong (e.g. the user
+  // is on home with no pack, or an upload failed validation).
   if (!packId) {
-    setFocusedCompileCatalog({ error: 'no pack selected on the server (uploaded packs aren\'t addressable yet)', groups: [] });
+    setFocusedCompileCatalog({ error: 'No pack selected.', groups: [] });
     return focusedCompileCatalog();
   }
   const params = new URLSearchParams();
@@ -1103,7 +1097,7 @@ function renderCompileView(host) {
   // id for) and hangs the tab via fetch + localStorage thrash.
   if (catalog.error) {
     nav.innerHTML = '<div class="placeholder">No catalog available.</div>';
-    stage.innerHTML = `<div class="error">Compile catalog failed: ${escapeHtml(catalog.error)}<br><br>If this is an uploaded pack, the server can't compile uploaded packs yet — save the canonical YAML to <code>examples/</code> first.</div>`;
+    stage.innerHTML = `<div class="error">Compile catalog failed: ${escapeHtml(catalog.error)}</div>`;
     return;
   }
   const groups = catalog.groups || [];
@@ -3400,6 +3394,19 @@ async function handleFile(file) {
     state.activeLayer = 'L1';
     state.activeCardKey = null;
     state.mode = 'single';
+    // The server now registers uploaded packs and returns an id so the
+    // rest of the API (/api/packs/:id/compile-catalog, /conformance,
+    // /deploy, /diff) can address them. Use it as state.selectedPackId
+    // so Compile / Deploy / Compare all Just Work — instead of hanging
+    // the way they did pre-registration.
+    if (res.registered?.id) {
+      state.selectedPackId = res.registered.id;
+      state.selectedEnv = defaultEnvFor(state.selectedPackId);
+      // Refresh the catalog so the picker shows the new uploaded pack
+      // alongside the file-backed ones. Pack B picker reads the same
+      // catalog so it's available there too.
+      await loadCatalog();
+    }
     applyModeChrome();
     renderPackSelect();
     renderPackBSelect();
@@ -4328,6 +4335,11 @@ async function adoptCrawlResult() {
     state.activeLayer = 'L1';
     state.activeCardKey = null;
     state.mode = 'single';
+    if (res.registered?.id) {
+      state.selectedPackId = res.registered.id;
+      state.selectedEnv = defaultEnvFor(state.selectedPackId);
+      await loadCatalog();
+    }
     applyModeChrome();
     renderPackSelect();
     renderPackBSelect();
@@ -4900,6 +4912,11 @@ async function adoptDraftFromMcpResult() {
     state.activeLayer = 'L1';
     state.activeCardKey = null;
     state.mode = 'single';
+    if (res.registered?.id) {
+      state.selectedPackId = res.registered.id;
+      state.selectedEnv = defaultEnvFor(state.selectedPackId);
+      await loadCatalog();
+    }
     applyModeChrome();
     renderPackSelect();
     renderPackBSelect();
