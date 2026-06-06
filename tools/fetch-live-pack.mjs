@@ -228,6 +228,104 @@ function durationFromMs(ms, fallback) {
   return `${Math.max(1, Math.round(ms / 60_000))}m`;
 }
 
+// ============================================================
+// Capability inventory — otel-mcp-server's `backend_capabilities`
+// tool exposes the full skill → backend → product → version
+// matrix the server can speak to. Spec v1.2 §VersionSpec was
+// designed around this. We parse it into a normalised structure
+// the pack builder can drive telemetry.backends[] from.
+// ============================================================
+
+// Map MCP-reported backend display names to the spec's Product slug
+// registry. Anything not on this list still passes the lint as an
+// "unknown product" — but the registered names get clean signals.
+const BACKEND_TO_PRODUCT = {
+  'Prometheus':                 'prometheus',
+  'Grafana Mimir':              'mimir',
+  'Thanos':                     'thanos',
+  'VictoriaMetrics':            'victoriametrics',
+  'Cortex':                     'cortex',
+  'Grafana Loki':               'loki',
+  'Grafana Tempo':              'tempo',
+  'Tempo':                      'tempo',
+  'Grafana Pyroscope':          'pyroscope',
+  'Grafana':                    'grafana',
+  'Grafana Alloy':              'alloy',
+  'Alertmanager':               'alertmanager',
+  'Elasticsearch':              'elasticsearch',
+  'OpenSearch':                 'opensearch',
+  'ClickHouse':                 'clickhouse',
+  'Graylog':                    'graylog',
+  'InfluxDB 1.x':               'influxdb',
+  'InfluxDB 2.x':               'influxdb',
+  'InfluxDB 3.x':               'influxdb',
+  'OpenTSDB':                   'opentsdb',
+  'Jaeger':                     'jaeger',
+  'Zipkin':                     'zipkin',
+  'SkyWalking':                 'skywalking',
+  'Pinpoint':                   'pinpoint',
+  'Open Policy Agent':          'opa',
+  'Cilium':                     'cilium',
+  'Kubernetes':                 'kubernetes',
+  'Envoy':                      'envoy',
+  'Consul':                     'consul',
+  'Kong':                       'kong',
+  'Traefik':                    'traefik',
+  'Fluent Bit':                 'fluentbit',
+  'Beats':                      'beats',
+  'Vector':                     'vector',
+};
+
+// Map skill id to the spec's Signal enum
+// (metrics|logs|traces|profiles|network|policy|mesh|gateway|collection|alerting|dashboards).
+// Skills the spec doesn't model as a telemetry signal (zk-proofs,
+// agentrelay, public-exchange, system, kubernetes) get null and
+// flow into annotations only.
+const SKILL_TO_SIGNAL = {
+  metrics:      'metrics',
+  logs:         'logs',
+  traces:       'traces',
+  pyroscope:    'profiles',
+  grafana:      'dashboards',
+  alertmanager: 'alerting',
+  cilium:       'network',
+  consul:       'mesh',
+  envoy:        'mesh',
+  kong:         'gateway',
+  traefik:      'gateway',
+  opa:          'policy',
+  pipeline:     'collection',
+  elasticsearch: 'logs',
+  clickhouse:   'logs',
+  graylog:      'logs',
+  influx:       'metrics',
+  opentsdb:     'metrics',
+  // Skills below have no direct Signal mapping; they remain in the
+  // annotation inventory but do not become telemetry.backends[].
+  kubernetes:    null,
+  pinpoint:      null,
+  agentrelay:    null,
+  'public-exchange': null,
+  system:        null,
+  'zk-proofs':   null,
+};
+
+function parseBackendCapabilities(response) {
+  // backend_capabilities returns its body as a JSON-stringified
+  // text content; both the raw object and the wrapped form are
+  // supported here so this stays robust to wire changes.
+  let inner = response;
+  if (response?.content?.[0]?.text) {
+    try { inner = JSON.parse(response.content[0].text); } catch { inner = null; }
+  }
+  if (!inner || !Array.isArray(inner.skills)) return null;
+  return {
+    gatingMode:    inner.gatingMode || 'warn',
+    protocolModel: inner.protocolModel || null,
+    skills:        inner.skills,
+  };
+}
+
 export function buildCanonicalPack({
   refreshedAt,
   mcpUrl,
@@ -239,6 +337,7 @@ export function buildCanonicalPack({
   errors = {},
   discoveredTools = [],
   unmatchedTools = [],
+  capabilities = null,
   packName = PACK_NAME,
 } = {}) {
   const services = Array.isArray(health.services) ? health.services : [];
@@ -299,17 +398,113 @@ export function buildCanonicalPack({
   if (!errors.system_health) markVerified('otel');
 
   // ---- spec.telemetry.backends ----
-  // Always declare the headline platform backends; tag with `mcp` evidence
-  // when the topology/health response confirms them.
+  // When the MCP exposes backend_capabilities, drive backends from the
+  // canonical skill→backend→product→version inventory. Each entry gets
+  // a real version block (declared from must[0], gating from the
+  // server's own gatingMode, capabilities from baselineFeatures). When
+  // capabilities are absent, fall back to the legacy hardcoded set so
+  // older MCPs still produce a valid pack.
   const backends = [];
+  const seenIds = new Set();
   const pushBackend = (b, verifiedBy) => {
+    if (seenIds.has(b.id)) return;
+    seenIds.add(b.id);
     backends.push(b);
     if (verifiedBy && !errors[verifiedBy]) markVerified(`telemetry.backends.${b.id}`);
   };
-  pushBackend({ id: 'metrics-prom', signal: 'metrics', product: 'prometheus' }, 'system_health');
-  pushBackend({ id: 'logs-elastic', signal: 'logs',    product: 'elasticsearch' }, null);
-  pushBackend({ id: 'traces-jaeger', signal: 'traces', product: 'jaeger' },
-              (topology?.dependencies || []).some(d => (d.child || '').includes('jaeger')) ? 'system_topology' : null);
+
+  // Capability-derived inventory annotations (one row per skill+backend)
+  // get stamped regardless of whether the entry becomes a telemetry
+  // backend — the studio's connect screen reads these to render the
+  // full version-gating story.
+  const capabilityRows = [];
+  if (capabilities && Array.isArray(capabilities.skills)) {
+    for (const s of capabilities.skills) {
+      const signal = SKILL_TO_SIGNAL[s.skill] ?? null;
+      for (const b of s.backends || []) {
+        const fallbackSlug = (slug(b.backend, '') || '').replace(/_/g, '-');
+        const productSlug = BACKEND_TO_PRODUCT[b.backend] ?? (fallbackSlug || null);
+        const pv = b.productVersions || {};
+        const must = pv.must || [];
+        const should = pv.should || [];
+        const optional = pv.optional || [];
+        const row = {
+          skill: s.skill,
+          backend: b.backend,
+          product: productSlug,
+          protocol: b.protocol || null,
+          queryLanguage: b.queryLanguage || null,
+          products: b.products || [],
+          versions: { must, should, optional },
+          baselineFeatures: b.baselineFeatures || [],
+          versionedFeatures: (b.versionedFeatures || []).map(v => v.feature),
+          signal,
+        };
+        capabilityRows.push(row);
+
+        // Only mint a telemetry.backends[] entry when the skill maps
+        // to one of the spec's Signal values AND the product slug
+        // matches the Product pattern (`^[a-z][a-z0-9_-]*$`).
+        if (!signal || !productSlug || !/^[a-z][a-z0-9_-]*$/.test(productSlug)) continue;
+        const id = slug(`${signal}-${productSlug}`);
+        if (!/^[a-z][a-z0-9_-]*[a-z0-9]$/.test(id)) continue;
+
+        // Build the version block. `declared` must look like an
+        // actual version string; fall back to must[0] but skip the
+        // entry if no version is present at all.
+        const declared = must[0] || should[0] || optional[0] || null;
+        const version = {};
+        if (declared) version.declared = declared;
+        if (must.length) version.min = must[must.length - 1];
+        const gating = capabilities.gatingMode;
+        if (gating === 'off' || gating === 'warn' || gating === 'enforce') {
+          version.gating = gating;
+        }
+        // baselineFeatures already match the Product capability pattern
+        // (lowercase, underscore-separated). Cap to 32 so a pack with
+        // a chatty skill (e.g. elasticsearch with 60 features) stays
+        // readable.
+        const caps = (b.baselineFeatures || [])
+          .filter(c => /^[a-z][a-z0-9_-]*$/.test(c))
+          .slice(0, 32);
+        if (caps.length) version.capabilities = caps;
+
+        pushBackend({
+          id,
+          signal,
+          product: productSlug,
+          ...(Object.keys(version).length ? { version } : {}),
+        }, 'backend_capabilities');
+      }
+    }
+  }
+
+  // Fallback / floor: ensure the headline platform backends are
+  // always present even when backend_capabilities was unavailable.
+  // (Schema requires at least one telemetry backend.)
+  if (backends.length === 0) {
+    pushBackend({ id: 'metrics-prom', signal: 'metrics', product: 'prometheus' }, 'system_health');
+    pushBackend({ id: 'logs-elastic', signal: 'logs',    product: 'elasticsearch' }, null);
+    pushBackend({ id: 'traces-jaeger', signal: 'traces', product: 'jaeger' },
+                (topology?.dependencies || []).some(d => (d.child || '').includes('jaeger')) ? 'system_topology' : null);
+  }
+
+  // Capability inventory annotations — the studio renders these on
+  // connect so users can see exactly what the MCP can speak to.
+  if (capabilities) {
+    annotations['mcp.capabilities.gatingMode'] = capabilities.gatingMode;
+    annotations['mcp.capabilities.protocolModel'] = capabilities.protocolModel || '';
+    annotations['mcp.capabilities.skillCount'] = String(capabilities.skills.length);
+    annotations['mcp.capabilities.backendCount'] = String(capabilityRows.length);
+    annotations['mcp.capabilities.skills'] =
+      [...new Set(capabilityRows.map(r => r.skill))].join(',');
+    // Per-skill enumeration so the studio can render the inventory
+    // without re-parsing. Format: `<skill>:<backend>:<product>:<must-csv>`
+    // joined by '|'. Compact enough to keep total annotation size sane.
+    annotations['mcp.capabilities.inventory'] = capabilityRows
+      .map(r => `${r.skill}:${r.backend}:${r.product || '-'}:${(r.versions.must || []).join(';')}`)
+      .join('|');
+  }
 
   // Probes drive multiple downstream sections — hoist their results.
   const discoveredRules = probeResults?.recording_rules?.adapted || [];
@@ -675,6 +870,16 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     : [];
   const discoveredToolNames = new Set(discoveredTools.map(t => t.name));
 
+  // otel-mcp-server 1.6+ exposes `backend_capabilities` — the canonical
+  // skill → backend → product → version inventory the spec's
+  // VersionSpec was designed around. Call it up-front; downstream
+  // builders use it to (a) declare telemetry.backends[] with real
+  // version blocks and (b) surface the full inventory to the studio.
+  const capabilitiesRaw = discoveredToolNames.has('backend_capabilities')
+    ? await safe('backend_capabilities', () => callTool('backend_capabilities'))
+    : null;
+  const capabilities = capabilitiesRaw ? parseBackendCapabilities(capabilitiesRaw) : null;
+
   const [health, topology, anomaliesActive, baselinesData] = await Promise.all([
     safe('system_health',       () => callTool('system_health')),
     safe('system_topology',     () => callTool('system_topology')),
@@ -745,6 +950,7 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     probeResults, errors,
     discoveredTools,            // full list from tools/list (or empty if unsupported)
     unmatchedTools,             // tools the MCP exposes that we don't probe yet
+    capabilities,               // parsed backend_capabilities inventory (or null)
   };
 }
 

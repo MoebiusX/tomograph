@@ -850,6 +850,31 @@ app.post('/api/draft-from-mcp', async (req, res) => {
     const ann = pack.metadata?.annotations || {};
     const probesAttempted = (ann['mcp.probesAttempted'] || '').split(',').filter(Boolean);
     const probesSucceeded = (ann['mcp.probesSucceeded'] || '').split(',').filter(Boolean);
+
+    // Parse the capability inventory (skill → backend → product → versions)
+    // out of the flat annotation set the fetcher stamped. The studio's
+    // connect screen reads this directly to render the version-gating
+    // story up-front, before the user even commits to drafting a pack.
+    const inventoryRaw = ann['mcp.capabilities.inventory'] || '';
+    const inventory = inventoryRaw.split('|').filter(Boolean).map(row => {
+      const [skill, backend, product, mustCsv] = row.split(':');
+      return {
+        skill, backend,
+        product: product === '-' ? null : product,
+        versions: { must: (mustCsv || '').split(';').filter(Boolean) },
+      };
+    });
+    const capabilities = ann['mcp.capabilities.skillCount']
+      ? {
+          gatingMode:    ann['mcp.capabilities.gatingMode'] || 'warn',
+          protocolModel: ann['mcp.capabilities.protocolModel'] || null,
+          skillCount:    Number(ann['mcp.capabilities.skillCount'] || 0),
+          backendCount:  Number(ann['mcp.capabilities.backendCount'] || 0),
+          skills:        (ann['mcp.capabilities.skills'] || '').split(',').filter(Boolean),
+          inventory,
+        }
+      : null;
+
     const summary = {
       source: 'mcp',
       mcpUrl,
@@ -872,6 +897,11 @@ app.post('/api/draft-from-mcp', async (req, res) => {
         toolsUnmatched:  (ann['mcp.toolsUnmatched']  || '').split(',').filter(Boolean),
         probesAttempted, probesSucceeded,
       },
+      // Full backend_capabilities inventory — the version-gating contract.
+      // When null, the MCP didn't expose backend_capabilities (older
+      // server). When set, the studio renders the full skill → backend →
+      // product → version matrix on connect.
+      capabilities,
       warnings: [],
       tier: pack.metadata?.bindings?.criticality || 'tier-3',
     };

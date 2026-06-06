@@ -4005,6 +4005,12 @@ function renderHomeMcpCapabilities(out, host) {
   const toolsExposed   = (ann['mcp.toolsExposed']   || '').split(',').filter(Boolean);
   const toolsUnmatched = (ann['mcp.toolsUnmatched'] || '').split(',').filter(Boolean);
 
+  // backend_capabilities inventory: the canonical skill → backend →
+  // product → version matrix the MCP exposes. When present, render the
+  // full version-gating story below the 4-card grid so the user sees
+  // EVERYTHING their MCP can speak to before drafting a pack.
+  const capabilities = out.summary?.capabilities || null;
+
   // Recognised vs unrecognised tools (over what we CALLED, not what was
   // advertised). Tracks the canonical otel-mcp-server tool catalog
   // (metrics_*, grafana_*, alertmanager_*, pipeline_*) plus the generic
@@ -4072,11 +4078,67 @@ function renderHomeMcpCapabilities(out, host) {
           <div class="home-mcp-cap-detail">${baselines} baseline${baselines === 1 ? '' : 's'} computed<div class="home-mcp-cap-meta">from recent telemetry</div></div>
         </div>
       </div>
+      ${renderCapabilitiesPanel(capabilities)}
       ${out.summary?.warnings?.length ? `
         <div class="home-mcp-gaps">
           <div class="home-mcp-gaps-head">⚠ Honest gaps</div>
           <ul>${out.summary.warnings.slice(0, 5).map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul>
         </div>` : ''}
+    </div>
+  `;
+}
+
+// Render the skill → backend → product → version matrix the MCP
+// exposes via `backend_capabilities`. The signal-class skills
+// (metrics/logs/traces/profiles + alerting/dashboards) lead because
+// they're what drive Tomograph's L1–L4 projection; the rest follow
+// in a compact tail.
+function renderCapabilitiesPanel(capabilities) {
+  if (!capabilities || !Array.isArray(capabilities.inventory) || !capabilities.inventory.length) return '';
+
+  // The spec's Signal enum order — used to group + sort entries.
+  const SIGNAL_SKILLS = ['metrics', 'logs', 'traces', 'pyroscope', 'alertmanager', 'grafana'];
+  const grouped = new Map();
+  for (const row of capabilities.inventory) {
+    if (!grouped.has(row.skill)) grouped.set(row.skill, []);
+    grouped.get(row.skill).push(row);
+  }
+  const orderedSkills = [
+    ...SIGNAL_SKILLS.filter(s => grouped.has(s)),
+    ...[...grouped.keys()].filter(s => !SIGNAL_SKILLS.includes(s)).sort(),
+  ];
+
+  const rows = orderedSkills.map(skill => {
+    const backends = grouped.get(skill);
+    const chips = backends.map(b => {
+      const ver = (b.versions?.must || [])[0] || '';
+      const product = b.product || b.backend;
+      return `<span class="home-mcp-skill-chip" title="${escapeHtml(b.backend)} · must=${escapeHtml((b.versions?.must||[]).join(','))}">
+        <strong>${escapeHtml(product)}</strong>${ver ? ` <em>${escapeHtml(ver)}</em>` : ''}
+      </span>`;
+    }).join('');
+    return `
+      <div class="home-mcp-skill-row" data-skill="${escapeHtml(skill)}">
+        <div class="home-mcp-skill-name">${escapeHtml(skill)}</div>
+        <div class="home-mcp-skill-chips">${chips}</div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="home-mcp-skills">
+      <div class="home-mcp-skills-head">
+        <div class="home-mcp-skills-title">
+          Backend capabilities
+          <span class="home-mcp-skills-meta">
+            ${capabilities.skillCount} skill${capabilities.skillCount === 1 ? '' : 's'}
+            · ${capabilities.backendCount} backend${capabilities.backendCount === 1 ? '' : 's'}
+            · gating <code>${escapeHtml(capabilities.gatingMode)}</code>
+          </span>
+        </div>
+        <div class="home-mcp-skills-sub">From <code>backend_capabilities</code> — every skill the MCP can speak to, the products it implements, and the version policy it enforces.</div>
+      </div>
+      <div class="home-mcp-skills-body">${rows}</div>
     </div>
   `;
 }

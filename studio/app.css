@@ -2285,6 +2285,98 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
   color: var(--ink-4);
 }
 
+/* backend_capabilities inventory — the canonical version-gating story.
+   Rendered as a striped, scannable list of skill rows with chip pills
+   showing each backend's product + must-version. Sits between the
+   4-card capability grid and the gaps banner. */
+.home-mcp-skills {
+  margin-top: 22px;
+  padding: 16px 18px 18px;
+  background: var(--paper);
+  border: 1px solid var(--ink-line);
+  border-radius: 6px;
+}
+.home-mcp-skills-head { margin-bottom: 12px; }
+.home-mcp-skills-title {
+  font: 600 12px/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-1);
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+}
+.home-mcp-skills-meta {
+  font: 400 11px/1 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--ink-4);
+}
+.home-mcp-skills-meta code {
+  font: inherit;
+  background: var(--ink-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.home-mcp-skills-sub {
+  margin-top: 6px;
+  font: 13px/1.5 var(--serif);
+  color: var(--ink-3);
+}
+.home-mcp-skills-sub code {
+  font: 12px/1 var(--mono);
+  background: var(--ink-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.home-mcp-skills-body {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  background: var(--ink-line);
+  border: 1px solid var(--ink-line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.home-mcp-skill-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--paper);
+}
+.home-mcp-skill-row:hover { background: var(--ink-bg); }
+.home-mcp-skill-name {
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.home-mcp-skill-chips {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.home-mcp-skill-chip {
+  display: inline-flex; align-items: baseline; gap: 4px;
+  padding: 3px 8px;
+  background: var(--ink-bg);
+  border: 1px solid var(--ink-line);
+  border-radius: 3px;
+  font: 11.5px/1.3 var(--mono);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.home-mcp-skill-chip strong { font-weight: 600; color: var(--ink-1); }
+.home-mcp-skill-chip em {
+  font-style: normal;
+  color: var(--ink-4);
+  font-size: 10.5px;
+}
+@media (max-width: 720px) {
+  .home-mcp-skill-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
+
 .home-mcp-gaps {
   margin-top: 18px;
   padding: 14px 18px;
