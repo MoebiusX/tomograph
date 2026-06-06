@@ -23,7 +23,8 @@ const L4_SUBGROUPS = [
   { key: 'healing',  label: 'Self-healing' },
 ];
 
-const CONFORMANCE_TAB = { id: 'CONF', num: 'CONF', name: 'Conformance' };
+const CONFORMANCE_TAB = { id: 'CONF',    num: 'CONF', name: 'Conformance' };
+const COMPARE_TAB     = { id: 'COMPARE', num: 'CMP',  name: 'Compare' };
 
 const state = {
   catalog: [],
@@ -35,6 +36,10 @@ const state = {
   activeLayer: 'L1',
   activeCardKey: null,
   uploadedSource: null,        // set when user uploaded a pack instead of using the catalog
+  compareBId: null,            // second pack id for the COMPARE view
+  compareBEnv: null,
+  diff: null,                  // last fetched /api/diff result
+  mcpStatus: null,
 };
 
 const $  = (sel, root = document) => root.querySelector(sel);
@@ -231,6 +236,11 @@ function renderTabs() {
     const label = `${conf.mustPercent}% MUST`;
     tabs.appendChild(renderTab(def, label, true));
   }
+  if (state.catalog.filter(p => p.ok).length >= 2) {
+    const def = COMPARE_TAB;
+    const label = state.diff ? `${state.diff.summary.inBoth}/${state.diff.summary.union}` : 'pick';
+    tabs.appendChild(renderTab(def, label, true));
+  }
 }
 
 function renderTab(def, countOrLabel, isMeta = false) {
@@ -256,6 +266,11 @@ function renderMainView() {
 
   if (state.activeLayer === 'CONF') {
     view.appendChild(renderConformanceView());
+    return;
+  }
+
+  if (state.activeLayer === 'COMPARE') {
+    renderCompareView(view);
     return;
   }
 
@@ -461,6 +476,227 @@ function renderConformanceView() {
   }
   wrap.appendChild(list);
   return wrap;
+}
+
+// ---------- compare view ----------
+
+const COMPARE_LAYERS = [
+  { id: 'L1',  name: 'Contract'    },
+  { id: 'L2',  name: 'Telemetry'   },
+  { id: 'L2X', name: 'Extended'    },
+  { id: 'L3',  name: 'Insight'     },
+  { id: 'L4',  name: 'Action'      },
+  { id: 'L5',  name: 'Validation'  },
+  { id: 'GOV', name: 'Governance'  },
+];
+
+function defaultCompareB() {
+  // First catalog pack that loaded OK and isn't the current A.
+  return state.catalog.find(p => p.ok && p.id !== state.selectedPackId)?.id || null;
+}
+
+async function loadDiff() {
+  if (!state.selectedPackId || !state.compareBId) { state.diff = null; return; }
+  const params = new URLSearchParams({ a: state.selectedPackId, b: state.compareBId });
+  if (state.selectedEnv) params.set('aEnv', state.selectedEnv);
+  if (state.compareBEnv) params.set('bEnv', state.compareBEnv);
+  try {
+    state.diff = await api(`/api/diff?${params}`);
+  } catch (e) {
+    state.diff = { error: e.message };
+  }
+}
+
+async function refreshDiff() {
+  await loadDiff();
+  renderTabs();
+  renderMainView();
+}
+
+function renderCompareView(view) {
+  if (!state.compareBId) state.compareBId = defaultCompareB();
+  if (!state.compareBEnv) state.compareBEnv = defaultEnvFor(state.compareBId);
+
+  if (!state.compareBId) {
+    view.innerHTML = '<div class="placeholder">Need at least two packs in the catalog to compare.</div>';
+    return;
+  }
+
+  // Render scaffold immediately so the picker is responsive even before
+  // the diff arrives.
+  const scaffold = document.createElement('section');
+  scaffold.className = 'section compare-view';
+  scaffold.dataset.layer = 'COMPARE';
+  scaffold.appendChild(renderCompareHead());
+  scaffold.appendChild(renderComparePicker());
+  view.appendChild(scaffold);
+
+  if (!state.diff) {
+    const loading = document.createElement('div');
+    loading.className = 'placeholder';
+    loading.textContent = 'Loading diff…';
+    scaffold.appendChild(loading);
+    loadDiff().then(() => { renderTabs(); renderMainView(); });
+    return;
+  }
+  if (state.diff.error) {
+    const err = document.createElement('div');
+    err.className = 'error';
+    err.textContent = state.diff.error;
+    scaffold.appendChild(err);
+    return;
+  }
+
+  scaffold.appendChild(renderCompareSummary());
+  for (const def of COMPARE_LAYERS) {
+    const bucket = state.diff.layers[def.id];
+    if (!bucket) continue;
+    const total = bucket.onlyInA.length + bucket.inBoth.length + bucket.onlyInB.length;
+    if (total === 0) continue;
+    scaffold.appendChild(renderCompareLayer(def, bucket));
+  }
+}
+
+function renderCompareHead() {
+  const a = state.diff?.a;
+  const b = state.diff?.b;
+  const head = document.createElement('div');
+  head.className = 'section-head';
+  head.innerHTML = `
+    <span class="section-num">CMP</span>
+    <span class="section-name">${escapeHtml(a?.name || '?')} <em>vs</em> ${escapeHtml(b?.name || '?')}</span>
+    <span class="section-count">${state.diff ? `union ${state.diff.summary.union}` : '—'}</span>
+  `;
+  return head;
+}
+
+function renderComparePicker() {
+  const wrap = document.createElement('div');
+  wrap.className = 'compare-picker';
+  wrap.innerHTML = `
+    <label class="ctrl">
+      <span class="ctrl-key">PACK B</span>
+      <select id="compare-b-pack"></select>
+    </label>
+    <label class="ctrl">
+      <span class="ctrl-key">ENV B</span>
+      <select id="compare-b-env"></select>
+    </label>
+    <button class="ctrl-btn" id="compare-swap" type="button" title="Swap A and B">⇄ swap</button>
+  `;
+
+  const bSel = wrap.querySelector('#compare-b-pack');
+  for (const p of state.catalog) {
+    if (!p.ok) continue;
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = `${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`;
+    bSel.appendChild(opt);
+  }
+  bSel.value = state.compareBId;
+  bSel.onchange = () => {
+    state.compareBId = bSel.value;
+    state.compareBEnv = defaultEnvFor(bSel.value);
+    state.diff = null;
+    refreshDiff();
+  };
+
+  const envSel = wrap.querySelector('#compare-b-env');
+  const envs = state.catalog.find(p => p.id === state.compareBId)?.environments || [];
+  if (!envs.length) {
+    const opt = document.createElement('option');
+    opt.value = ''; opt.textContent = '— none —'; envSel.appendChild(opt);
+    envSel.disabled = true;
+  } else {
+    for (const e of envs) {
+      const opt = document.createElement('option');
+      opt.value = e; opt.textContent = e; envSel.appendChild(opt);
+    }
+    envSel.value = state.compareBEnv || envs[0];
+    envSel.onchange = () => { state.compareBEnv = envSel.value || null; state.diff = null; refreshDiff(); };
+  }
+
+  wrap.querySelector('#compare-swap').onclick = () => {
+    if (!state.compareBId) return;
+    const aId = state.selectedPackId;
+    const aEnv = state.selectedEnv;
+    state.selectedPackId = state.compareBId;
+    state.selectedEnv = state.compareBEnv;
+    state.compareBId = aId;
+    state.compareBEnv = aEnv;
+    state.diff = null;
+    // Reload everything for the now-A pack.
+    refresh();
+    refreshDiff();
+  };
+
+  return wrap;
+}
+
+function renderCompareSummary() {
+  const s = state.diff.summary;
+  const wrap = document.createElement('div');
+  wrap.className = 'compare-summary';
+  wrap.innerHTML = `
+    <div class="compare-cell c-a"><div class="c-key">only in A</div><div class="c-val">${s.onlyInA}</div></div>
+    <div class="compare-cell c-both"><div class="c-key">in both</div><div class="c-val">${s.inBoth}</div></div>
+    <div class="compare-cell c-b"><div class="c-key">only in B</div><div class="c-val">${s.onlyInB}</div></div>
+    <div class="compare-cell c-union"><div class="c-key">union</div><div class="c-val">${s.union}</div></div>
+    <div class="compare-cell c-jacc"><div class="c-key">jaccard</div><div class="c-val">${Math.round(s.jaccard * 100)}%</div></div>
+  `;
+  return wrap;
+}
+
+function renderCompareLayer(def, bucket) {
+  const section = document.createElement('section');
+  section.className = 'compare-layer';
+  section.dataset.layer = def.id;
+  section.innerHTML = `
+    <div class="compare-layer-head">
+      <span class="section-num">${def.id}</span>
+      <span class="section-name">${def.name}</span>
+      <span class="section-count">${bucket.onlyInA.length} / ${bucket.inBoth.length} / ${bucket.onlyInB.length}</span>
+    </div>
+  `;
+  const grid = document.createElement('div');
+  grid.className = 'compare-grid';
+
+  grid.appendChild(renderCompareColumn('only in A', 'c-a',    bucket.onlyInA.map(x => x.artefact), def));
+  grid.appendChild(renderCompareColumn('in both',   'c-both', bucket.inBoth.map(x => x.a), def, bucket.inBoth));
+  grid.appendChild(renderCompareColumn('only in B', 'c-b',    bucket.onlyInB.map(x => x.artefact), def));
+
+  section.appendChild(grid);
+  return section;
+}
+
+function renderCompareColumn(label, cls, items, def, inBothPairs = null) {
+  const col = document.createElement('div');
+  col.className = 'compare-col ' + cls;
+  col.innerHTML = `<div class="compare-col-head">${label} <span class="muted">${items.length}</span></div>`;
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'compare-empty';
+    empty.textContent = '—';
+    col.appendChild(empty);
+    return col;
+  }
+  for (let i = 0; i < items.length; i++) {
+    const artefact = items[i];
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'compare-row';
+    const bPair = inBothPairs ? inBothPairs[i].b : null;
+    const annotation = bPair && bPair.source && bPair.source !== artefact.source
+      ? ` <span class="compare-tag">${escapeHtml(artefact.source)}/${escapeHtml(bPair.source)}</span>`
+      : '';
+    row.innerHTML = `
+      <span class="compare-row-id">${escapeHtml(artefact.id || '')}</span>
+      <span class="compare-row-title">${escapeHtml(artefact.title || '')}</span>${annotation}
+    `;
+    row.onclick = () => openDrawer(artefact, def, null);
+    col.appendChild(row);
+  }
+  return col;
 }
 
 // ---------- drawer ----------
