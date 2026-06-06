@@ -380,9 +380,11 @@ function renderPackBSelect() {
     const wantedAutoSwitch = !crossPackViews.has(state.view);
     loadPackB().then(() => {
       refreshDiff();
+      if (wantedAutoSwitch) state.view = 'compare';
+      // applyModeChrome reads state.view — must run AFTER the
+      // potential switch so the header pickers hide/show correctly.
       applyModeChrome();
       renderEnvBSelect();
-      if (wantedAutoSwitch) state.view = 'compare';
       renderTabs();
       renderMainView();
     });
@@ -614,6 +616,9 @@ function renderPrimaryViewNav() {
       // Mirror to activeLayer for legacy code paths.
       state.activeLayer = ({ conformance: 'CONF', compile: 'COMPILE', atlas: 'ATLAS', schema: 'CONF', layers: state.layerFilter !== 'all' ? state.layerFilter : 'L1' })[v.id] || 'L1';
       state.activeCardKey = null;
+      // Header chrome depends on the current view (Compare hides its
+      // pickers because the compare pack-cards have their own).
+      applyModeChrome();
       renderTabs();
       renderMainView();
     };
@@ -3607,21 +3612,29 @@ function enterCompareMode(aId, aEnv, bId, bEnv) {
 // new pack.
 function applyModeChrome() {
   const isHome = state.mode === 'home';
+  // On Compare view the pack-A / pack-B cards inside the comparison
+  // already carry their own pickers, env selectors, swap button, and
+  // metadata chips. Showing the header pickers above is pure
+  // duplication — the same two controls fifty pixels higher. Hide them.
+  // Every other view needs the header pickers as the only way to swap
+  // packs.
+  const onCompare = state.view === 'compare';
   document.body.dataset.mode = state.mode;
+  document.body.dataset.view = state.view || '';
   const packSel = $('#pack-select')?.parentElement;
   const envSel  = $('#env-select')?.parentElement;
-  if (packSel) packSel.hidden = isHome;
-  if (envSel)  envSel.hidden  = isHome;
+  if (packSel) packSel.hidden = isHome || onCompare;
+  if (envSel)  envSel.hidden  = isHome || onCompare;
   // Pack B picker stays visible whenever we're not on home — empty until
   // the user picks something. This is the unlock: no more rigid single
-  // vs compare mode.
+  // vs compare mode. Hide it on Compare for the same duplication reason.
   const packBCtrl = $('#ctrl-pack-b');
   const envBCtrl  = $('#ctrl-env-b');
-  if (packBCtrl) packBCtrl.hidden = isHome;
-  if (envBCtrl)  envBCtrl.hidden  = isHome || !state.packB;
+  if (packBCtrl) packBCtrl.hidden = isHome || onCompare;
+  if (envBCtrl)  envBCtrl.hidden  = isHome || onCompare || !state.packB;
   // Clear-B button only when B is loaded.
   const clearB = $('#pack-b-clear');
-  if (clearB) clearB.hidden = !state.packB;
+  if (clearB) clearB.hidden = !state.packB || onCompare;
   const meta = $('#meta');   if (meta) meta.hidden = isHome;
   const tabs = $('#layer-tabs'); if (tabs) tabs.hidden = isHome;
 }
