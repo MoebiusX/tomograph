@@ -3837,14 +3837,18 @@ function renderHomeView() {
           <path d="M 480 399 C 540 329 630 329 630 399 C 630 469 540 469 480 399 C 420 329 330 329 330 399 C 330 469 420 469 480 399 Z"
                 fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.10"/>
 
-          <!-- connectors (clockwise) -->
+          <!-- connectors (clockwise) — mirror-symmetric about x=480.
+               All four arrows attach to nodes at the same 51px inset
+               from the corner: x=706 on COMPILE (left side), x=254 on
+               VERIFY (right side), and the matching offsets on
+               DECLARE + OBSERVE for the corner-exit arrows. -->
           <path d="M 588 276 Q 690 300 706 358" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
           <path d="M 706 442 Q 690 502 590 522" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
-          <path d="M 370 522 Q 270 502 296 442" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
+          <path d="M 370 522 Q 270 502 254 442" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
           <!-- closing arc: dashed return = "and again" -->
-          <path d="M 294 358 Q 268 300 370 276" fill="none" stroke="#4a5b72" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#cyc-ah)"/>
-          <text x="247" y="312" font-size="15" fill="#7fa9a0">↺</text>
-          <text x="232" y="300" font-family="'Newsreader', Georgia, serif" font-size="11" font-style="italic" fill="#6f7d90">begin again</text>
+          <path d="M 254 358 Q 270 300 372 276" fill="none" stroke="#4a5b72" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#cyc-ah)"/>
+          <text x="207" y="312" font-size="15" fill="#7fa9a0">↺</text>
+          <text x="192" y="300" font-family="'Newsreader', Georgia, serif" font-size="11" font-style="italic" fill="#6f7d90">begin again</text>
 
           <!-- node: DECLARE (green) -->
           <rect x="375" y="212" width="210" height="76" rx="12" fill="#141d2c" stroke="#5dcaa5" stroke-width="2"/>
