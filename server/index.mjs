@@ -34,6 +34,7 @@ import { parse as parseYaml, emit as emitYaml } from '../tools/lib/mini-yaml.mjs
 import { adapt, listEnvironments, applyEnvironmentOverlay } from '../tools/lib/adapter.mjs';
 import { validateCanonical, SPEC_VERSION } from '../tools/lib/validator.mjs';
 import { evaluateConformance, RUBRIC } from '../tools/lib/conformance.mjs';
+import { crawlFiles, crawlToYaml } from '../tools/lib/crawler.mjs';
 import { fetchMcp, buildCanonicalPack, createMcpClient } from '../tools/fetch-live-pack.mjs';
 import { diffPacks } from '../tools/lib/diff.mjs';
 import { compile, listTargets } from '../tools/lib/compile.mjs';
@@ -138,7 +139,7 @@ function overlaidCanonical(canonical, envName) {
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', false);
-app.use(express.json({ limit: '4mb' }));
+app.use(express.json({ limit: '16mb' }));   // /api/crawl can carry a whole repo's worth of YAML
 app.use(express.text({ type: ['application/x-yaml', 'text/yaml', 'text/plain'], limit: '4mb' }));
 
 app.get('/healthz', (req, res) => {
@@ -498,6 +499,81 @@ app.post('/api/refresh-live', async (req, res) => {
   } catch (e) {
     process.stderr.write(`[refresh-live]   error in ${Date.now() - t0}ms: ${e.message}\n`);
     res.status(502).json({ ok: false, error: e.message, details: e.details });
+  }
+});
+
+// ----------------------------------------------------------------
+// POST /api/crawl — Path A of the pack-creation user journey.
+//
+// Accepts an in-memory file map (the client uploads or drags in
+// files; the server never touches disk) and returns a draft
+// canonical pack plus the validation + conformance reports.
+//
+// Body: {
+//   files: { [relPath]: contentString },
+//   repoName?: string,
+//   environment?: string,
+//   criticality?: 'tier-1'|'tier-2'|'tier-3',
+//   binding?: string,
+//   owners?: string[]
+// }
+//
+// Response: { ok, canonical, canonicalYaml, summary, evidence,
+//             validation: { ok, errors }, conformance }
+//
+// The crawler library is shared with tools/crawl-repo.mjs (the
+// CLI form); both feed crawlFiles() the same in-memory map shape.
+// ----------------------------------------------------------------
+app.post('/api/crawl', (req, res) => {
+  const body = req.body || {};
+  const files = body.files;
+  if (!files || typeof files !== 'object' || Array.isArray(files)) {
+    return res.status(400).json({ ok: false, error: 'expected JSON body { files: { <relPath>: <content> } }' });
+  }
+  const entries = Object.entries(files);
+  if (entries.length === 0) {
+    return res.status(400).json({ ok: false, error: 'no files provided' });
+  }
+  for (const [k, v] of entries) {
+    if (typeof k !== 'string' || typeof v !== 'string') {
+      return res.status(400).json({ ok: false, error: `each file entry must be string→string (offending key: ${JSON.stringify(k)})` });
+    }
+  }
+  // Cap total payload to 16 MB so a runaway repo can't OOM the server.
+  let total = 0;
+  for (const [_, v] of entries) total += v.length;
+  if (total > 16 * 1024 * 1024) {
+    return res.status(413).json({ ok: false, error: `payload too large (${total} bytes; cap is 16MB). Drop large files like build artefacts or vendored binaries.` });
+  }
+
+  const opts = {
+    repoName: typeof body.repoName === 'string' ? body.repoName : undefined,
+    environment: typeof body.environment === 'string' ? body.environment : undefined,
+    criticality: typeof body.criticality === 'string' ? body.criticality : undefined,
+    binding: typeof body.binding === 'string' ? body.binding : undefined,
+    owners: Array.isArray(body.owners) ? body.owners.map(String) : undefined,
+  };
+
+  const t0 = Date.now();
+  try {
+    const { yaml, summary, evidence } = crawlToYaml(files, opts);
+    const { canonical } = crawlFiles(files, opts);
+    const validationErrors = validateCanonical(canonical, SCHEMA);
+    const conformance = evaluateConformance(canonical);
+    process.stderr.write(`[crawl] ${entries.length} files, ${summary.files.classified} classified, ${Object.keys(evidence).length} evidence, tier=${summary.inferred.tier}, valid=${validationErrors.length === 0}, ${Date.now() - t0}ms\n`);
+    res.json({
+      ok: true,
+      canonical,
+      canonicalYaml: yaml,
+      summary,
+      evidence,
+      validation: { ok: validationErrors.length === 0, errors: validationErrors },
+      conformance,
+      tookMs: Date.now() - t0,
+    });
+  } catch (e) {
+    process.stderr.write(`[crawl] error: ${e.message}\n`);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 

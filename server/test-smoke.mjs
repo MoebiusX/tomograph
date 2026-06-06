@@ -333,6 +333,58 @@ try {
   assert(html.includes('/app.mjs'), 'shell loads app.mjs');
   assert(html.includes('/app.css'), 'shell loads app.css');
 
+  // POST /api/crawl — Path A of pack creation. Real fixture: docker-compose
+  // + Prometheus rules + Alertmanager + Grafana dashboard. Output must pass
+  // canonical schema and surface evidence pointers.
+  const crawlBody = {
+    repoName: 'smoke-crawl',
+    files: {
+      'docker-compose.yml': `version: '3.8'\nservices:\n  prometheus:\n    image: prom/prometheus:v2.51.0\n    ports: ["9090:9090"]\n  grafana:\n    image: grafana/grafana:12.0.0\n    ports: ["3000:3000"]\n`,
+      'rules.yml': `groups:\n  - name: g\n    rules:\n      - record: smoke:availability:ratio\n        expr: sum(rate(req_total[5m]))\n`,
+      'dashboards/svc.json': JSON.stringify({ title: 'svc', uid: 'svc', schemaVersion: 41, version: 1, panels: [{ title: 'p', type: 'stat' }] }),
+      'alertmanager.yml': `route:\n  receiver: oncall\nreceivers:\n  - name: oncall\n    msteams_configs:\n      - channel_url: '#oncall'\n`,
+    },
+  };
+  const crawlRes = await fetch(`${base}/api/crawl`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(crawlBody),
+  });
+  assert(crawlRes.status === 200, 'POST /api/crawl returns 200 on valid input');
+  const crawlOut = await crawlRes.json();
+  assert(crawlOut.ok === true, 'crawl ok');
+  assert(crawlOut.canonical?.apiVersion === 'observability.platform/v1', 'crawl emits canonical v1');
+  assert(crawlOut.canonical?.metadata?.name === 'smoke-crawl', 'crawl honors repoName');
+  assert(Array.isArray(crawlOut.canonical?.spec?.telemetry?.backends), 'crawl emits telemetry.backends');
+  assert(crawlOut.canonical.spec.telemetry.backends.some(b => b.product === 'prometheus'),
+         'crawl discovers prometheus backend from docker-compose');
+  assert(crawlOut.canonical.spec.queries.recording_rules.some(r => r.name === 'smoke:availability:ratio'),
+         'crawl preserves recording rule name');
+  assert(crawlOut.canonical.spec.dashboards.some(d => d.provider?.kind === 'grafana'),
+         'crawl emits grafana dashboard');
+  assert(crawlOut.validation?.ok === true,
+         `crawl output passes v1.2 schema (errors: ${JSON.stringify(crawlOut.validation?.errors || []).slice(0, 200)})`);
+  assert(typeof crawlOut.canonicalYaml === 'string' && crawlOut.canonicalYaml.includes('apiVersion'),
+         'crawl returns canonical YAML');
+  assert(crawlOut.summary?.discovered?.backends >= 2, 'crawl summary counts ≥2 backends');
+  assert(crawlOut.evidence && Object.keys(crawlOut.evidence).length >= 3,
+         'crawl returns evidence pointers');
+  assert(typeof crawlOut.conformance?.declaredTier === 'string',
+         'crawl includes conformance report');
+
+  // POST /api/crawl — empty body → 400
+  const crawlEmpty = await fetch(`${base}/api/crawl`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert(crawlEmpty.status === 400, 'POST /api/crawl rejects empty body with 400');
+
+  // POST /api/crawl — non-string value → 400
+  const crawlBad = await fetch(`${base}/api/crawl`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files: { 'x.yml': 123 } }),
+  });
+  assert(crawlBad.status === 400, 'POST /api/crawl rejects non-string content with 400');
+
   // Static assets
   const css = await getText(base, '/app.css');
   assert(css.includes('--L2X:'), '/app.css served with L2X palette');
