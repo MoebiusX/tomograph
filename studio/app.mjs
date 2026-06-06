@@ -356,8 +356,14 @@ function renderPackBSelect() {
     if (!newId) {
       // User cleared Pack B — back to single-pack focus.
       state.viewFocus = 'a';
-      if (state.view === 'compare' || state.view === 'atlas' || state.view === 'traceability') {
+      // Atlas works in single-pack mode (Strata / Periodic / Skyline /
+      // Arbor), so it stays. Compare + Traceability are cross-pack only —
+      // fall back to Layers.
+      if (state.view === 'compare' || state.view === 'traceability') {
         state.view = 'layers';
+      }
+      if (state.view === 'atlas' && CROSS_PACK_VARIANTS.has(state.atlasVariant)) {
+        state.atlasVariant = 'strata';
       }
       applyModeChrome();
       renderTabs();
@@ -599,8 +605,13 @@ function renderPrimaryViewNav() {
     ...(hasB ? [
       { id: 'compare',     label: 'Compare',     hint: 'Side-by-side per-layer comparison of PACK A vs PACK B.' },
       { id: 'traceability',label: 'Traceability',hint: 'Repo vs live: aligned / declared-not-verified / verified-not-declared / stale.' },
-      { id: 'atlas',       label: 'Atlas',       hint: 'Cross-pack atlas variants — Stratigraphy, Periodic, Constellation, Skyline, Transit, Arbor.' },
     ] : []),
+    // Atlas is available in single-pack mode too — Stratigraphy, Periodic,
+    // Skyline, and Arbor all work on a single pack (Arbor especially is a
+    // dependency-discovery tool that doesn't need a second pack). The
+    // cross-pack variants (Constellation morph, Transit interchanges)
+    // surface in the variant picker only when Pack B is loaded.
+    { id: 'atlas',       label: 'Atlas',       hint: 'Visual atlases — Stratigraphy, Periodic, Skyline, Arbor (single-pack) · Constellation, Transit (cross-pack).' },
     { id: 'schema',     label: 'Schema',     hint: 'Maturity score + canonical schema view.' },
   ];
   const active = state.view || 'layers';
@@ -2696,13 +2707,17 @@ async function loadPackB() {
   state.compileContentB = null;
 }
 
-function renderAtlasView(view) {
-  if (!state.compareBId) state.compareBId = defaultCompareB();
-  if (!state.compareBEnv) state.compareBEnv = defaultEnvFor(state.compareBId);
+// Variants that need both packs (animate / interchange between them).
+// Everything else works on a single pack — Arbor especially is a
+// dependency-discovery tool you don't need to compare to use.
+const CROSS_PACK_VARIANTS = new Set(['constellation', 'transit']);
 
-  if (!state.compareBId) {
-    view.innerHTML = '<div class="placeholder">Need at least two packs in the catalog to render an atlas.</div>';
-    return;
+function renderAtlasView(view) {
+  const hasB = !!state.packB;
+  // If the user is on a cross-pack variant but Pack B isn't loaded,
+  // fall back to a single-pack variant so the view stays usable.
+  if (!hasB && CROSS_PACK_VARIANTS.has(state.atlasVariant)) {
+    state.atlasVariant = 'strata';
   }
 
   const section = document.createElement('section');
@@ -2714,7 +2729,7 @@ function renderAtlasView(view) {
   head.className = 'section-head';
   head.innerHTML = `
     <span class="section-num">ATL</span>
-    <span class="section-name">${escapeHtml(meta.title)}</span>
+    <span class="section-name">${escapeHtml(meta.title)}${hasB ? '' : ' · single pack'}</span>
     <span class="section-count">${escapeHtml(state.atlasVariant)}</span>
   `;
   section.appendChild(head);
@@ -2724,10 +2739,14 @@ function renderAtlasView(view) {
   sub.textContent = meta.lede;
   section.appendChild(sub);
 
-  // Variant selector pills
+  // Variant selector pills. Cross-pack variants are filtered out when
+  // Pack B isn't loaded — the picker only shows what'll actually work.
   const pills = document.createElement('div');
   pills.className = 'atlas-variants';
-  for (const v of ATLAS_VARIANTS) {
+  const availableVariants = hasB
+    ? ATLAS_VARIANTS
+    : ATLAS_VARIANTS.filter(v => !CROSS_PACK_VARIANTS.has(v));
+  for (const v of availableVariants) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'atlas-variant' + (v === state.atlasVariant ? ' is-active' : '');
@@ -2741,8 +2760,8 @@ function renderAtlasView(view) {
   }
   section.appendChild(pills);
 
-  // Pack-B + env-B + swap (same controls as compare view)
-  section.appendChild(renderComparePicker());
+  // Pack-B + env-B + swap. Only useful in compare mode — skip in single.
+  if (hasB) section.appendChild(renderComparePicker());
 
   // Stage for SVG
   const stage = document.createElement('div');
@@ -3517,7 +3536,12 @@ async function boot() {
     state.compileCatalogB = null;
     state.compileContentB = null;
     state.viewFocus = 'a';
-    if (state.view === 'compare' || state.view === 'atlas') state.view = 'layers';
+    // Compare + Traceability are cross-pack only; Atlas stays available
+    // in single mode (Strata / Periodic / Skyline / Arbor work on one pack).
+    if (state.view === 'compare' || state.view === 'traceability') state.view = 'layers';
+    if (state.view === 'atlas' && CROSS_PACK_VARIANTS.has(state.atlasVariant)) {
+      state.atlasVariant = 'strata';
+    }
     applyModeChrome();
     renderPackBSelect();
     renderTabs();
@@ -3774,26 +3798,26 @@ function renderHomeView() {
       <div class="home-cycle">
         <div class="home-cycle-head"><span>the assurance loop</span></div>
         <p class="home-cycle-lede">
-          The studio runs a continuous-improvement cycle: introspect the
-          current state, compare to a reference (a target tier) or to live
-          telemetry, and resolve the gap either by deploying to live or
-          retro-feeding the manifest. Schedule the loop and assurance
-          becomes a property of the system, not a one-time audit.
+          The studio runs a continuous-improvement cycle. Generate or load a
+          pack to gauge initial state, then take either path: interrogate
+          the live MCP to deploy / retro-feed the delta, or benchmark against
+          a reference and save the delta back to the repo. Validate the new
+          state and iterate.
         </p>
-        <svg class="home-cycle-svg" viewBox="0 0 760 260" role="img" aria-label="The observability assurance loop: introspect → compare → deploy or retro-feed → assure → cycle back">
+        <svg class="home-cycle-svg" viewBox="0 0 880 280" role="img" aria-label="The assurance loop: generate/load pack → live MCP delta or benchmark delta → validate → iterate">
           <style>
             .cyc-node       { fill: var(--card); stroke-width: 1.5; }
-            .cyc-intro      { stroke: var(--L1); }
-            .cyc-cmp        { stroke: var(--CMP); }
+            .cyc-gen        { stroke: var(--L1); }
+            .cyc-live       { stroke: var(--BLD); }
             .cyc-deploy     { stroke: var(--BLD); }
-            .cyc-retro      { stroke: var(--ATL); }
-            .cyc-assure     { stroke: var(--ink); }
-            .cyc-title      { font: 600 13px/1 var(--sans); fill: var(--ink); letter-spacing: 0.06em; text-transform: uppercase; }
+            .cyc-bench      { stroke: var(--CMP); }
+            .cyc-delta      { stroke: var(--CMP); }
+            .cyc-validate   { stroke: var(--ink); }
+            .cyc-title      { font: 600 12px/1 var(--sans); fill: var(--ink); letter-spacing: 0.05em; text-transform: uppercase; }
             .cyc-sub        { font: italic 11px/1.2 var(--serif); fill: var(--ink-3); }
             .cyc-arrow      { stroke: var(--ink-4); stroke-width: 1.5; fill: none; }
             .cyc-loop       { stroke: var(--ink-4); stroke-width: 1.5; stroke-dasharray: 4,4; fill: none; }
-            .cyc-loop-label { font: italic 11.5px/1 var(--serif); fill: var(--ink-4); }
-            .cyc-branch-lbl { font: 600 9.5px/1 var(--mono); letter-spacing: 0.08em; fill: var(--ink-4); text-transform: uppercase; }
+            .cyc-loop-label { font: italic 12px/1 var(--serif); fill: var(--ink-4); }
           </style>
           <defs>
             <marker id="cyc-arrow-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
@@ -3801,64 +3825,64 @@ function renderHomeView() {
             </marker>
           </defs>
 
-          <!-- Top loop arrow: ASSURE → INTROSPECT (continuous cycle) -->
-          <path class="cyc-loop" d="M 685 100 C 720 -20, 60 -20, 95 100" marker-end="url(#cyc-arrow-head)"/>
-          <text class="cyc-loop-label" x="380" y="15" text-anchor="middle">continuous assurance — schedule the loop</text>
+          <!-- Iterate loop: Validate back to Generate/Load Pack (curves below) -->
+          <path class="cyc-loop" d="M 765 200 C 800 280, 80 280, 105 200" marker-end="url(#cyc-arrow-head)"/>
+          <text class="cyc-loop-label" x="440" y="272" text-anchor="middle">iterate</text>
 
-          <!-- 1. INTROSPECT -->
-          <g transform="translate(30, 90)">
-            <rect class="cyc-node cyc-intro" width="130" height="80" rx="10"/>
-            <text class="cyc-title" x="65" y="32" text-anchor="middle">Introspect</text>
-            <text class="cyc-sub"   x="65" y="52" text-anchor="middle">connect to MCP</text>
-            <text class="cyc-sub"   x="65" y="66" text-anchor="middle">crawl · upload</text>
+          <!-- 1. Generate/Load Pack — leftmost, vertically centered -->
+          <g transform="translate(20, 105)">
+            <rect class="cyc-node cyc-gen" width="170" height="80" rx="10"/>
+            <text class="cyc-title" x="85" y="30" text-anchor="middle">Generate / Load Pack</text>
+            <text class="cyc-sub"   x="85" y="52" text-anchor="middle">gauge initial state</text>
+            <text class="cyc-sub"   x="85" y="68" text-anchor="middle">MCP · crawl · upload</text>
           </g>
 
-          <!-- INTROSPECT → COMPARE -->
-          <line class="cyc-arrow" x1="160" y1="130" x2="200" y2="130" marker-end="url(#cyc-arrow-head)"/>
+          <!-- Branch up to "Generate Live MCP" (top path) -->
+          <path class="cyc-arrow" d="M 190 145 C 220 145, 240 60, 270 60" marker-end="url(#cyc-arrow-head)"/>
+          <!-- Branch down to "Benchmark" (bottom path) -->
+          <path class="cyc-arrow" d="M 190 145 C 220 145, 240 230, 270 230" marker-end="url(#cyc-arrow-head)"/>
 
-          <!-- 2. COMPARE -->
-          <g transform="translate(200, 90)">
-            <rect class="cyc-node cyc-cmp" width="130" height="80" rx="10"/>
-            <text class="cyc-title" x="65" y="32" text-anchor="middle">Compare</text>
-            <text class="cyc-sub"   x="65" y="52" text-anchor="middle">vs maturity rubric</text>
-            <text class="cyc-sub"   x="65" y="66" text-anchor="middle">vs reference · vs live</text>
+          <!-- 2a. Generate Live MCP (top path, step 1) -->
+          <g transform="translate(270, 20)">
+            <rect class="cyc-node cyc-live" width="170" height="80" rx="10"/>
+            <text class="cyc-title" x="85" y="30" text-anchor="middle">Generate Live MCP</text>
+            <text class="cyc-sub"   x="85" y="52" text-anchor="middle">interrogate live</text>
+            <text class="cyc-sub"   x="85" y="68" text-anchor="middle">platform telemetry</text>
           </g>
+          <line class="cyc-arrow" x1="440" y1="60" x2="490" y2="60" marker-end="url(#cyc-arrow-head)"/>
 
-          <!-- COMPARE → DEPLOY (top branch) -->
-          <path class="cyc-arrow" d="M 330 130 C 360 130, 380 130, 400 70" marker-end="url(#cyc-arrow-head)"/>
-          <text class="cyc-branch-lbl" x="365" y="98" text-anchor="middle">deploy gap</text>
-
-          <!-- COMPARE → RETRO-FEED (bottom branch) -->
-          <path class="cyc-arrow" d="M 330 130 C 360 130, 380 130, 400 190" marker-end="url(#cyc-arrow-head)"/>
-          <text class="cyc-branch-lbl" x="365" y="172" text-anchor="middle">drift gap</text>
-
-          <!-- 3a. DEPLOY (top) -->
-          <g transform="translate(400, 30)">
-            <rect class="cyc-node cyc-deploy" width="140" height="74" rx="10"/>
-            <text class="cyc-title" x="70" y="32" text-anchor="middle">Deploy</text>
-            <text class="cyc-sub"   x="70" y="50" text-anchor="middle">fix the live signal</text>
-            <text class="cyc-sub"   x="70" y="64" text-anchor="middle">via MCP write tools</text>
+          <!-- 3a. Deploy / Retro-feed Delta (top path, step 2) -->
+          <g transform="translate(490, 20)">
+            <rect class="cyc-node cyc-deploy" width="190" height="80" rx="10"/>
+            <text class="cyc-title" x="95" y="30" text-anchor="middle">Deploy / Retro-feed Delta</text>
+            <text class="cyc-sub"   x="95" y="52" text-anchor="middle">fix live signal,</text>
+            <text class="cyc-sub"   x="95" y="68" text-anchor="middle">or pull live into manifest</text>
           </g>
+          <path class="cyc-arrow" d="M 680 60 C 720 60, 740 145, 775 145" marker-end="url(#cyc-arrow-head)"/>
 
-          <!-- 3b. RETRO-FEED (bottom) -->
-          <g transform="translate(400, 156)">
-            <rect class="cyc-node cyc-retro" width="140" height="74" rx="10"/>
-            <text class="cyc-title" x="70" y="32" text-anchor="middle">Retro-feed</text>
-            <text class="cyc-sub"   x="70" y="50" text-anchor="middle">fix the manifest</text>
-            <text class="cyc-sub"   x="70" y="64" text-anchor="middle">verified → declared</text>
+          <!-- 2b. Benchmark (bottom path, step 1) -->
+          <g transform="translate(270, 190)">
+            <rect class="cyc-node cyc-bench" width="170" height="80" rx="10"/>
+            <text class="cyc-title" x="85" y="30" text-anchor="middle">Benchmark</text>
+            <text class="cyc-sub"   x="85" y="52" text-anchor="middle">vs reference pack</text>
+            <text class="cyc-sub"   x="85" y="68" text-anchor="middle">(curated catalogue)</text>
           </g>
+          <line class="cyc-arrow" x1="440" y1="230" x2="490" y2="230" marker-end="url(#cyc-arrow-head)"/>
 
-          <!-- DEPLOY → ASSURE -->
-          <path class="cyc-arrow" d="M 540 67 C 580 67, 600 130, 620 130" marker-end="url(#cyc-arrow-head)"/>
-          <!-- RETRO-FEED → ASSURE -->
-          <path class="cyc-arrow" d="M 540 193 C 580 193, 600 130, 620 130" marker-end="url(#cyc-arrow-head)"/>
+          <!-- 3b. Generate Delta and Deploy/Save -->
+          <g transform="translate(490, 190)">
+            <rect class="cyc-node cyc-delta" width="190" height="80" rx="10"/>
+            <text class="cyc-title" x="95" y="30" text-anchor="middle">Generate Delta</text>
+            <text class="cyc-sub"   x="95" y="52" text-anchor="middle">deploy or save</text>
+            <text class="cyc-sub"   x="95" y="68" text-anchor="middle">(export to repo)</text>
+          </g>
+          <path class="cyc-arrow" d="M 680 230 C 720 230, 740 145, 775 145" marker-end="url(#cyc-arrow-head)"/>
 
-          <!-- 4. ASSURE -->
-          <g transform="translate(620, 90)">
-            <rect class="cyc-node cyc-assure" width="120" height="80" rx="10"/>
-            <text class="cyc-title" x="60" y="32" text-anchor="middle">Assure</text>
-            <text class="cyc-sub"   x="60" y="52" text-anchor="middle">re-verify</text>
-            <text class="cyc-sub"   x="60" y="66" text-anchor="middle">on a schedule</text>
+          <!-- 4. Validate new state -->
+          <g transform="translate(775, 105)">
+            <rect class="cyc-node cyc-validate" width="90" height="80" rx="10"/>
+            <text class="cyc-title" x="45" y="34" text-anchor="middle">Validate</text>
+            <text class="cyc-sub"   x="45" y="54" text-anchor="middle">new state</text>
           </g>
         </svg>
       </div>
