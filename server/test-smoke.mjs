@@ -385,11 +385,20 @@ try {
   });
   assert(crawlBad.status === 400, 'POST /api/crawl rejects non-string content with 400');
 
+  // Shell carries the crawler panel scaffolding (Phase 7j-2)
+  const shell = await getText(base, '/');
+  assert(shell.includes('id="crawl-panel"'), 'shell includes #crawl-panel');
+  assert(shell.includes('id="crawl-dropzone"'), 'shell includes the dropzone');
+  assert(shell.includes('id="crawl-btn"'), 'shell includes the "new from repo" button');
+
   // Static assets
   const css = await getText(base, '/app.css');
   assert(css.includes('--L2X:'), '/app.css served with L2X palette');
+  assert(css.includes('.crawl-dropzone'), '/app.css ships crawl-dropzone styles');
   const js = await getText(base, '/app.mjs');
   assert(js.includes('LAYER_DEFS'), '/app.mjs served');
+  assert(js.includes('setupCrawlPanel'), '/app.mjs wires setupCrawlPanel');
+  assert(js.includes('renderCrawlResult'), '/app.mjs ships renderCrawlResult');
   const atlasJs = await getText(base, '/atlases.mjs');
   // The full atlas roster is restored as of Phase 7h.
   for (const fn of ['renderStrata', 'renderPeriodic', 'renderConstellation', 'renderSkyline', 'renderTransit', 'renderArbor']) {

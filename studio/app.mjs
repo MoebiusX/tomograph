@@ -2084,6 +2084,7 @@ async function boot() {
   setupUpload();
   setupTheme();
   setupMcpPanel();
+  setupCrawlPanel();
 
   // Initial live-status load + 60s soft-refresh of the badge so "3m ago"
   // ticks forward without manual reload.
@@ -2261,6 +2262,294 @@ function setRefreshStatus(msg, kind = '') {
   if (!el) return;
   el.textContent = msg;
   el.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
+}
+
+// ============================================================
+// Crawler panel — Path A of pack creation.
+//
+// Engineer drops a service repo (or picks files) → studio reads them
+// in the browser → POSTs to /api/crawl → server returns a draft
+// canonical pack + validation + conformance → we render the review.
+// "Use this pack" hands the draft to the existing upload flow so it
+// loads into the active session just like any other pack.
+// ============================================================
+
+const CRAWL_SCAN_EXT = /\.(ya?ml|json)$/i;
+const CRAWL_IGNORE_DIRS = new Set(['.git', 'node_modules', 'vendor', 'dist', 'build', '.cache', '.next', '.terraform', '__pycache__']);
+const CRAWL_MAX_FILE_BYTES = 5 * 1024 * 1024;
+
+const crawlState = {
+  files: new Map(),     // relPath → string content
+  rootName: null,
+  lastResult: null,
+};
+
+function setupCrawlPanel() {
+  const btn = $('#crawl-btn');
+  if (!btn) return;
+  const panel = $('#crawl-panel');
+  const dropzone = $('#crawl-dropzone');
+  const pickFilesBtn = $('#crawl-pick-files-btn');
+  const pickFolderBtn = $('#crawl-pick-folder-btn');
+  const goBtn = $('#crawl-go-btn');
+  const resetBtn = $('#crawl-reset-btn');
+  const closeBtn = $('#crawl-panel-close');
+  const resultCloseBtn = $('#crawl-result-close');
+  const adoptBtn = $('#crawl-adopt-btn');
+  const folderInput = $('#crawl-file-input');
+  // We add a separate non-webkitdirectory input lazily for "pick files".
+  let multiInput = null;
+
+  btn.onclick = () => { panel.hidden = !panel.hidden; if (!panel.hidden) $('#crawl-name')?.focus(); };
+  closeBtn.onclick = () => { panel.hidden = true; };
+  resultCloseBtn.onclick = () => { $('#crawl-result').hidden = true; };
+  resetBtn.onclick = () => { resetCrawlStaged(); };
+
+  pickFolderBtn.onclick = () => folderInput.click();
+  pickFilesBtn.onclick = () => {
+    if (!multiInput) {
+      multiInput = document.createElement('input');
+      multiInput.type = 'file';
+      multiInput.multiple = true;
+      multiInput.accept = '.yaml,.yml,.json';
+      multiInput.style.display = 'none';
+      multiInput.addEventListener('change', () => {
+        if (multiInput.files?.length) stageFileList(multiInput.files, null);
+        multiInput.value = '';
+      });
+      document.body.appendChild(multiInput);
+    }
+    multiInput.click();
+  };
+  folderInput.onchange = () => {
+    if (folderInput.files?.length) stageFileList(folderInput.files, null);
+    folderInput.value = '';
+  };
+
+  // Drag-and-drop. We accept both files (FileList) and DataTransferItem
+  // entries (so a directory drag works in Chromium/Edge/Firefox via
+  // webkitGetAsEntry).
+  ['dragenter', 'dragover'].forEach(ev => dropzone.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation();
+    dropzone.classList.add('is-dragover');
+  }));
+  ['dragleave', 'dragend', 'drop'].forEach(ev => dropzone.addEventListener(ev, e => {
+    if (ev === 'drop') return;
+    if (e.target === dropzone || !dropzone.contains(e.target)) dropzone.classList.remove('is-dragover');
+  }));
+  dropzone.addEventListener('drop', async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    dropzone.classList.remove('is-dragover');
+    const dt = e.dataTransfer;
+    const entries = dt?.items
+      ? [...dt.items].map(i => i.webkitGetAsEntry?.()).filter(Boolean)
+      : [];
+    if (entries.length) {
+      for (const ent of entries) await readEntry(ent, '');
+      finalizeStaging();
+    } else if (dt?.files?.length) {
+      stageFileList(dt.files, null);
+    }
+  });
+
+  goBtn.onclick = () => doCrawl();
+  adoptBtn.onclick = () => adoptCrawlResult();
+}
+
+// Read a single FileSystemEntry recursively into the staged map.
+async function readEntry(entry, prefix) {
+  if (!entry) return;
+  if (entry.isFile) {
+    if (!CRAWL_SCAN_EXT.test(entry.name)) return;
+    const file = await new Promise((res, rej) => entry.file(res, rej));
+    if (file.size > CRAWL_MAX_FILE_BYTES) return;
+    const rel = (prefix ? `${prefix}/` : '') + entry.name;
+    const text = await file.text();
+    crawlState.files.set(rel, text);
+    if (!crawlState.rootName) crawlState.rootName = entry.fullPath?.split('/')[1] || null;
+  } else if (entry.isDirectory) {
+    if (CRAWL_IGNORE_DIRS.has(entry.name)) return;
+    const reader = entry.createReader();
+    let batch;
+    do {
+      batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+      for (const ent of batch) await readEntry(ent, (prefix ? `${prefix}/` : '') + entry.name);
+    } while (batch.length > 0);
+  }
+}
+
+async function stageFileList(fileList, _rootHint) {
+  for (const f of fileList) {
+    if (!CRAWL_SCAN_EXT.test(f.name)) continue;
+    if (f.size > CRAWL_MAX_FILE_BYTES) continue;
+    // webkitRelativePath populated when picked via webkitdirectory.
+    const rel = f.webkitRelativePath || f.name;
+    crawlState.files.set(rel, await f.text());
+    if (!crawlState.rootName && f.webkitRelativePath) {
+      crawlState.rootName = f.webkitRelativePath.split('/')[0];
+    }
+  }
+  finalizeStaging();
+}
+
+function finalizeStaging() {
+  const list = $('#crawl-staged-files');
+  const go = $('#crawl-go-btn');
+  const n = crawlState.files.size;
+  if (n === 0) {
+    list.innerHTML = '<span class="crawl-staged-empty">nothing staged yet</span>';
+    go.disabled = true;
+    return;
+  }
+  const sample = [...crawlState.files.keys()].slice(0, 10);
+  const more = n > sample.length ? ` <em>… and ${n - sample.length} more</em>` : '';
+  list.innerHTML = `<strong>${n}</strong> file${n === 1 ? '' : 's'} staged${crawlState.rootName ? ` from <code>${escapeHtml(crawlState.rootName)}/</code>` : ''}:<br>`
+    + sample.map(p => `<code>${escapeHtml(p)}</code>`).join('  ·  ') + more;
+  go.disabled = false;
+  if (crawlState.rootName && !$('#crawl-name').value) $('#crawl-name').value = crawlState.rootName;
+}
+
+function resetCrawlStaged() {
+  crawlState.files.clear();
+  crawlState.rootName = null;
+  crawlState.lastResult = null;
+  finalizeStaging();
+  $('#crawl-result').hidden = true;
+  $('#crawl-status').textContent = '';
+}
+
+async function doCrawl() {
+  const statusEl = $('#crawl-status');
+  const setStatus = (msg, kind) => {
+    statusEl.textContent = msg;
+    statusEl.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
+  };
+  if (crawlState.files.size === 0) { setStatus('drop a folder or pick files first', 'error'); return; }
+
+  // Reshape the staged map to a plain object for transport.
+  const files = {};
+  for (const [k, v] of crawlState.files) files[k] = v;
+
+  const body = {
+    files,
+    repoName:   $('#crawl-name').value.trim() || crawlState.rootName || 'crawled-service',
+    environment:$('#crawl-env').value.trim() || 'prod',
+  };
+  const crit = $('#crawl-criticality').value;
+  if (crit) body.criticality = crit;
+
+  const goBtn = $('#crawl-go-btn');
+  goBtn.disabled = true;
+  setStatus(`crawling ${crawlState.files.size} files…`);
+
+  try {
+    const r = await fetch('/api/crawl', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    if (!ct.includes('application/json')) {
+      setStatus(`server returned ${r.status} ${ct || 'no content-type'} — restart \`npm run dev\` if you just changed server code`, 'error');
+      return;
+    }
+    const out = JSON.parse(raw);
+    if (!out.ok) { setStatus(`error: ${out.error || 'unknown'}`, 'error'); return; }
+    crawlState.lastResult = out;
+    renderCrawlResult(out);
+    setStatus(`done in ${out.tookMs}ms · ${out.summary.files.classified}/${out.summary.files.scanned} files classified`, 'ok');
+  } catch (e) {
+    setStatus(`error: ${e.message}`, 'error');
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+function renderCrawlResult(out) {
+  const resBox = $('#crawl-result');
+  resBox.hidden = false;
+
+  $('#crawl-result-sub').textContent =
+    `${out.canonical.metadata.name} · ${out.canonical.metadata.bindings.criticality} (inferred ${out.summary.inferred.tier})`;
+  $('#crawl-result-yaml').textContent = out.canonicalYaml;
+
+  // Validation
+  const vBox = $('#crawl-result-validation');
+  vBox.innerHTML = `
+    <h4>schema validation</h4>
+    ${out.validation.ok
+      ? `<div class="crawl-pill crawl-pill-ok">✓ valid v1.2</div>`
+      : `<div class="crawl-pill crawl-pill-err">✗ ${out.validation.errors.length} schema error(s)</div>
+         <ul class="crawl-result-errs">${out.validation.errors.slice(0, 8).map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`}
+  `;
+
+  // Discovery summary
+  const s = out.summary.discovered;
+  $('#crawl-result-summary').innerHTML = `
+    <h4>what we found</h4>
+    <table class="crawl-summary-table">
+      <tr><td>backends</td><td>${s.backends}</td></tr>
+      <tr><td>recording rules</td><td>${s.recordingRules}</td></tr>
+      <tr><td>burn-rate alerts</td><td>${s.burnRateAlerts}</td></tr>
+      <tr><td>dashboards</td><td>${s.dashboards}</td></tr>
+      <tr><td>alerting routes</td><td>${s.alertingRoutes}</td></tr>
+      <tr><td>pipelines</td><td>${s.pipelines}</td></tr>
+    </table>
+    <div class="crawl-inferred">
+      <em>inferred</em>: ${out.summary.inferred.slis} SLI(s) · ${out.summary.inferred.slos} SLO(s) · tier ${out.summary.inferred.tier}
+    </div>
+  `;
+
+  // Warnings — these are the bits we stubbed.
+  const w = out.summary.warnings || [];
+  $('#crawl-result-warnings').innerHTML = w.length
+    ? `<h4>what to refine</h4><ul class="crawl-warnings">${w.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>`
+    : `<h4>what to refine</h4><div class="crawl-pill crawl-pill-ok">nothing flagged — review the YAML and ship</div>`;
+
+  // Evidence
+  const ev = out.evidence || {};
+  const evEntries = Object.entries(ev).slice(0, 12);
+  $('#crawl-result-evidence').innerHTML = evEntries.length
+    ? `<h4>evidence (top ${evEntries.length})</h4><ul class="crawl-evidence">${evEntries.map(([id, path]) => `<li><code>${escapeHtml(id)}</code> ← <code>${escapeHtml(path)}</code></li>`).join('')}</ul>`
+    : '';
+
+  // Download link
+  const dl = $('#crawl-download-btn');
+  const blob = new Blob([out.canonicalYaml], { type: 'application/x-yaml' });
+  if (dl.href.startsWith('blob:')) URL.revokeObjectURL(dl.href);
+  dl.href = URL.createObjectURL(blob);
+  dl.download = `${out.canonical.metadata.name}.pack.yaml`;
+}
+
+async function adoptCrawlResult() {
+  const out = crawlState.lastResult;
+  if (!out) return;
+  // Reuse the upload flow: POST /api/validate → if ok, load into the
+  // active state and re-render. Same path as drag-dropping a yaml file
+  // onto the studio shell.
+  try {
+    const res = await validateUploaded(out.canonicalYaml, 'application/x-yaml', state.selectedEnv);
+    if (!res.ok) {
+      toast(`Could not adopt — ${res.errors.length} validation error(s)`, 'error');
+      return;
+    }
+    state.pack = res.adapted;
+    state.conformance = res.conformance;
+    state.symbolTable = buildSymbolTable(res.adapted);
+    state.uploadedSource = `${out.canonical.metadata.name} (crawled draft)`;
+    state.activeLayer = 'L1';
+    state.activeCardKey = null;
+    renderPackSelect();
+    renderEnvSelect();
+    renderMeta();
+    renderTabs();
+    renderMainView();
+    $('#crawl-panel').hidden = true;
+    toast(`Loaded crawled draft for ${out.canonical.metadata.name}`);
+  } catch (e) {
+    toast(`Adopt failed: ${e.message}`, 'error');
+  }
 }
 
 function setupMcpPanel() {

@@ -42,6 +42,8 @@
     </label>
     <button id="upload-btn" class="ctrl-btn" type="button" title="Upload a canonical v1.2 pack (.yaml or .json)">upload</button>
     <input id="file-input" type="file" accept=".yaml,.yml,.json,application/json,text/yaml,application/x-yaml" hidden>
+    <button id="crawl-btn" class="ctrl-btn" type="button" title="Draft a pack from a service repo — drag a folder or pick files">new from repo</button>
+    <input id="crawl-file-input" type="file" multiple webkitdirectory hidden>
     <button id="mcp-btn" class="ctrl-btn mcp-btn" type="button" aria-haspopup="true" aria-expanded="false" title="Refresh production-live from an MCP server">
       <span class="mcp-dot" aria-hidden="true"></span>
       <span class="mcp-btn-label">mcp</span>
@@ -103,6 +105,81 @@
   <dl class="drawer-meta" id="drawer-a-meta"></dl>
   <div id="drawer-a-panels"></div>
 </aside>
+
+<div class="crawl-panel" id="crawl-panel" role="dialog" aria-labelledby="crawl-panel-title" hidden>
+  <div class="crawl-panel-head">
+    <div id="crawl-panel-title" class="mcp-panel-title">Draft a pack from a service repo</div>
+    <button id="crawl-panel-close" class="drawer-close" type="button" aria-label="Close crawl panel">esc</button>
+  </div>
+  <div class="crawl-panel-body">
+    <p class="crawl-lede">
+      Path A of pack creation. The crawler walks your repo's
+      <code>docker-compose.yml</code>, Prometheus rules, Alertmanager configs,
+      OTel Collector configs, and Grafana dashboard JSONs, then emits a
+      <em>draft canonical v1.2 pack</em> — a real, valid manifest you can
+      then refine.
+    </p>
+
+    <div class="crawl-controls">
+      <label class="mcp-field">
+        <span class="mcp-field-key">Service name</span>
+        <input id="crawl-name" type="text" placeholder="e.g. payments" autocomplete="off">
+      </label>
+      <label class="mcp-field">
+        <span class="mcp-field-key">Environment</span>
+        <input id="crawl-env" type="text" placeholder="prod" value="prod" autocomplete="off">
+      </label>
+      <label class="mcp-field">
+        <span class="mcp-field-key">Criticality <em>(blank = infer)</em></span>
+        <select id="crawl-criticality">
+          <option value="">(infer from what's discovered)</option>
+          <option value="tier-1">tier-1</option>
+          <option value="tier-2">tier-2</option>
+          <option value="tier-3">tier-3</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="crawl-dropzone" id="crawl-dropzone">
+      <div class="crawl-dropzone-icon">⬇</div>
+      <div class="crawl-dropzone-headline">Drop a folder here</div>
+      <div class="crawl-dropzone-sub">
+        or
+        <button id="crawl-pick-files-btn" type="button" class="crawl-link-btn">pick files</button>
+        ·
+        <button id="crawl-pick-folder-btn" type="button" class="crawl-link-btn">pick a folder</button>
+      </div>
+      <div class="crawl-dropzone-files" id="crawl-staged-files"></div>
+    </div>
+
+    <div class="crawl-panel-actions">
+      <button id="crawl-go-btn" class="mcp-refresh-btn" type="button" disabled>crawl</button>
+      <button id="crawl-reset-btn" class="ctrl-btn" type="button">reset</button>
+      <span id="crawl-status" class="mcp-refresh-status"></span>
+    </div>
+
+    <div class="crawl-result" id="crawl-result" hidden>
+      <div class="crawl-result-head">
+        <div class="crawl-result-title">Draft pack — review before adopting</div>
+        <div class="crawl-result-sub" id="crawl-result-sub"></div>
+      </div>
+      <div class="crawl-result-grid">
+        <pre class="crawl-result-yaml" id="crawl-result-yaml"></pre>
+        <div class="crawl-result-side">
+          <div class="crawl-result-section" id="crawl-result-validation"></div>
+          <div class="crawl-result-section" id="crawl-result-summary"></div>
+          <div class="crawl-result-section" id="crawl-result-warnings"></div>
+          <div class="crawl-result-section" id="crawl-result-evidence"></div>
+        </div>
+      </div>
+      <div class="crawl-result-actions">
+        <button id="crawl-adopt-btn" class="mcp-refresh-btn" type="button">use this pack</button>
+        <a id="crawl-download-btn" class="ctrl-btn" download="draft.pack.yaml">download yaml</a>
+        <button id="crawl-result-close" class="ctrl-btn" type="button">close</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="mcp-panel" id="mcp-panel" role="dialog" aria-labelledby="mcp-panel-title" hidden>
   <div class="mcp-panel-head">
