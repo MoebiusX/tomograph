@@ -3853,7 +3853,7 @@ function renderHomeView() {
           <!-- node: DECLARE (green) -->
           <rect x="375" y="212" width="210" height="76" rx="12" fill="#141d2c" stroke="#5dcaa5" stroke-width="2"/>
           <text x="480" y="242" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">DECLARE</text>
-          <text x="480" y="261" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">write the pack</text>
+          <text x="480" y="261" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">generate the pack</text>
           <text x="480" y="277" text-anchor="middle" font-size="10.5" fill="#6f7d90">one service · one contract</text>
 
           <!-- node: COMPILE (purple) -->
