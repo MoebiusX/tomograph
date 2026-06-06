@@ -338,6 +338,7 @@ export function buildCanonicalPack({
   discoveredTools = [],
   unmatchedTools = [],
   capabilities = null,
+  liveVersions = {},
   packName = PACK_NAME,
 } = {}) {
   const services = Array.isArray(health.services) ? health.services : [];
@@ -449,10 +450,15 @@ export function buildCanonicalPack({
         const id = slug(`${signal}-${productSlug}`);
         if (!/^[a-z][a-z0-9_-]*[a-z0-9]$/.test(id)) continue;
 
-        // Build the version block. `declared` must look like an
-        // actual version string; fall back to must[0] but skip the
-        // entry if no version is present at all.
-        const declared = must[0] || should[0] || optional[0] || null;
+        // Build the version block. `declared` is the LIVE, authoritative
+        // version from a version-revealing probe when available (e.g.
+        // grafana_health returns "12.4.0"; metrics_query vm_app_version
+        // returns "v1.113.0"). When the live version is missing, fall
+        // back to the backend_capabilities policy must[0]. `min` always
+        // carries the policy floor so the user can see both the live
+        // version AND the supported range.
+        const live = liveVersions[productSlug]?.declared || null;
+        const declared = live || must[0] || should[0] || optional[0] || null;
         const version = {};
         if (declared) version.declared = declared;
         if (must.length) version.min = must[must.length - 1];
@@ -504,6 +510,26 @@ export function buildCanonicalPack({
     annotations['mcp.capabilities.inventory'] = capabilityRows
       .map(r => `${r.skill}:${r.backend}:${r.product || '-'}:${(r.versions.must || []).join(';')}`)
       .join('|');
+  }
+
+  // Live-version annotations — the authoritative truth we pulled from
+  // grafana_health, metrics_query vm_app_version, etc. Surfaced both
+  // per-product (mcp.versions.grafana) AND with provenance
+  // (mcp.versions.grafana.source) so an SRE can see exactly which
+  // endpoint attested each number.
+  for (const [product, info] of Object.entries(liveVersions || {})) {
+    if (!info?.declared) continue;
+    annotations[`mcp.versions.${product}`] = info.declared;
+    if (info.source) annotations[`mcp.versions.${product}.source`] = info.source;
+    if (info.commit) annotations[`mcp.versions.${product}.commit`] = info.commit;
+    if (info.fullTag && info.fullTag !== info.declared) {
+      annotations[`mcp.versions.${product}.fullTag`] = info.fullTag;
+    }
+    if (info.revision) annotations[`mcp.versions.${product}.revision`] = info.revision;
+    // Per-artefact verification marker pointing at the backend whose
+    // version we just attested. The id pattern matches the convention
+    // used in pushBackend below (e.g. metrics-victoriametrics).
+    markVerified(`telemetry.backends.versions.${product}`);
   }
 
   // Probes drive multiple downstream sections — hoist their results.
@@ -1001,6 +1027,65 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     probeResults[probe.name] = { tool: null, attempted, adapted: null };
   }));
 
+  // ----------------------------------------------------------------
+  // Version probes — authoritative live version capture.
+  //
+  // backend_capabilities tells us what the MCP SUPPORTS (e.g. "metrics
+  // skill, VictoriaMetrics, must=1.x"). That's a policy range, not a
+  // live truth. These probes call canonical version-revealing endpoints
+  // on the actual backends so the resulting telemetry.backends[] entry
+  // carries `version.declared = <live>` — the real string the cluster
+  // is running.
+  //
+  // Each probe maps to (product, value-extractor). Spec v1.2 §VersionSpec
+  // pinned `declared` as the live value with `min` carrying the policy
+  // floor — so we slot the live version into `declared` and let the
+  // backend_capabilities policy live alongside.
+  // ----------------------------------------------------------------
+  const liveVersions = {};
+
+  // Grafana — grafana_health returns {version, commit, database, orgId}.
+  if (discoveredToolNames.has('grafana_health')) {
+    const r = await quiet('grafana_health', () => callTool('grafana_health'));
+    if (r && typeof r.version === 'string') {
+      liveVersions.grafana = { declared: r.version, commit: r.commit || null, source: 'grafana_health' };
+    }
+  }
+
+  // VictoriaMetrics — query the `vm_app_version` metric; its `short_version`
+  // label is the canonical live version (e.g. "v1.113.0"). For Prometheus
+  // installs the same approach works via `prometheus_build_info` whose
+  // `version` label carries the build version.
+  if (discoveredToolNames.has('metrics_query')) {
+    const vm = await quiet('metrics_query.vm_app_version',
+      () => callTool('metrics_query', { query: 'vm_app_version' }));
+    const vmSeries = vm?.result?.[0]?.metric;
+    if (vmSeries) {
+      const declared = vmSeries.short_version || vmSeries.version || null;
+      if (declared) {
+        liveVersions.victoriametrics = {
+          declared,
+          fullTag:    vmSeries.version || null,
+          source:     'metrics_query/vm_app_version',
+        };
+      }
+    } else {
+      // Fall back to Prometheus build info on installs that AREN'T
+      // VictoriaMetrics. The metric has labels `{version, revision,
+      // branch, goversion}` per Prometheus convention.
+      const prom = await quiet('metrics_query.prometheus_build_info',
+        () => callTool('metrics_query', { query: 'prometheus_build_info' }));
+      const promSeries = prom?.result?.[0]?.metric;
+      if (promSeries && typeof promSeries.version === 'string') {
+        liveVersions.prometheus = {
+          declared: promSeries.version,
+          revision: promSeries.revision || null,
+          source:   'metrics_query/prometheus_build_info',
+        };
+      }
+    }
+  }
+
   // Compute unmatched tool names — tools the MCP advertises that we
   // DON'T have a probe pattern for. These are the leading edge: every
   // unmatched name is a potential probe candidate to add. Surface them
@@ -1012,6 +1097,10 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
       .filter(Boolean)
       .concat(['system_health', 'system_topology', 'anomalies_active', 'anomalies_baselines'])
   );
+  // Version probes count as "wired" too — surface them so they don't
+  // show up as "not yet probed" in the unmatched panel.
+  if (liveVersions.grafana) allMatchedNames.add('grafana_health');
+  if (liveVersions.victoriametrics || liveVersions.prometheus) allMatchedNames.add('metrics_query');
   const unmatchedTools = discoveredTools.filter(t => !allMatchedNames.has(t.name));
 
   return {
@@ -1020,6 +1109,7 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     discoveredTools,            // full list from tools/list (or empty if unsupported)
     unmatchedTools,             // tools the MCP exposes that we don't probe yet
     capabilities,               // parsed backend_capabilities inventory (or null)
+    liveVersions,               // { <product>: { declared, ...meta } } from authoritative endpoints
   };
 }
 

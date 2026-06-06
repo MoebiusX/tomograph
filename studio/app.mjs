@@ -4011,6 +4011,16 @@ function renderHomeMcpCapabilities(out, host) {
   // EVERYTHING their MCP can speak to before drafting a pack.
   const capabilities = out.summary?.capabilities || null;
 
+  // Live version captures — authoritative version strings pulled from
+  // grafana_health / metrics_query vm_app_version etc. Threaded into
+  // the capability chips so the demo audience sees ground truth, not
+  // just the policy band.
+  const liveVersions = {};
+  for (const [k, v] of Object.entries(ann)) {
+    const m = /^mcp\.versions\.([a-z0-9_-]+)$/.exec(k);
+    if (m) liveVersions[m[1]] = v;
+  }
+
   // Recognised vs unrecognised tools (over what we CALLED, not what was
   // advertised). Tracks the canonical otel-mcp-server tool catalog
   // (metrics_*, grafana_*, alertmanager_*, pipeline_*) plus the generic
@@ -4078,7 +4088,7 @@ function renderHomeMcpCapabilities(out, host) {
           <div class="home-mcp-cap-detail">${baselines} baseline${baselines === 1 ? '' : 's'} computed<div class="home-mcp-cap-meta">from recent telemetry</div></div>
         </div>
       </div>
-      ${renderCapabilitiesPanel(capabilities)}
+      ${renderCapabilitiesPanel(capabilities, liveVersions)}
       ${out.summary?.warnings?.length ? `
         <div class="home-mcp-gaps">
           <div class="home-mcp-gaps-head">⚠ Honest gaps</div>
@@ -4093,7 +4103,15 @@ function renderHomeMcpCapabilities(out, host) {
 // (metrics/logs/traces/profiles + alerting/dashboards) lead because
 // they're what drive Tomograph's L1–L4 projection; the rest follow
 // in a compact tail.
-function renderCapabilitiesPanel(capabilities) {
+//
+// When `liveVersions` carries an authoritative live version for a
+// product (e.g. {grafana: "12.4.0", victoriametrics: "v1.113.0"} from
+// grafana_health + metrics_query), the chip flips to "live mode": the
+// live version is shown in bold instead of the policy must[0], and a
+// "● LIVE" indicator hangs off the chip so the audience can see at a
+// glance which versions are attested vs which are inferred from
+// capabilities.
+function renderCapabilitiesPanel(capabilities, liveVersions = {}) {
   if (!capabilities || !Array.isArray(capabilities.inventory) || !capabilities.inventory.length) return '';
 
   // The spec's Signal enum order — used to group + sort entries.
@@ -4108,13 +4126,19 @@ function renderCapabilitiesPanel(capabilities) {
     ...[...grouped.keys()].filter(s => !SIGNAL_SKILLS.includes(s)).sort(),
   ];
 
+  const liveCount = Object.keys(liveVersions).length;
+
   const rows = orderedSkills.map(skill => {
     const backends = grouped.get(skill);
     const chips = backends.map(b => {
-      const ver = (b.versions?.must || [])[0] || '';
       const product = b.product || b.backend;
-      return `<span class="home-mcp-skill-chip" title="${escapeHtml(b.backend)} · must=${escapeHtml((b.versions?.must||[]).join(','))}">
-        <strong>${escapeHtml(product)}</strong>${ver ? ` <em>${escapeHtml(ver)}</em>` : ''}
+      const live = liveVersions[product];
+      const policyVer = (b.versions?.must || [])[0] || '';
+      const isLive = !!live;
+      const ver = isLive ? live : policyVer;
+      const liveTooltip = isLive ? ` · live=${live}` : '';
+      return `<span class="home-mcp-skill-chip${isLive ? ' is-live' : ''}" title="${escapeHtml(b.backend)} · must=${escapeHtml((b.versions?.must||[]).join(','))}${liveTooltip}">
+        <strong>${escapeHtml(product)}</strong>${ver ? ` <em>${escapeHtml(ver)}</em>` : ''}${isLive ? `<span class="home-mcp-skill-chip-live" aria-label="live version">●&nbsp;LIVE</span>` : ''}
       </span>`;
     }).join('');
     return `
@@ -4125,6 +4149,10 @@ function renderCapabilitiesPanel(capabilities) {
     `;
   }).join('');
 
+  const liveSummary = liveCount
+    ? ` · <span class="home-mcp-skills-meta-live">${liveCount} live version${liveCount === 1 ? '' : 's'}</span>`
+    : '';
+
   return `
     <div class="home-mcp-skills">
       <div class="home-mcp-skills-head">
@@ -4133,10 +4161,10 @@ function renderCapabilitiesPanel(capabilities) {
           <span class="home-mcp-skills-meta">
             ${capabilities.skillCount} skill${capabilities.skillCount === 1 ? '' : 's'}
             · ${capabilities.backendCount} backend${capabilities.backendCount === 1 ? '' : 's'}
-            · gating <code>${escapeHtml(capabilities.gatingMode)}</code>
+            · gating <code>${escapeHtml(capabilities.gatingMode)}</code>${liveSummary}
           </span>
         </div>
-        <div class="home-mcp-skills-sub">From <code>backend_capabilities</code> — every skill the MCP can speak to, the products it implements, and the version policy it enforces.</div>
+        <div class="home-mcp-skills-sub">From <code>backend_capabilities</code> — every skill the MCP can speak to, the products it implements, and the version policy it enforces. <strong>LIVE</strong> chips carry an authoritative version captured from the backend itself.</div>
       </div>
       <div class="home-mcp-skills-body">${rows}</div>
     </div>

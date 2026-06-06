@@ -2370,6 +2370,29 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
   color: var(--ink-4);
   font-size: 10.5px;
 }
+/* Live-version chips: authoritative version pulled from the backend
+   itself (grafana_health, metrics_query vm_app_version, …). The
+   "● LIVE" pip + tinted accent border tells the demo audience this
+   number is ground truth, not capability policy. */
+.home-mcp-skill-chip.is-live {
+  background: rgba(56, 142, 60, 0.06);
+  border-color: rgba(56, 142, 60, 0.45);
+}
+.home-mcp-skill-chip.is-live em { color: rgb(46, 110, 50); font-weight: 500; }
+.home-mcp-skill-chip-live {
+  margin-left: 4px;
+  padding: 1px 5px;
+  background: rgb(46, 110, 50);
+  color: var(--paper, #fff);
+  border-radius: 2px;
+  font: 600 9px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.home-mcp-skills-meta-live {
+  color: rgb(46, 110, 50);
+  font-weight: 600;
+}
 @media (max-width: 720px) {
   .home-mcp-skill-row {
     grid-template-columns: 1fr;
