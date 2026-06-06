@@ -3755,11 +3755,20 @@ function renderHomeView() {
         </div>
       </div>
 
-      <div class="home-alt-row">
-        <span class="home-alt-prefix">Or work from</span>
-        <button id="home-shortcut-upload" type="button" class="home-alt-link">a YAML / JSON manifest</button>
-        <span class="home-alt-sep">·</span>
-        <button id="home-shortcut-crawl" type="button" class="home-alt-link">a service repository</button>
+      <div class="home-alt">
+        <div class="home-alt-head"><span>or open a pack manually</span></div>
+        <div class="home-alt-buttons">
+          <button id="home-shortcut-upload" type="button" class="home-alt-btn">
+            <span class="home-alt-key" aria-hidden="true">▤</span>
+            <span class="home-alt-label">Drop a YAML / JSON pack</span>
+            <span class="home-alt-sub">canonical v1.2 manifest</span>
+          </button>
+          <button id="home-shortcut-crawl" type="button" class="home-alt-btn">
+            <span class="home-alt-key" aria-hidden="true">↻</span>
+            <span class="home-alt-label">Crawl a service repo</span>
+            <span class="home-alt-sub">walks Prom / OTel / Grafana / AM configs</span>
+          </button>
+        </div>
       </div>
     </section>
   `;

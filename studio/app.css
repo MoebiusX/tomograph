@@ -2298,27 +2298,55 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
   letter-spacing: 0.005em;
 }
 
-/* Manual alternative — a single quiet line below the card. */
-.home-alt-row {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin-top: 28px;
-  padding: 0 4px;
-  font: 14px/1.5 var(--serif);
+/* Manual alternatives — secondary to the MCP card above, but still
+   visually substantial. Italic-serif rule-divided heading + two equal
+   buttons with an icon, sans-label, and italic-serif subtitle. */
+.home-alt {
+  margin-top: 32px;
+}
+.home-alt-head {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 14px;
+}
+.home-alt-head::before, .home-alt-head::after {
+  content: ''; flex: 1;
+  height: 1px; background: var(--line-2);
+}
+.home-alt-head span {
+  font: italic 12px/1.4 var(--serif);
   color: var(--ink-4);
 }
-.home-alt-prefix { font-style: italic; }
-.home-alt-link {
-  background: none;
-  border: none;
-  padding: 0;
-  font: 14px/1.5 var(--serif);
-  color: var(--ink);
-  cursor: pointer;
-  border-bottom: 1px solid var(--ink-5);
-  transition: color 120ms ease, border-color 120ms ease;
+.home-alt-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
 }
-.home-alt-link:hover { color: var(--CMP); border-bottom-color: var(--CMP); }
-.home-alt-sep { color: var(--ink-5); }
+.home-alt-btn {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.home-alt-btn:hover {
+  border-color: var(--ink-4);
+  background: var(--hover);
+}
+.home-alt-key {
+  font: 600 14px/1 var(--mono);
+  color: var(--ink-4);
+}
+.home-alt-label {
+  font: 600 13px/1.3 var(--sans);
+  color: var(--ink);
+}
+.home-alt-sub {
+  font: italic 11.5px/1.4 var(--serif);
+  color: var(--ink-4);
+}
 
 .hdr-brand h1 { transition: color 150ms ease; }
 .hdr-brand h1:hover { color: var(--CMP); }
@@ -2335,6 +2363,7 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
   .home-mcp-cap-num { font-size: 28px; }
   .home-mcp-actions { flex-direction: column; align-items: stretch; }
   .home-mcp-status { margin-left: 0; }
+  .home-alt-buttons { grid-template-columns: 1fr; }
 }
 
 /* ===================== COMPARE — SIDE-BY-SIDE (legacy) ===================== */
