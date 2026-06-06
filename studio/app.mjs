@@ -46,6 +46,8 @@ const state = {
   uploadedSource: null,        // set when user uploaded a pack instead of using the catalog
   compareBId: null,            // second pack id for the COMPARE view
   compareBEnv: null,
+  compareSlice: 'all',         // 'all' | 'onlyA' | 'onlyB' | 'both' | 'a-b' | 'a+b'
+  compareSearch: '',           // text filter applied to card id/title
   diff: null,                  // last fetched /api/diff result
   packB: null,                 // B's full layered pack (for atlases)
   atlasVariant: 'strata',      // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit' | 'arbor'
@@ -1098,9 +1100,6 @@ function renderCompareView(view) {
   scaffold.appendChild(renderComparePicker());
   view.appendChild(scaffold);
 
-  // Compare view needs both: state.pack (A — already loaded for the
-  // single-pack views), state.packB (B — for the right column), and
-  // state.diff (for set-membership chips on each card).
   const haveA = !!state.pack;
   const haveB = !!state.packB;
   const haveDiff = !!state.diff && !state.diff.error;
@@ -1123,10 +1122,27 @@ function renderCompareView(view) {
     return;
   }
 
-  scaffold.appendChild(renderCompareSummary());
+  // Tall header band: two pack-summary cards (A on left, B on right)
+  // with name + tier + version + env + count. Always visible — answers
+  // "what am I comparing" at a glance.
+  scaffold.appendChild(renderComparePackHeaders());
 
-  // Build per-layer key-set lookups so each side's card can mark its
-  // diff membership in O(1).
+  // Set-arithmetic summary + slice filter pills + search.
+  scaffold.appendChild(renderCompareSummary());
+  scaffold.appendChild(renderCompareFilters());
+
+  // Build per-layer key-set lookups once.
+  const sets = buildCompareKeySets();
+
+  // Stack per-layer rows. Each row has the layer header SPANNING both
+  // columns, then a left grid (A) + right grid (B) aligned beneath it.
+  for (const L of LAYERS_FOR_DIFF) {
+    const row = renderCompareLayerRow(L, sets);
+    if (row) scaffold.appendChild(row);
+  }
+}
+
+function buildCompareKeySets() {
   const keysOnlyInA = {}, keysInBoth = {}, keysOnlyInB = {};
   for (const L of LAYERS_FOR_DIFF) {
     const bucket = state.diff.layers[L] || { onlyInA: [], onlyInB: [], inBoth: [] };
@@ -1134,12 +1150,193 @@ function renderCompareView(view) {
     keysOnlyInB[L] = new Set(bucket.onlyInB.map(x => x.key));
     keysInBoth[L]  = new Set(bucket.inBoth.map(x => x.key));
   }
+  return { keysOnlyInA, keysInBoth, keysOnlyInB };
+}
 
-  const sxs = document.createElement('div');
-  sxs.className = 'compare-sxs';
-  sxs.appendChild(renderComparePackSide('a', state.pack,  { keysInBoth, keysOnly: keysOnlyInA }));
-  sxs.appendChild(renderComparePackSide('b', state.packB, { keysInBoth, keysOnly: keysOnlyInB }));
-  scaffold.appendChild(sxs);
+// New: stacked PACK A + PACK B header band, side-by-side.
+function renderComparePackHeaders() {
+  const wrap = document.createElement('div');
+  wrap.className = 'compare-pack-headers';
+  wrap.appendChild(renderComparePackHeader('a', state.pack,  state.diff?.a));
+  wrap.appendChild(renderComparePackHeader('b', state.packB, state.diff?.b));
+  return wrap;
+}
+
+function renderComparePackHeader(side, pack, diffMeta) {
+  const card = document.createElement('div');
+  card.className = `compare-pack-card compare-pack-card-${side}`;
+  const tier = pack?.meta?.criticality || '?';
+  const sourcePill = inferPackSource(pack);   // 'Repo' | 'Live' | 'Target' | 'Pack'
+  // Artefact count: sum across all layers (L4 has sub-buckets).
+  let count = 0;
+  for (const L of LAYERS_FOR_DIFF) {
+    if (L === 'L4') {
+      const L4 = pack?.layers?.L4 || {};
+      count += (L4.policy?.length || 0) + (L4.alerting?.length || 0) + (L4.healing?.length || 0);
+    } else {
+      count += (pack?.layers?.[L] || []).length;
+    }
+  }
+  card.innerHTML = `
+    <div class="cpc-eyebrow">PACK ${side.toUpperCase()}</div>
+    <div class="cpc-row">
+      <span class="cpc-source-pill" data-source="${escapeHtml(sourcePill)}">${escapeHtml(sourcePill)}</span>
+      <span class="cpc-name">${escapeHtml(pack?.name || '?')}</span>
+    </div>
+    <div class="cpc-meta">
+      <span class="cpc-meta-pill" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
+      <span class="cpc-meta-pill">v${escapeHtml(pack?.meta?.version || '?')}</span>
+      <span class="cpc-meta-pill">env: ${escapeHtml(diffMeta?.environment || pack?.meta?.environment || state[side === 'a' ? 'selectedEnv' : 'compareBEnv'] || '—')}</span>
+      <span class="cpc-meta-pill cpc-count">${count} artefact${count === 1 ? '' : 's'}</span>
+    </div>
+  `;
+  return card;
+}
+
+function inferPackSource(pack) {
+  // The studio's source taxonomy is per-artefact, not per-pack. We
+  // infer the pack-level label from id + dominant artefact source.
+  if (!pack) return 'Pack';
+  const id = (pack.id || '').toLowerCase();
+  if (id.includes('live'))     return 'Live';
+  if (id.includes('target'))   return 'Target';
+  if (id.includes('curated'))  return 'Repo';
+  if (id.includes('skeleton')) return 'Demo';
+  // Fallback: look at the artefact sources
+  const first = (pack?.layers?.L1 || [])[0];
+  if (first?.source === 'Verified') return 'Live';
+  return 'Repo';
+}
+
+// Slice filter pills + search input.
+function renderCompareFilters() {
+  const wrap = document.createElement('div');
+  wrap.className = 'compare-filters';
+  const slices = [
+    { id: 'all',   label: 'All' },
+    { id: 'onlyA', label: 'Only in A' },
+    { id: 'onlyB', label: 'Only in B' },
+    { id: 'both',  label: 'In both' },
+    { id: 'a-b',   label: 'A − B' },
+    { id: 'a+b',   label: 'A + B' },
+  ];
+  const active = state.compareSlice || 'all';
+  for (const s of slices) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'compare-slice-pill' + (s.id === active ? ' is-active' : '');
+    b.dataset.slice = s.id;
+    b.textContent = s.label;
+    b.onclick = () => { state.compareSlice = s.id; renderMainView(); };
+    wrap.appendChild(b);
+  }
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'compare-search-input';
+  search.placeholder = 'search id or title…';
+  search.value = state.compareSearch || '';
+  // Use input event for live filter; debounce via requestAnimationFrame.
+  let pending = null;
+  search.addEventListener('input', () => {
+    if (pending) cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(() => {
+      state.compareSearch = search.value;
+      renderMainView();
+      // After re-render, restore focus + cursor (renderMainView wipes the DOM).
+      const fresh = document.querySelector('.compare-search-input');
+      if (fresh) { fresh.focus(); fresh.setSelectionRange(search.value.length, search.value.length); }
+    });
+  });
+  wrap.appendChild(search);
+  return wrap;
+}
+
+// Per-layer ROW: layer head spans both columns, then two aligned grids.
+function renderCompareLayerRow(L, sets) {
+  const aItems = layerItemsFor(state.pack, L);
+  const bItems = layerItemsFor(state.packB, L);
+  if (aItems.length === 0 && bItems.length === 0) return null;
+
+  const layerNames = {L1:'Contract',L2:'Telemetry',L2X:'Extended',L3:'Insight',L4:'Action',L5:'Validation',GOV:'Governance'};
+  const row = document.createElement('section');
+  row.className = 'compare-layer-row';
+  row.dataset.layer = L;
+  // Counts after slice + search filtering.
+  const filteredA = filterCompareItems(aItems, L, 'a', sets);
+  const filteredB = filterCompareItems(bItems, L, 'b', sets);
+  if (filteredA.length === 0 && filteredB.length === 0) return null;
+
+  const head = document.createElement('div');
+  head.className = 'compare-layer-head';
+  head.innerHTML = `
+    <span class="section-num">${L}</span>
+    <span class="section-name">${escapeHtml(layerNames[L] || L)}</span>
+    <span class="section-count">
+      <span class="cli-pill cli-a">${filteredA.length}</span>
+      <span class="cli-vs">vs</span>
+      <span class="cli-pill cli-b">${filteredB.length}</span>
+    </span>
+  `;
+  row.appendChild(head);
+
+  const grid = document.createElement('div');
+  grid.className = 'compare-layer-grid';
+  grid.appendChild(renderCompareLayerColumn('a', L, filteredA, sets));
+  grid.appendChild(renderCompareLayerColumn('b', L, filteredB, sets));
+  row.appendChild(grid);
+  return row;
+}
+
+function layerItemsFor(pack, L) {
+  if (!pack?.layers) return [];
+  if (L === 'L4') {
+    const L4 = pack.layers.L4 || {};
+    const out = [];
+    for (const sg of L4_SUBGROUPS) for (const it of (L4[sg.key] || [])) out.push({ ...it, _sub: sg.key });
+    return out;
+  }
+  return pack.layers[L] || [];
+}
+
+// Apply slice + text search to a side's items.
+function filterCompareItems(items, L, side, sets) {
+  const slice = state.compareSlice || 'all';
+  const search = (state.compareSearch || '').trim().toLowerCase();
+  return items.filter(art => {
+    const k = compareKeyOf(art);
+    const inBoth = sets.keysInBoth[L]?.has(k);
+    const onlySide = side === 'a' ? sets.keysOnlyInA[L]?.has(k) : sets.keysOnlyInB[L]?.has(k);
+    let sliceOk = true;
+    switch (slice) {
+      case 'onlyA': sliceOk = side === 'a' && onlySide; break;
+      case 'onlyB': sliceOk = side === 'b' && onlySide; break;
+      case 'both':  sliceOk = inBoth; break;
+      case 'a-b':   sliceOk = side === 'a' && (onlySide || !inBoth); break;   // items in A not in B
+      case 'a+b':   sliceOk = true; break;                                     // union
+      default:      sliceOk = true;
+    }
+    if (!sliceOk) return false;
+    if (!search) return true;
+    const hay = `${art.id || ''} ${art.title || ''}`.toLowerCase();
+    return hay.includes(search);
+  });
+}
+
+function renderCompareLayerColumn(side, L, items, sets) {
+  const col = document.createElement('div');
+  col.className = `compare-layer-col compare-layer-col-${side}`;
+  if (items.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'compare-layer-empty';
+    empty.textContent = '— nothing matches —';
+    col.appendChild(empty);
+    return col;
+  }
+  for (const art of items) {
+    const def = { id: L, num: L, name: L };
+    col.appendChild(renderCompareCard(art, def, art._sub || null, side, sets));
+  }
+  return col;
 }
 
 const LAYERS_FOR_DIFF = ['L1', 'L2', 'L2X', 'L3', 'L4', 'L5', 'GOV'];
@@ -1219,13 +1416,15 @@ function renderCompareSideLayer(def, items, side, sets, isL4) {
 
 function renderCompareCard(artefact, def, sublayerKey, side, sets) {
   const k = compareKeyOf(artefact);
-  const isBoth = sets.keysInBoth[def.id]?.has(k);
-  const isOnly = sets.keysOnly[def.id]?.has(k);
+  const inBoth   = sets.keysInBoth[def.id]?.has(k);
+  const onlyA    = sets.keysOnlyInA?.[def.id]?.has(k);
+  const onlyB    = sets.keysOnlyInB?.[def.id]?.has(k);
+  const isOnlySide = side === 'a' ? onlyA : onlyB;
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'card compare-side-card';
-  if (isBoth) btn.classList.add('is-both');
-  if (isOnly) btn.classList.add('is-only');
+  if (inBoth) btn.classList.add('is-both');
+  if (isOnlySide) btn.classList.add('is-only', `is-only-${side}`);
   const ckey = cardKey(def.id, sublayerKey, artefact.id);
   btn.dataset.key = ckey;
   if ((side === 'a' && ckey === state.activeCardKeyA) ||
@@ -1233,11 +1432,19 @@ function renderCompareCard(artefact, def, sublayerKey, side, sets) {
     btn.classList.add('is-active');
   }
 
-  const chip = isBoth
-    ? '<span class="diff-chip chip-both">both</span>'
-    : (isOnly ? `<span class="diff-chip chip-only">only ${side.toUpperCase()}</span>` : '');
+  // Comparison status pill — what this card means in the diff.
+  let statusPill = '';
+  if (inBoth) statusPill = '<span class="diff-chip chip-both">in both</span>';
+  else if (onlyA) statusPill = `<span class="diff-chip chip-only-a">only in A</span>`;
+  else if (onlyB) statusPill = `<span class="diff-chip chip-only-b">only in B</span>`;
 
-  // Gating chip for backend cards (preserved from the regular renderCard)
+  // Source pill — Declared/Verified/Missing (what the studio's
+  // per-artefact taxonomy already says about this card's status in
+  // its own pack, independent of the comparison).
+  const src = artefact.source || 'Declared';
+  const sourcePill = `<span class="source-chip" data-source="${escapeHtml(src)}">${escapeHtml(src)}</span>`;
+
+  // Gating chip for backend cards
   let gatingChip = '';
   if (/^BAK-/.test(artefact.id) && artefact.spec?.version?.gating) {
     const g = artefact.spec.version.gating;
@@ -1247,12 +1454,15 @@ function renderCompareCard(artefact, def, sublayerKey, side, sets) {
   btn.innerHTML = `
     <div class="card-head">
       <span class="card-id">${escapeHtml(artefact.id)}</span>
-      ${chip}
+      ${statusPill}
       ${gatingChip}
     </div>
     <div class="card-title">${escapeHtml(artefact.title || artefact.id)}</div>
     ${artefact.desc ? `<div class="card-desc">${escapeHtml(artefact.desc)}</div>` : ''}
-    ${artefact.tool ? `<div class="card-foot"><span class="tool">${escapeHtml(artefact.tool)}</span></div>` : ''}
+    <div class="card-foot card-foot-compare">
+      ${sourcePill}
+      ${artefact.tool ? `<span class="tool">${escapeHtml(artefact.tool)}</span>` : ''}
+    </div>
   `;
   btn.onclick = () => openDrawer(artefact, def, sublayerKey, side);
   return btn;
