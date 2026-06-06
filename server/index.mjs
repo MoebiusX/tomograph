@@ -867,6 +867,9 @@ app.post('/api/draft-from-mcp', async (req, res) => {
         dashboards:      Number(ann['mcp.discovered.dashboards'] || (pack.spec?.dashboards || []).length),
         scrapeJobs:     (ann['mcp.discovered.scrape_jobs'] || '').split(',').filter(Boolean),
         metricNamesCount: Number(ann['mcp.discovered.metric_names_count'] || 0),
+        // tools/list inventory — what the MCP advertised vs what we matched
+        toolsExposed:    (ann['mcp.toolsExposed']    || '').split(',').filter(Boolean),
+        toolsUnmatched:  (ann['mcp.toolsUnmatched']  || '').split(',').filter(Boolean),
         probesAttempted, probesSucceeded,
       },
       warnings: [],

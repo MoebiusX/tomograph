@@ -3960,8 +3960,15 @@ function renderHomeMcpCapabilities(out, host) {
   const anomalies = parseInt(ann['mcp.activeAnomalies'] || '0', 10);
   const backends = s.backends ?? 0;
 
-  // Recognised vs unrecognised tools. Surfacing this honestly is part
-  // of the studio's integrity story.
+  // tools/list inventory: the full set of tools the MCP advertised, and the
+  // subset Tomograph doesn't yet have a probe pattern for. These come from
+  // the post-rename fetcher that calls `tools/list` instead of guessing.
+  const toolsExposed   = (ann['mcp.toolsExposed']   || '').split(',').filter(Boolean);
+  const toolsUnmatched = (ann['mcp.toolsUnmatched'] || '').split(',').filter(Boolean);
+
+  // Recognised vs unrecognised tools (over what we CALLED, not what was
+  // advertised). Surfacing this honestly is part of the studio's integrity
+  // story.
   const knownTools = new Set([
     'system_health', 'system_topology',
     'anomalies_active', 'anomalies_baselines',
@@ -3987,10 +3994,11 @@ function renderHomeMcpCapabilities(out, host) {
       </div>
       <div class="home-mcp-cap-grid">
         <div class="home-mcp-cap" data-cap="tools">
-          <div class="home-mcp-cap-num">${tools.length}</div>
-          <div class="home-mcp-cap-key">tools called</div>
-          <div class="home-mcp-cap-detail">${recognised.length ? recognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ') : '<em>unrecognised set</em>'}</div>
-          ${unrecognised.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-unknown">+${unrecognised.length} unrecognised: ${unrecognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
+          <div class="home-mcp-cap-num">${toolsExposed.length || tools.length}</div>
+          <div class="home-mcp-cap-key">${toolsExposed.length ? 'tools exposed' : 'tools called'}</div>
+          <div class="home-mcp-cap-detail">${recognised.length ? recognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ') : '<em>none recognised</em>'}</div>
+          ${toolsUnmatched.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-unknown">+${toolsUnmatched.length} not yet probed: ${toolsUnmatched.slice(0, 8).map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}${toolsUnmatched.length > 8 ? ` <em>+${toolsUnmatched.length - 8} more</em>` : ''}</div>` : ''}
+          ${unrecognised.length && !toolsUnmatched.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-unknown">+${unrecognised.length} unrecognised: ${unrecognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
           ${failed.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-fail">⚠ failed: ${failed.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
         </div>
         <div class="home-mcp-cap" data-cap="services">

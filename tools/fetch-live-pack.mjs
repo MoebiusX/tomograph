@@ -237,6 +237,8 @@ export function buildCanonicalPack({
   baselinesData = {},
   probeResults = {},
   errors = {},
+  discoveredTools = [],
+  unmatchedTools = [],
   packName = PACK_NAME,
 } = {}) {
   const services = Array.isArray(health.services) ? health.services : [];
@@ -264,6 +266,13 @@ export function buildCanonicalPack({
     'mcp.servicesDiscovered':  serviceNames.join(','),
     'mcp.baselinesComputed':   String((baselinesData.baselines || []).length),
     'mcp.activeAnomalies':     String(anomaliesActive?.traceAnomalies?.active?.length || 0),
+    // tools/list inventory — the honest record of what the MCP advertised.
+    'mcp.toolsExposed':        discoveredTools.map(t => t.name).join(','),
+    'mcp.toolsExposedCount':   String(discoveredTools.length),
+    // Tools the MCP advertises that we DON'T currently have a probe pattern
+    // for. Every entry here is a candidate enhancement — surface them so
+    // the user can name what to wire next.
+    'mcp.toolsUnmatched':      unmatchedTools.map(t => t.name).join(','),
   };
   // Per-probe count annotations, ONLY for probes that responded — so an
   // engineer reading the pack can see what came back from live state.
@@ -627,8 +636,20 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   await rpc('initialize', {
     protocolVersion: '2025-06-18',
     capabilities: {},
-    clientInfo: { name: 'observabilitypack-studio-fetcher', version: '0.3.0' },
+    clientInfo: { name: 'tomograph-fetcher', version: '0.3.0' },
   }).catch(() => {});
+
+  // Discover what the MCP actually exposes via tools/list. This is the
+  // foundation for honest probing — instead of guessing candidate tool
+  // names blindly, we intersect with what the server actually
+  // advertises. tools/list is part of the MCP spec since 2025-03-26;
+  // we tolerate its absence (older servers) by falling back to the
+  // candidate-guessing behaviour for compatibility.
+  const toolsList = await safe('tools/list', () => rpc('tools/list'));
+  const discoveredTools = Array.isArray(toolsList?.tools)
+    ? toolsList.tools.map(t => ({ name: t.name, description: t.description || '' }))
+    : [];
+  const discoveredToolNames = new Set(discoveredTools.map(t => t.name));
 
   const [health, topology, anomaliesActive, baselinesData] = await Promise.all([
     safe('system_health',       () => callTool('system_health')),
@@ -641,11 +662,30 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     throw new Error(`core MCP tools unavailable. errors: ${JSON.stringify(errors)}`);
   }
 
-  // Run discovery probes in parallel. Each probe tries multiple
-  // candidate tool names and stops at the first response.
+  // Run discovery probes in parallel. If we got a tools/list response,
+  // reorder candidates so the ACTUALLY EXPOSED names get tried first,
+  // and skip the rest — no point hammering the server with names it
+  // can't recognise. If tools/list returned nothing (old server), fall
+  // back to the original candidate-cascade behaviour.
   const probeResults = {};
   await Promise.all(PROBES.map(async (probe) => {
-    for (const candidate of probe.candidates) {
+    let candidates;
+    if (discoveredToolNames.size > 0) {
+      // Trust the server's advertisement: only try names it actually exposes.
+      candidates = probe.candidates.filter(c => discoveredToolNames.has(c));
+      if (candidates.length === 0) {
+        probeResults[probe.name] = {
+          tool: null,
+          attempted: probe.candidates.slice(),
+          adapted: null,
+          skippedReason: 'no candidate matched tools/list inventory',
+        };
+        return;
+      }
+    } else {
+      candidates = probe.candidates.slice();
+    }
+    for (const candidate of candidates) {
       const response = await quiet(candidate, () => callTool(candidate));
       if (response != null) {
         let adapted;
@@ -653,18 +693,35 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
         catch (_) { adapted = null; }
         probeResults[probe.name] = {
           tool: candidate,
-          attempted: probe.candidates.slice(0, probe.candidates.indexOf(candidate) + 1),
+          attempted: candidates.slice(0, candidates.indexOf(candidate) + 1),
           adapted,
           rawSize: JSON.stringify(response).length,
         };
         return;
       }
     }
-    // None of the candidates responded — record that we tried.
-    probeResults[probe.name] = { tool: null, attempted: probe.candidates.slice(), adapted: null };
+    probeResults[probe.name] = { tool: null, attempted: candidates, adapted: null };
   }));
 
-  return { health, topology, anomaliesActive, baselinesData, probeResults, errors };
+  // Compute unmatched tool names — tools the MCP advertises that we
+  // DON'T have a probe pattern for. These are the leading edge: every
+  // unmatched name is a potential probe candidate to add. Surface them
+  // so engineers can see what's reachable but not yet wired into the
+  // canonical pack.
+  const allMatchedNames = new Set(
+    Object.values(probeResults)
+      .map(r => r.tool)
+      .filter(Boolean)
+      .concat(['system_health', 'system_topology', 'anomalies_active', 'anomalies_baselines'])
+  );
+  const unmatchedTools = discoveredTools.filter(t => !allMatchedNames.has(t.name));
+
+  return {
+    health, topology, anomaliesActive, baselinesData,
+    probeResults, errors,
+    discoveredTools,            // full list from tools/list (or empty if unsupported)
+    unmatchedTools,             // tools the MCP exposes that we don't probe yet
+  };
 }
 
 // Convenience entrypoint used by the CLI + the server: end-to-end build,
