@@ -42,6 +42,11 @@
     </label>
     <button id="upload-btn" class="ctrl-btn" type="button" title="Upload a canonical v1.2 pack (.yaml or .json)">upload</button>
     <input id="file-input" type="file" accept=".yaml,.yml,.json,application/json,text/yaml,application/x-yaml" hidden>
+    <button id="mcp-btn" class="ctrl-btn mcp-btn" type="button" aria-haspopup="true" aria-expanded="false" title="Refresh production-live from an MCP server">
+      <span class="mcp-dot" aria-hidden="true"></span>
+      <span class="mcp-btn-label">mcp</span>
+      <span class="mcp-btn-age" id="mcp-btn-age"></span>
+    </button>
     <button id="theme-toggle" class="ctrl-btn theme-toggle" type="button" aria-label="Toggle theme"></button>
     <a class="ctrl-link" href="/api/packs" target="_blank" rel="noopener" title="Pack catalog JSON">api</a>
   </div>
@@ -83,6 +88,28 @@
   <dl class="drawer-meta" id="drawer-meta"></dl>
   <div id="drawer-panels"></div>
 </aside>
+
+<div class="mcp-panel" id="mcp-panel" role="dialog" aria-labelledby="mcp-panel-title" hidden>
+  <div class="mcp-panel-head">
+    <div id="mcp-panel-title" class="mcp-panel-title">Refresh production-live from MCP</div>
+    <button id="mcp-panel-close" class="drawer-close" type="button" aria-label="Close MCP panel">esc</button>
+  </div>
+  <div class="mcp-panel-body">
+    <label class="mcp-field">
+      <span class="mcp-field-key">MCP URL</span>
+      <input id="mcp-url" type="url" placeholder="https://your-mcp.example.com/observability" autocomplete="off">
+    </label>
+    <label class="mcp-field">
+      <span class="mcp-field-key">Auth token <em>(optional, not persisted)</em></span>
+      <input id="mcp-auth" type="password" placeholder="bearer token" autocomplete="off">
+    </label>
+    <div class="mcp-panel-actions">
+      <button id="mcp-refresh-btn" class="mcp-refresh-btn" type="button">refresh now</button>
+      <span id="mcp-refresh-status" class="mcp-refresh-status"></span>
+    </div>
+    <div class="mcp-panel-status" id="mcp-status-body"></div>
+  </div>
+</div>
 
 <div class="drop-overlay" id="drop-overlay" hidden>
   <div class="drop-overlay-inner">

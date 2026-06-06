@@ -27,13 +27,14 @@
  */
 
 import express from 'express';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parse as parseYaml } from '../tools/lib/mini-yaml.mjs';
+import { parse as parseYaml, emit as emitYaml } from '../tools/lib/mini-yaml.mjs';
 import { adapt, listEnvironments, applyEnvironmentOverlay } from '../tools/lib/adapter.mjs';
 import { validateCanonical, SPEC_VERSION } from '../tools/lib/validator.mjs';
 import { evaluateConformance, RUBRIC } from '../tools/lib/conformance.mjs';
+import { fetchMcp, buildCanonicalPack } from '../tools/fetch-live-pack.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -198,6 +199,69 @@ app.get('/api/maturity-rubric', (req, res) => {
     docs: `vendor/observability-pack-spec/v${SPEC_VERSION}/docs/maturity-model.md`,
     clauses: RUBRIC.map(({ evaluate, ...rest }) => rest),
   });
+});
+
+// ---------- live MCP refresh ----------
+//
+// The cron-driven workflow (.github/workflows/refresh-live-pack.yml) is the
+// production path. This in-browser endpoint exists so a dev session can
+// kick off an ad-hoc refresh from a local MCP without spawning a process.
+
+const LIVE_PACK_PATH = 'packs/production-live.pack.yaml';
+
+app.get('/api/live-status', (req, res) => {
+  try {
+    const abs = resolve(ROOT, LIVE_PACK_PATH);
+    if (!existsSync(abs)) return res.json({ present: false });
+    const c = parseYaml(readFileSync(abs, 'utf8'));
+    const a = c.metadata?.annotations || {};
+    res.json({
+      present: true,
+      refreshedAt:        a['mcp.refreshedAt']        || null,
+      url:                a['mcp.url']                || null,
+      toolsCalled:        a['mcp.toolsCalled']        || '',
+      toolsFailed:        a['mcp.toolsFailed']        || '',
+      servicesDiscovered: a['mcp.servicesDiscovered'] || '',
+      baselinesComputed:  a['mcp.baselinesComputed']  || '0',
+      activeAnomalies:    a['mcp.activeAnomalies']    || '0',
+    });
+  } catch (e) {
+    res.json({ present: false, error: e.message });
+  }
+});
+
+app.post('/api/refresh-live', async (req, res) => {
+  const body = req.body || {};
+  const mcpUrl = typeof body.mcpUrl === 'string' && body.mcpUrl.trim() ? body.mcpUrl.trim() : null;
+  const mcpAuth = typeof body.mcpAuth === 'string' && body.mcpAuth ? body.mcpAuth : null;
+  if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+
+  const t0 = Date.now();
+  try {
+    process.stderr.write(`[refresh-live] POST /api/refresh-live -> ${mcpUrl}\n`);
+    const fetched = await fetchMcp({ mcpUrl, mcpAuth });
+    const refreshedAt = new Date().toISOString();
+    const pack = buildCanonicalPack({ refreshedAt, mcpUrl, ...fetched });
+    const errors = validateCanonical(pack, SCHEMA);
+    if (errors.length) {
+      return res.status(500).json({ ok: false, error: 'built pack failed schema validation', details: errors });
+    }
+    const abs = resolve(ROOT, LIVE_PACK_PATH);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, emitYaml(pack));
+    process.stderr.write(`[refresh-live]   ok in ${Date.now() - t0}ms; ` +
+      `services=${pack.metadata.annotations['mcp.servicesDiscovered'] || '(none)'} ` +
+      `failed=${pack.metadata.annotations['mcp.toolsFailed'] || 'none'}\n`);
+    res.json({
+      ok: true,
+      refreshedAt,
+      pack: adapt(pack),
+      annotations: pack.metadata.annotations,
+    });
+  } catch (e) {
+    process.stderr.write(`[refresh-live]   error in ${Date.now() - t0}ms: ${e.message}\n`);
+    res.status(502).json({ ok: false, error: e.message, details: e.details });
+  }
 });
 
 app.post('/api/validate', (req, res) => {
