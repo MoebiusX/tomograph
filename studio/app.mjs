@@ -46,6 +46,19 @@ const state = {
   // Primary view selector (top nav). One of: layers, conformance,
   // compile, atlas, schema. Compare mode hides conformance + compile.
   view: 'layers',
+  // Per-pack focus toggle (A | B). Surfaces the A|B switch on the
+  // conformance / compile / schema views when both packs are loaded so
+  // the user can read B's report without losing A. Resets to 'a' when
+  // Pack B is cleared. Stays 'a' until the user flips it.
+  viewFocus: 'a',
+  // Parallel slots for Pack B — populated when the user flips focus
+  // to B (or pre-fetched alongside loadPackB() so toggling is instant).
+  conformanceB: null,
+  compileCatalogB: null,        // mirrors compileCatalog for B
+  compileGroupB: 'rules',       // mirrors compileGroup for B
+  compileFlavorB: 'prometheus', // mirrors compileFlavor for B
+  compileArtifactB: 'all',      // mirrors compileArtifact for B
+  compileContentB: null,        // mirrors compileContent for B
   // Secondary layer filter chips (only visible on view='layers').
   // 'all' stacks every layer; the layer ids narrow to one.
   layerFilter: 'all',
@@ -105,6 +118,44 @@ async function api(path, opts = {}) {
 async function loadCatalog() {
   const { packs } = await api('/api/packs');
   state.catalog = packs || [];
+}
+
+// ---------- focus (A | B) ----------
+//
+// Conformance / Compile / Schema render a single pack at a time. When
+// both A and B are loaded the user can flip focus between them via the
+// toggle in the view nav. effectiveFocus() falls back to 'a' if focus is
+// 'b' but Pack B isn't loaded — defensive, since the toggle is hidden
+// in that state anyway.
+function effectiveFocus() {
+  return (state.viewFocus === 'b' && state.packB) ? 'b' : 'a';
+}
+function focusedPackId()   { return effectiveFocus() === 'b' ? state.compareBId  : state.selectedPackId; }
+function focusedEnv()      { return effectiveFocus() === 'b' ? state.compareBEnv : state.selectedEnv; }
+function focusedPack()     { return effectiveFocus() === 'b' ? state.packB       : state.pack; }
+
+function focusedConformance()     { return effectiveFocus() === 'b' ? state.conformanceB     : state.conformance; }
+function setFocusedConformance(v) { if (effectiveFocus() === 'b') state.conformanceB = v; else state.conformance = v; }
+
+function focusedCompileCatalog()     { return effectiveFocus() === 'b' ? state.compileCatalogB     : state.compileCatalog; }
+function setFocusedCompileCatalog(v) { if (effectiveFocus() === 'b') state.compileCatalogB = v; else state.compileCatalog = v; }
+function focusedCompileContent()     { return effectiveFocus() === 'b' ? state.compileContentB     : state.compileContent; }
+function setFocusedCompileContent(v) { if (effectiveFocus() === 'b') state.compileContentB = v; else state.compileContent = v; }
+function focusedCompileGroup()       { return effectiveFocus() === 'b' ? state.compileGroupB       : state.compileGroup; }
+function setFocusedCompileGroup(v)   { if (effectiveFocus() === 'b') state.compileGroupB = v; else state.compileGroup = v; }
+function focusedCompileFlavor()      { return effectiveFocus() === 'b' ? state.compileFlavorB      : state.compileFlavor; }
+function setFocusedCompileFlavor(v)  { if (effectiveFocus() === 'b') state.compileFlavorB = v; else state.compileFlavor = v; }
+function focusedCompileArtifact()    { return effectiveFocus() === 'b' ? state.compileArtifactB    : state.compileArtifact; }
+function setFocusedCompileArtifact(v){ if (effectiveFocus() === 'b') state.compileArtifactB = v; else state.compileArtifact = v; }
+
+function setViewFocus(focus) {
+  if (state.viewFocus === focus) return;
+  state.viewFocus = focus;
+  // Cached content for the newly-focused side may be stale or missing —
+  // dropping it forces a lazy-load on the next render.
+  if (effectiveFocus() === 'b' && !state.compileCatalogB) state.compileContentB = null;
+  renderTabs();
+  renderMainView();
 }
 
 async function loadPack(id, env) {
@@ -192,6 +243,12 @@ function renderPackBSelect() {
     state.compareBId = newId;
     state.compareBEnv = newId ? defaultEnvFor(newId) : null;
     state.packB = null; state.diff = null;
+    // Reset B-side state slots (they belong to whatever pack was just removed).
+    state.conformanceB = null;
+    state.compileCatalogB = null;
+    state.compileContentB = null;
+    // Focus snaps back to A — no point pointing at a pack that's gone.
+    state.viewFocus = 'a';
     if (!newId) {
       // User cleared Pack B — back to single-pack focus. If the active
       // view was a cross-pack one, fall back to Layers.
@@ -373,6 +430,36 @@ function renderTabs() {
   tabs.appendChild(renderLayerFilterChips());
 }
 
+// Focus toggle (A | B). Visible only when both packs are loaded AND the
+// active view renders a single pack — conformance, compile, schema. The
+// other views (layers/compare/atlas) already show both packs.
+function renderFocusToggle() {
+  const wrap = document.createElement('div');
+  wrap.className = 'focus-toggle';
+  const showToggle = !!state.packB && ['conformance', 'compile', 'schema'].includes(state.view);
+  if (!showToggle) { wrap.hidden = true; return wrap; }
+  const cur = effectiveFocus();
+
+  const label = document.createElement('span');
+  label.className = 'focus-toggle-key';
+  label.textContent = 'FOCUS';
+  wrap.appendChild(label);
+
+  const mkBtn = (side, pack) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.side = side;
+    b.className = 'focus-toggle-btn' + (cur === side ? ' is-active' : '');
+    b.textContent = side.toUpperCase();
+    b.title = `Focus PACK ${side.toUpperCase()} — ${pack?.id || ''}`;
+    b.onclick = () => setViewFocus(side);
+    return b;
+  };
+  wrap.appendChild(mkBtn('a', state.pack));
+  wrap.appendChild(mkBtn('b', state.packB));
+  return wrap;
+}
+
 function renderPrimaryViewNav() {
   const nav = document.createElement('div');
   nav.className = 'view-nav';
@@ -411,6 +498,7 @@ function renderPrimaryViewNav() {
     };
     nav.appendChild(b);
   }
+  nav.appendChild(renderFocusToggle());
   return nav;
 }
 
@@ -621,8 +709,10 @@ function renderConformanceView() {
   const wrap = document.createElement('section');
   wrap.className = 'section conformance-view';
   wrap.dataset.layer = 'CONF';
+  wrap.dataset.focus = effectiveFocus();
 
-  const c = state.conformance;
+  const c = focusedConformance();
+  const pk = focusedPack();
   if (!c) {
     wrap.innerHTML = '<div class="placeholder">conformance report unavailable</div>';
     return wrap;
@@ -630,9 +720,10 @@ function renderConformanceView() {
 
   const head = document.createElement('div');
   head.className = 'section-head';
+  const focusBadge = state.packB ? ` · pack ${effectiveFocus().toUpperCase()} (${escapeHtml(pk?.id || '')})` : '';
   head.innerHTML = `
     <span class="section-num">CONF</span>
-    <span class="section-name">Maturity rubric · ${escapeHtml(c.declaredTier)}</span>
+    <span class="section-name">Maturity rubric · ${escapeHtml(c.declaredTier)}${focusBadge}</span>
     <span class="section-count">${c.scorePercent}% overall · ${c.mustPercent}% MUST</span>
   `;
   wrap.appendChild(head);
@@ -730,27 +821,30 @@ function targetScopable(target) {
 }
 
 async function loadCompileCatalog() {
-  if (!state.selectedPackId) return null;
+  const packId = focusedPackId();
+  const env = focusedEnv();
+  if (!packId) return null;
   const params = new URLSearchParams();
-  if (state.selectedEnv) params.set('env', state.selectedEnv);
+  if (env) params.set('env', env);
   try {
-    const r = await fetch(`/api/packs/${encodeURIComponent(state.selectedPackId)}/compile-catalog?${params}`);
+    const r = await fetch(`/api/packs/${encodeURIComponent(packId)}/compile-catalog?${params}`);
     if (!r.ok) return null;
-    state.compileCatalog = await r.json();
+    const cat = await r.json();
+    setFocusedCompileCatalog(cat);
     // Reconcile current selection with what's available (the pack may
     // have changed since last view).
-    const groups = state.compileCatalog.groups || [];
-    const g = groups.find(x => x.id === state.compileGroup) || groups[0];
-    if (!g) return state.compileCatalog;
-    state.compileGroup = g.id;
-    if (!g.flavors?.some(f => f.id === state.compileFlavor)) {
-      state.compileFlavor = g.flavors?.[0]?.id || null;
+    const groups = cat.groups || [];
+    const g = groups.find(x => x.id === focusedCompileGroup()) || groups[0];
+    if (!g) return cat;
+    setFocusedCompileGroup(g.id);
+    if (!g.flavors?.some(f => f.id === focusedCompileFlavor())) {
+      setFocusedCompileFlavor(g.flavors?.[0]?.id || null);
     }
-    if (!g.items?.some(it => it.id === state.compileArtifact)) {
-      state.compileArtifact = g.items?.[0]?.id || 'all';
+    if (!g.items?.some(it => it.id === focusedCompileArtifact())) {
+      setFocusedCompileArtifact(g.items?.[0]?.id || 'all');
     }
-  } catch (_) { state.compileCatalog = null; }
-  return state.compileCatalog;
+  } catch (_) { setFocusedCompileCatalog(null); }
+  return focusedCompileCatalog();
 }
 
 // Map (group, flavor) → legacy deploy target id used by isDeployable() and the
@@ -766,14 +860,16 @@ function legacyDeployTargetFor(group) {
 }
 
 async function loadCompiled() {
-  if (!state.selectedPackId) { state.compileContent = null; return; }
+  const packId = focusedPackId();
+  const env = focusedEnv();
+  if (!packId) { setFocusedCompileContent(null); return; }
   // Reset cached content so a switch between artifacts/flavors re-fetches.
   const params = new URLSearchParams();
-  if (state.selectedEnv) params.set('env', state.selectedEnv);
-  params.set('group', state.compileGroup);
-  if (state.compileFlavor)   params.set('flavor', state.compileFlavor);
-  if (state.compileArtifact) params.set('artifact', state.compileArtifact);
-  const url = `/api/packs/${encodeURIComponent(state.selectedPackId)}/compile-artifact?${params}`;
+  if (env) params.set('env', env);
+  params.set('group', focusedCompileGroup());
+  if (focusedCompileFlavor())   params.set('flavor', focusedCompileFlavor());
+  if (focusedCompileArtifact()) params.set('artifact', focusedCompileArtifact());
+  const url = `/api/packs/${encodeURIComponent(packId)}/compile-artifact?${params}`;
   try {
     const r = await fetch(url);
     const ct = r.headers.get('content-type') || '';
@@ -783,22 +879,22 @@ async function loadCompiled() {
         const j = await r.json().catch(() => null);
         if (j?.error) msg = j.error;
       }
-      state.compileContent = { error: msg };
+      setFocusedCompileContent({ error: msg });
       return;
     }
     const text = await r.text();
-    state.compileContent = {
+    setFocusedCompileContent({
       filename: parseCdFilename(r.headers.get('content-disposition'))
-        || `${state.selectedPackId}.${state.compileGroup}.${state.compileArtifact}`,
+        || `${packId}.${focusedCompileGroup()}.${focusedCompileArtifact()}`,
       contentType: ct.split(';')[0].trim(),
       text,
       source: r.headers.get('x-pack-source'),
       group: r.headers.get('x-compile-group'),
       flavor: r.headers.get('x-compile-flavor'),
       artifact: r.headers.get('x-compile-artifact'),
-    };
+    });
   } catch (e) {
-    state.compileContent = { error: e.message };
+    setFocusedCompileContent({ error: e.message });
   }
 }
 
@@ -812,13 +908,16 @@ function renderCompileView(host) {
   const section = document.createElement('section');
   section.className = 'section compile-view';
   section.dataset.layer = 'COMPILE';
+  section.dataset.focus = effectiveFocus();
 
+  const focusedPk = focusedPack();
   const head = document.createElement('div');
   head.className = 'section-head';
+  const focusBadge = state.packB ? ` · pack ${effectiveFocus().toUpperCase()}` : '';
   head.innerHTML = `
     <span class="section-num">BLD</span>
-    <span class="section-name">Compile — pack as the source of truth</span>
-    <span class="section-count">${escapeHtml(state.pack?.id || '')}</span>
+    <span class="section-name">Compile — pack as the source of truth${focusBadge}</span>
+    <span class="section-count">${escapeHtml(focusedPk?.id || '')}</span>
   `;
   section.appendChild(head);
 
@@ -844,15 +943,15 @@ function renderCompileView(host) {
   stage.className = 'compile-stage';
   grid.appendChild(stage);
 
-  // Fetch catalog if missing.
-  if (!state.compileCatalog) {
+  // Fetch catalog if missing for the focused pack.
+  if (!focusedCompileCatalog()) {
     nav.innerHTML = '<div class="compile-loading">Loading artifacts…</div>';
     stage.innerHTML = '<div class="placeholder">Loading the artifact catalog…</div>';
-    loadCompileCatalog().then(() => { state.compileContent = null; renderMainView(); });
+    loadCompileCatalog().then(() => { setFocusedCompileContent(null); renderMainView(); });
     return;
   }
 
-  const catalog = state.compileCatalog;
+  const catalog = focusedCompileCatalog();
   const groups = catalog.groups || [];
   if (!groups.length) {
     nav.innerHTML = '<div class="placeholder">This pack has nothing compilable yet — add SLOs, dashboards, or pipelines to the source.</div>';
@@ -862,7 +961,7 @@ function renderCompileView(host) {
   // ---- Left nav: artifact tree ----
   for (const g of groups) {
     const groupEl = document.createElement('div');
-    groupEl.className = 'compile-group' + (g.id === state.compileGroup ? ' is-active-group' : '');
+    groupEl.className = 'compile-group' + (g.id === focusedCompileGroup() ? ' is-active-group' : '');
     groupEl.innerHTML = `
       <div class="compile-group-head">
         <span class="compile-group-label">${escapeHtml(g.label)}</span>
@@ -873,7 +972,7 @@ function renderCompileView(host) {
     list.className = 'compile-item-list';
     for (const it of (g.items || [])) {
       const li = document.createElement('li');
-      const selected = (g.id === state.compileGroup) && (it.id === state.compileArtifact);
+      const selected = (g.id === focusedCompileGroup()) && (it.id === focusedCompileArtifact());
       li.className = 'compile-item' + (selected ? ' is-active' : '');
       li.innerHTML = `
         <button type="button" class="compile-item-btn" title="${escapeHtml(it.subtitle || '')}">
@@ -885,13 +984,13 @@ function renderCompileView(host) {
         </button>
       `;
       li.querySelector('button').onclick = () => {
-        state.compileGroup = g.id;
-        state.compileArtifact = it.id;
+        setFocusedCompileGroup(g.id);
+        setFocusedCompileArtifact(it.id);
         // Reconcile flavor with the chosen group.
-        if (!g.flavors?.some(f => f.id === state.compileFlavor)) {
-          state.compileFlavor = g.flavors?.[0]?.id || null;
+        if (!g.flavors?.some(f => f.id === focusedCompileFlavor())) {
+          setFocusedCompileFlavor(g.flavors?.[0]?.id || null);
         }
-        state.compileContent = null;
+        setFocusedCompileContent(null);
         renderMainView();
       };
       list.appendChild(li);
@@ -901,9 +1000,9 @@ function renderCompileView(host) {
   }
 
   // ---- Right stage: flavor pills + platform badge + compiled output ----
-  const activeGroup = groups.find(g => g.id === state.compileGroup) || groups[0];
-  const activeFlavor = activeGroup?.flavors?.find(f => f.id === state.compileFlavor) || activeGroup?.flavors?.[0];
-  const activeItem = (activeGroup?.items || []).find(it => it.id === state.compileArtifact);
+  const activeGroup = groups.find(g => g.id === focusedCompileGroup()) || groups[0];
+  const activeFlavor = activeGroup?.flavors?.find(f => f.id === focusedCompileFlavor()) || activeGroup?.flavors?.[0];
+  const activeItem = (activeGroup?.items || []).find(it => it.id === focusedCompileArtifact());
 
   // Platform callout — the explicit answer to "where does this land?"
   const callout = document.createElement('div');
@@ -925,13 +1024,13 @@ function renderCompileView(host) {
     for (const f of activeGroup.flavors) {
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'compile-flavor-pill' + (f.id === state.compileFlavor ? ' is-active' : '');
+      b.className = 'compile-flavor-pill' + (f.id === focusedCompileFlavor() ? ' is-active' : '');
       b.innerHTML = `${escapeHtml(f.label)}`;
       b.title = `${f.platform} · ${f.description}`;
       b.onclick = () => {
-        if (state.compileFlavor === f.id) return;
-        state.compileFlavor = f.id;
-        state.compileContent = null;
+        if (focusedCompileFlavor() === f.id) return;
+        setFocusedCompileFlavor(f.id);
+        setFocusedCompileContent(null);
         renderMainView();
       };
       flavorBar.appendChild(b);
@@ -951,7 +1050,7 @@ function renderCompileView(host) {
   }
 
   // Content
-  if (!state.compileContent) {
+  if (!focusedCompileContent()) {
     const ph = document.createElement('div');
     ph.className = 'placeholder';
     ph.textContent = 'Compiling…';
@@ -959,18 +1058,18 @@ function renderCompileView(host) {
     loadCompiled().then(() => renderMainView());
     return;
   }
-  if (state.compileContent.error) {
+  if (focusedCompileContent().error) {
     const err = document.createElement('div');
     err.className = 'error';
-    err.textContent = `Compile failed: ${state.compileContent.error}`;
+    err.textContent = `Compile failed: ${focusedCompileContent().error}`;
     stage.appendChild(err);
     return;
   }
-  const c = state.compileContent;
+  const c = focusedCompileContent();
   // Map current selection to the legacy target name the deploy path expects.
-  state.compileTarget = legacyDeployTargetFor(state.compileGroup) || state.compileTarget;
+  state.compileTarget = legacyDeployTargetFor(focusedCompileGroup()) || state.compileTarget;
 
-  const envLabel = state.selectedEnv || 'none';
+  const envLabel = focusedEnv() || 'none';
   const actions = document.createElement('div');
   actions.className = 'compile-actions';
   actions.innerHTML = `
@@ -1022,7 +1121,7 @@ function renderCompileView(host) {
   dl.href = URL.createObjectURL(blob);
 
   const deployBtn = actions.querySelector('#deploy-compiled');
-  if (deployBtn) deployBtn.onclick = () => openDeployModal({ packId: state.selectedPackId });
+  if (deployBtn) deployBtn.onclick = () => openDeployModal({ packId: focusedPackId() });
 
   // Live re-derive the default tool name as the user changes product /
   // version / scope. We DON'T overwrite a user-typed override — only when
@@ -1149,10 +1248,11 @@ async function doDeploy(panel) {
   resultEl.hidden = true;
 
   const qs = new URLSearchParams();
-  if (state.selectedEnv) qs.set('env', state.selectedEnv);
+  const deployEnv = focusedEnv();
+  if (deployEnv) qs.set('env', deployEnv);
   if (state.compileDashId) qs.set('dashboardId', state.compileDashId);
   const target = state.compileTarget;
-  const path = `/api/packs/${encodeURIComponent(state.selectedPackId)}/deploy/${encodeURIComponent(target)}?${qs}`;
+  const path = `/api/packs/${encodeURIComponent(focusedPackId())}/deploy/${encodeURIComponent(target)}?${qs}`;
 
   try {
     const r = await fetch(path, {
@@ -2105,9 +2205,25 @@ function renderCompareColumn(label, cls, items, def, inBothPairs = null) {
 // ---------- atlas view ----------
 
 async function loadPackB() {
-  if (!state.compareBId) { state.packB = null; return; }
+  if (!state.compareBId) {
+    state.packB = null;
+    state.conformanceB = null;
+    state.compileCatalogB = null;
+    state.compileContentB = null;
+    return;
+  }
   const q = state.compareBEnv ? `?env=${encodeURIComponent(state.compareBEnv)}` : '';
-  state.packB = await api(`/api/packs/${encodeURIComponent(state.compareBId)}${q}`);
+  // Fetch pack + conformance in parallel so flipping focus to B is
+  // instant (no extra network round-trip).
+  const [pack, conformance] = await Promise.all([
+    api(`/api/packs/${encodeURIComponent(state.compareBId)}${q}`),
+    api(`/api/packs/${encodeURIComponent(state.compareBId)}/conformance${q}`).catch(() => null),
+  ]);
+  state.packB = pack;
+  state.conformanceB = conformance;
+  // Reset cached compile state for B so first-visit re-fetches.
+  state.compileCatalogB = null;
+  state.compileContentB = null;
 }
 
 function renderAtlasView(view) {
@@ -2906,6 +3022,11 @@ async function boot() {
     e.preventDefault(); e.stopPropagation();
     state.compareBId = null; state.compareBEnv = null;
     state.packB = null; state.diff = null;
+    // Drop B's parallel state slots + reset focus to A.
+    state.conformanceB = null;
+    state.compileCatalogB = null;
+    state.compileContentB = null;
+    state.viewFocus = 'a';
     if (state.view === 'compare' || state.view === 'atlas') state.view = 'layers';
     applyModeChrome();
     renderPackBSelect();

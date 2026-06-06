@@ -737,6 +737,44 @@ a:hover { color: var(--ink); }
   color: var(--ink);
   border-bottom-color: var(--CMP);
 }
+/* Focus toggle (A | B) sits flush-right on the view nav. Only visible
+   when both packs are loaded AND the active view renders one pack at a
+   time. B side gets the CMP-purple accent to match the Pack B picker. */
+.focus-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: auto;
+  padding: 6px 0 8px 16px;
+  border-left: 1px dashed var(--line-2);
+  align-self: stretch;
+}
+.focus-toggle[hidden] { display: none; }
+.focus-toggle-key {
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.12em;
+  color: var(--ink-4);
+  text-transform: uppercase;
+  margin-right: 2px;
+}
+.focus-toggle-btn {
+  min-width: 28px;
+  padding: 5px 10px;
+  font: 600 12px/1.2 var(--mono);
+  color: var(--ink-4);
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.focus-toggle-btn:hover { color: var(--ink); border-color: var(--ink-4); }
+.focus-toggle-btn.is-active {
+  color: var(--paper);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.focus-toggle-btn[data-side="b"].is-active {
+  background: var(--CMP);
+  border-color: var(--CMP);
+}
 .layer-chips {
   display: flex; gap: 4px;
   padding: 8px 28px;
