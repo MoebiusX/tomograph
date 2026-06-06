@@ -1189,8 +1189,241 @@ function renderComparePackHeader(side, pack, diffMeta) {
       <span class="cpc-meta-pill">env: ${escapeHtml(diffMeta?.environment || pack?.meta?.environment || state[side === 'a' ? 'selectedEnv' : 'compareBEnv'] || '—')}</span>
       <span class="cpc-meta-pill cpc-count">${count} artefact${count === 1 ? '' : 's'}</span>
     </div>
+    <div class="cpc-actions">
+      <button class="cpc-action-btn" data-action="evaluate" title="Show maturity score: per-tier conformance breakdown">
+        <span class="cpc-action-icon">✓</span> evaluate
+      </button>
+      <button class="cpc-action-btn" data-action="coverage" title="Show coverage breakdown by layer + sub-bucket">
+        <span class="cpc-action-icon">∑</span> coverage
+      </button>
+    </div>
   `;
+  // Wire the action buttons. Evaluate opens the maturity popover;
+  // coverage opens a layer-by-layer count breakdown.
+  const evalBtn = card.querySelector('[data-action="evaluate"]');
+  if (evalBtn) evalBtn.onclick = (e) => { e.stopPropagation(); openMaturityPopover(side, pack, card); };
+  const covBtn = card.querySelector('[data-action="coverage"]');
+  if (covBtn) covBtn.onclick = (e) => { e.stopPropagation(); openCoveragePopover(side, pack, card); };
   return card;
+}
+
+// ------------------------------------------------------------
+// Maturity score popover — score with per-clause pass/fail
+// grouped by tier. Drives off /api/packs/:id/conformance which
+// returns the rubric evaluation the studio already uses on the
+// SCHEMA tab.
+// ------------------------------------------------------------
+
+async function openMaturityPopover(side, pack, anchor) {
+  // Resolve which pack id to fetch conformance for.
+  const packId = (side === 'a') ? state.selectedPackId : state.compareBId;
+  const env    = (side === 'a') ? state.selectedEnv   : state.compareBEnv;
+  // Tear down any open popover first.
+  document.querySelectorAll('.maturity-popover, .coverage-popover').forEach(n => n.remove());
+
+  const pop = document.createElement('div');
+  pop.className = 'maturity-popover';
+  pop.dataset.side = side;
+  pop.innerHTML = `
+    <div class="mp-head">
+      <div class="mp-eyebrow">MATURITY SCORE</div>
+      <button class="mp-close" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="mp-body"><div class="placeholder">Evaluating…</div></div>
+  `;
+  anchor.appendChild(pop);
+  pop.querySelector('.mp-close').onclick = () => pop.remove();
+
+  // Outside-click dismiss.
+  setTimeout(() => {
+    const onDoc = (e) => {
+      if (!pop.contains(e.target) && !anchor.querySelector('[data-action="evaluate"]')?.contains(e.target)) {
+        pop.remove();
+        document.removeEventListener('click', onDoc);
+      }
+    };
+    document.addEventListener('click', onDoc);
+  }, 50);
+
+  try {
+    const qs = env ? `?env=${encodeURIComponent(env)}` : '';
+    const conf = await api(`/api/packs/${encodeURIComponent(packId)}/conformance${qs}`);
+    pop.querySelector('.mp-body').innerHTML = renderMaturityPopoverBody(conf, pack?.name);
+  } catch (e) {
+    pop.querySelector('.mp-body').innerHTML = `<div class="error">Could not evaluate: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderMaturityPopoverBody(conf, packName) {
+  // Conformance shape:
+  //   declaredTier, conformant, scorePercent, mustPercent, must {passed,total}, should{...},
+  //   clauses: [{ id, dimension, severity, minTier, description, applies, passed }]
+  const score = Math.round(conf.scorePercent || 0);
+  const verdict = conf.conformant ? 'conformant' : 'non-conformant';
+  const verdictClass = conf.conformant ? 'mp-verdict-ok' : 'mp-verdict-err';
+  // Group clauses by minTier. Display order: tier-3 first (the floor), then tier-2, then tier-1.
+  // The conformance lib's clause shape is { id, dimension, severity, minTier,
+  // description, applies, pass } — `pass` is null when applies=false.
+  const tiers = ['tier-3', 'tier-2', 'tier-1'];
+  const tierLabels = {
+    'tier-3': 'TIER 3 — MINIMUM CONFORMANCE',
+    'tier-2': 'TIER 2 — INTERNAL CRITICAL',
+    'tier-1': 'TIER 1 — CUSTOMER-FACING',
+  };
+  const sections = tiers.map(t => {
+    const items = (conf.clauses || []).filter(c => c.minTier === t);
+    if (!items.length) return '';
+    const applicable = items.filter(c => c.applies);
+    const passed     = items.filter(c => c.pass === true).length;
+    const countLabel = applicable.length === items.length
+      ? `${passed}/${items.length}`
+      : `${passed}/${applicable.length}<span class="mp-tier-na"> (${items.length - applicable.length} N/A)</span>`;
+    return `
+      <div class="mp-tier">
+        <div class="mp-tier-head">
+          <span class="mp-tier-label">${tierLabels[t]}</span>
+          <span class="mp-tier-count">${countLabel}</span>
+        </div>
+        <ul class="mp-clauses">
+          ${items.map(c => {
+            const cls = !c.applies ? 'is-na' : (c.pass ? 'is-passed' : 'is-failed');
+            return `
+              <li class="mp-clause ${cls}" title="${escapeHtml(c.description || '')}">
+                <span class="mp-clause-num">${escapeHtml(c.id)}</span>
+                <span class="mp-clause-desc">${escapeHtml(c.dimension || c.description || c.id)}</span>
+                <span class="mp-clause-sev">${escapeHtml(c.severity || '')}</span>
+              </li>`;
+          }).join('')}
+        </ul>
+      </div>`;
+  }).join('');
+  return `
+    <div class="mp-score-row">
+      <div class="mp-score-big">${score}<span class="mp-score-denom">/100</span></div>
+      <div class="mp-score-side">
+        <div class="mp-pack-name">${escapeHtml(packName || '')}</div>
+        <div class="mp-verdict ${verdictClass}">${escapeHtml(verdict)}</div>
+        <div class="mp-score-mini">MUST ${conf.must?.passed || 0}/${conf.must?.total || 0} · SHOULD ${conf.should?.passed || 0}/${conf.should?.total || 0}</div>
+      </div>
+    </div>
+    ${sections}
+  `;
+}
+
+// ------------------------------------------------------------
+// Coverage popover — per-layer breakdown with sub-buckets so the
+// SRE can see "26 L3 = 19 dashboards + 7 recording rules", etc.
+// ------------------------------------------------------------
+
+function openCoveragePopover(side, pack, anchor) {
+  document.querySelectorAll('.maturity-popover, .coverage-popover').forEach(n => n.remove());
+  const pop = document.createElement('div');
+  pop.className = 'coverage-popover';
+  pop.dataset.side = side;
+  pop.innerHTML = `
+    <div class="mp-head">
+      <div class="mp-eyebrow">COVERAGE BREAKDOWN</div>
+      <button class="mp-close" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="mp-body">${renderCoveragePopoverBody(pack)}</div>
+  `;
+  anchor.appendChild(pop);
+  pop.querySelector('.mp-close').onclick = () => pop.remove();
+  setTimeout(() => {
+    const onDoc = (e) => {
+      if (!pop.contains(e.target) && !anchor.querySelector('[data-action="coverage"]')?.contains(e.target)) {
+        pop.remove();
+        document.removeEventListener('click', onDoc);
+      }
+    };
+    document.addEventListener('click', onDoc);
+  }, 50);
+}
+
+function renderCoveragePopoverBody(pack) {
+  // Sub-bucket each layer the same way the spec breaks them down.
+  const breakdown = [];
+  let total = 0;
+  const layers = pack?.layers || {};
+
+  function countAndAdd(layerLabel, layerKey, items, subBuckets) {
+    const n = items.length;
+    total += n;
+    const subRows = subBuckets ? Object.entries(subBuckets).map(([k, v]) => `
+      <tr class="cv-sub">
+        <td class="cv-key">${escapeHtml(k)}</td>
+        <td class="cv-val">${v}</td>
+      </tr>`).join('') : '';
+    breakdown.push(`
+      <tr class="cv-row" data-layer="${escapeHtml(layerKey)}">
+        <td class="cv-key"><span class="cv-pill" data-layer="${escapeHtml(layerKey)}">${escapeHtml(layerKey)}</span> ${escapeHtml(layerLabel)}</td>
+        <td class="cv-val">${n}</td>
+      </tr>${subRows}`);
+  }
+
+  // L1: SLIs + SLOs
+  const l1 = layers.L1 || [];
+  const l1Sub = {
+    'SLIs':  l1.filter(x => /^SLI-/.test(x.id)).length,
+    'SLOs':  l1.filter(x => /^SLO-/.test(x.id)).length,
+  };
+  countAndAdd('SLI/SLO', 'L1', l1, Object.values(l1Sub).reduce((a,b)=>a+b,0) > 0 ? l1Sub : null);
+
+  // L2: Backends + Pipelines + Storage + Otel
+  const l2 = layers.L2 || [];
+  const l2Sub = {
+    'Backends':     l2.filter(x => /^BAK-/.test(x.id)).length,
+    'Pipelines':    l2.filter(x => /^PIP-/.test(x.id)).length,
+    'Storage':      l2.filter(x => /^STO-/.test(x.id)).length,
+    'OTel':         l2.filter(x => /^OTEL-/.test(x.id)).length,
+  };
+  countAndAdd('Metrics/Logs/Traces', 'L2', l2, l2Sub);
+
+  // L2X: extended
+  if ((layers.L2X || []).length) countAndAdd('Extended surfaces', 'L2X', layers.L2X);
+
+  // L3: Queries + Views + Dashboards
+  const l3 = layers.L3 || [];
+  const l3Sub = {
+    'Dashboards':       l3.filter(x => /^DASH-/.test(x.id)).length,
+    'Recording rules':  l3.filter(x => /^QRY-/.test(x.id)).length,
+    'Derived views':    l3.filter(x => /^VIEW-/.test(x.id)).length,
+  };
+  countAndAdd('Dashboards/Queries', 'L3', l3, l3Sub);
+
+  // L4: policy + alerting + healing
+  const l4 = layers.L4 || {};
+  const l4Items = [...(l4.policy || []), ...(l4.alerting || []), ...(l4.healing || [])];
+  const l4Sub = {
+    'Burn-rate alerts': (l4.policy || []).filter(x => /^POL-/.test(x.id)).length,
+    'Forecast alerts':  (l4.policy || []).filter(x => /^FCST-/.test(x.id)).length,
+    'Alert routes':     (l4.alerting || []).length,
+    'Remediation':      (l4.healing || []).length,
+  };
+  countAndAdd('Alerts + remediation', 'L4', l4Items, l4Sub);
+
+  // L5: baselines + chaos + synthetic
+  const l5 = layers.L5 || [];
+  const l5Sub = {
+    'Baselines':       l5.filter(x => /^BASE-/.test(x.id)).length,
+    'Chaos':           l5.filter(x => /^CHAOS-/.test(x.id)).length,
+    'Synthetic':       l5.filter(x => /^SYN-/.test(x.id)).length,
+  };
+  countAndAdd('Self-check', 'L5', l5, l5Sub);
+
+  // GOV
+  if ((layers.GOV || []).length) countAndAdd('Governance', 'GOV', layers.GOV);
+
+  return `
+    <table class="cv-table">
+      ${breakdown.join('')}
+      <tr class="cv-total">
+        <td class="cv-key"><strong>Total</strong></td>
+        <td class="cv-val"><strong>${total}</strong></td>
+      </tr>
+    </table>
+    <div class="cv-foot">Sub-buckets count by id prefix (SLI-, BAK-, DASH-, etc.). Pack generated from canonical v1.2 manifest.</div>
+  `;
 }
 
 function inferPackSource(pack) {
@@ -1213,12 +1446,12 @@ function renderCompareFilters() {
   const wrap = document.createElement('div');
   wrap.className = 'compare-filters';
   const slices = [
-    { id: 'all',   label: 'All' },
-    { id: 'onlyA', label: 'Only in A' },
-    { id: 'onlyB', label: 'Only in B' },
-    { id: 'both',  label: 'In both' },
-    { id: 'a-b',   label: 'A − B' },
-    { id: 'a+b',   label: 'A + B' },
+    { id: 'all',   label: 'All',       hint: 'Every artefact from both packs, side by side.' },
+    { id: 'onlyA', label: 'Only in A', hint: 'Artefacts present in pack A but not in pack B. Right column is empty.' },
+    { id: 'onlyB', label: 'Only in B', hint: 'Artefacts present in pack B but not in pack A. Left column is empty.' },
+    { id: 'both',  label: 'In both',   hint: 'Artefacts present in both packs (matched by `defines` symbol or id).' },
+    { id: 'a-b',   label: 'A − B',     hint: 'Set difference: every artefact in A, minus anything also in B.' },
+    { id: 'a+b',   label: 'A + B',     hint: 'Union: combined view of both packs without duplication.' },
   ];
   const active = state.compareSlice || 'all';
   for (const s of slices) {
@@ -1227,6 +1460,7 @@ function renderCompareFilters() {
     b.className = 'compare-slice-pill' + (s.id === active ? ' is-active' : '');
     b.dataset.slice = s.id;
     b.textContent = s.label;
+    b.title = s.hint;
     b.onclick = () => { state.compareSlice = s.id; renderMainView(); };
     wrap.appendChild(b);
   }
