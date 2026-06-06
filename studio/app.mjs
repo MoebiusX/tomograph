@@ -1083,8 +1083,6 @@ function renderCompareView(view) {
   const scaffold = document.createElement('section');
   scaffold.className = 'section compare-view';
   scaffold.dataset.layer = 'COMPARE';
-  scaffold.appendChild(renderCompareHead());
-  scaffold.appendChild(renderComparePicker());
   view.appendChild(scaffold);
 
   const haveA = !!state.pack;
@@ -1145,8 +1143,44 @@ function renderComparePackHeaders() {
   const wrap = document.createElement('div');
   wrap.className = 'compare-pack-headers';
   wrap.appendChild(renderComparePackHeader('a', state.pack,  state.diff?.a));
+
+  // Swap button BETWEEN the two cards — visually anchors the
+  // "A vs B" relationship and removes the need for a separate
+  // picker band. Disabled when there's nothing to swap to.
+  const swapWrap = document.createElement('div');
+  swapWrap.className = 'compare-swap-wrap';
+  swapWrap.innerHTML = `
+    <button class="compare-swap-btn" type="button" id="compare-swap-btn" title="Swap PACK A and PACK B (and their envs)" aria-label="Swap packs">
+      <span class="csb-arrow">⇄</span>
+      <span class="csb-label">swap</span>
+    </button>
+  `;
+  swapWrap.querySelector('#compare-swap-btn').onclick = () => {
+    const aId  = state.selectedPackId;
+    const aEnv = state.selectedEnv;
+    if (!state.compareBId) return;
+    state.selectedPackId = state.compareBId;
+    state.selectedEnv    = state.compareBEnv;
+    state.compareBId  = aId;
+    state.compareBEnv = aEnv;
+    state.diff = null; state.packB = null;
+    refresh();
+    refreshDiff();
+  };
+  wrap.appendChild(swapWrap);
+
   wrap.appendChild(renderComparePackHeader('b', state.packB, state.diff?.b));
   return wrap;
+}
+
+// Return the catalog entry for a pack id — the source of truth for
+// the human-readable label, version, criticality, environments. The
+// per-pack metadata.name in the YAML may DIFFER from the catalog
+// label (e.g. catalog "Target advanced (tier-1 reference)" vs YAML
+// metadata.name "platform-edge"); the catalog label is what the
+// user picked from the dropdown, so it wins for display.
+function catalogEntryFor(packId) {
+  return (state.catalog || []).find(p => p.id === packId) || null;
 }
 
 function renderComparePackHeader(side, pack, diffMeta) {
@@ -1164,16 +1198,45 @@ function renderComparePackHeader(side, pack, diffMeta) {
       count += (pack?.layers?.[L] || []).length;
     }
   }
+  // Resolve the active id + env per side, plus the catalog entry so we
+  // use the catalog label (what the user PICKED) rather than the YAML's
+  // metadata.name (which can differ — bug surfaced by user feedback).
+  const activeId  = (side === 'a') ? state.selectedPackId : state.compareBId;
+  const activeEnv = (side === 'a') ? state.selectedEnv   : state.compareBEnv;
+  const catalogEntry = catalogEntryFor(activeId);
+  const displayLabel = catalogEntry?.label || pack?.name || activeId || '?';
+  const envOptions   = catalogEntry?.environments || [];
+  const tierResolved = catalogEntry?.criticality || tier;
+  const versionResolved = catalogEntry?.version || pack?.meta?.version || '?';
+
+  // Build the pack + env picker options from the live catalog.
+  const packOptionsHtml = (state.catalog || [])
+    .filter(p => p.ok)
+    .map(p => `<option value="${escapeHtml(p.id)}" ${p.id === activeId ? 'selected' : ''}>${escapeHtml(p.label)}</option>`)
+    .join('');
+  const envOptionsHtml = (envOptions.length ? envOptions : (activeEnv ? [activeEnv] : []))
+    .map(e => `<option value="${escapeHtml(e)}" ${e === activeEnv ? 'selected' : ''}>${escapeHtml(e)}</option>`)
+    .join('');
+
   card.innerHTML = `
     <div class="cpc-eyebrow">PACK ${side.toUpperCase()}</div>
+    <div class="cpc-pickers">
+      <label class="cpc-pickfield">
+        <span class="cpc-pickfield-key">pack</span>
+        <select class="cpc-pack-select" data-side="${side}">${packOptionsHtml}</select>
+      </label>
+      <label class="cpc-pickfield cpc-pickfield-env">
+        <span class="cpc-pickfield-key">env</span>
+        <select class="cpc-env-select" data-side="${side}" ${envOptions.length ? '' : 'disabled'}>${envOptionsHtml || '<option>—</option>'}</select>
+      </label>
+    </div>
     <div class="cpc-row">
       <span class="cpc-source-pill" data-source="${escapeHtml(sourcePill)}">${escapeHtml(sourcePill)}</span>
-      <span class="cpc-name">${escapeHtml(pack?.name || '?')}</span>
+      <span class="cpc-name" title="catalog label">${escapeHtml(displayLabel)}</span>
     </div>
     <div class="cpc-meta">
-      <span class="cpc-meta-pill" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
-      <span class="cpc-meta-pill">v${escapeHtml(pack?.meta?.version || '?')}</span>
-      <span class="cpc-meta-pill">env: ${escapeHtml(diffMeta?.environment || pack?.meta?.environment || state[side === 'a' ? 'selectedEnv' : 'compareBEnv'] || '—')}</span>
+      <span class="cpc-meta-pill" data-tier="${escapeHtml(tierResolved)}">${escapeHtml(tierResolved)}</span>
+      <span class="cpc-meta-pill">v${escapeHtml(versionResolved)}</span>
       <span class="cpc-meta-pill cpc-count">${count} artefact${count === 1 ? '' : 's'}</span>
     </div>
     <div class="cpc-actions">
@@ -1188,6 +1251,31 @@ function renderComparePackHeader(side, pack, diffMeta) {
       </button>
     </div>
   `;
+
+  // Wire the pickers — changes trigger a reload of the affected side
+  // and re-fetch the diff.
+  const packSel = card.querySelector('.cpc-pack-select');
+  if (packSel) packSel.onchange = () => {
+    const newId = packSel.value;
+    if (side === 'a') {
+      state.selectedPackId = newId;
+      state.selectedEnv    = defaultEnvFor(newId);
+      state.diff = null;
+      refresh();
+      refreshDiff();
+    } else {
+      state.compareBId = newId;
+      state.compareBEnv = defaultEnvFor(newId);
+      state.diff = null; state.packB = null;
+      refreshDiff();
+      renderTabs(); renderMainView();
+    }
+  };
+  const envSel = card.querySelector('.cpc-env-select');
+  if (envSel) envSel.onchange = () => {
+    if (side === 'a') { state.selectedEnv = envSel.value || null; refresh(); }
+    else { state.compareBEnv = envSel.value || null; state.packB = null; state.diff = null; refreshDiff(); renderTabs(); renderMainView(); }
+  };
   // Wire the action buttons. Evaluate opens the maturity popover;
   // coverage opens a layer-by-layer count breakdown.
   const evalBtn = card.querySelector('[data-action="evaluate"]');
