@@ -158,6 +158,107 @@ function setViewFocus(focus) {
   renderMainView();
 }
 
+// ---------- persistence (localStorage) ----------
+//
+// The studio used to forget everything on refresh: which pack was open,
+// which view you were on, your layer filter, your compare slice. That's
+// fine for a demo but cruel for a tool you live in for hours. We persist
+// a small whitelist of state under a versioned key and re-hydrate on
+// boot — re-fetching packs the normal way (no skipping validation) so a
+// pack that vanished from the catalog just drops silently.
+const PERSIST_KEY = 'studioState.v1';
+const PERSIST_FIELDS = [
+  'selectedPackId', 'selectedEnv',
+  'compareBId', 'compareBEnv',
+  'view', 'layerFilter',
+  'compareSlice', 'compareSearch',
+  'viewFocus',
+  'atlasVariant', 'arborView',
+  'compileGroup', 'compileFlavor', 'compileArtifact',
+  'compileGroupB', 'compileFlavorB', 'compileArtifactB',
+];
+const persistence = {
+  _suspended: true,  // boot-phase guard — flipped to false once rehydrate finishes
+  _timer: null,
+  suspend() { this._suspended = true; if (this._timer) { clearTimeout(this._timer); this._timer = null; } },
+  resume()  { this._suspended = false; },
+  read() {
+    try {
+      const raw = localStorage.getItem(PERSIST_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      return (data && typeof data === 'object') ? data : null;
+    } catch (_) { return null; }
+  },
+  write() {
+    if (this._suspended) return;
+    const snap = {};
+    for (const k of PERSIST_FIELDS) snap[k] = state[k];
+    try { localStorage.setItem(PERSIST_KEY, JSON.stringify(snap)); } catch (_) {}
+  },
+  schedule() {
+    if (this._suspended) return;
+    if (this._timer) clearTimeout(this._timer);
+    this._timer = setTimeout(() => { this._timer = null; this.write(); }, 250);
+  },
+  clear() { try { localStorage.removeItem(PERSIST_KEY); } catch (_) {} },
+};
+
+// Rehydrate state from the persistence key. Called once after the
+// catalog + examples are loaded so we can validate pack IDs before
+// trying to load them. Returns true if it took the studio out of home
+// mode; the caller falls back to goHome() otherwise.
+async function rehydrateFromPersistence() {
+  const saved = persistence.read();
+  if (!saved) return false;
+  const allKnown = [...(state.catalog || []), ...(state._examplesCache || [])];
+  const aMeta = allKnown.find(p => p.id === saved.selectedPackId);
+  if (!aMeta) {
+    // Pack A is gone — drop the whole snapshot. Half-restoring a session
+    // (view/filter but no pack) would just confuse.
+    persistence.clear();
+    return false;
+  }
+
+  // Restore non-pack UI fields up-front so the first render shows them.
+  if (typeof saved.view === 'string')          state.view = saved.view;
+  if (typeof saved.layerFilter === 'string')   state.layerFilter = saved.layerFilter;
+  if (typeof saved.compareSlice === 'string')  state.compareSlice = saved.compareSlice;
+  if (typeof saved.compareSearch === 'string') state.compareSearch = saved.compareSearch;
+  if (saved.viewFocus === 'a' || saved.viewFocus === 'b') state.viewFocus = saved.viewFocus;
+  if (typeof saved.atlasVariant === 'string')  state.atlasVariant = saved.atlasVariant;
+  if (typeof saved.arborView === 'string')     state.arborView = saved.arborView;
+  if (typeof saved.compileGroup === 'string')  state.compileGroup = saved.compileGroup;
+  if (typeof saved.compileFlavor === 'string') state.compileFlavor = saved.compileFlavor;
+  if (typeof saved.compileArtifact === 'string') state.compileArtifact = saved.compileArtifact;
+  if (typeof saved.compileGroupB === 'string')  state.compileGroupB = saved.compileGroupB;
+  if (typeof saved.compileFlavorB === 'string') state.compileFlavorB = saved.compileFlavorB;
+  if (typeof saved.compileArtifactB === 'string') state.compileArtifactB = saved.compileArtifactB;
+
+  // Make sure the picker can label an archived example by pushing the
+  // catalog-entry shape into state.catalog (same trick renderPackBSelect uses).
+  if (!state.catalog.find(p => p.id === aMeta.id)) state.catalog.push(aMeta);
+  enterAnalyzeMode(aMeta.id, saved.selectedEnv);
+
+  // Pack B (optional) — only if both the ID still resolves AND we had
+  // env-B persisted. We don't pre-fetch B's pack object; loadPackB does that.
+  const bMeta = saved.compareBId ? allKnown.find(p => p.id === saved.compareBId) : null;
+  if (bMeta) {
+    if (!state.catalog.find(p => p.id === bMeta.id)) state.catalog.push(bMeta);
+    state.compareBId  = bMeta.id;
+    state.compareBEnv = saved.compareBEnv || defaultEnvFor(bMeta.id);
+    loadPackB().then(() => {
+      refreshDiff();
+      applyModeChrome();
+      renderPackBSelect();
+      renderEnvBSelect();
+      renderTabs();
+      renderMainView();
+    });
+  }
+  return true;
+}
+
 async function loadPack(id, env) {
   const q = env ? `?env=${encodeURIComponent(env)}` : '';
   const [pack, conformance] = await Promise.all([
@@ -547,6 +648,9 @@ function renderLayerFilterChips() {
 function renderMainView() {
   const view = $('#layer-view');
   view.innerHTML = '';
+  // Persistence: every mutation chain ends here, so this is the single
+  // hook for the debounced write. Cheap when suspended (boot phase).
+  persistence.schedule();
   if (state.mode === 'home') { renderHomeView(); return; }
   if (!state.pack) { view.innerHTML = '<div class="placeholder">Loading pack…</div>'; return; }
 
@@ -3015,8 +3119,9 @@ async function boot() {
   setupTheme();
   // Eagerly fetch /api/examples so the Pack B picker has the archived
   // reference packs available even before the user visits the home
-  // examples disclosure.
-  loadAndCacheExamples();
+  // examples disclosure. AWAITED so the persistence rehydrate below can
+  // validate saved pack IDs against the merged catalog ∪ examples set.
+  await loadAndCacheExamples();
   // Wire the Pack B "×" clear button.
   $('#pack-b-clear')?.addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -3051,8 +3156,12 @@ async function boot() {
     if (state.mode !== 'home' && state.activeLayer === 'COMPILE') renderMainView();
   });
 
-  // Land on the empty home screen — user picks Analyze or Compare.
-  goHome();
+  // Try to rehydrate from the previous session before falling back to
+  // home. Persistence stays suspended until rehydrate finishes so the
+  // boot-time mutations don't fire `schedule()` writes.
+  const restored = await rehydrateFromPersistence();
+  persistence.resume();
+  if (!restored) goHome();
 }
 
 // ============================================================
@@ -3066,8 +3175,24 @@ function goHome() {
   state.diff = null;
   state.compileCatalog = null;
   state.compileContent = null;
+  // Going home is the user saying "start over" — clear the persisted
+  // pack/compare-B IDs so the next reload doesn't re-enter analyze mode.
+  state.selectedPackId = null;
+  state.selectedEnv = null;
+  state.compareBId = null;
+  state.compareBEnv = null;
+  state.conformanceB = null;
+  state.compileCatalogB = null;
+  state.compileContentB = null;
+  state.viewFocus = 'a';
+  // Reset view so the next pack lands on the default browse, not on
+  // whatever the previous session left selected (e.g. Compile, which
+  // would be weird with no pack loaded yet).
+  state.view = 'layers';
+  state.layerFilter = 'all';
   applyModeChrome();
   renderHomeView();
+  persistence.schedule();
 }
 
 function enterAnalyzeMode(packId, env) {
