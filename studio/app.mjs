@@ -3967,12 +3967,28 @@ function renderHomeMcpCapabilities(out, host) {
   const toolsUnmatched = (ann['mcp.toolsUnmatched'] || '').split(',').filter(Boolean);
 
   // Recognised vs unrecognised tools (over what we CALLED, not what was
-  // advertised). Surfacing this honestly is part of the studio's integrity
-  // story.
+  // advertised). Tracks the canonical otel-mcp-server tool catalog
+  // (metrics_*, grafana_*, alertmanager_*, pipeline_*) plus the generic
+  // system + zk-proof tools.
   const knownTools = new Set([
+    // generic / system
     'system_health', 'system_topology',
     'anomalies_active', 'anomalies_baselines',
-    'zk_stats', 'zk_solvency',
+    // zk-proofs skill
+    'zk_proof_get', 'zk_proof_verify', 'zk_solvency', 'zk_stats',
+    // metrics skill (Prometheus)
+    'metrics_query', 'metrics_query_range', 'metrics_targets',
+    'metrics_alerts', 'metrics_metadata', 'metrics_label_values',
+    // grafana skill
+    'grafana_health', 'grafana_datasources', 'grafana_datasource_health',
+    'grafana_datasource_query', 'grafana_dashboards_search',
+    'grafana_dashboard_get', 'grafana_folders', 'grafana_alert_rules',
+    'grafana_alerts', 'grafana_contact_points',
+    // alertmanager skill
+    'alertmanager_alerts', 'alertmanager_groups', 'alertmanager_silences',
+    'alertmanager_status',
+    // pipeline skill
+    'pipeline_alloy', 'pipeline_beats', 'pipeline_fluentbit', 'pipeline_vector',
   ]);
   const recognised   = tools.filter(t => knownTools.has(t));
   const unrecognised = tools.filter(t => !knownTools.has(t));

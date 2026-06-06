@@ -533,7 +533,11 @@ export function buildCanonicalPack({
 const PROBES = [
   {
     name: 'recording_rules',
-    candidates: ['list_recording_rules', 'prometheus_recording_rules', 'metrics_recording_rules', 'mimir_recording_rules', 'rules_list_recording', 'prometheus_rules', 'rules_list'],
+    // Prometheus /api/v1/rules returns BOTH recording rules and alert rules
+    // in one payload. The otel-mcp-server's metrics_alerts tool exposes it
+    // directly (the name is historical; it returns ALL rule types). Our adapt
+    // function filters to record-only rules.
+    candidates: ['metrics_alerts', 'list_recording_rules', 'prometheus_recording_rules', 'metrics_recording_rules', 'mimir_recording_rules', 'rules_list_recording', 'prometheus_rules', 'rules_list'],
     target: 'spec.queries.recording_rules',
     adapt: (response) => {
       // Common shapes:
@@ -555,7 +559,11 @@ const PROBES = [
   },
   {
     name: 'alert_rules',
-    candidates: ['list_alert_rules', 'prometheus_alert_rules', 'metrics_alert_rules', 'mimir_alert_rules', 'rules_list_alerting', 'prometheus_alerts'],
+    // metrics_alerts (Prometheus alert rules via /api/v1/rules) and
+    // grafana_alert_rules (Grafana unified alerting) are the canonical
+    // otel-mcp-server names. alertmanager_alerts surfaces FIRING alerts
+    // (not declarations) but counts as evidence the alerting stack works.
+    candidates: ['metrics_alerts', 'grafana_alert_rules', 'alertmanager_alerts', 'list_alert_rules', 'prometheus_alert_rules', 'metrics_alert_rules', 'mimir_alert_rules', 'rules_list_alerting', 'prometheus_alerts'],
     target: 'spec.policy.burn_rate_alerts',
     adapt: (response) => {
       const groups = response?.groups || response?.data?.groups || [];
@@ -576,7 +584,9 @@ const PROBES = [
   },
   {
     name: 'dashboards',
-    candidates: ['list_dashboards', 'grafana_dashboards', 'grafana_list_dashboards', 'grafana_search_dashboards', 'dashboards_list', 'grafana_search'],
+    // grafana_dashboards_search is the canonical otel-mcp-server tool
+    // (Grafana skill). The others are legacy / community-MCP names.
+    candidates: ['grafana_dashboards_search', 'grafana_dashboard_get', 'list_dashboards', 'grafana_dashboards', 'grafana_list_dashboards', 'grafana_search_dashboards', 'dashboards_list', 'grafana_search'],
     target: 'spec.dashboards',
     adapt: (response) => {
       // Grafana /api/search shape: [{ id, uid, title, type:'dash-db', folderTitle, tags }]
@@ -594,7 +604,9 @@ const PROBES = [
   },
   {
     name: 'scrape_configs',
-    candidates: ['list_scrape_configs', 'prometheus_scrape_configs', 'prometheus_targets', 'metrics_scrape_jobs', 'list_metric_jobs'],
+    // metrics_targets is the canonical otel-mcp-server tool (metrics skill);
+    // returns the Prometheus /api/v1/targets shape. The rest are legacy.
+    candidates: ['metrics_targets', 'list_scrape_configs', 'prometheus_scrape_configs', 'prometheus_targets', 'metrics_scrape_jobs', 'list_metric_jobs'],
     target: 'spec.telemetry.scrape_evidence',   // annotation-only; no schema field
     adapt: (response) => {
       // Prometheus /api/v1/targets shape: { activeTargets: [{ labels: { job, instance } }] }
@@ -609,11 +621,23 @@ const PROBES = [
   },
   {
     name: 'metric_names',
-    candidates: ['list_metrics', 'prometheus_metric_names', 'metrics_inventory', 'mimir_metric_names'],
-    target: 'spec.otel.metric_inventory',   // annotation-only
+    // Candidates ordered by likelihood:
+    //   metrics_metadata    — canonical otel-mcp-server name (metrics skill)
+    //   metrics_label_values — fallback (returns __name__ label values)
+    //   the rest are legacy / community-MCP names
+    candidates: ['metrics_metadata', 'metrics_label_values', 'list_metrics', 'prometheus_metric_names', 'metrics_inventory', 'mimir_metric_names'],
+    target: 'spec.otel.metric_inventory',
     adapt: (response) => {
+      // metrics_metadata shape: { data: { <metric>: [{ type, help, unit }] } }
+      if (response?.data && typeof response.data === 'object' && !Array.isArray(response.data)) {
+        return Object.keys(response.data);
+      }
+      // metrics_label_values shape: { data: [<name>, <name>, ...] }
+      if (Array.isArray(response?.data)) {
+        return response.data.filter(s => typeof s === 'string');
+      }
       const names = Array.isArray(response) ? response
-        : (response?.data || response?.metrics || response?.names || []);
+        : (response?.metrics || response?.names || []);
       return Array.isArray(names) ? names.filter(s => typeof s === 'string') : [];
     },
   },
