@@ -2,11 +2,227 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ObservabilityPack Studio</title>
-  <meta http-equiv="refresh" content="0; url=studio/observabilitypack-studio.html">
-  <link rel="canonical" href="studio/observabilitypack-studio.html">
+  <meta name="description" content="Engineering bench for ObservabilityPack canonical spec v1.2 — analyze a pack, compare repo vs live, score conformance, compile to native artefacts.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --serif: 'Newsreader', 'IBM Plex Serif', Georgia, serif;
+      --ink:    #0F1B2D;
+      --ink-3:  #4A4A4A;
+      --ink-4:  #6B6B6B;
+      --line:   #D4D9DF;
+      --line-2: #E5E8EC;
+      --paper:  #FAFAF7;
+      --card:   #FFFFFF;
+      --CMP:    #7C3AED;
+      --BLD:    #047857;
+      --L1:     #C97700;
+      --L2:     #2E75B6;
+      --code-bg: #FBFBF8;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--paper);
+      color: var(--ink);
+      font: 15px/1.6 var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+    .page {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 56px 28px 80px;
+    }
+    .eyebrow {
+      font: 600 11px/1 var(--mono);
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-4);
+      margin-bottom: 14px;
+    }
+    h1 {
+      font-family: var(--serif);
+      font-weight: 600;
+      font-size: 44px;
+      line-height: 1.1;
+      letter-spacing: -0.01em;
+      margin: 0 0 18px;
+    }
+    h1 em { color: var(--CMP); font-style: italic; }
+    .lede {
+      font-family: var(--serif);
+      font-size: 19px;
+      line-height: 1.55;
+      color: var(--ink-3);
+      margin: 0 0 36px;
+      max-width: 640px;
+    }
+    h2 {
+      font-family: var(--serif);
+      font-size: 24px;
+      font-weight: 600;
+      margin: 48px 0 12px;
+      letter-spacing: -0.005em;
+    }
+    h3 {
+      font: 600 13px/1.2 var(--mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-4);
+      margin: 0 0 8px;
+    }
+    p { margin: 0 0 14px; max-width: 640px; }
+    a { color: var(--CMP); text-decoration: none; border-bottom: 1px solid currentColor; }
+    a:hover { color: var(--ink); }
+    code, pre {
+      font-family: var(--mono);
+    }
+    code {
+      font-size: 13px;
+      background: var(--code-bg);
+      border: 1px solid var(--line-2);
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: var(--ink);
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--line-2);
+      border-left: 3px solid var(--BLD);
+      border-radius: 6px;
+      padding: 16px 18px;
+      font-size: 13px;
+      line-height: 1.65;
+      overflow-x: auto;
+      margin: 14px 0;
+    }
+    pre .comment { color: var(--ink-4); }
+    .use-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 18px;
+      margin: 18px 0 0;
+    }
+    .use-card {
+      padding: 18px 20px;
+      background: var(--card);
+      border: 1px solid var(--line-2);
+      border-radius: 8px;
+    }
+    .use-card-num {
+      font: 600 11px/1 var(--mono);
+      letter-spacing: 0.1em;
+      color: var(--ink-4);
+      margin-bottom: 10px;
+    }
+    .use-card-title {
+      font: 600 15px/1.3 var(--sans);
+      margin-bottom: 6px;
+    }
+    .use-card-body {
+      font: 13.5px/1.5 var(--sans);
+      color: var(--ink-3);
+    }
+    .use-card[data-accent="L1"]  { border-left: 3px solid var(--L1); }
+    .use-card[data-accent="L2"]  { border-left: 3px solid var(--L2); }
+    .use-card[data-accent="CMP"] { border-left: 3px solid var(--CMP); }
+    .note {
+      margin-top: 20px;
+      padding: 14px 16px;
+      background: var(--card);
+      border-left: 3px solid var(--ink-4);
+      font: 13.5px/1.55 var(--sans);
+      color: var(--ink-3);
+    }
+    .note strong { color: var(--ink); }
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 24px;
+      margin-top: 20px;
+      font: 13.5px/1.5 var(--sans);
+    }
+    .links a {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .links a::before { content: '↗'; font-size: 12px; opacity: 0.6; }
+    footer {
+      margin-top: 64px;
+      padding-top: 24px;
+      border-top: 1px solid var(--line-2);
+      font: 12px/1.5 var(--mono);
+      color: var(--ink-4);
+      letter-spacing: 0.02em;
+    }
+    @media (max-width: 640px) {
+      .use-grid { grid-template-columns: 1fr; }
+      h1 { font-size: 34px; }
+      .lede { font-size: 17px; }
+      .page { padding: 40px 22px 60px; }
+    }
+  </style>
 </head>
 <body>
-  <p>Redirecting to <a href="studio/observabilitypack-studio.html">ObservabilityPack Studio</a>…</p>
+  <main class="page">
+    <div class="eyebrow">ObservabilityPack · canonical spec v1.2</div>
+    <h1><em>ObservabilityPack Studio</em></h1>
+    <p class="lede">
+      An engineering bench for canonical <a href="https://github.com/MoebiusX/otel-observability-pack">ObservabilityPack</a> manifests — analyze a pack, compare your repo against live MCP signal, score against the maturity rubric, and compile to native Prometheus, OTel Collector, Alertmanager, and Grafana artefacts.
+    </p>
+
+    <h2>What it does</h2>
+    <div class="use-grid">
+      <div class="use-card" data-accent="L1">
+        <div class="use-card-num">① ANALYZE</div>
+        <div class="use-card-title">One pack, end to end</div>
+        <div class="use-card-body">Browse by layer (L1–GOV), score conformance against the tier rubric, compile per artefact to the native platform format.</div>
+      </div>
+      <div class="use-card" data-accent="L2">
+        <div class="use-card-num">② COMPARE</div>
+        <div class="use-card-title">Repo vs live, side by side</div>
+        <div class="use-card-body">Diff two packs across every layer. Slice pills, atlas variants (Stratigraphy, Periodic Table, Constellation, Skyline, Transit, Arbor).</div>
+      </div>
+      <div class="use-card" data-accent="CMP">
+        <div class="use-card-num">③ TRACEABILITY</div>
+        <div class="use-card-title">What to do about the drift</div>
+        <div class="use-card-body">Every artefact binned into Aligned / Declared-not-verified / Verified-not-declared / Stale. Per-row resolve and suppress, persisted locally.</div>
+      </div>
+    </div>
+
+    <h2>Run it locally</h2>
+    <p>The studio is an Express server plus a thin browser client. One install, one command — boots on <code>http://127.0.0.1:8000</code>.</p>
+    <pre><span class="comment"># clone, install, run</span>
+git clone https://github.com/MoebiusX/otel-observability-pack-studio.git
+cd otel-observability-pack-studio
+npm install
+npm run dev
+<span class="comment"># open http://127.0.0.1:8000 in a browser</span></pre>
+
+    <p>Five reference packs ship under <code>examples/</code> — payment-service (the spec's canonical tier-1 example), a tier-2 partial BAU, a tier-1 aspirational target, a tier-3 minimum, and a cron-refreshed live snapshot.</p>
+
+    <div class="note">
+      <strong>No hosted demo yet.</strong> Earlier studio versions were a single static HTML file we could publish on GitHub Pages; v0.3 split into a client + Node server for the live MCP fetcher, crawler, and conformance/compile endpoints. Hosting that needs a real Node runtime — coming after the current milestone.
+    </div>
+
+    <h2>Reference</h2>
+    <div class="links">
+      <a href="https://github.com/MoebiusX/otel-observability-pack-studio">Studio repo on GitHub</a>
+      <a href="https://github.com/MoebiusX/otel-observability-pack">Canonical ObservabilityPack spec</a>
+      <a href="https://github.com/MoebiusX/otel-observability-pack/blob/main/docs/maturity-model.md">Maturity model</a>
+      <a href="https://github.com/MoebiusX/otel-observability-pack/blob/main/spec/ObservabilityPack-Spec.md">Spec v1.2</a>
+    </div>
+
+    <footer>
+      ObservabilityPack Studio · v0.3 · MIT licensed
+    </footer>
+  </main>
 </body>
 </html>

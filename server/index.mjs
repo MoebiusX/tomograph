@@ -30,6 +30,7 @@ import express from 'express';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { parse as parseYaml, emit as emitYaml } from '../tools/lib/mini-yaml.mjs';
 import { adapt, listEnvironments, applyEnvironmentOverlay } from '../tools/lib/adapter.mjs';
 import { validateCanonical, SPEC_VERSION } from '../tools/lib/validator.mjs';
@@ -106,6 +107,82 @@ function loadPackFile(relPath) {
   const text = readFileSync(abs, 'utf8');
   const ext = extname(relPath).toLowerCase();
   return ext === '.json' ? JSON.parse(text) : parseYaml(text);
+}
+
+// ---------- uploaded / crawled / drafted packs registry ----------
+//
+// In-memory registry for packs that didn't come from disk (uploaded via
+// /api/validate, crawled via /api/crawl, drafted via /api/draft-from-mcp).
+// Demoing — and any per-artefact compile, conformance score, deploy or
+// diff against a freshly-created pack — needs those packs to be addressable
+// by an id under /api/packs/:id/*. Without this they'd be opaque blobs the
+// server can't refer back to.
+//
+// Capped at MAX_UPLOADS to bound memory; oldest entry evicted on overflow.
+// Process-scoped — restart clears the map. Persistence on the client side
+// gracefully drops unknown ids on rehydrate (rehydrateFromPersistence
+// validates against catalog ∪ examples ∪ uploads).
+const UPLOADED_PACKS = new Map();   // id → { canonical, source, createdAt }
+const MAX_UPLOADS = 20;
+
+function slugify(s) {
+  return String(s || 'pack')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40) || 'pack';
+}
+
+// Deterministic content hash — same canonical → same id across restarts,
+// engineers, and environments. The first 8 hex chars of SHA-256 over the
+// JSON.stringify of the canonical pack object. 8 chars = 32 bits = ~4B
+// slots, comfortably collision-free for the demo's 20-pack cap. Run-time
+// annotations (metadata.annotations.mcp.refreshedAt etc.) ARE included in
+// the hash on purpose — two packs that differ only in their refreshedAt
+// timestamp are genuinely different snapshots and deserve distinct ids.
+function contentHash(canonical) {
+  const json = JSON.stringify(canonical || {});
+  return createHash('sha256').update(json).digest('hex').slice(0, 8);
+}
+
+function registerUploadedPack(canonical, source) {
+  const slug = slugify(canonical?.metadata?.name || source || 'pack');
+  const id = `uploaded-${slug}-${contentHash(canonical)}`;
+  // Idempotent: if the same canonical content was already registered,
+  // delete + re-insert refreshes its LRU position without minting a new
+  // id. That makes re-upload safe (no duplicate entries) AND keeps the
+  // user's pick alive when they're actively working with that pack.
+  if (UPLOADED_PACKS.has(id)) UPLOADED_PACKS.delete(id);
+  UPLOADED_PACKS.set(id, { canonical, source: source || 'upload', createdAt: Date.now() });
+  // Evict the oldest if we've blown the cap.
+  while (UPLOADED_PACKS.size > MAX_UPLOADS) {
+    const oldestKey = UPLOADED_PACKS.keys().next().value;
+    UPLOADED_PACKS.delete(oldestKey);
+  }
+  return id;
+}
+
+function uploadedMeta(id) {
+  const upl = UPLOADED_PACKS.get(id);
+  if (!upl) return null;
+  return {
+    id,
+    path: null,        // signal: not file-backed
+    canonical: upl.canonical,
+    label: upl.canonical?.metadata?.name || id,
+    description: `Uploaded pack — ${upl.source}`,
+    source: upl.source,
+    uploaded: true,
+  };
+}
+
+// Resolve a canonical pack object regardless of where it came from. Used
+// by every /api/packs/:id/* handler so uploaded packs are treated the
+// same as catalog or example packs.
+function loadPackCanonical(meta) {
+  if (meta?.canonical) return meta.canonical;
+  if (meta?.path)      return loadPackFile(meta.path);
+  throw new Error(`pack meta has neither canonical nor path: ${meta?.id}`);
 }
 
 function catalogEntry(meta) {
@@ -187,12 +264,37 @@ app.get('/healthz', (req, res) => {
 });
 
 app.get('/api/packs', (req, res) => {
-  res.json({ packs: PACK_CATALOG.map(catalogEntry) });
+  // Catalog + in-memory uploads. Uploaded packs lead the list so the
+  // picker surfaces them at the top — they're the user's just-created
+  // work and most likely what they want to interact with next.
+  const uploads = [...UPLOADED_PACKS.keys()].map(id => catalogEntryForUpload(id)).filter(Boolean);
+  res.json({ packs: [...uploads, ...PACK_CATALOG.map(catalogEntry)] });
 });
 
-// Opt-in lookup across catalog + examples — used by all the /api/packs/:id/*
-// routes so opening an example doesn't require a separate code path.
+function catalogEntryForUpload(id) {
+  const meta = uploadedMeta(id);
+  if (!meta) return null;
+  const c = meta.canonical;
+  return {
+    id,
+    label: meta.label,
+    description: meta.description,
+    name: c?.metadata?.name,
+    version: c?.metadata?.version,
+    binding: c?.metadata?.binding,
+    criticality: c?.metadata?.bindings?.criticality,
+    environments: listEnvironments(c),
+    source: 'uploaded',
+    ok: true,
+  };
+}
+
+// Opt-in lookup across uploads + catalog + examples — used by every
+// /api/packs/:id/* route so uploaded / crawled / drafted packs work the
+// same as file-backed packs (compile, conformance, diff, deploy etc).
 function findPackMeta(id) {
+  const upl = uploadedMeta(id);
+  if (upl) return upl;
   return PACK_CATALOG.find(p => p.id === id)
       || EXAMPLE_PACKS.find(p => p.id === id);
 }
@@ -207,7 +309,7 @@ app.get('/api/packs/:id', (req, res) => {
   const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
-    const canonical = loadPackFile(meta.path);
+    const canonical = loadPackCanonical(meta);
     const env = readEnv(req.query);
     const errors = validateCanonical(canonical, SCHEMA);
     if (errors.length) return res.status(500).json({ error: 'pack failed schema validation', details: errors });
@@ -222,7 +324,7 @@ app.get('/api/packs/:id/canonical', (req, res) => {
   const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
-    const canonical = loadPackFile(meta.path);
+    const canonical = loadPackCanonical(meta);
     const env = readEnv(req.query);
     const { canonical: overlaid, effective } = overlaidCanonical(canonical, env);
     res.json({ ...overlaid, __effectiveEnvironment: env, __effective: effective });
@@ -235,7 +337,7 @@ app.get('/api/packs/:id/conformance', (req, res) => {
   const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
-    const canonical = loadPackFile(meta.path);
+    const canonical = loadPackCanonical(meta);
     const env = readEnv(req.query);
     const { canonical: overlaid } = overlaidCanonical(canonical, env);
     const report = evaluateConformance(overlaid);
@@ -256,8 +358,8 @@ app.get('/api/diff', (req, res) => {
   const aEnv = typeof req.query.aEnv === 'string' && req.query.aEnv ? req.query.aEnv : null;
   const bEnv = typeof req.query.bEnv === 'string' && req.query.bEnv ? req.query.bEnv : null;
   try {
-    const aCanonical = loadPackFile(aMeta.path);
-    const bCanonical = loadPackFile(bMeta.path);
+    const aCanonical = loadPackCanonical(aMeta);
+    const bCanonical = loadPackCanonical(bMeta);
     const aLayered = adapt(aCanonical, { environment: aEnv });
     const bLayered = adapt(bCanonical, { environment: bEnv });
     res.json(diffPacks(aLayered, bLayered));
@@ -286,7 +388,7 @@ app.get('/api/packs/:id/compile-catalog', (req, res) => {
   const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
   try {
-    const canonical = loadPackFile(meta.path);
+    const canonical = loadPackCanonical(meta);
     const env = readEnv(req.query);
     const { canonical: overlaid } = overlaidCanonical(canonical, env);
     const catalog = compileCatalog(overlaid);
@@ -314,7 +416,7 @@ app.get('/api/packs/:id/compile-artifact', (req, res) => {
   const artifact = req.query.artifact ? String(req.query.artifact) : 'all';
   if (!group) return res.status(400).json({ ok: false, error: 'group query param required' });
   try {
-    const canonical = loadPackFile(meta.path);
+    const canonical = loadPackCanonical(meta);
     const env = readEnv(req.query);
     const { canonical: overlaid } = overlaidCanonical(canonical, env);
     const out = compileArtifact(overlaid, { group, flavor, artifact });
@@ -444,7 +546,7 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   if (!DEPLOY_VERSIONS[product]?.includes(version)) return res.status(400).json({ ok: false, error: `unsupported ${product} version: ${version}` });
 
   const t0 = Date.now();
-  const canonical = loadPackFile(meta.path);
+  const canonical = loadPackCanonical(meta);
   const { canonical: overlaid } = overlaidCanonical(canonical, env);
 
   // Map item.group → legacy target id used by defaultDeployTool.
@@ -562,7 +664,7 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
 
   const t0 = Date.now();
   try {
-    const canonical = loadPackFile(meta.path);
+    const canonical = loadPackCanonical(meta);
     const { canonical: overlaid } = overlaidCanonical(canonical, env);
     const compiled = compile(overlaid, target, { dashboardId });
 
@@ -617,7 +719,7 @@ app.get('/api/packs/:id/compile/:target', (req, res) => {
   const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
-    const canonical = loadPackFile(meta.path);
+    const canonical = loadPackCanonical(meta);
     const env = readEnv(req.query);
     const { canonical: overlaid } = overlaidCanonical(canonical, env);
     const opts = {
@@ -769,9 +871,14 @@ app.post('/api/draft-from-mcp', async (req, res) => {
 
     const conformance = evaluateConformance(pack);
     const canonicalYaml = banner(pack) + emitYaml(pack);
+    // Register only if validation passes; bad packs aren't addressable.
+    const registered = errors.length === 0
+      ? { id: registerUploadedPack(pack, `${pack.metadata?.name || 'mcp-draft'} (live draft)`) }
+      : null;
     process.stderr.write(`[draft-from-mcp]   ok in ${Date.now() - t0}ms; ` +
       `valid=${errors.length === 0}; ` +
       `services=${summary.discovered.backends}; ` +
+      `registered=${registered?.id || '-'}; ` +
       `failed=${summary.discovered.toolsFailed.join(',') || 'none'}\n`);
 
     res.json({
@@ -782,6 +889,7 @@ app.post('/api/draft-from-mcp', async (req, res) => {
       annotations: ann,
       validation: { ok: errors.length === 0, errors },
       conformance,
+      registered,
       tookMs: Date.now() - t0,
     });
   } catch (e) {
@@ -902,7 +1010,12 @@ app.post('/api/crawl', (req, res) => {
     const { canonical } = crawlFiles(files, opts);
     const validationErrors = validateCanonical(canonical, SCHEMA);
     const conformance = evaluateConformance(canonical);
-    process.stderr.write(`[crawl] ${entries.length} files, ${summary.files.classified} classified, ${Object.keys(evidence).length} evidence, tier=${summary.inferred.tier}, valid=${validationErrors.length === 0}, ${Date.now() - t0}ms\n`);
+    // Register the crawled canonical only if it validates. Bad packs
+    // shouldn't pollute the catalog under an addressable id.
+    const registered = validationErrors.length === 0
+      ? { id: registerUploadedPack(canonical, `${opts.repoName || canonical.metadata?.name || 'crawl'} (crawled)`) }
+      : null;
+    process.stderr.write(`[crawl] ${entries.length} files, ${summary.files.classified} classified, ${Object.keys(evidence).length} evidence, tier=${summary.inferred.tier}, valid=${validationErrors.length === 0}, registered=${registered?.id || '-'}, ${Date.now() - t0}ms\n`);
     res.json({
       ok: true,
       canonical,
@@ -911,6 +1024,7 @@ app.post('/api/crawl', (req, res) => {
       evidence,
       validation: { ok: validationErrors.length === 0, errors: validationErrors },
       conformance,
+      registered,
       tookMs: Date.now() - t0,
     });
   } catch (e) {
@@ -935,7 +1049,15 @@ app.post('/api/validate', (req, res) => {
     const adapted = adapt(canonical, { environment: env });
     const { canonical: overlaid } = overlaidCanonical(canonical, env);
     const conformance = evaluateConformance(overlaid);
-    res.json({ ok: true, adapted, conformance });
+    // Register the canonical so the rest of the API can refer to it by
+    // id. The client uses `registered.id` as the new state.selectedPackId
+    // — that unlocks per-artefact Compile, Deploy, Conformance, diff
+    // against this pack as Pack A or Pack B, etc. ?source= lets the
+    // client describe where the pack came from (file name, crawl target,
+    // mcp URL); falls back to the canonical's metadata.name.
+    const sourceHint = typeof req.query.source === 'string' && req.query.source ? req.query.source : null;
+    const id = registerUploadedPack(canonical, sourceHint || canonical.metadata?.name || 'upload');
+    res.json({ ok: true, adapted, conformance, registered: { id, source: sourceHint || null } });
   } catch (e) {
     res.status(400).json({ ok: false, errors: [e.message] });
   }

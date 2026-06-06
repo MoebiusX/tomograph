@@ -301,24 +301,17 @@ function renderPackSelect() {
   for (const p of state.catalog) {
     const opt = document.createElement('option');
     opt.value = p.id;
+    // Uploaded packs lead with a folder glyph so the user can tell
+    // them apart from file-backed catalog entries at a glance.
+    const prefix = p.source === 'uploaded' ? '📂 ' : '';
     opt.textContent = p.ok
-      ? `${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`
+      ? `${prefix}${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`
       : `${p.label} (error)`;
     if (!p.ok) opt.disabled = true;
     sel.appendChild(opt);
   }
-  if (state.uploadedSource) {
-    const opt = document.createElement('option');
-    opt.value = '__uploaded__';
-    opt.textContent = `📂 ${state.uploadedSource} (uploaded)`;
-    opt.selected = true;
-    sel.appendChild(opt);
-    sel.disabled = false;
-  } else {
-    sel.value = state.selectedPackId || (state.catalog.find(p => p.ok)?.id ?? '');
-  }
+  sel.value = state.selectedPackId || (state.catalog.find(p => p.ok)?.id ?? '');
   sel.onchange = () => {
-    if (sel.value === '__uploaded__') return;
     state.selectedPackId = sel.value;
     state.selectedEnv = defaultEnvFor(state.selectedPackId);
     refresh();
@@ -941,12 +934,37 @@ function targetScopable(target) {
 async function loadCompileCatalog() {
   const packId = focusedPackId();
   const env = focusedEnv();
-  if (!packId) return null;
+  // No pack id available — fall through to the error sentinel so
+  // renderCompileView shows a message instead of looping. Uploaded /
+  // crawled / drafted packs now register server-side and get a real id;
+  // hitting this branch means something else went wrong (e.g. the user
+  // is on home with no pack, or an upload failed validation).
+  if (!packId) {
+    setFocusedCompileCatalog({ error: 'No pack selected.', groups: [] });
+    return focusedCompileCatalog();
+  }
   const params = new URLSearchParams();
   if (env) params.set('env', env);
   try {
     const r = await fetch(`/api/packs/${encodeURIComponent(packId)}/compile-catalog?${params}`);
-    if (!r.ok) return null;
+    if (!r.ok) {
+      // CRITICAL: must NOT leave catalog null on failure. renderCompileView
+      // re-fires loadCompileCatalog every time the catalog is null, so a
+      // persistent 4xx/5xx (e.g. uploaded packs the server doesn't know
+      // about under their __uploaded__ id) would loop a fetch-and-render
+      // chain forever — that was the cause of the krystalinex-pack hang.
+      // Store an error sentinel so the next render shows an explanation.
+      let msg = `HTTP ${r.status}`;
+      try {
+        const ct = r.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          const j = await r.json();
+          if (j?.error) msg = j.error;
+        }
+      } catch (_) {}
+      setFocusedCompileCatalog({ error: msg, groups: [] });
+      return focusedCompileCatalog();
+    }
     const cat = await r.json();
     setFocusedCompileCatalog(cat);
     // Reconcile current selection with what's available (the pack may
@@ -961,7 +979,10 @@ async function loadCompileCatalog() {
     if (!g.items?.some(it => it.id === focusedCompileArtifact())) {
       setFocusedCompileArtifact(g.items?.[0]?.id || 'all');
     }
-  } catch (_) { setFocusedCompileCatalog(null); }
+  } catch (e) {
+    // Network error / parse error — same loop-prevention as above.
+    setFocusedCompileCatalog({ error: e.message || 'network error', groups: [] });
+  }
   return focusedCompileCatalog();
 }
 
@@ -1070,6 +1091,15 @@ function renderCompileView(host) {
   }
 
   const catalog = focusedCompileCatalog();
+  // Catalog-load error — show it, do NOT re-trigger the fetch. Without
+  // this guard the renderCompileView → loadCompileCatalog → renderMainView
+  // chain loops on persistent 4xx (e.g. uploaded packs the server has no
+  // id for) and hangs the tab via fetch + localStorage thrash.
+  if (catalog.error) {
+    nav.innerHTML = '<div class="placeholder">No catalog available.</div>';
+    stage.innerHTML = `<div class="error">Compile catalog failed: ${escapeHtml(catalog.error)}</div>`;
+    return;
+  }
   const groups = catalog.groups || [];
   if (!groups.length) {
     nav.innerHTML = '<div class="placeholder">This pack has nothing compilable yet — add SLOs, dashboards, or pipelines to the source.</div>';
@@ -3364,6 +3394,19 @@ async function handleFile(file) {
     state.activeLayer = 'L1';
     state.activeCardKey = null;
     state.mode = 'single';
+    // The server now registers uploaded packs and returns an id so the
+    // rest of the API (/api/packs/:id/compile-catalog, /conformance,
+    // /deploy, /diff) can address them. Use it as state.selectedPackId
+    // so Compile / Deploy / Compare all Just Work — instead of hanging
+    // the way they did pre-registration.
+    if (res.registered?.id) {
+      state.selectedPackId = res.registered.id;
+      state.selectedEnv = defaultEnvFor(state.selectedPackId);
+      // Refresh the catalog so the picker shows the new uploaded pack
+      // alongside the file-backed ones. Pack B picker reads the same
+      // catalog so it's available there too.
+      await loadCatalog();
+    }
     applyModeChrome();
     renderPackSelect();
     renderPackBSelect();
@@ -4292,6 +4335,11 @@ async function adoptCrawlResult() {
     state.activeLayer = 'L1';
     state.activeCardKey = null;
     state.mode = 'single';
+    if (res.registered?.id) {
+      state.selectedPackId = res.registered.id;
+      state.selectedEnv = defaultEnvFor(state.selectedPackId);
+      await loadCatalog();
+    }
     applyModeChrome();
     renderPackSelect();
     renderPackBSelect();
@@ -4864,6 +4912,11 @@ async function adoptDraftFromMcpResult() {
     state.activeLayer = 'L1';
     state.activeCardKey = null;
     state.mode = 'single';
+    if (res.registered?.id) {
+      state.selectedPackId = res.registered.id;
+      state.selectedEnv = defaultEnvFor(state.selectedPackId);
+      await loadCatalog();
+    }
     applyModeChrome();
     renderPackSelect();
     renderPackBSelect();
