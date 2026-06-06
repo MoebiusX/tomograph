@@ -70,6 +70,13 @@ const PACK_CATALOG = [];
 // the user opens an example.
 const EXAMPLE_PACKS = [
   {
+    id: 'kafka-reference',
+    label: 'Kafka (catalogue reference · tier-2)',
+    path: 'examples/kafka.pack.yaml',
+    description: 'State-of-the-art reference pack for Apache Kafka 3.x. Five operational vital signs, multi-window burn-rate alerts, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/kafka.md.',
+    catalogue: true,
+  },
+  {
     id: 'payment-service',
     label: 'Payment service (canonical example)',
     path: 'examples/payment-service.pack.yaml',

@@ -1,0 +1,552 @@
+# =============================================================================
+# ObservabilityPack: kafka
+# -----------------------------------------------------------------------------
+# State-of-the-art reference pack for an Apache Kafka cluster (3.x or
+# Strimzi-managed). Covers broker availability, partition replication,
+# consumer-group lag, producer/consumer request latency, controller
+# stability, and the standard chaos + synthetic validation set.
+#
+# Sourced from public, citeable references — see
+# docs/catalogue-evidence/kafka.md for the per-section evidence trail.
+#
+# Tier-2 100% MUST baseline. Most production-tier deployments should
+# benchmark against this pack and either match or exceed it.
+# =============================================================================
+
+apiVersion: observability.platform/v1
+kind: ObservabilityPack
+
+metadata:
+  name: kafka
+  version: 1.0.0
+  binding: otel-grafanalabs
+  owners:
+    - catalogue-curators
+    - team-platform-sre
+  imports:
+    - ref: platform/golden-signals-base@1.4
+    - ref: platform/std-alert-routes@3.0
+    - ref: platform/std-budget-policy@2.1
+  bindings:
+    service: kafka
+    environments: [prod, staging]
+    criticality: tier-2
+  labels:
+    category: messaging
+    subcategory: streaming
+    pack_class: reference
+  annotations:
+    catalogue_id: messaging/kafka
+    docs: https://kafka.apache.org/documentation/
+    target_versions: kafka 3.x, Strimzi 0.40+
+    evidence: docs/catalogue-evidence/kafka.md
+    promote_for_certification: tier-2
+    instruments: kafka-broker, kafka-controller, kafka-producer, kafka-consumer
+
+spec:
+
+  # ---------------------------------------------------------------------------
+  # OTel instrumentation contract
+  # ---------------------------------------------------------------------------
+  # Kafka clients (Java, Go, Node) emit messaging.* semconv telemetry. The
+  # broker side is scraped via kafka_exporter + JMX Prometheus exporter
+  # (the two standards). semconv 1.27 brings messaging.kafka.* attributes
+  # for consumer-group, partition, topic.
+  # ---------------------------------------------------------------------------
+  otel:
+    semconv: "1.27.0"
+    resource_attributes:
+      required:
+        - service.name
+        - service.namespace
+        - service.version
+        - service.instance.id
+        - deployment.environment
+      custom:
+        - kafka.cluster.id
+        - kafka.broker.id
+    sdk:
+      languages: [java, go, node]
+      sampling:
+        policy: parentbased_traceidratio
+        ratio: 0.1
+      propagators: [tracecontext, baggage]
+      log_correlation: true
+
+  # ---------------------------------------------------------------------------
+  # Telemetry backend catalog
+  # ---------------------------------------------------------------------------
+  telemetry:
+    backends:
+      - id: metrics-prom
+        signal: metrics
+        product: prometheus
+        version: { declared: "2.55", min: "2.53", gating: warn }
+        endpoints: [https://prom-a.internal:9090, https://prom-b.internal:9090]
+        auth: { kind: bearer, secretRef: prometheus-token }
+        default: true
+      - id: metrics-mimir
+        signal: metrics
+        product: mimir
+        version: { declared: "2.13", min: "2.12", gating: warn }
+        endpoints: [https://mimir.internal/api/v1/push]
+        auth: { kind: bearer, secretRef: mimir-token }
+        tenant: messaging
+      - id: logs-es
+        signal: logs
+        product: elasticsearch
+        version: { declared: "8.15", min: "8.13", gating: warn }
+        endpoints: [https://es.internal:9200]
+        auth: { kind: basic, secretRef: es-credentials }
+      - id: traces-tempo
+        signal: traces
+        product: tempo
+        version: { declared: "2.6", min: "2.5", gating: warn }
+        endpoints: [https://tempo.internal:3200]
+        auth: { kind: bearer, secretRef: tempo-token }
+
+  # ---------------------------------------------------------------------------
+  # Environments
+  # ---------------------------------------------------------------------------
+  environments:
+    prod:
+      target: ske
+      criticality: tier-2
+      backends: { metrics: metrics-mimir, logs: logs-es, traces: traces-tempo }
+      overrides:
+        storage.metrics.retention: 13mo
+        otel.sdk.sampling.ratio: 0.1
+      promote_after: 30d
+    staging:
+      target: bare-k8s
+      criticality: tier-3
+      backends: { metrics: metrics-prom, logs: logs-es, traces: traces-tempo }
+      overrides:
+        otel.sdk.sampling.ratio: 1.0
+      suppress: [deploy_freezes]
+
+  # ---------------------------------------------------------------------------
+  # 1. SLIs — Kafka's five operational vital signs.
+  # PromQL uses standard kafka_exporter + JMX exporter metric names.
+  # ---------------------------------------------------------------------------
+  slis:
+
+    # --- Broker / cluster availability ---
+    - id: broker_availability
+      type: ratio
+      description: Fraction of brokers reporting ready vs. cluster's declared broker count.
+      semconv_metric: kafka.broker.up
+      good: |
+        sum(up{job="kafka-broker"} == 1)
+      total: |
+        count(up{job="kafka-broker"})
+      owner: team-platform-sre
+
+    - id: partition_replica_health
+      type: ratio
+      description: Fraction of partitions where all in-sync replicas (ISRs) are present, vs. total partitions.
+      semconv_metric: kafka.partition.in_sync_replicas
+      good: |
+        sum(kafka_topic_partition_in_sync_replica == kafka_topic_partition_replicas)
+      total: |
+        count(kafka_topic_partition_replicas)
+
+    # --- Consumer-group freshness ---
+    - id: consumer_group_lag_seconds
+      type: threshold
+      description: |
+        Maximum consumer-group lag (in seconds equivalent), per critical
+        consumer group. Computed by dividing message-count lag by the
+        consumer's rolling consumption rate.
+      semconv_metric: messaging.kafka.consumer.lag
+      query: |
+        max by (consumergroup) (
+          kafka_consumergroup_lag /
+            (rate(kafka_consumergroup_current_offset[5m]) > 0)
+        )
+      threshold: 60
+      unit: seconds
+
+    # --- Producer / consumer request latency ---
+    - id: produce_latency_p99
+      type: threshold
+      description: 99th-percentile latency of Produce requests, server-side.
+      semconv_metric: kafka.broker.request.latency
+      query: |
+        histogram_quantile(0.99,
+          sum by (le)(
+            rate(kafka_server_RequestMetrics_localtime_ms_bucket{request="Produce"}[5m])
+          ))
+      threshold: 0.1
+      unit: seconds
+
+    - id: fetch_latency_p99
+      type: threshold
+      description: 99th-percentile latency of FetchConsumer requests, server-side.
+      semconv_metric: kafka.broker.request.latency
+      query: |
+        histogram_quantile(0.99,
+          sum by (le)(
+            rate(kafka_server_RequestMetrics_localtime_ms_bucket{request="FetchConsumer"}[5m])
+          ))
+      threshold: 0.05
+      unit: seconds
+
+    # --- Controller stability ---
+    - id: controller_election_rate
+      type: threshold
+      description: |
+        Rate of controller elections per hour. Elevated controller
+        churn signals broker instability or network issues that haven't
+        yet shown up in broker-availability metrics.
+      semconv_metric: kafka.controller.election.rate
+      query: |
+        sum(rate(kafka_controller_ControllerStats_election_rate[1h])) * 3600
+      threshold: 1
+      unit: events_per_hour
+
+  # ---------------------------------------------------------------------------
+  # 2. SLOs — tier-2 thresholds for production messaging
+  # ---------------------------------------------------------------------------
+  slos:
+    - { id: broker_availability_99_9,           sli: broker_availability,        objective: 0.999,  window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: partition_health_99_95,             sli: partition_replica_health,   objective: 0.9995, window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: consumer_lag_99_under_60s,          sli: consumer_group_lag_seconds, objective: 0.99,   window: 7d,  error_budget_policy: ref:platform/std-budget-policy }
+    - { id: produce_latency_99_p99_100ms,       sli: produce_latency_p99,        objective: 0.99,   window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: fetch_latency_99_p99_50ms,          sli: fetch_latency_p99,          objective: 0.99,   window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: controller_stability_99_under_1ph,  sli: controller_election_rate,   objective: 0.99,   window: 7d,  error_budget_policy: ref:platform/std-budget-policy }
+
+  # ---------------------------------------------------------------------------
+  # 3. Pipelines — OTel Collector for Kafka client telemetry + receivers
+  # ---------------------------------------------------------------------------
+  pipelines:
+
+    receivers:
+      - name: otlp
+        protocols: [grpc, http]
+        endpoint: 0.0.0.0:4317
+      - name: prometheus
+        scrape_configs:
+          - job_name: kafka-broker
+            scrape_interval: 30s
+            kubernetes_sd_configs:
+              - { role: pod, namespaces: { names: [kafka] } }
+            relabel_configs:
+              - source_labels: [__meta_kubernetes_pod_label_strimzi_io_kind]
+                regex: Kafka
+                action: keep
+              - source_labels: [__meta_kubernetes_pod_container_port_number]
+                regex: "9404"
+                action: keep
+          - job_name: kafka-exporter
+            scrape_interval: 30s
+            static_configs:
+              - targets: [kafka-exporter.kafka:9308]
+      - name: kafka
+        brokers: [kafka.kafka:9092]
+        topic: otlp_spans
+        encoding: otlp_proto
+
+    processors:
+      - name: memory_limiter
+        limit_percentage: 80
+      - name: batch
+        timeout: 10s
+      - name: resource
+        attributes:
+          - { key: kafka.cluster.id,    value: "${KAFKA_CLUSTER_ID}", action: upsert }
+          - { key: deployment.environment, value: "${ENV}",            action: upsert }
+      - name: transform
+        log_statements:
+          - context: log
+            statements:
+              - set(attributes["service.namespace"], "kafka") where attributes["service.namespace"] == nil
+
+    exporters:
+      metrics:
+        kind: prometheusremotewrite
+        endpoint: https://mimir.internal/api/v1/push
+        external_labels: { service: kafka }
+      logs:
+        kind: elasticsearch
+        endpoints: [https://es.internal:9200]
+        logs_index: logs-kafka-default
+      traces:
+        kind: otlp
+        endpoint: tempo.internal:4317
+
+  # ---------------------------------------------------------------------------
+  # 4. Storage
+  # ---------------------------------------------------------------------------
+  storage:
+    metrics:
+      backend: mimir
+      version: "2.13"
+      retention: 13mo
+      remote_write:
+        - url: https://mimir.internal/api/v1/push
+          tenant: messaging
+    logs:
+      backend: elasticsearch
+      version: "8.15"
+      data_stream: logs-kafka-default
+      ilm_policy: ref:platform/std-logs-ilm-90d
+    traces:
+      backend: tempo
+      version: "2.6"
+      retention: 14d
+      sampling: tail-based
+
+  # ---------------------------------------------------------------------------
+  # 5. Queries — recording rules
+  # ---------------------------------------------------------------------------
+  queries:
+    recording_rules:
+      - { name: kafka:broker_availability:ratio_5m,         expr: ref:slis.broker_availability,         interval: 30s }
+      - { name: kafka:broker_availability:error_ratio_5m,   expr: 1 - kafka:broker_availability:ratio_5m, interval: 30s }
+      - { name: kafka:partition_health:ratio_5m,            expr: ref:slis.partition_replica_health,    interval: 30s }
+      - { name: kafka:partition_health:error_ratio_5m,      expr: 1 - kafka:partition_health:ratio_5m,  interval: 30s }
+      - { name: kafka:consumer_lag:seconds_max_5m,          expr: ref:slis.consumer_group_lag_seconds,  interval: 30s }
+      - { name: kafka:produce_latency:p99_5m,               expr: ref:slis.produce_latency_p99,         interval: 30s }
+      - { name: kafka:fetch_latency:p99_5m,                 expr: ref:slis.fetch_latency_p99,           interval: 30s }
+      - { name: kafka:controller_elections:rate_1h,         expr: ref:slis.controller_election_rate,    interval: 1m }
+      - { name: kafka:errorbudget:burn_1h,                  expr: kafka:broker_availability:error_ratio_5m / (1 - 0.999), interval: 1m }
+      - { name: kafka:errorbudget:burn_6h,                  expr: kafka:broker_availability:error_ratio_5m / (1 - 0.999), interval: 1m }
+
+    derived_views:
+      - id: golden_signals_kafka
+        bind: ref:platform/golden-signals-view
+        params: { service: kafka }
+      - id: per_topic_throughput
+        bind: ref:platform/per-resource-rollup
+        params: { metric: kafka_server_BrokerTopicMetrics_messagesinpersec, by: [topic] }
+      - id: per_consumergroup_lag
+        bind: ref:platform/per-resource-rollup
+        params: { sli: consumer_group_lag_seconds, by: [consumergroup] }
+
+  # ---------------------------------------------------------------------------
+  # 6. Dashboards
+  # ---------------------------------------------------------------------------
+  dashboards:
+    - id: kafka-cluster-overview
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: kafka
+      source: file://dashboards/kafka-cluster-overview.json
+      datasources:
+        metrics: ref:platform/ds-mimir
+        logs:    ref:platform/ds-elasticsearch-logs
+        traces:  ref:platform/ds-tempo
+      panel_bindings:
+        - { panel: sli-broker-availability,    binds_to: slis.broker_availability }
+        - { panel: sli-partition-health,       binds_to: slis.partition_replica_health }
+        - { panel: sli-produce-latency,        binds_to: slis.produce_latency_p99 }
+        - { panel: sli-fetch-latency,          binds_to: slis.fetch_latency_p99 }
+        - { panel: slo-broker-availability,    binds_to: slos.broker_availability_99_9 }
+        - { panel: slo-partition-health,       binds_to: slos.partition_health_99_95 }
+
+    - id: kafka-consumer-lag
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: kafka
+      source: file://dashboards/kafka-consumer-lag.json
+      datasources:
+        metrics: ref:platform/ds-mimir
+      panel_bindings:
+        - { panel: sli-consumer-lag,           binds_to: slis.consumer_group_lag_seconds }
+        - { panel: slo-consumer-lag,           binds_to: slos.consumer_lag_99_under_60s }
+        - { panel: per-cg-lag,                 binds_to: ref:queries.per_consumergroup_lag }
+
+    - id: kafka-throughput
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: kafka
+      template: ref:platform/per-resource-template
+      params: { view: per_topic_throughput }
+
+    - id: kafka-slo-burn
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: kafka
+      template: ref:platform/slo-burn-template
+      params: { slos: [ broker_availability_99_9, partition_health_99_95, produce_latency_99_p99_100ms, fetch_latency_99_p99_50ms, consumer_lag_99_under_60s ] }
+
+  # ---------------------------------------------------------------------------
+  # 7. Policy — multi-window burn-rate alerts (Google SRE playbook)
+  # ---------------------------------------------------------------------------
+  policy:
+    burn_rate_alerts:
+      - slo: broker_availability_99_9
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: partition_health_99_95
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: produce_latency_99_p99_100ms
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: fetch_latency_99_p99_50ms
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: consumer_lag_99_under_60s
+        windows:
+          - { short: 10m, long: 1h, factor: 10, severity: SEV2 }
+          - { short: 1h,  long: 6h, factor: 4,  severity: SEV3 }
+
+      # Controller stability — multi-window because controller churn can be
+      # transient (single election from a planned restart) OR sustained
+      # (split-brain). Tier-2 alerts at SEV2 on sustained, SEV3 on transient.
+      - slo: controller_stability_99_under_1ph
+        windows:
+          - { short: 15m, long: 2h, factor: 8, severity: SEV2 }
+          - { short: 1h,  long: 6h, factor: 3, severity: SEV3 }
+
+    forecasts:
+      - { slo: broker_availability_99_9,    method: holt-winters,          horizon: 7d, on_projected_breach: open_ticket }
+      - { slo: partition_health_99_95,      method: holt-winters,          horizon: 7d, on_projected_breach: open_ticket }
+      - { slo: consumer_lag_99_under_60s,   method: percentile-of-history, horizon: 3d, on_projected_breach: post_warning }
+
+  # ---------------------------------------------------------------------------
+  # 8. Alerting routes
+  # ---------------------------------------------------------------------------
+  alerting:
+    routes:
+      - severity: SEV1
+        channels:
+          - { msteams:  "#kafka-oncall" }
+          - { voice:    "pagerduty://kafka" }
+      - severity: SEV2
+        channels:
+          - { msteams:  "#kafka-oncall" }
+          - { voice:    "pagerduty://kafka-low" }
+      - severity: SEV3
+        channels:
+          - { msteams: "#kafka-team" }
+
+    dedup: ref:platform/std-dedup
+    suppress: [ maintenance_windows, deploy_freezes, dependency_outage ]
+
+  # ---------------------------------------------------------------------------
+  # 9. Remediation — Argo Workflow guardrailed actions
+  # ---------------------------------------------------------------------------
+  remediation:
+    - trigger: alert:kafka-broker-down
+      runbook: file://runbooks/broker-down.md
+      automation: argo-workflow://restart-broker-with-quorum-check
+      guardrails:
+        max_invocations_per_hour: 2
+        requires_human_above: SEV1
+        rollback_on_failure: true
+        cooldown_after_success: 30m
+        circuit_breaker: { failures: 2, window: 1h }
+
+    - trigger: alert:kafka-partition-under-replicated
+      runbook: file://runbooks/under-replicated-partitions.md
+      automation: argo-workflow://reassign-partitions-with-throttle
+      guardrails:
+        max_invocations_per_hour: 1
+        requires_human_above: SEV2
+        rollback_on_failure: false
+        cooldown_after_success: 1h
+
+    - trigger: alert:kafka-consumer-lag-burn
+      runbook: file://runbooks/consumer-lag.md
+      automation: argo-workflow://consumer-group-scale-out
+      guardrails:
+        max_invocations_per_hour: 3
+        requires_human_above: SEV2
+        rollback_on_failure: true
+        cooldown_after_success: 15m
+
+    - trigger: alert:kafka-controller-churn
+      runbook: file://runbooks/controller-churn.md
+      automation: "manual-only"      # explicit: controller churn never auto-remediates
+      guardrails:
+        max_invocations_per_hour: 1   # gated to 1; the automation: "manual-only" sentinel above means this path is documentation-only and never auto-fires
+        requires_human_above: SEV2
+
+  # ---------------------------------------------------------------------------
+  # 10a. Baselines
+  # ---------------------------------------------------------------------------
+  baselines:
+    mttd_target_p50: 2m
+    mttd_target_p95: 5m
+    mttr_target_p50: 30m
+    mttr_target_p95: 1h
+    measurement_source: incident-mgmt + alertmanager firing timestamps
+    review_cadence: monthly
+    regression_gate: block_release_if_either_breaches_target
+
+  # ---------------------------------------------------------------------------
+  # 10b. Validation — chaos + synthetic
+  # ---------------------------------------------------------------------------
+  validation:
+
+    chaos_experiments:
+
+      - id: broker-pod-kill
+        engine: chaos-mesh
+        target: kafka-broker
+        steady_state_hypothesis: ref:slos.broker_availability_99_9
+        fault: { kind: pod-failure, fraction: 0.33, duration: 90s }
+        expected_alerts: [ kafka-broker-availability-burn-fast ]
+        expected_mttd: 90s
+        schedule: weekly
+        environment: staging
+
+      - id: broker-network-partition
+        engine: chaos-mesh
+        target: kafka-broker
+        steady_state_hypothesis: ref:slos.partition_health_99_95
+        fault: { kind: network-partition, duration: 3m }
+        expected_alerts: [ kafka-partition-health-burn-fast ]
+        expected_mttd: 2m
+        schedule: monthly
+        environment: staging
+
+      - id: consumer-group-overload
+        engine: chaos-mesh
+        target: kafka-consumer
+        steady_state_hypothesis: ref:slos.consumer_lag_99_under_60s
+        fault: { kind: producer-flood, multiplier: 5, duration: 10m }
+        expected_alerts: [ kafka-consumer-lag-burn ]
+        expected_mttd: 5m
+        schedule: monthly
+        environment: staging
+
+      - id: produce-latency-spike
+        engine: chaos-mesh
+        target: kafka-broker
+        steady_state_hypothesis: ref:slos.produce_latency_99_p99_100ms
+        fault: { kind: disk-io-latency, fraction: 0.5, duration: 5m }
+        expected_alerts: [ kafka-produce-latency-burn-fast ]
+        expected_mttd: 5m
+        schedule: monthly
+        environment: prod
+
+    synthetic_checks:
+
+      - id: produce-consume-canary
+        kind: k6
+        target: kafka.internal:9092
+        interval: 1m
+        otel_instrumentation: true
+        assertions:
+          - { produce_success: true }
+          - { round_trip_latency_lt: 500ms }
+          - { payload_match: "canary-${TIMESTAMP}" }
+        on_fail_severity: SEV2
+
+      - id: consumer-group-health
+        kind: k6
+        target: kafka.internal:9092
+        interval: 1m
+        otel_instrumentation: true
+        assertions:
+          - { consumer_groups_assigned: true }
+          - { current_offset_advancing: true }
+        on_fail_severity: SEV2
