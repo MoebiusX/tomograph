@@ -50,6 +50,7 @@ const state = {
   packB: null,                 // B's full layered pack (for atlases)
   atlasVariant: 'strata',      // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit' | 'arbor'
   atlasMorph: 0,               // 0..1 for the constellation slider
+  arborView: 'A',              // 'A' | 'B' | 'both' — arbor side-by-side toggle
   compileTarget: 'prometheus-rules',
   compileDashId: null,
   compileContent: null,        // { filename, contentType, text, source } | { error }
@@ -1280,6 +1281,8 @@ function renderAtlasView(view) {
   // Render — fetch packB lazily if missing
   const atlasOpts = {
     morph: state.atlasMorph,
+    arborView: state.arborView || 'A',
+    onArborViewChange: (v) => { state.arborView = v; renderMainView(); },
     onArtefactClick: (artefact, layerId) => openDrawer(artefact, { id: layerId }, null),
   };
   const dataset = datasetFor();

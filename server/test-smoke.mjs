@@ -275,9 +275,8 @@ try {
   const js = await getText(base, '/app.mjs');
   assert(js.includes('LAYER_DEFS'), '/app.mjs served');
   const atlasJs = await getText(base, '/atlases.mjs');
-  // Phases 7c + 7g now ship strata, periodic, constellation, skyline.
-  // Transit + Arbor return in a later restoration PR.
-  for (const fn of ['renderStrata', 'renderPeriodic', 'renderConstellation', 'renderSkyline']) {
+  // The full atlas roster is restored as of Phase 7h.
+  for (const fn of ['renderStrata', 'renderPeriodic', 'renderConstellation', 'renderSkyline', 'renderTransit', 'renderArbor']) {
     assert(atlasJs.includes(fn), `/atlases.mjs includes ${fn}`);
   }
 } finally {

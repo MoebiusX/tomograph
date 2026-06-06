@@ -58,8 +58,14 @@ export const ATLAS_META = {
     title: 'The maturity skyline',
     lede: 'A Tufte slopegraph: one line per layer, from A on the left to B on the right. The steeper the line, the larger the delta — and the louder that layer needs to be in your project plan. Labels are auto-displaced with leader lines so nothing collides.',
   },
-  transit:       { title: 'The platform as a transit network', lede: 'Coming in a later restoration PR.' },
-  arbor:         { title: 'A botanical of the platform',     lede: 'Coming in a later restoration PR.' },
+  transit: {
+    title: 'The platform as a transit network',
+    lede: 'A subway-style map. Each layer is a line; each artefact is a station. Open rings with a red ✕ are closed stations — gaps the network plan still shows but the train can\'t reach. Dashed vertical chains are interchanges, where an SLO becomes a query becomes a rule becomes an alert.',
+  },
+  arbor: {
+    title: 'A botanical of the platform',
+    lede: 'A plant rooted in the service. Branches divide upward through the layers — L1 closest to root, GOV at the canopy. Where two upper branches share a single downstream ancestor, the stems fuse: self-inosculation. From Latin "osculari" — to kiss. Two branches of the same tree, growing together until bark and wood become a single conduit.',
+  },
 };
 
 // ============================================================
@@ -855,11 +861,569 @@ function renderSkyline(host, { a, b, diff }, opts = {}) {
   });
 }
 
+// ============================================================
+// 5) TRANSIT — subway-style map.
+//
+// Each layer is a coloured horizontal line; each artefact is a station
+// on that line. L4 becomes a junction with three branches (policy /
+// alerting / healing). Stations the pack declares are filled discs;
+// gaps (artefacts only in B, viewed from A's perspective) are open
+// rings with a red ✕. Verified stations get a cyan halo.
+//
+// Interchange chains — where stations in adjacent layers share
+// approximately the same x — are drawn as dashed vertical leaders.
+// This is what makes "SLO → recording rule → alert → remediation"
+// readable as a single line of intent on the map.
+// ============================================================
+
+const TRANSIT_LAYERS = ['L1', 'L2', 'L3', 'L5', 'GOV'];   // L4 handled separately
+const TRANSIT_C = {
+  L1: '#C97700', L2: '#2E75B6', L3: '#006B6B',
+  L4: '#A22323', L5: '#5B2C82', GOV: '#4A4A4A',
+};
+
+function renderTransit(host, { a, b, diff }, opts = {}) {
+  if (!a) { host.innerHTML = '<div class="placeholder">Pack A required.</div>'; return; }
+  const A = a, B = b;
+  const onClick = opts.onArtefactClick;
+
+  // Synthesise per-layer list: present items + injected gap items
+  // (artefacts only in B viewed from A's POV). Gap markers carry
+  // _isGap = true and the artefact's id from B.
+  function withGaps(L) {
+    const present = flatLayer(A, L);
+    const gaps = (diff?.layers?.[L]?.onlyInB || []).map(e => ({ ...e.artefact, _isGap: true }));
+    return [...present, ...gaps];
+  }
+
+  const VB_W = 1100, VB_H = 720;
+  const X_LEFT = 160, X_RIGHT = 1020;
+  const Y = { L1: 100, L2: 190, L3: 280, L4_POL: 340, L4_ALR: 380, L4_HEAL: 420, L5: 520, GOV: 600 };
+  const CARD = '#11192A', INK_3 = '#9BA3AD';
+
+  function xsFor(n) {
+    if (n <= 1) return [(X_LEFT + X_RIGHT) / 2];
+    const step = (X_RIGHT - X_LEFT) / (n - 1);
+    return Array.from({ length: n }, (_, i) => X_LEFT + i * step);
+  }
+
+  // ----- per-layer station tables (excluding L4 branches) -----
+  const lines = TRANSIT_LAYERS.map(L => {
+    const list = withGaps(L);
+    const xs = xsFor(list.length);
+    const y = Y[L];
+    return { id: L, y, color: TRANSIT_C[L], stations: list.map((it, i) => ({ ...it, x: xs[i], y })) };
+  });
+
+  // L4 sub-branches
+  const L4 = A.layers?.L4 || {};
+  const polList  = (L4.policy   || []).map(x => ({ ...x, _col: 'policy'  }));
+  const alrList  = (L4.alerting || []).map(x => ({ ...x, _col: 'alerting'}));
+  const healList = (L4.healing  || []).map(x => ({ ...x, _col: 'healing' }));
+  const polXs  = xsFor(polList.length),  alrXs = xsFor(alrList.length),  healXs = xsFor(healList.length);
+  const polStations  = polList .map((it, i) => ({ ...it, x: polXs[i],  y: Y.L4_POL  }));
+  const alrStations  = alrList .map((it, i) => ({ ...it, x: alrXs[i],  y: Y.L4_ALR  }));
+  const healStations = healList.map((it, i) => ({ ...it, x: healXs[i], y: Y.L4_HEAL }));
+
+  // ----- interchange detection: adjacent layers, same column -----
+  const layerOrder = ['L1', 'L2', 'L3', 'L4_ALR', 'L5', 'GOV'];
+  const byLayer = {
+    L1: lines.find(l => l.id === 'L1').stations,
+    L2: lines.find(l => l.id === 'L2').stations,
+    L3: lines.find(l => l.id === 'L3').stations,
+    L4_ALR: alrStations,
+    L5: lines.find(l => l.id === 'L5').stations,
+    GOV: lines.find(l => l.id === 'GOV').stations,
+  };
+  const TOL = 35;
+  const interchangeStations = new Set();
+  const interchangeColumns = [];
+  for (let i = 0; i < layerOrder.length - 1; i++) {
+    const above = byLayer[layerOrder[i]], below = byLayer[layerOrder[i + 1]];
+    for (const sa of above) for (const sb of below) {
+      if (Math.abs(sa.x - sb.x) <= TOL) {
+        interchangeStations.add(sa.id);
+        interchangeStations.add(sb.id);
+        interchangeColumns.push({ x: (sa.x + sb.x) / 2, y1: sa.y, y2: sb.y });
+      }
+    }
+  }
+
+  // ----- SVG build -----
+  let svg = `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="transit-svg atlas-svg" xmlns="http://www.w3.org/2000/svg" font-family="IBM Plex Sans, system-ui">`;
+  svg += `<rect x="0" y="0" width="${VB_W}" height="${VB_H}" fill="#0A111E"/>`;
+
+  // Title
+  svg += `<text x="${VB_W/2}" y="28" text-anchor="middle"
+    style="font-family:'Newsreader', serif; font-size:18px; font-weight:600; fill:#E5E7EB;">The platform as a transit network</text>
+    <text x="${VB_W/2}" y="48" text-anchor="middle"
+      style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; fill:#9BA3AD; letter-spacing:0.04em;">
+      ● operational  ◎ live  ○ closed/gap   |   dashed = interchange chain
+    </text>`;
+
+  // Interchange columns (drawn before lines)
+  const colsByX = new Map();
+  for (const c of interchangeColumns) {
+    const key = Math.round(c.x / 8) * 8;
+    if (!colsByX.has(key)) colsByX.set(key, { x: c.x, yMin: c.y1, yMax: c.y2 });
+    const g = colsByX.get(key);
+    g.yMin = Math.min(g.yMin, c.y1, c.y2);
+    g.yMax = Math.max(g.yMax, c.y1, c.y2);
+  }
+  for (const g of colsByX.values()) {
+    svg += `<line x1="${g.x}" y1="${g.yMin}" x2="${g.x}" y2="${g.yMax}"
+              stroke="${INK_3}" stroke-width="1" stroke-dasharray="2 3" opacity="0.5"/>`;
+  }
+
+  // Headline interchange annotation — pick the leftmost cluster spanning L1 → L4_ALR
+  let canonicalCol = null;
+  for (const g of colsByX.values()) {
+    if (g.yMin <= Y.L1 + 5 && g.yMax >= Y.L4_ALR - 5) {
+      if (!canonicalCol || g.x < canonicalCol.x) canonicalCol = g;
+    }
+  }
+  if (canonicalCol) {
+    svg += `<text x="${canonicalCol.x + 10}" y="68"
+      style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; fill:#C4CCD6;">
+      interchange · the SLO → alert chain</text>`;
+  }
+
+  // Draw each line + label
+  function drawLine(x1, y, x2, color) {
+    return `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="${color}" stroke-width="7" stroke-linecap="round" opacity="0.95"/>`;
+  }
+  function lineLabel(L, y, label) {
+    return `<text x="20" y="${y - 6}" style="font-family:'IBM Plex Mono', monospace; font-size:11px; font-weight:700; fill:${TRANSIT_C[L]}; letter-spacing:0.04em;">${L}</text>
+            <text x="20" y="${y + 10}" style="font-family:'Newsreader', serif; font-size:13px; fill:#D7DCE3;">${label}</text>`;
+  }
+  for (const L of TRANSIT_LAYERS) {
+    const ln = lines.find(l => l.id === L);
+    svg += drawLine(X_LEFT - 20, ln.y, X_RIGHT + 20, ln.color);
+    svg += lineLabel(L, ln.y, LAYER_NAMES[L]);
+  }
+
+  // L4 — junction + 3 branches
+  const JX = 200, JY = Y.L4_ALR;
+  svg += lineLabel('L4', JY, 'Action');
+  svg += `<line x1="${JX}" y1="${JY}" x2="${X_RIGHT + 20}" y2="${JY}"
+    stroke="${TRANSIT_C.L4}" stroke-width="7" stroke-linecap="round"/>`;
+  const POL_X0 = JX + 40, HEAL_X0 = JX + 40;
+  svg += `<path d="M ${JX} ${JY} L ${POL_X0} ${Y.L4_POL} L ${X_RIGHT + 20} ${Y.L4_POL}"
+    stroke="${TRANSIT_C.L4}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.92"/>`;
+  svg += `<path d="M ${JX} ${JY} L ${HEAL_X0} ${Y.L4_HEAL} L ${X_RIGHT + 20} ${Y.L4_HEAL}"
+    stroke="${TRANSIT_C.L4}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.92"/>`;
+  svg += `
+    <text x="${X_RIGHT + 26}" y="${Y.L4_POL  + 4}" style="font-family:'IBM Plex Mono', monospace; font-size:10px; fill:${TRANSIT_C.L4};">policy ›</text>
+    <text x="${X_RIGHT + 26}" y="${Y.L4_ALR  + 4}" style="font-family:'IBM Plex Mono', monospace; font-size:10px; fill:${TRANSIT_C.L4};">alerting ›</text>
+    <text x="${X_RIGHT + 26}" y="${Y.L4_HEAL + 4}" style="font-family:'IBM Plex Mono', monospace; font-size:10px; fill:${TRANSIT_C.L4};">healing ›</text>
+    <text x="${JX - 6}" y="${JY - 16}" text-anchor="end"
+      style="font-family:'Newsreader', serif; font-style:italic; font-size:10.5px; fill:#9BA3AD;">junction</text>
+    <circle cx="${JX}" cy="${JY}" r="5" fill="${TRANSIT_C.L4}" stroke="#11192A" stroke-width="1.5"/>`;
+
+  // ----- station glyphs -----
+  function stationGlyph(s, L) {
+    const color = TRANSIT_C[L];
+    const inter = interchangeStations.has(s.id);
+    const baseR = inter ? 9 : 6;
+    let body = '';
+    if (s._isGap) {
+      body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR}" fill="${CARD}" stroke="${color}" stroke-width="1.7"/>`;
+      body += `<g stroke="#DC2626" stroke-width="1.8" stroke-linecap="round">
+                 <line x1="${s.x-3.4}" y1="${s.y-3.4}" x2="${s.x+3.4}" y2="${s.y+3.4}"/>
+                 <line x1="${s.x-3.4}" y1="${s.y+3.4}" x2="${s.x+3.4}" y2="${s.y-3.4}"/>
+               </g>`;
+    } else if (s.source === 'Verified') {
+      body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR + 1}" fill="#06B6D4" stroke="${color}" stroke-width="2"/>`;
+    } else {
+      body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR}" fill="${color}" stroke="${CARD}" stroke-width="1.2"/>`;
+    }
+    if (inter && !s._isGap) {
+      body += `<circle cx="${s.x}" cy="${s.y}" r="${baseR + 3}" fill="none" stroke="${color}" stroke-width="1.6" opacity="0.85"/>`;
+    }
+    return body;
+  }
+  function stationLabel(s, i) {
+    const dy = (i % 2 === 0) ? -16 : 22;
+    const lbl = s.id + (s.source === 'Verified' ? ' (live)' : '');
+    return `<text x="${s.x}" y="${s.y + dy}" text-anchor="middle"
+      style="font-family:'IBM Plex Mono', monospace; font-size:10px; fill:#D7DCE3;">${escapeHtml(lbl)}</text>`;
+  }
+  function renderStations(stations, L) {
+    return stations.map((s, i) => `
+      <g class="transit-station" data-id="${escapeHtml(s.id)}" data-layer="${L}"
+         data-from="${s._isGap ? 'b' : 'a'}" style="cursor:pointer">
+        ${stationGlyph(s, L)}
+        ${stationLabel(s, i)}
+        <title>${escapeHtml(s.id + ' — ' + (s.title || ''))}${s._isGap ? ' · gap' : ''}</title>
+      </g>`).join('');
+  }
+  for (const L of TRANSIT_LAYERS) svg += renderStations(lines.find(l => l.id === L).stations, L);
+  svg += renderStations(polStations,  'L4');
+  svg += renderStations(alrStations,  'L4');
+  svg += renderStations(healStations, 'L4');
+
+  // Reading guide footer
+  svg += `<g transform="translate(20 ${VB_H - 80})">
+    <rect x="0" y="0" width="${VB_W - 40}" height="70" rx="6" fill="#0B1424" stroke="#1F2937" stroke-width="1"/>
+    <text x="14" y="20" style="font-family:'IBM Plex Mono', monospace; font-size:11px; fill:#E5E7EB; font-weight:600;">Reading the map</text>
+    <text x="14" y="38" style="font-family:'Newsreader', serif; font-size:12px; fill:#C4CCD6;">Open circles with a red ✕ are gaps: the station exists on the plan but isn't built.</text>
+    <text x="14" y="56" style="font-family:'Newsreader', serif; font-size:12px; fill:#C4CCD6;">A dashed vertical means the SLO at top connects through query → alert → automation below.</text>
+  </g>`;
+
+  svg += `</svg>`;
+  host.innerHTML = `<div class="transit-wrap" style="background:#0A111E; border-radius:8px; padding:12px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin:4px 8px 10px; color:#C4CCD6;">
+      <span style="font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.06em;">SHOWING: ${escapeHtml(A.name)}</span>
+      ${B ? `<span style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; color:#9BA3AD;">gaps inferred from ${escapeHtml(B.name)}</span>` : ''}
+    </div>${svg}</div>`;
+
+  host.querySelectorAll('.transit-station').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.dataset.id;
+      const L = el.dataset.layer;
+      const from = el.dataset.from;
+      const pack = from === 'b' ? B : A;
+      const list = flatLayer(pack, L);
+      const target = list.find(x => x.id === id) || list[0];
+      if (target && onClick) onClick(target, L);
+    });
+  });
+}
+
+// ============================================================
+// 6) ARBOR — a botanical of the platform.
+//
+// The pack is rendered as a plant, rooted in the service and
+// branching upward through the layers — L1 closest to the root,
+// GOV at the canopy. Where two upper-layer artefacts share a single
+// downstream ancestor in the layer below, their stems CONVERGE to a
+// fusion point before branching out: self-inosculation.
+//
+// In botany: two branches of the same tree grow together until their
+// bark and wood fuse into a single conduit. Here it's exact: when
+// two L3 artefacts share a parent L2 artefact (by tag affinity), their
+// lineage is literally one branch.
+//
+// Parent selection: tag overlap > id-prefix > horizontal proximity.
+// ============================================================
+
+const ARBOR_LAYERS = ['L1', 'L2', 'L3', 'L4', 'L5', 'GOV'];
+const ARBOR_C = {
+  L1: '#C97700', L2: '#2E75B6', L3: '#006B6B',
+  L4: '#A22323', L5: '#5B2C82', GOV: '#4A4A4A',
+};
+
+function renderArbor(host, { a, b, diff }, opts = {}) {
+  if (!a) { host.innerHTML = '<div class="placeholder">Pack A required.</div>'; return; }
+  const A = a, B = b;
+  const onClick = opts.onArtefactClick;
+  const samePack = !B || A.id === B.id;
+  const mode = samePack ? 'A' : (opts.arborView || 'A');
+  const showA = mode === 'A' || mode === 'both';
+  const showB = !samePack && (mode === 'B' || mode === 'both');
+
+  function buildTree(pack, otherPack) {
+    const VB_W = 1100, VB_H = 820;
+    const TRUNK_C = '#7A4A1F', TRUNK_C_DARK = '#5B3614';
+    const PAPER = '#F7F1E1', PAPER_2 = '#EFE6CF';
+    const INK = '#3B2F1E', INK_SOFT = '#7A6A50';
+    const ROOT_X = VB_W / 2, ROOT_Y = VB_H - 60;
+    const Y = { L1: 640, L2: 520, L3: 400, L4: 290, L5: 180, GOV: 90 };
+    const X_LEFT = 100, X_RIGHT = VB_W - 100;
+
+    // Synthesise per-layer list — include B-only items as gap "buds"
+    // (only when otherPack exists).
+    function nodesFor(L) {
+      if (L === 'L4') {
+        const out = [];
+        for (const col of ['policy', 'alerting', 'healing']) {
+          for (const x of (pack.layers.L4?.[col] || [])) out.push({ ...x, _col: col, layer: 'L4' });
+        }
+        if (otherPack) {
+          const gaps = (diff?.layers?.L4?.onlyInB || []).map(e => ({ ...e.artefact, layer: 'L4', _isGap: true }));
+          out.push(...gaps);
+        }
+        return out;
+      }
+      const out = flatLayer(pack, L).map(x => ({ ...x, layer: L }));
+      if (otherPack) {
+        const gaps = (diff?.layers?.[L]?.onlyInB || []).map(e => ({ ...e.artefact, layer: L, _isGap: true }));
+        out.push(...gaps);
+      }
+      return out;
+    }
+
+    function spreadXs(n, leftPad = 0, rightPad = 0) {
+      if (n <= 0) return [];
+      const xl = X_LEFT + leftPad, xr = X_RIGHT - rightPad;
+      if (n === 1) return [(xl + xr) / 2];
+      const step = (xr - xl) / (n - 1);
+      return Array.from({ length: n }, (_, i) => xl + i * step);
+    }
+
+    const padding = { L1: 220, L2: 80, L3: 40, L4: 40, L5: 100, GOV: 220 };
+    const byLayer = {};
+    for (const L of ARBOR_LAYERS) {
+      const list = nodesFor(L);
+      const xs = spreadXs(list.length, padding[L] || 60, padding[L] || 60);
+      byLayer[L] = list.map((it, i) => ({ ...it, x: xs[i] || ROOT_X, y: Y[L] }));
+    }
+
+    // Parent assignment by tag affinity
+    function sharedTags(a, b) {
+      const as = new Set(a.tags || []);
+      let n = 0; for (const t of (b.tags || [])) if (as.has(t)) n++;
+      return n;
+    }
+    function idPrefix(id) { return (id || '').split('-')[0]; }
+    function pickParent(child, parents) {
+      if (!parents.length) return null;
+      let best = null, bestScore = -Infinity;
+      for (const p of parents) {
+        const score = sharedTags(child, p) * 10
+                    + (idPrefix(child.id) === idPrefix(p.id) ? 4 : 0)
+                    - Math.abs(child.x - p.x) / 100;
+        if (score > bestScore) { bestScore = score; best = p; }
+      }
+      return best;
+    }
+    const childrenOf = new Map();
+    for (let i = 1; i < ARBOR_LAYERS.length; i++) {
+      const upper = byLayer[ARBOR_LAYERS[i]], lower = byLayer[ARBOR_LAYERS[i - 1]];
+      for (const child of upper) {
+        const p = pickParent(child, lower);
+        if (p) {
+          if (!childrenOf.has(p.id)) childrenOf.set(p.id, []);
+          childrenOf.get(p.id).push(child);
+        }
+      }
+    }
+    function findNodeById(id) {
+      for (const L of ARBOR_LAYERS) {
+        const n = byLayer[L].find(x => x.id === id);
+        if (n) return n;
+      }
+      return null;
+    }
+
+    // ----- SVG -----
+    let svg = `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="arbor-svg atlas-svg" xmlns="http://www.w3.org/2000/svg" font-family="IBM Plex Sans, system-ui">`;
+    svg += `<defs>
+      <radialGradient id="arborBg" cx="50%" cy="92%" r="85%">
+        <stop offset="0%"   stop-color="${PAPER}"/>
+        <stop offset="60%"  stop-color="${PAPER_2}"/>
+        <stop offset="100%" stop-color="#E2D6B6"/>
+      </radialGradient>
+      <radialGradient id="canopyGlow" cx="50%" cy="0%" r="60%">
+        <stop offset="0%"   stop-color="#A8C97A" stop-opacity="0.35"/>
+        <stop offset="100%" stop-color="#A8C97A" stop-opacity="0"/>
+      </radialGradient>
+      <filter id="leafShadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur in="SourceAlpha" stdDeviation="1.2"/>
+        <feOffset dx="0" dy="1" result="off"/>
+        <feComponentTransfer><feFuncA type="linear" slope="0.35"/></feComponentTransfer>
+        <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+    <rect x="0" y="0" width="${VB_W}" height="${VB_H}" fill="url(#arborBg)"/>
+    <rect x="0" y="0" width="${VB_W}" height="280" fill="url(#canopyGlow)"/>`;
+
+    // Title
+    svg += `<text x="${VB_W/2}" y="32" text-anchor="middle"
+      style="font-family:'Newsreader', serif; font-size:18px; font-weight:600; fill:${INK};">A botanical of the platform</text>
+      <text x="${VB_W/2}" y="52" text-anchor="middle"
+        style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; fill:${INK_SOFT}; letter-spacing:0.04em;">
+        rooted in the service · branches fuse where lineage is shared (self-inosculation)
+      </text>`;
+
+    // Layer guide rules + names
+    for (const L of ARBOR_LAYERS) {
+      const y = Y[L];
+      svg += `<line x1="${X_LEFT - 40}" y1="${y}" x2="${X_RIGHT + 40}" y2="${y}"
+        stroke="${INK_SOFT}" stroke-width="0.6" stroke-dasharray="1 6" opacity="0.4"/>
+        <text x="${X_LEFT - 50}" y="${y - 6}" text-anchor="end"
+          style="font-family:'IBM Plex Mono', monospace; font-size:10px; font-weight:700; fill:${ARBOR_C[L]}; letter-spacing:0.04em;">${L}</text>
+        <text x="${X_LEFT - 50}" y="${y + 8}" text-anchor="end"
+          style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; fill:${INK_SOFT};">${LAYER_NAMES[L]}</text>`;
+    }
+
+    // Trunk: root → L1 fanout
+    const l1Nodes = byLayer.L1;
+    svg += `<line x1="${ROOT_X}" y1="${ROOT_Y}" x2="${ROOT_X}" y2="${Y.L1 + 60}"
+      stroke="${TRUNK_C_DARK}" stroke-width="14" stroke-linecap="round"/>`;
+    svg += `<ellipse cx="${ROOT_X}" cy="${ROOT_Y + 14}" rx="120" ry="10" fill="#4A3622" opacity="0.55"/>`;
+    svg += `<ellipse cx="${ROOT_X}" cy="${ROOT_Y + 20}" rx="160" ry="6" fill="#3B2A18" opacity="0.35"/>`;
+    for (const n of l1Nodes) {
+      svg += `<path d="M ${ROOT_X} ${Y.L1 + 60}
+        C ${ROOT_X} ${Y.L1 + 50}, ${n.x} ${Y.L1 + 10}, ${n.x} ${n.y}"
+        stroke="${TRUNK_C}" stroke-width="6" fill="none" stroke-linecap="round"/>`;
+    }
+
+    // Branches + inosculation
+    function branchPath(parent, child) {
+      const dy = parent.y - child.y;
+      return `<path d="M ${parent.x} ${parent.y - 6}
+        C ${parent.x} ${parent.y - dy * 0.45}, ${child.x} ${child.y + dy * 0.45}, ${child.x} ${child.y + 6}"
+        stroke="${TRUNK_C}" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.9"/>`;
+    }
+    const inoscFusionPoints = [];
+    for (const [parentId, children] of childrenOf) {
+      const parent = findNodeById(parentId);
+      if (!parent) continue;
+      if (children.length === 1) { svg += branchPath(parent, children[0]); continue; }
+      const meanChildX = children.reduce((s, c) => s + c.x, 0) / children.length;
+      const childY = children[0].y;
+      const fY = parent.y + (childY - parent.y) * 0.42;
+      const fX = (parent.x + meanChildX) / 2;
+      inoscFusionPoints.push({ x: fX, y: fY, n: children.length });
+      svg += `<path d="M ${parent.x} ${parent.y - 6}
+        C ${parent.x} ${parent.y - 30}, ${fX} ${fY + 40}, ${fX} ${fY}"
+        stroke="${TRUNK_C}" stroke-width="4.5" fill="none" stroke-linecap="round"/>`;
+      for (const c of children) {
+        svg += `<path d="M ${fX} ${fY}
+          C ${fX} ${fY - 30}, ${c.x} ${c.y + 30}, ${c.x} ${c.y + 6}"
+          stroke="${TRUNK_C}" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.92"/>`;
+      }
+      // Inosculation knot
+      svg += `<ellipse cx="${fX}" cy="${fY}" rx="5" ry="3.2"
+        fill="${TRUNK_C_DARK}" stroke="${PAPER}" stroke-width="0.8"
+        transform="rotate(20 ${fX} ${fY})"/>`;
+    }
+
+    // Leaves
+    function leafGlyph(n) {
+      const color = ARBOR_C[n.layer];
+      const isCanopy = n.layer === 'GOV' || n.layer === 'L5';
+      const baseR = isCanopy ? 9 : 7;
+      let body = '';
+      if (n._isGap) {
+        body += `<circle cx="${n.x}" cy="${n.y}" r="${baseR}" fill="${PAPER}" stroke="${color}" stroke-width="1.7"/>`;
+        body += `<g stroke="#DC2626" stroke-width="1.8" stroke-linecap="round">
+                   <line x1="${n.x-3.4}" y1="${n.y-3.4}" x2="${n.x+3.4}" y2="${n.y+3.4}"/>
+                   <line x1="${n.x-3.4}" y1="${n.y+3.4}" x2="${n.x+3.4}" y2="${n.y-3.4}"/>
+                 </g>`;
+      } else if (n.source === 'Verified') {
+        body += `<circle cx="${n.x}" cy="${n.y}" r="${baseR + 5}" fill="#06B6D4" opacity="0.22"/>`;
+        body += `<circle cx="${n.x}" cy="${n.y}" r="${baseR + 1}" fill="#06B6D4" stroke="${color}" stroke-width="1.6"/>`;
+      } else {
+        body += `<ellipse cx="${n.x}" cy="${n.y}" rx="${baseR + 1}" ry="${baseR - 2}"
+          fill="${color}" stroke="${PAPER}" stroke-width="1.2"
+          transform="rotate(-25 ${n.x} ${n.y})" filter="url(#leafShadow)"/>`;
+      }
+      return body;
+    }
+    function leafLabel(n, idx) {
+      const dy = (idx % 2 === 0) ? -14 : 20;
+      return `<text x="${n.x}" y="${n.y + dy}" text-anchor="middle"
+        style="font-family:'IBM Plex Mono', monospace; font-size:9.5px; fill:${INK};">${escapeHtml(n.id)}</text>`;
+    }
+    for (const L of ARBOR_LAYERS) {
+      byLayer[L].forEach((n, i) => {
+        svg += `<g class="arbor-node" data-id="${escapeHtml(n.id)}" data-layer="${L}"
+                  data-from="${n._isGap ? 'b' : 'a'}" style="cursor:pointer">
+                  ${leafGlyph(n)}
+                  ${leafLabel(n, i)}
+                  <title>${escapeHtml(n.id + ' — ' + (n.title || ''))}${n._isGap ? ' · gap (from B)' : ''}</title>
+                </g>`;
+      });
+    }
+
+    // Root + label
+    svg += `<circle cx="${ROOT_X}" cy="${ROOT_Y}" r="9" fill="${TRUNK_C_DARK}" stroke="${PAPER}" stroke-width="1.5"/>`;
+    svg += `<text x="${ROOT_X}" y="${ROOT_Y + 38}" text-anchor="middle"
+      style="font-family:'Newsreader', serif; font-style:italic; font-size:12px; fill:${INK_SOFT};">root · the service</text>`;
+
+    // Inosculation legend
+    if (inoscFusionPoints.length) {
+      const total = inoscFusionPoints.length;
+      const totalChildren = inoscFusionPoints.reduce((s, p) => s + p.n, 0);
+      svg += `<g transform="translate(${VB_W - 280} ${VB_H - 92})">
+        <rect x="0" y="0" width="260" height="74" rx="8" fill="#FFFDF6" stroke="${INK_SOFT}" stroke-width="0.8" opacity="0.92"/>
+        <ellipse cx="20" cy="22" rx="5.5" ry="3.5" fill="${TRUNK_C_DARK}" transform="rotate(20 20 22)"/>
+        <text x="36" y="20" style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; font-weight:700; fill:${INK};">SELF-INOSCULATION</text>
+        <text x="36" y="36" style="font-family:'Newsreader', serif; font-size:11px; fill:${INK};">${total} fusion point${total === 1 ? '' : 's'} · ${totalChildren} converging branches</text>
+        <text x="14" y="58" style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; fill:${INK_SOFT};">Two branches sharing an ancestor</text>
+        <text x="14" y="71" style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; fill:${INK_SOFT};">fuse — lineage made visible.</text>
+      </g>`;
+    }
+
+    // Reading guide
+    svg += `<g transform="translate(20 ${VB_H - 92})">
+      <rect x="0" y="0" width="420" height="74" rx="8" fill="#FFFDF6" stroke="${INK_SOFT}" stroke-width="0.8" opacity="0.92"/>
+      <text x="14" y="20" style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; fill:${INK}; font-weight:700;">READING THE PLANT</text>
+      <text x="14" y="38" style="font-family:'Newsreader', serif; font-size:11.5px; fill:${INK};">Filled ellipses = present · cyan halo = verified · ✕ open ring = gap.</text>
+      <text x="14" y="55" style="font-family:'Newsreader', serif; font-size:11.5px; fill:${INK};">Affinity by shared tags decides parentage — which is what produces inosculation.</text>
+      <text x="14" y="70" style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; fill:${INK_SOFT};">Click any leaf to open its drawer.</text>
+    </g>`;
+
+    svg += `</svg>`;
+    return svg;
+  }
+
+  const svgA = showA ? buildTree(A, B) : null;
+  const svgB = showB ? buildTree(B, A) : null;
+
+  const cardA = svgA ? `
+    <div class="arbor-wrap" data-pack="A" style="background:#EFE6CF; border-radius:8px; padding:12px; min-width:0;">
+      <div style="display:flex; justify-content:space-between; margin:4px 8px 10px; color:#3B2F1E;">
+        <span style="font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.06em;">PACK A · ${escapeHtml(A.name)}</span>
+        <span style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; color:#7A6A50;">${escapeHtml(A.meta?.criticality || '')}</span>
+      </div>${svgA}</div>` : '';
+  const cardB = svgB ? `
+    <div class="arbor-wrap" data-pack="B" style="background:#EFE6CF; border-radius:8px; padding:12px; min-width:0;">
+      <div style="display:flex; justify-content:space-between; margin:4px 8px 10px; color:#3B2F1E;">
+        <span style="font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.06em;">PACK B · ${escapeHtml(B?.name || '')}</span>
+        <span style="font-family:'IBM Plex Mono', monospace; font-size:10.5px; color:#7A6A50;">${escapeHtml(B?.meta?.criticality || '')}</span>
+      </div>${svgB}</div>` : '';
+  const gridCols = (showA && showB) ? 'minmax(0,1fr) minmax(0,1fr)' : '1fr';
+
+  host.innerHTML = `
+    <div class="arbor-toolbar" style="display:flex; gap:10px; align-items:center; margin:2px 2px 10px;">
+      <label style="font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.06em; color:var(--ink-4);">VIEW</label>
+      <select id="arborViewSel" ${samePack ? 'disabled' : ''}
+        style="font-family:'IBM Plex Mono', monospace; font-size:11px; padding:4px 8px; border-radius:6px;">
+        <option value="A"    ${mode === 'A'    ? 'selected' : ''}>Pack A · ${escapeHtml(A.name)}</option>
+        <option value="B"    ${mode === 'B'    ? 'selected' : ''} ${samePack ? 'disabled' : ''}>Pack B · ${escapeHtml((B || A).name)}</option>
+        <option value="both" ${mode === 'both' ? 'selected' : ''} ${samePack ? 'disabled' : ''}>Both side-by-side</option>
+      </select>
+      ${samePack ? `<span style="font-family:'Newsreader', serif; font-style:italic; font-size:11px; color:var(--ink-4);">pick a Pack B to enable side-by-side</span>` : ''}
+    </div>
+    <div class="arbor-pair" style="display:grid; grid-template-columns:${gridCols}; gap:14px; align-items:start;">
+      ${cardA}${cardB}
+    </div>`;
+
+  // Click-through per card
+  const cardAEl = host.querySelector('[data-pack="A"]');
+  if (cardAEl) cardAEl.querySelectorAll('.arbor-node').forEach(el => {
+    el.addEventListener('click', () => {
+      const list = flatLayer(A, el.dataset.layer);
+      const target = list.find(x => x.id === el.dataset.id) || list[0];
+      if (target && onClick) onClick(target, el.dataset.layer);
+    });
+  });
+  const cardBEl = host.querySelector('[data-pack="B"]');
+  if (cardBEl && B) cardBEl.querySelectorAll('.arbor-node').forEach(el => {
+    el.addEventListener('click', () => {
+      const list = flatLayer(B, el.dataset.layer);
+      const target = list.find(x => x.id === el.dataset.id) || list[0];
+      if (target && onClick) onClick(target, el.dataset.layer);
+    });
+  });
+
+  // View selector
+  const sel = host.querySelector('#arborViewSel');
+  if (sel) sel.addEventListener('change', () => {
+    opts.onArborViewChange?.(sel.value);
+  });
+}
+
 const RENDERERS = {
   strata:        renderStrata,
   periodic:      renderPeriodic,
   constellation: renderConstellation,
   skyline:       renderSkyline,
+  transit:       renderTransit,
+  arbor:         renderArbor,
 };
 
 export function render(variant, host, dataset, opts = {}) {
