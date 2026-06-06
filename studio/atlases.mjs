@@ -50,8 +50,14 @@ export const ATLAS_META = {
   },
   // The four below are intentionally not exported via VARIANTS yet —
   // they'll come back as their faithful ports land.
-  constellation: { title: 'The night sky of the platform',  lede: 'Coming in the next restoration PR.' },
-  skyline:       { title: 'The maturity skyline',           lede: 'Coming in the next restoration PR.' },
+  constellation: {
+    title: 'The night sky of the platform',
+    lede: 'A celestial chart of the observability domain. Bright stars are present; dashed ghosts are gaps. Asterism lines connect symbols within the same layer. Drag the slider to see the sky fill in — every gap closed is a star reignited. After Cellarius (1660) and Hevelius (1690).',
+  },
+  skyline: {
+    title: 'The maturity skyline',
+    lede: 'A Tufte slopegraph: one line per layer, from A on the left to B on the right. The steeper the line, the larger the delta — and the louder that layer needs to be in your project plan. Labels are auto-displaced with leader lines so nothing collides.',
+  },
   transit:       { title: 'The platform as a transit network', lede: 'Coming in a later restoration PR.' },
   arbor:         { title: 'A botanical of the platform',     lede: 'Coming in a later restoration PR.' },
 };
@@ -479,9 +485,381 @@ function shorten(s, n) {
 // Public dispatcher
 // ============================================================
 
+// ============================================================
+// 3) CONSTELLATION — celestial chart.
+//
+// Polar layout: 6 layer sectors (L1..L5, plus L2X) radiating from a
+// central compass-rose, GOV ringed on the outer arc. Each artefact is a
+// star placed at a deterministic (hash-based) polar position so the
+// chart reads the same on every render. Stars in the same layer are
+// joined by faint asterism lines (the "constellation").
+//
+// Source / set-membership encodes brightness:
+//   - in both packs → bright always
+//   - only in A    → bright at mix=0, fades as mix→1
+//   - only in B    → dim at mix=0, reignites as mix→1
+// Mix slider drives a CSS-free opacity animation per star.
+//
+// Reads from defs: `starGlow` Gaussian-blur bloom and per-layer
+// `radialGradient` nebulae (the warm haze across each sector).
+// ============================================================
+
+const CONST_LAYERS = ['L1', 'L2', 'L2X', 'L3', 'L4', 'L5'];
+const CONST_HEX = {
+  L1:  '#FFB45A', L2:  '#79A8E5', L2X: '#5BC8C2',
+  L3:  '#4FC3B8', L4:  '#E07474', L5:  '#A37FCC',
+};
+
+function hashStr(s) {
+  let x = 0;
+  for (let i = 0; i < s.length; i++) x = (x * 31 + s.charCodeAt(i)) | 0;
+  return ((x ^ (x >>> 13)) >>> 0) / 4294967295;
+}
+
+function renderConstellation(host, { a, b, diff }, opts = {}) {
+  if (!a || !b) {
+    host.innerHTML = '<div class="placeholder">Pick a Pack B to render the constellation.</div>';
+    return;
+  }
+  const A = a, B = b;
+  const onClick = opts.onArtefactClick;
+  const mix = typeof opts.morph === 'number' ? Math.max(0, Math.min(1, opts.morph)) : 0;
+
+  function unionLayer(L) {
+    const aItems = flatLayer(A, L);
+    const bItems = flatLayer(B, L);
+    const map = new Map();
+    for (const x of aItems) map.set(x.defines || x.id, { ...x, inA: true, inB: false, _from: 'a' });
+    for (const x of bItems) {
+      const k = x.defines || x.id;
+      const ex = map.get(k);
+      if (ex) { ex.inB = true; }
+      else map.set(k, { ...x, inA: false, inB: true, _from: 'b' });
+    }
+    return Array.from(map.values());
+  }
+
+  const VB = 900, CX = VB / 2, CY = VB / 2;
+  const R_INNER = 90, R_OUTER = 360;
+  const govR = R_OUTER + 30;
+  const N = CONST_LAYERS.length;
+
+  // ----- defs -----
+  let svg = `<svg viewBox="0 0 ${VB} ${VB}" class="const-svg atlas-svg" xmlns="http://www.w3.org/2000/svg" font-family="IBM Plex Sans, system-ui">`;
+  svg += `<defs>
+    <filter id="starGlow" x="-300%" y="-300%" width="600%" height="600%">
+      <feGaussianBlur stdDeviation="2.4" result="b1"/>
+      <feGaussianBlur stdDeviation="6" result="b2"/>
+      <feMerge>
+        <feMergeNode in="b2"/>
+        <feMergeNode in="b1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    ${CONST_LAYERS.map(L => `
+      <radialGradient id="neb-${L}" cx="50%" cy="50%" r="50%">
+        <stop offset="0%"   stop-color="${CONST_HEX[L]}" stop-opacity="0.10"/>
+        <stop offset="100%" stop-color="${CONST_HEX[L]}" stop-opacity="0"/>
+      </radialGradient>`).join('')}
+  </defs>`;
+
+  // ----- night-sky background + magnitude rings -----
+  svg += `<rect x="0" y="0" width="${VB}" height="${VB}" fill="#0B1530"/>`;
+  for (let r = R_INNER; r <= R_OUTER; r += 70) {
+    svg += `<circle cx="${CX}" cy="${CY}" r="${r}" fill="none" stroke="rgba(232,220,196,0.16)" stroke-width="0.5"/>`;
+  }
+  svg += `<circle cx="${CX}" cy="${CY}" r="${govR}" fill="none" stroke="rgba(232,220,196,0.22)" stroke-width="0.6"/>`;
+
+  // ----- spokes between sectors -----
+  for (let i = 0; i < N; i++) {
+    const angle = (-Math.PI / 2) + i * (2 * Math.PI / N);
+    const x1 = CX + Math.cos(angle) * R_INNER;
+    const y1 = CY + Math.sin(angle) * R_INNER;
+    const x2 = CX + Math.cos(angle) * R_OUTER;
+    const y2 = CY + Math.sin(angle) * R_OUTER;
+    svg += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(232,220,196,0.18)" stroke-width="0.6"/>`;
+  }
+
+  // ----- nebulae per sector (faint glow) -----
+  CONST_LAYERS.forEach((L, i) => {
+    const angle = (-Math.PI / 2) + (i + 0.5) * (2 * Math.PI / N);
+    const nx = CX + Math.cos(angle) * (R_INNER + R_OUTER) / 2;
+    const ny = CY + Math.sin(angle) * (R_INNER + R_OUTER) / 2;
+    svg += `<circle cx="${nx}" cy="${ny}" r="120" fill="url(#neb-${L})"/>`;
+  });
+
+  // ----- central compass-rose -----
+  svg += `<g>
+    <circle cx="${CX}" cy="${CY}" r="50" fill="none" stroke="rgba(232,220,196,0.30)" stroke-width="0.6"/>
+    <circle cx="${CX}" cy="${CY}" r="36" fill="none" stroke="rgba(232,220,196,0.20)" stroke-width="0.5"/>
+    <g transform="translate(${CX} ${CY})">
+      ${[0, 60, 120, 180, 240, 300].map(a => {
+        const rad = a * Math.PI / 180;
+        const x1 = Math.cos(rad) * 20, y1 = Math.sin(rad) * 20;
+        const x2 = Math.cos(rad) * 50, y2 = Math.sin(rad) * 50;
+        return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(232,220,196,0.4)" stroke-width="0.5"/>`;
+      }).join('')}
+      <text x="0" y="-58" text-anchor="middle" style="font-family:'Newsreader', serif; font-style:italic; fill:#E8DCC4; font-size:11px;">★</text>
+      <text x="0" y="4"   text-anchor="middle" style="font-family:'Newsreader', serif; font-style:italic; fill:#E8DCC4; font-size:9px; letter-spacing:0.10em;">OBSERVO</text>
+      <text x="0" y="14"  text-anchor="middle" style="font-family:'IBM Plex Mono', monospace; fill:rgba(232,220,196,0.55); font-size:7.5px; letter-spacing:0.16em;">${escapeHtml(A.name || 'A')} → ${escapeHtml(B.name || 'B')}</text>
+    </g>
+  </g>`;
+
+  // ----- sector labels at the rim -----
+  CONST_LAYERS.forEach((L, i) => {
+    const angle = (-Math.PI / 2) + (i + 0.5) * (2 * Math.PI / N);
+    const lx = CX + Math.cos(angle) * (R_OUTER + 22);
+    const ly = CY + Math.sin(angle) * (R_OUTER + 22);
+    const angleDeg = (angle * 180 / Math.PI);
+    const rotate = (Math.cos(angle) < 0) ? angleDeg + 180 : angleDeg;
+    svg += `<text x="${lx}" y="${ly}" text-anchor="middle" dominant-baseline="middle"
+      transform="rotate(${rotate} ${lx} ${ly})"
+      style="font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.10em; fill:rgba(232,220,196,0.75);">${L} · ${LAYER_NAMES[L].toUpperCase()}</text>`;
+  });
+
+  // ----- stars per sector, with asterism lines -----
+  const sectorStars = {};
+  CONST_LAYERS.forEach((L, i) => {
+    const items = unionLayer(L);
+    const sectorAngleStart = (-Math.PI / 2) + i * (2 * Math.PI / N) + 0.08;
+    const sectorAngleEnd   = (-Math.PI / 2) + (i + 1) * (2 * Math.PI / N) - 0.08;
+    const sectorWidth = sectorAngleEnd - sectorAngleStart;
+    sectorStars[L] = [];
+    items.forEach((item, j) => {
+      const hash  = hashStr(item.id + L);
+      const hash2 = hashStr(item.id + '#radial');
+      const t = items.length > 0 ? (j + 0.5) / items.length : 0.5;
+      const wob = (hash - 0.5) * sectorWidth * 0.25;
+      const angle = sectorAngleStart + t * sectorWidth + wob;
+      const radius = R_INNER + 30 + hash2 * (R_OUTER - R_INNER - 60);
+      const x = CX + Math.cos(angle) * radius;
+      const y = CY + Math.sin(angle) * radius;
+      sectorStars[L].push({ item, x, y });
+    });
+    // Asterism: thin polyline connecting consecutive stars in this layer.
+    if (sectorStars[L].length >= 2) {
+      const pts = sectorStars[L];
+      let path = `M ${pts[0].x} ${pts[0].y}`;
+      for (let k = 1; k < pts.length; k++) path += ` L ${pts[k].x} ${pts[k].y}`;
+      svg += `<path d="${path}" fill="none" stroke="rgba(255,246,224,0.18)" stroke-width="0.6"/>`;
+    }
+  });
+
+  // ----- draw stars -----
+  CONST_LAYERS.forEach(L => {
+    const color = CONST_HEX[L];
+    sectorStars[L].forEach(({ item, x, y }) => {
+      const r = 2.5 + (hashStr(item.id) * 2.2);
+      const onlyA = item.inA && !item.inB;
+      const onlyB = item.inB && !item.inA;
+      const both  = item.inA && item.inB;
+      const cls = both ? 'inboth' : (onlyA ? 'only-a' : 'only-b');
+      // Opacity is animated by JS based on mix.
+      svg += `<g class="const-star" data-cls="${cls}" data-id="${escapeHtml(item.id)}"
+                 data-layer="${L}" data-from="${escapeHtml(item._from)}" style="cursor:pointer">
+        <circle class="star-halo" cx="${x}" cy="${y}" r="${r * 2.4}" fill="${color}" opacity="0.22" filter="url(#starGlow)"/>
+        ${onlyB
+          ? `<circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" stroke-width="0.9" stroke-dasharray="1.5 1.5"/>`
+          : `<circle cx="${x}" cy="${y}" r="${r}" fill="#FFF6E0"/>`}
+        ${both ? `<g stroke="#FFF6E0" stroke-width="0.5" opacity="0.55">
+          <line x1="${x - r*2.5}" y1="${y}" x2="${x + r*2.5}" y2="${y}"/>
+          <line x1="${x}" y1="${y - r*2.5}" x2="${x}" y2="${y + r*2.5}"/>
+        </g>` : ''}
+        <title>${escapeHtml(item.id + ' · ' + (item.title || ''))}</title>
+      </g>`;
+    });
+  });
+
+  // ----- GOV markers on the outer arc -----
+  const gItems = unionLayer('GOV');
+  gItems.forEach((item, i) => {
+    const t = gItems.length > 0 ? (i + 0.5) / gItems.length : 0.5;
+    const angle = Math.PI * 0.55 + t * Math.PI * 0.9;
+    const x = CX + Math.cos(angle) * (govR + 8);
+    const y = CY + Math.sin(angle) * (govR + 8);
+    const isGap = !item.inA && item.inB;
+    const cls = (item.inA && item.inB) ? 'inboth' : (item.inA ? 'only-a' : 'only-b');
+    svg += `<g class="const-star" data-cls="${cls}" data-id="${escapeHtml(item.id)}"
+               data-layer="GOV" data-from="${escapeHtml(item._from)}" style="cursor:pointer">
+      <circle cx="${x}" cy="${y}" r="2.6"
+        fill="${isGap ? 'rgba(220,38,38,0.35)' : '#FFF6E0'}"
+        ${isGap ? 'stroke="rgba(220,38,38,0.7)" stroke-width="0.8" stroke-dasharray="1 1.2"' : ''}/>
+      <title>${escapeHtml(item.id + ' · ' + (item.title || ''))}</title>
+    </g>`;
+  });
+  svg += `<text x="${CX}" y="${CY + govR + 50}" text-anchor="middle"
+    style="font-family:'IBM Plex Mono', monospace; font-size:9.5px; letter-spacing:0.12em; fill:rgba(232,220,196,0.65);">GOVERNANCE · constellation of evidence</text>`;
+
+  svg += `</svg>`;
+  host.innerHTML = svg;
+
+  // ----- per-star opacity animation driven by `mix` -----
+  function applyMix(m) {
+    host.querySelectorAll('.const-star').forEach(el => {
+      const cls = el.dataset.cls;
+      let op;
+      if (cls === 'inboth')      op = 1;
+      else if (cls === 'only-a') op = Math.max(0.30, 1 - 0.65 * m);   // fades toward B
+      else                       op = 0.18 + 0.82 * m;                  // reignites toward B
+      el.style.opacity = op;
+    });
+  }
+  applyMix(mix);
+
+  // ----- click handlers — open the star's source pack -----
+  host.querySelectorAll('.const-star').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.dataset.id;
+      const L  = el.dataset.layer;
+      const from = el.dataset.from;
+      const pack = from === 'a' ? A : B;
+      const list = flatLayer(pack, L);
+      const target = list.find(x => x.id === id);
+      if (target && onClick) onClick(target, L);
+    });
+  });
+}
+
+// ============================================================
+// 4) SKYLINE — Tufte slopegraph of per-layer coverage.
+//
+// One line per layer from "A coverage" on the left to "B coverage" on
+// the right. Coverage is computed against the canonical union (A∪B per
+// layer); a pack that holds every shared symbol scores 100%, an empty
+// pack scores 0%. Labels are auto-displaced with leader lines so that
+// even tightly-bunched lines remain legible. Delta annotations colour
+// green (improving), red (regressing), or grey (flat). Click any label
+// to open the layer's first artefact in the drawer.
+// ============================================================
+
+const SKYLINE_LAYERS = ['L1', 'L2', 'L2X', 'L3', 'L4', 'L5', 'GOV'];
+
+function renderSkyline(host, { a, b, diff }, opts = {}) {
+  if (!a || !b) {
+    host.innerHTML = '<div class="placeholder">Pick a Pack B to render the skyline.</div>';
+    return;
+  }
+  const A = a, B = b;
+  const onClick = opts.onArtefactClick;
+
+  function coverage(side, L) {
+    const sideItems = flatLayer(side, L);
+    // Universe for the layer = items in A's layer ∪ items in B's layer.
+    const aSet = new Set(flatLayer(A, L).map(x => x.defines || x.id));
+    const bSet = new Set(flatLayer(B, L).map(x => x.defines || x.id));
+    const universe = new Set([...aSet, ...bSet]);
+    const present = sideItems.length;
+    const total   = universe.size;
+    return { present, total, pct: total ? present / total : 1 };
+  }
+
+  const VB_W = 1100, VB_H = 560;
+  const PAD_L = 220, PAD_R = 200, PAD_T = 40, PAD_B = 50;
+  const plotW = VB_W - PAD_L - PAD_R, plotH = VB_H - PAD_T - PAD_B;
+
+  let svg = `<svg viewBox="0 0 ${VB_W} ${VB_H}" class="skyline-svg atlas-svg" xmlns="http://www.w3.org/2000/svg" font-family="IBM Plex Sans, system-ui">`;
+
+  // ----- "Now / Target" column headers -----
+  svg += `
+    <text x="${PAD_L}" y="${PAD_T - 16}"
+      style="font-family:'IBM Plex Mono', monospace; font-size:10px; letter-spacing:0.16em; text-transform:uppercase; fill:${cssVar('--ink-4', '#6B6B6B')};">A · ${escapeHtml(A.name || 'pack A')}</text>
+    <text x="${VB_W - PAD_R}" y="${PAD_T - 16}" text-anchor="end"
+      style="font-family:'IBM Plex Mono', monospace; font-size:10px; letter-spacing:0.16em; text-transform:uppercase; fill:${cssVar('--ink-4', '#6B6B6B')};">B · ${escapeHtml(B.name || 'pack B')}</text>
+  `;
+
+  // ----- percentage gridlines -----
+  for (const p of [0, 25, 50, 75, 100]) {
+    const y = PAD_T + (1 - p / 100) * plotH;
+    const dash = (p === 0 || p === 100) ? '0' : '2 4';
+    svg += `
+      <line x1="${PAD_L}" y1="${y}" x2="${VB_W - PAD_R}" y2="${y}"
+        stroke="${cssVar('--line-2', '#E5E8EC')}" stroke-width="0.6" stroke-dasharray="${dash}"/>
+      <text x="${PAD_L - 8}" y="${y + 3}" text-anchor="end"
+        style="font-family:'IBM Plex Mono', monospace; font-size:9.5px; fill:${cssVar('--ink-5', '#9BA3AD')};">${p}%</text>
+    `;
+  }
+
+  // ----- per-layer entries -----
+  const entries = SKYLINE_LAYERS.map(L => {
+    const cA = coverage(A, L), cB = coverage(B, L);
+    return {
+      L, cA, cB,
+      yA: PAD_T + (1 - cA.pct) * plotH,
+      yB: PAD_T + (1 - cB.pct) * plotH,
+      color: layerColor(L),
+    };
+  });
+
+  // ----- displace labels so they don't collide -----
+  const minSpacing = 30;
+  const sortedL = [...entries].sort((x, y) => x.yA - y.yA);
+  let lastL = -Infinity;
+  for (const e of sortedL) { e.labelYL = Math.max(e.yA, lastL + minSpacing); lastL = e.labelYL; }
+  const sortedR = [...entries].sort((x, y) => x.yB - y.yB);
+  let lastR = -Infinity;
+  for (const e of sortedR) { e.labelYR = Math.max(e.yB, lastR + minSpacing); lastR = e.labelYR; }
+
+  // ----- lines + endpoints + leader lines + labels -----
+  const xA = PAD_L, xB = VB_W - PAD_R;
+  for (const e of entries) {
+    const delta = e.cB.pct - e.cA.pct;
+    const isFlat = Math.abs(delta) < 0.01;
+    svg += `<line x1="${xA}" y1="${e.yA}" x2="${xB}" y2="${e.yB}"
+      stroke="${e.color}" stroke-width="${isFlat ? 1.5 : 2.3}" opacity="${isFlat ? 0.55 : 0.95}" stroke-linecap="round"/>`;
+    svg += `<circle cx="${xA}" cy="${e.yA}" r="5" fill="${e.color}" stroke="${cssVar('--card', '#fff')}" stroke-width="1.5"/>`;
+    svg += `<circle cx="${xB}" cy="${e.yB}" r="6" fill="${e.color}" stroke="${cssVar('--card', '#fff')}" stroke-width="1.8"/>`;
+
+    if (Math.abs(e.labelYL - e.yA) > 1) {
+      svg += `<line x1="${xA - 6}" y1="${e.yA}" x2="${xA - 10}" y2="${e.labelYL}" stroke="${e.color}" stroke-width="0.7" stroke-dasharray="1.5 2" opacity="0.6"/>`;
+    }
+    if (Math.abs(e.labelYR - e.yB) > 1) {
+      svg += `<line x1="${xB + 6}" y1="${e.yB}" x2="${xB + 10}" y2="${e.labelYR}" stroke="${e.color}" stroke-width="0.7" stroke-dasharray="1.5 2" opacity="0.6"/>`;
+    }
+
+    svg += `<g class="slope-left" data-layer="${e.L}" data-side="a" style="cursor:pointer">
+      <rect x="${PAD_L - 200}" y="${e.labelYL - 13}" width="190" height="26" fill="transparent"/>
+      <text x="${PAD_L - 14}" y="${e.labelYL - 2}" text-anchor="end"
+        style="font-family:'IBM Plex Mono', monospace; font-size:11px; font-weight:600; fill:${e.color};">${e.L} · ${LAYER_NAMES[e.L]}</text>
+      <text x="${PAD_L - 14}" y="${e.labelYL + 11}" text-anchor="end"
+        style="font-family:'IBM Plex Mono', monospace; font-size:10px; fill:${cssVar('--ink-4', '#6B6B6B')};">${Math.round(e.cA.pct * 100)}% · ${e.cA.present}/${e.cA.total}</text>
+    </g>`;
+
+    const deltaStr = (delta >= 0 ? '+' : '') + Math.round(delta * 100) + '%';
+    const deltaColor = delta > 0.05 ? '#16A34A' : (delta < -0.05 ? '#DC2626' : '#9BA3AD');
+    svg += `<g class="slope-right" data-layer="${e.L}" data-side="b" style="cursor:pointer">
+      <text x="${VB_W - PAD_R + 14}" y="${e.labelYR - 2}"
+        style="font-family:'Newsreader', serif; font-style:italic; font-size:14px; fill:${e.color};">${e.L} · ${LAYER_NAMES[e.L]}</text>
+      <text x="${VB_W - PAD_R + 14}" y="${e.labelYR + 13}"
+        style="font-family:'IBM Plex Mono', monospace; font-size:10px; fill:${cssVar('--ink-4', '#6B6B6B')};">${Math.round(e.cB.pct * 100)}% · ${e.cB.present}/${e.cB.total}<tspan dx="6" style="fill:${deltaColor}; font-weight:600;">${deltaStr}</tspan></text>
+    </g>`;
+  }
+
+  // ----- caption -----
+  svg += `<text x="${VB_W/2}" y="${VB_H - 14}" text-anchor="middle"
+    style="font-family:'Newsreader', serif; font-style:italic; font-size:12px; fill:${cssVar('--ink-4', '#6B6B6B')};">
+    Each line is a layer. The steeper the slope, the larger the delta — and the louder that layer needs to be in the project plan.
+  </text>`;
+
+  svg += `</svg>`;
+  host.innerHTML = svg;
+
+  // ----- click handlers -----
+  host.querySelectorAll('.slope-left, .slope-right').forEach(el => {
+    el.addEventListener('click', () => {
+      const L = el.dataset.layer;
+      const pack = el.dataset.side === 'a' ? A : B;
+      const list = flatLayer(pack, L);
+      const target = list[0];
+      if (target && onClick) onClick(target, L);
+    });
+  });
+}
+
 const RENDERERS = {
-  strata:   renderStrata,
-  periodic: renderPeriodic,
+  strata:        renderStrata,
+  periodic:      renderPeriodic,
+  constellation: renderConstellation,
+  skyline:       renderSkyline,
 };
 
 export function render(variant, host, dataset, opts = {}) {
