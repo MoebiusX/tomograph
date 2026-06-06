@@ -302,15 +302,17 @@ function renderPrimaryViewNav() {
   const views = (state.mode === 'compare')
     ? [
         { id: 'layers',     label: 'Layers',     hint: 'Side-by-side per-layer comparison.' },
-        { id: 'atlas',      label: 'Atlas',      hint: 'Side-by-side atlas variants.' },
+        { id: 'atlas',      label: 'Atlas',      hint: 'Side-by-side atlas variants — Stratigraphy, Periodic, Constellation, Skyline, Transit, Arbor.' },
         { id: 'schema',     label: 'Schema',     hint: 'Maturity rubric + spec compliance.' },
       ]
     : [
         { id: 'layers',     label: 'Layers',     hint: 'Browse artefacts by layer (L1..GOV).' },
         { id: 'conformance',label: 'Conformance',hint: 'Maturity rubric per tier with pass/fail.' },
         { id: 'compile',    label: 'Compile',    hint: 'Per-artefact compilation to native platform format.' },
-        { id: 'atlas',      label: 'Atlas',      hint: 'Visualise the pack as Stratigraphy, Periodic, Constellation, Skyline, Transit, or Arbor.' },
         { id: 'schema',     label: 'Schema',     hint: 'Maturity score + canonical schema view.' },
+        // Atlas omitted from single mode — the variants are diff-driven
+        // (A vs B). To use them, pick "Compare two packs" from the home
+        // screen and choose this pack as side A.
       ];
   const active = state.view || 'layers';
 

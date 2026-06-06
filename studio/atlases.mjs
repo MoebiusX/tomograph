@@ -17,11 +17,12 @@
 const LAYERS = ['L1', 'L2', 'L3', 'L4', 'L5', 'GOV'];
 
 const LAYER_NAMES = {
-  L1: 'Contract',
-  L2: 'Telemetry',
-  L3: 'Insight',
-  L4: 'Action',
-  L5: 'Validation',
+  L1:  'Contract',
+  L2:  'Telemetry',
+  L2X: 'Extended',     // spec v1.2 RFC-0001 sibling layer
+  L3:  'Insight',
+  L4:  'Action',
+  L5:  'Validation',
   GOV: 'Governance',
 };
 
@@ -98,6 +99,18 @@ function escapeHtml(s) {
   if (s == null) return '';
   return String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+}
+
+// Read a CSS custom property from the document root, with a hard-coded
+// fallback colour when the variable is missing (SSR, server-rendered
+// SVG, or theme not yet applied). Used by skyline so its slopegraph
+// inherits the active theme colours.
+function cssVar(name, fallback) {
+  try {
+    if (typeof document === 'undefined') return fallback;
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  } catch (_) { return fallback; }
 }
 
 // ============================================================
@@ -792,7 +805,7 @@ function renderSkyline(host, { a, b, diff }, opts = {}) {
       L, cA, cB,
       yA: PAD_T + (1 - cA.pct) * plotH,
       yB: PAD_T + (1 - cB.pct) * plotH,
-      color: layerColor(L),
+      color: C[L] || cssVar('--ink-3', '#3B3B3B'),
     };
   });
 
@@ -886,6 +899,17 @@ function renderTransit(host, { a, b, diff }, opts = {}) {
   if (!a) { host.innerHTML = '<div class="placeholder">Pack A required.</div>'; return; }
   const A = a, B = b;
   const onClick = opts.onArtefactClick;
+  // Hard cap: transit's interchange detection is O(N²) across adjacent
+  // layers (every station compared to every adjacent station for x-column
+  // proximity). At ~800 stations total it crosses the 100ms perception
+  // threshold; at ~1500 it locks the tab. Cap with a clear message.
+  const totalCount = TRANSIT_LAYERS.reduce((s, L) => s + flatLayer(A, L).length, 0)
+                   + (A.layers?.L4 ? (A.layers.L4.policy?.length || 0) + (A.layers.L4.alerting?.length || 0) + (A.layers.L4.healing?.length || 0) : 0);
+  if (totalCount > 600) {
+    host.innerHTML = `<div class="placeholder">Transit atlas is capped at 600 artefacts (this pack has ${totalCount}).<br><br>
+      Pick a smaller pack, narrow with a per-layer filter on the Layers view, or use the Periodic / Strata atlases — they cope better with large packs.</div>`;
+    return;
+  }
 
   // Synthesise per-layer list: present items + injected gap items
   // (artefacts only in B viewed from A's POV). Gap markers carry
@@ -1121,6 +1145,21 @@ function renderArbor(host, { a, b, diff }, opts = {}) {
   const mode = samePack ? 'A' : (opts.arborView || 'A');
   const showA = mode === 'A' || mode === 'both';
   const showB = !samePack && (mode === 'B' || mode === 'both');
+  // Hard cap: parent-affinity is O(N×parents-per-layer); inosculation
+  // detection is O(children²). At ~700 artefacts per side the trunk
+  // becomes a forest of overlapping leaves and the layout hangs the
+  // tab. Cap before we get there.
+  const sideCount = (pack) => pack ? ARBOR_LAYERS.reduce((s, L) => {
+    if (L === 'L4') return s + (pack.layers?.L4 ? (pack.layers.L4.policy?.length || 0) + (pack.layers.L4.alerting?.length || 0) + (pack.layers.L4.healing?.length || 0) : 0);
+    return s + (pack.layers?.[L]?.length || 0);
+  }, 0) : 0;
+  const aCount = sideCount(A), bCount = showB ? sideCount(B) : 0;
+  const heaviest = Math.max(aCount, bCount);
+  if (heaviest > 500) {
+    host.innerHTML = `<div class="placeholder">Arbor atlas is capped at 500 artefacts per side (PACK A: ${aCount}${showB ? `, PACK B: ${bCount}` : ''}).<br><br>
+      The botanical layout's parent-affinity + self-inosculation passes are O(N²) per layer. Try Strata, Skyline, or Periodic for large packs.</div>`;
+    return;
+  }
 
   function buildTree(pack, otherPack) {
     const VB_W = 1100, VB_H = 820;
