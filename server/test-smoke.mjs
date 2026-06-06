@@ -112,6 +112,28 @@ try {
   const stgConf = await getJson(base, '/api/packs/payment-service/conformance?env=staging');
   assert(stgConf.declaredTier === 'tier-2', 'staging env overlay reports tier-2');
 
+  // /api/diff
+  const diff = await getJson(base, '/api/diff?a=target-advanced&b=demo-skeleton');
+  // .id is the canonical metadata.name (consistent with /api/packs/:id)
+  assert(diff.a?.id === 'platform-edge',  'diff.a.id = target-advanced metadata.name');
+  assert(diff.b?.id === 'demo-skeleton',  'diff.b.id = demo-skeleton metadata.name');
+  assert(diff.a?.criticality === 'tier-1', 'diff.a carries criticality');
+  assert(diff.b?.criticality === 'tier-3', 'diff.b carries criticality');
+  assert(typeof diff.summary?.onlyInA === 'number', 'diff.summary.onlyInA present');
+  assert(typeof diff.summary?.inBoth  === 'number', 'diff.summary.inBoth present');
+  assert(typeof diff.summary?.jaccard === 'number', 'diff.summary.jaccard present');
+  assert(diff.summary.aTotal > diff.summary.bTotal,
+         'target-advanced has more artefacts than demo-skeleton',
+         { aTotal: diff.summary.aTotal, bTotal: diff.summary.bTotal },
+         'aTotal > bTotal');
+  assert(Array.isArray(diff.layers?.L1?.onlyInA), 'diff.layers.L1.onlyInA array');
+  assert(Array.isArray(diff.layers?.L4?.inBoth),  'diff.layers.L4.inBoth array (sub-layers flattened)');
+  // missing args
+  const badDiff = await fetch(`${base}/api/diff?a=target-advanced`);
+  assert(badDiff.status === 400, 'diff with missing b → 400');
+  const unknownPack = await fetch(`${base}/api/diff?a=target-advanced&b=nope`);
+  assert(unknownPack.status === 404, 'diff with unknown pack id → 404');
+
   // /api/maturity-rubric
   const rubric = await getJson(base, '/api/maturity-rubric');
   assert(rubric.specVersion === '1.2', 'rubric specVersion 1.2');

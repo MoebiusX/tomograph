@@ -35,6 +35,7 @@ import { adapt, listEnvironments, applyEnvironmentOverlay } from '../tools/lib/a
 import { validateCanonical, SPEC_VERSION } from '../tools/lib/validator.mjs';
 import { evaluateConformance, RUBRIC } from '../tools/lib/conformance.mjs';
 import { fetchMcp, buildCanonicalPack } from '../tools/fetch-live-pack.mjs';
+import { diffPacks } from '../tools/lib/diff.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -188,6 +189,27 @@ app.get('/api/packs/:id/conformance', (req, res) => {
     const { canonical: overlaid } = overlaidCanonical(canonical, env);
     const report = evaluateConformance(overlaid);
     res.json({ environment: env, ...report });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/diff', (req, res) => {
+  const aId = typeof req.query.a === 'string' ? req.query.a : null;
+  const bId = typeof req.query.b === 'string' ? req.query.b : null;
+  if (!aId || !bId) return res.status(400).json({ error: 'query params `a` and `b` (pack ids) required' });
+  const aMeta = PACK_CATALOG.find(p => p.id === aId);
+  const bMeta = PACK_CATALOG.find(p => p.id === bId);
+  if (!aMeta) return res.status(404).json({ error: `unknown pack: ${aId}` });
+  if (!bMeta) return res.status(404).json({ error: `unknown pack: ${bId}` });
+  const aEnv = typeof req.query.aEnv === 'string' && req.query.aEnv ? req.query.aEnv : null;
+  const bEnv = typeof req.query.bEnv === 'string' && req.query.bEnv ? req.query.bEnv : null;
+  try {
+    const aCanonical = loadPackFile(aMeta.path);
+    const bCanonical = loadPackFile(bMeta.path);
+    const aLayered = adapt(aCanonical, { environment: aEnv });
+    const bLayered = adapt(bCanonical, { environment: bEnv });
+    res.json(diffPacks(aLayered, bLayered));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
