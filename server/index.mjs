@@ -34,7 +34,7 @@ import { parse as parseYaml, emit as emitYaml } from '../tools/lib/mini-yaml.mjs
 import { adapt, listEnvironments, applyEnvironmentOverlay } from '../tools/lib/adapter.mjs';
 import { validateCanonical, SPEC_VERSION } from '../tools/lib/validator.mjs';
 import { evaluateConformance, RUBRIC } from '../tools/lib/conformance.mjs';
-import { fetchMcp, buildCanonicalPack } from '../tools/fetch-live-pack.mjs';
+import { fetchMcp, buildCanonicalPack, createMcpClient } from '../tools/fetch-live-pack.mjs';
 import { diffPacks } from '../tools/lib/diff.mjs';
 import { compile, listTargets } from '../tools/lib/compile.mjs';
 
@@ -224,6 +224,78 @@ app.get('/api/diff', (req, res) => {
 
 app.get('/api/compile/targets', (req, res) => {
   res.json({ targets: listTargets() });
+});
+
+// Per-target default MCP write tool names. The pack is the source of
+// truth; these tools apply the compiled artefact to the live platform.
+// Convention: tools accept { payload, content_type, environment,
+// filename, pack_source, target } and return whatever they like.
+const DEFAULT_DEPLOY_TOOLS = {
+  'prometheus-rules': 'apply_prometheus_rules',
+  'otel-collector':   'apply_otel_config',
+  'alertmanager':     'apply_alertmanager_config',
+  'grafana-dashboard':'apply_grafana_dashboard',
+};
+
+app.post('/api/packs/:id/deploy/:target', async (req, res) => {
+  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
+
+  const target = req.params.target;
+  const body = req.body || {};
+  const mcpUrl  = typeof body.mcpUrl  === 'string' ? body.mcpUrl.trim()  : '';
+  const mcpAuth = typeof body.mcpAuth === 'string' ? body.mcpAuth        : null;
+  const mcpTool = (typeof body.mcpTool === 'string' && body.mcpTool.trim())
+    ? body.mcpTool.trim()
+    : (DEFAULT_DEPLOY_TOOLS[target] || `apply_${String(target).replace(/-/g, '_')}`);
+  const env = readEnv(req.query);
+  const dashboardId = typeof req.query.dashboardId === 'string' ? req.query.dashboardId : undefined;
+
+  if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+
+  const t0 = Date.now();
+  try {
+    const canonical = loadPackFile(meta.path);
+    const { canonical: overlaid } = overlaidCanonical(canonical, env);
+    const compiled = compile(overlaid, target, { dashboardId });
+
+    process.stderr.write(`[deploy] ${meta.id}@${canonical.metadata?.version || '?'} -> ${mcpUrl} via ${mcpTool} (${target}, env=${env || 'none'}, ${compiled.content.length}b)\n`);
+
+    const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth });
+    await rpc('initialize', {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'observabilitypack-studio-deploy', version: '0.3.0' },
+    }).catch(() => {});
+
+    const args = {
+      payload: compiled.content,
+      content_type: compiled.contentType,
+      environment: env || undefined,
+      filename: compiled.filename,
+      pack_source: `${meta.id}@${canonical.metadata?.version || '?'}`,
+      target,
+    };
+    const result = await callTool(mcpTool, args);
+
+    const tookMs = Date.now() - t0;
+    process.stderr.write(`[deploy]   ok in ${tookMs}ms\n`);
+    res.json({
+      ok: true,
+      target,
+      env,
+      tool: mcpTool,
+      mcpUrl,
+      filename: compiled.filename,
+      bytes: compiled.content.length,
+      tookMs,
+      result,
+    });
+  } catch (e) {
+    const tookMs = Date.now() - t0;
+    process.stderr.write(`[deploy]   error in ${tookMs}ms: ${e.message}\n`);
+    res.status(502).json({ ok: false, error: e.message, tool: mcpTool, target, env, tookMs });
+  }
 });
 
 app.get('/api/packs/:id/compile/:target', (req, res) => {

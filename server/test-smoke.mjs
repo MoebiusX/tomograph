@@ -176,6 +176,36 @@ try {
   const badPack = await fetch(`${base}/api/packs/does-not-exist/compile/prometheus-rules`);
   assert(badPack.status === 404, 'unknown pack on compile → 404');
 
+  // POST /api/packs/:id/deploy/:target — missing mcpUrl → 400
+  const deployNoUrl = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert(deployNoUrl.status === 400, 'deploy without mcpUrl → 400');
+  const deployBody = await deployNoUrl.json();
+  assert(/mcpUrl/.test(deployBody.error || ''), 'deploy 400 mentions mcpUrl');
+
+  // POST /api/packs/:id/deploy/:target — unknown pack → 404
+  const deployBadPack = await fetch(`${base}/api/packs/does-not-exist/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no' }),
+  });
+  assert(deployBadPack.status === 404, 'deploy unknown pack → 404');
+
+  // POST /api/packs/:id/deploy/:target — unreachable MCP → 502 (still JSON)
+  const deployBadMcp = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no-mcp' }),
+  });
+  assert(deployBadMcp.status === 502, 'deploy unreachable MCP → 502');
+  const deployErr = await deployBadMcp.json();
+  assert(deployErr.tool === 'apply_prometheus_rules',
+         'deploy 502 echoes the default MCP tool name for this target');
+  assert(deployErr.target === 'prometheus-rules', 'deploy 502 echoes the target');
+
   // /api/maturity-rubric
   const rubric = await getJson(base, '/api/maturity-rubric');
   assert(rubric.specVersion === '1.2', 'rubric specVersion 1.2');

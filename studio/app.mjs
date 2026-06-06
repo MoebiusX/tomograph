@@ -665,6 +665,7 @@ function renderCompileView(host) {
   }
   const c = state.compileContent;
 
+  const envLabel = state.selectedEnv || 'none';
   const actions = document.createElement('div');
   actions.className = 'compile-actions';
   actions.innerHTML = `
@@ -677,9 +678,21 @@ function renderCompileView(host) {
     <div class="compile-buttons">
       <button class="ctrl-btn" id="copy-compiled" type="button">copy</button>
       <a class="ctrl-btn ctrl-link" id="download-compiled" download="${escapeHtml(c.filename)}">download</a>
+      <button class="ctrl-btn ctrl-deploy" id="deploy-compiled" type="button" title="Push this artefact to the live platform via MCP write tools">
+        deploy → <em>${escapeHtml(envLabel)}</em>
+      </button>
     </div>
   `;
   stage.appendChild(actions);
+
+  // Inline deploy panel — collapsed by default; expands when the
+  // user clicks deploy. Reuses the MCP URL the refresh panel already
+  // persisted in localStorage so the engineer doesn't have to retype.
+  const deployPanel = document.createElement('div');
+  deployPanel.className = 'deploy-panel';
+  deployPanel.hidden = true;
+  deployPanel.innerHTML = renderDeployPanelMarkup();
+  stage.appendChild(deployPanel);
 
   const codeWrap = document.createElement('div');
   codeWrap.className = 'compile-code-wrap';
@@ -696,6 +709,122 @@ function renderCompileView(host) {
   const dl = actions.querySelector('#download-compiled');
   const blob = new Blob([c.text], { type: c.contentType });
   dl.href = URL.createObjectURL(blob);
+
+  actions.querySelector('#deploy-compiled').onclick = () => {
+    deployPanel.hidden = !deployPanel.hidden;
+    if (!deployPanel.hidden) {
+      // Prefill from persisted state.
+      const urlInput = deployPanel.querySelector('#deploy-mcp-url');
+      if (!urlInput.value) {
+        const saved = (() => { try { return localStorage.getItem('mcpUrl'); } catch { return null; } })();
+        urlInput.value = saved || state.mcpStatus?.url || '';
+      }
+      // Default tool per target if not already set.
+      const toolInput = deployPanel.querySelector('#deploy-mcp-tool');
+      if (!toolInput.value) toolInput.value = defaultDeployTool(state.compileTarget);
+      urlInput.focus();
+    }
+  };
+
+  deployPanel.querySelector('#deploy-go-btn').onclick = () => doDeploy(deployPanel);
+  deployPanel.querySelector('#deploy-cancel-btn').onclick = () => { deployPanel.hidden = true; };
+}
+
+const DEFAULT_DEPLOY_TOOLS = {
+  'prometheus-rules':  'apply_prometheus_rules',
+  'otel-collector':    'apply_otel_config',
+  'alertmanager':      'apply_alertmanager_config',
+  'grafana-dashboard': 'apply_grafana_dashboard',
+};
+function defaultDeployTool(target) {
+  return DEFAULT_DEPLOY_TOOLS[target] || `apply_${String(target || '').replace(/-/g, '_')}`;
+}
+
+function renderDeployPanelMarkup() {
+  return `
+    <div class="deploy-panel-head">
+      <div class="deploy-panel-title">Deploy via MCP write tool</div>
+      <div class="deploy-panel-sub">The compiled artefact is sent to the named MCP tool. The pack stays the source of truth — re-deploy any time by re-emitting from the pack.</div>
+    </div>
+    <div class="deploy-panel-body">
+      <label class="mcp-field">
+        <span class="mcp-field-key">MCP URL</span>
+        <input id="deploy-mcp-url" type="url" placeholder="https://your-mcp.example.com/observability" autocomplete="off">
+      </label>
+      <label class="mcp-field">
+        <span class="mcp-field-key">Tool name</span>
+        <input id="deploy-mcp-tool" type="text" placeholder="apply_*" autocomplete="off">
+      </label>
+      <label class="mcp-field">
+        <span class="mcp-field-key">Auth token <em>(optional, not persisted)</em></span>
+        <input id="deploy-mcp-auth" type="password" placeholder="bearer token" autocomplete="off">
+      </label>
+      <div class="deploy-panel-actions">
+        <button id="deploy-go-btn" class="mcp-refresh-btn" type="button">deploy</button>
+        <button id="deploy-cancel-btn" class="ctrl-btn" type="button">cancel</button>
+        <span id="deploy-status" class="mcp-refresh-status"></span>
+      </div>
+      <div id="deploy-result" class="deploy-result" hidden></div>
+    </div>
+  `;
+}
+
+async function doDeploy(panel) {
+  const url  = panel.querySelector('#deploy-mcp-url').value.trim();
+  const tool = panel.querySelector('#deploy-mcp-tool').value.trim() || defaultDeployTool(state.compileTarget);
+  const auth = panel.querySelector('#deploy-mcp-auth').value;
+  const statusEl = panel.querySelector('#deploy-status');
+  const resultEl = panel.querySelector('#deploy-result');
+  const setStatus = (msg, kind) => {
+    statusEl.textContent = msg;
+    statusEl.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
+  };
+  if (!url) { setStatus('mcp url required', 'error'); return; }
+  try { localStorage.setItem('mcpUrl', url); } catch (_) {}
+
+  const goBtn = panel.querySelector('#deploy-go-btn');
+  goBtn.disabled = true;
+  setStatus('contacting mcp…');
+  resultEl.hidden = true;
+
+  const qs = new URLSearchParams();
+  if (state.selectedEnv) qs.set('env', state.selectedEnv);
+  if (state.compileDashId) qs.set('dashboardId', state.compileDashId);
+  const target = state.compileTarget;
+  const path = `/api/packs/${encodeURIComponent(state.selectedPackId)}/deploy/${encodeURIComponent(target)}?${qs}`;
+
+  try {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined, mcpTool: tool }),
+    });
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    let body;
+    if (!ct.includes('application/json')) {
+      setStatus(`error: server returned ${r.status} ${ct || 'no content-type'}`, 'error');
+      console.error('[deploy] non-JSON response:', raw.slice(0, 400));
+      return;
+    }
+    try { body = JSON.parse(raw); }
+    catch (e) { setStatus(`error: malformed JSON (${e.message})`, 'error'); return; }
+
+    if (!body.ok) {
+      setStatus(`error: ${body.error || 'unknown'}`, 'error');
+      resultEl.textContent = JSON.stringify(body, null, 2);
+      resultEl.hidden = false;
+      return;
+    }
+    setStatus(`deployed in ${body.tookMs}ms via ${escapeHtml(body.tool)}`, 'ok');
+    resultEl.textContent = JSON.stringify(body.result, null, 2);
+    resultEl.hidden = false;
+    toast(`Deployed ${body.filename} to ${body.env || 'mcp'}`);
+  } catch (e) {
+    setStatus(`error: ${e.message}`, 'error');
+  } finally {
+    goBtn.disabled = false;
+  }
 }
 
 // ---------- compare view ----------

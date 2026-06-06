@@ -52,6 +52,8 @@ const PACK_NAME        = (process.env.PACK_NAME || 'production-live').toLowerCas
 // can drive it from the request body without spawning a subprocess.
 // ============================================================
 
+// createMcpClient is exported so the server can drive ad-hoc MCP
+// interactions (deploy, refresh) without spawning a subprocess.
 export function createMcpClient({ mcpUrl, mcpAuth = null } = {}) {
   if (!mcpUrl) throw new Error('createMcpClient: mcpUrl required');
   let session = null;
