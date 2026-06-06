@@ -3796,94 +3796,79 @@ function renderHomeView() {
       </div>
 
       <div class="home-cycle">
-        <div class="home-cycle-head"><span>the assurance loop</span></div>
-        <p class="home-cycle-lede">
-          Tomograph runs a continuous-improvement cycle. Generate or load a
-          pack to gauge initial state, then take either path: interrogate
-          the live MCP to deploy / retro-feed the delta, or benchmark against
-          a reference and save the delta back to the repo. Validate the new
-          state and iterate — so the image keeps matching the system.
-        </p>
-        <svg class="home-cycle-svg" viewBox="0 0 880 280" role="img" aria-label="The assurance loop: generate/load pack → live MCP delta or benchmark delta → validate → iterate">
-          <style>
-            .cyc-node       { fill: var(--card); stroke-width: 1.5; }
-            .cyc-gen        { stroke: var(--L1); }
-            .cyc-live       { stroke: var(--BLD); }
-            .cyc-deploy     { stroke: var(--BLD); }
-            .cyc-bench      { stroke: var(--CMP); }
-            .cyc-delta      { stroke: var(--CMP); }
-            .cyc-validate   { stroke: var(--ink); }
-            .cyc-title      { font: 600 12px/1 var(--sans); fill: var(--ink); letter-spacing: 0.05em; text-transform: uppercase; }
-            .cyc-sub        { font: italic 11px/1.2 var(--serif); fill: var(--ink-3); }
-            .cyc-arrow      { stroke: var(--ink-4); stroke-width: 1.5; fill: none; }
-            .cyc-loop       { stroke: var(--ink-4); stroke-width: 1.5; stroke-dasharray: 4,4; fill: none; }
-            .cyc-loop-label { font: italic 12px/1 var(--serif); fill: var(--ink-4); }
-          </style>
+        <svg class="home-cycle-svg" viewBox="0 0 960 640" xmlns="http://www.w3.org/2000/svg" role="img" font-family="'IBM Plex Sans', system-ui, sans-serif">
+          <title>The Möbius Loop — Tomograph's continuous assurance cycle</title>
+          <desc>Four stages — Declare, Compile, Observe, Verify — arranged as a closed loop around a single twisted Möbius ribbon, signifying one continuous surface with no first or last step.</desc>
+
           <defs>
-            <marker id="cyc-arrow-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-              <path d="M0,0 L10,5 L0,10 Z" fill="var(--ink-4)"/>
+            <pattern id="cyc-dots" width="24" height="24" patternUnits="userSpaceOnUse">
+              <circle cx="2" cy="2" r="1" fill="#1e2a3b" opacity="0.55"/>
+            </pattern>
+            <linearGradient id="cyc-mobius-grad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#5dcaa5"/>
+              <stop offset="0.34" stop-color="#54b3d4"/>
+              <stop offset="0.67" stop-color="#8f86e8"/>
+              <stop offset="1" stop-color="#e0703f"/>
+            </linearGradient>
+            <marker id="cyc-ah" markerWidth="9" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+              <path d="M0,0 L8,3 L0,6 Z" fill="#5a6b82"/>
             </marker>
           </defs>
 
-          <!-- Iterate loop: Validate back to Generate/Load Pack (curves below) -->
-          <path class="cyc-loop" d="M 765 200 C 800 280, 80 280, 105 200" marker-end="url(#cyc-arrow-head)"/>
-          <text class="cyc-loop-label" x="440" y="272" text-anchor="middle">iterate</text>
+          <!-- panel -->
+          <rect x="12" y="12" width="936" height="616" rx="18" fill="#0e1622" stroke="#21314a" stroke-width="1.5"/>
+          <rect x="12" y="12" width="936" height="616" rx="18" fill="url(#cyc-dots)"/>
 
-          <!-- 1. Generate/Load Pack — leftmost, vertically centered -->
-          <g transform="translate(20, 105)">
-            <rect class="cyc-node cyc-gen" width="170" height="80" rx="10"/>
-            <text class="cyc-title" x="85" y="30" text-anchor="middle">Generate / Load Pack</text>
-            <text class="cyc-sub"   x="85" y="52" text-anchor="middle">gauge initial state</text>
-            <text class="cyc-sub"   x="85" y="68" text-anchor="middle">MCP · crawl · upload</text>
+          <!-- header -->
+          <line x1="330" y1="50" x2="392" y2="50" stroke="#33485f" stroke-width="1"/>
+          <text x="480" y="55" text-anchor="middle" font-size="13" letter-spacing="4" font-weight="600" fill="#7fa9a0">THE MÖBIUS LOOP</text>
+          <line x1="568" y1="50" x2="630" y2="50" stroke="#33485f" stroke-width="1"/>
+
+          <!-- intro -->
+          <g font-family="'Newsreader', Georgia, serif" fill="#aab4c2" font-size="15.5" text-anchor="middle">
+            <text x="480" y="94">Declare once. Compile the platform. Observe it live. Verify the image still matches the system —</text>
+            <text x="480" y="118">then begin again. Like the strip it's named for, the loop is one continuous surface:</text>
+            <text x="480" y="142">no first step, no last, and nowhere for drift to hide.</text>
           </g>
 
-          <!-- Branch up to "Generate Live MCP" (top path) -->
-          <path class="cyc-arrow" d="M 190 145 C 220 145, 240 60, 270 60" marker-end="url(#cyc-arrow-head)"/>
-          <!-- Branch down to "Benchmark" (bottom path) -->
-          <path class="cyc-arrow" d="M 190 145 C 220 145, 240 230, 270 230" marker-end="url(#cyc-arrow-head)"/>
+          <!-- central Möbius ribbon (lemniscate) -->
+          <path d="M 480 399 C 540 329 630 329 630 399 C 630 469 540 469 480 399 C 420 329 330 329 330 399 C 330 469 420 469 480 399 Z"
+                fill="none" stroke="url(#cyc-mobius-grad)" stroke-width="16" stroke-linecap="round" opacity="0.85"/>
+          <path d="M 480 399 C 540 329 630 329 630 399 C 630 469 540 469 480 399 C 420 329 330 329 330 399 C 330 469 420 469 480 399 Z"
+                fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.10"/>
 
-          <!-- 2a. Generate Live MCP (top path, step 1) -->
-          <g transform="translate(270, 20)">
-            <rect class="cyc-node cyc-live" width="170" height="80" rx="10"/>
-            <text class="cyc-title" x="85" y="30" text-anchor="middle">Generate Live MCP</text>
-            <text class="cyc-sub"   x="85" y="52" text-anchor="middle">interrogate live</text>
-            <text class="cyc-sub"   x="85" y="68" text-anchor="middle">platform telemetry</text>
-          </g>
-          <line class="cyc-arrow" x1="440" y1="60" x2="490" y2="60" marker-end="url(#cyc-arrow-head)"/>
+          <!-- connectors (clockwise) -->
+          <path d="M 588 276 Q 690 300 706 358" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
+          <path d="M 706 442 Q 690 502 590 522" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
+          <path d="M 370 522 Q 270 502 296 442" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
+          <!-- closing arc: dashed return = "and again" -->
+          <path d="M 294 358 Q 268 300 370 276" fill="none" stroke="#4a5b72" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#cyc-ah)"/>
+          <text x="247" y="312" font-size="15" fill="#7fa9a0">↺</text>
+          <text x="232" y="300" font-family="'Newsreader', Georgia, serif" font-size="11" font-style="italic" fill="#6f7d90">begin again</text>
 
-          <!-- 3a. Deploy / Retro-feed Delta (top path, step 2) -->
-          <g transform="translate(490, 20)">
-            <rect class="cyc-node cyc-deploy" width="190" height="80" rx="10"/>
-            <text class="cyc-title" x="95" y="30" text-anchor="middle">Deploy / Retro-feed Delta</text>
-            <text class="cyc-sub"   x="95" y="52" text-anchor="middle">fix live signal,</text>
-            <text class="cyc-sub"   x="95" y="68" text-anchor="middle">or pull live into manifest</text>
-          </g>
-          <path class="cyc-arrow" d="M 680 60 C 720 60, 740 145, 775 145" marker-end="url(#cyc-arrow-head)"/>
+          <!-- node: DECLARE (green) -->
+          <rect x="375" y="212" width="210" height="76" rx="12" fill="#141d2c" stroke="#5dcaa5" stroke-width="2"/>
+          <text x="480" y="242" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">DECLARE</text>
+          <text x="480" y="261" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">write the pack</text>
+          <text x="480" y="277" text-anchor="middle" font-size="10.5" fill="#6f7d90">one service · one contract</text>
 
-          <!-- 2b. Benchmark (bottom path, step 1) -->
-          <g transform="translate(270, 190)">
-            <rect class="cyc-node cyc-bench" width="170" height="80" rx="10"/>
-            <text class="cyc-title" x="85" y="30" text-anchor="middle">Benchmark</text>
-            <text class="cyc-sub"   x="85" y="52" text-anchor="middle">vs reference pack</text>
-            <text class="cyc-sub"   x="85" y="68" text-anchor="middle">(curated catalogue)</text>
-          </g>
-          <line class="cyc-arrow" x1="440" y1="230" x2="490" y2="230" marker-end="url(#cyc-arrow-head)"/>
+          <!-- node: COMPILE (purple) -->
+          <rect x="655" y="362" width="210" height="76" rx="12" fill="#141d2c" stroke="#8f86e8" stroke-width="2"/>
+          <text x="760" y="392" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">COMPILE</text>
+          <text x="760" y="411" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">packc → every backend</text>
+          <text x="760" y="427" text-anchor="middle" font-size="10.5" fill="#6f7d90">Prom · Grafana · OTel · AM</text>
 
-          <!-- 3b. Generate Delta and Deploy/Save -->
-          <g transform="translate(490, 190)">
-            <rect class="cyc-node cyc-delta" width="190" height="80" rx="10"/>
-            <text class="cyc-title" x="95" y="30" text-anchor="middle">Generate Delta</text>
-            <text class="cyc-sub"   x="95" y="52" text-anchor="middle">deploy or save</text>
-            <text class="cyc-sub"   x="95" y="68" text-anchor="middle">(export to repo)</text>
-          </g>
-          <path class="cyc-arrow" d="M 680 230 C 720 230, 740 145, 775 145" marker-end="url(#cyc-arrow-head)"/>
+          <!-- node: OBSERVE (cyan) -->
+          <rect x="375" y="510" width="210" height="76" rx="12" fill="#141d2c" stroke="#54b3d4" stroke-width="2"/>
+          <text x="480" y="540" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">OBSERVE</text>
+          <text x="480" y="559" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">live signal via MCP</text>
+          <text x="480" y="575" text-anchor="middle" font-size="10.5" fill="#6f7d90">"declared" becomes "verified"</text>
 
-          <!-- 4. Validate new state -->
-          <g transform="translate(775, 105)">
-            <rect class="cyc-node cyc-validate" width="90" height="80" rx="10"/>
-            <text class="cyc-title" x="45" y="34" text-anchor="middle">Validate</text>
-            <text class="cyc-sub"   x="45" y="54" text-anchor="middle">new state</text>
-          </g>
+          <!-- node: VERIFY (amber) -->
+          <rect x="95" y="362" width="210" height="76" rx="12" fill="#141d2c" stroke="#e0703f" stroke-width="2"/>
+          <text x="200" y="392" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">VERIFY</text>
+          <text x="200" y="411" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">scan · score · attest</text>
+          <text x="200" y="427" text-anchor="middle" font-size="10.5" fill="#6f7d90">does the image still hold?</text>
         </svg>
       </div>
     </section>

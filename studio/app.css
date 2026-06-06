@@ -2348,45 +2348,24 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
   color: var(--ink-4);
 }
 
-/* The assurance loop — inline SVG cycle diagram. Rendered with the
-   studio's theme tokens so it auto-themes light/dark. Sits below the
-   manual alternatives as the explainer for visitors who haven't
-   connected yet but want to understand what the studio does. */
+/* The Möbius Loop — inline SVG cycle diagram. The SVG is fully
+   self-contained: dark panel, header rule, intro prose, gradient
+   ribbon, four colored nodes, and the dashed "begin again" return
+   arc. Themed independently of the light/dark theme toggle — it's a
+   brand illustration, not a UI surface, so it reads identically
+   regardless of the surrounding theme. Wrapper just centers + adds
+   subtle elevation. */
 .home-cycle {
   margin-top: 48px;
-  padding: 24px 28px 28px;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-}
-.home-cycle-head {
-  display: flex; align-items: center; gap: 10px;
-  margin-bottom: 10px;
-}
-.home-cycle-head::before, .home-cycle-head::after {
-  content: ''; flex: 1;
-  height: 1px; background: var(--line-2);
-}
-.home-cycle-head span {
-  font: 600 11px/1 var(--mono);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-4);
-}
-.home-cycle-lede {
-  margin: 0 auto 22px;
-  max-width: 640px;
-  font: 14px/1.6 var(--serif);
-  color: var(--ink-3);
-  text-align: center;
 }
 .home-cycle-svg {
   display: block;
   width: 100%;
-  max-width: 760px;
+  max-width: 960px;
   margin: 0 auto;
   height: auto;
-  overflow: visible;
+  border-radius: 18px;
+  box-shadow: 0 8px 24px -8px rgba(15,27,45,0.22);
 }
 
 .hdr-brand h1 { transition: color 150ms ease; }
