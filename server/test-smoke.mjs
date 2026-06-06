@@ -39,28 +39,33 @@ try {
   assert(health.ok === true, 'GET /healthz returns ok');
   assert(health.specVersion === '1.2', 'GET /healthz reports specVersion 1.2');
 
-  // /api/packs catalog
+  // /api/packs catalog — empty by design as of Phase 7q (the studio
+  // boots empty; user opens packs from disk via Upload / crawler /
+  // MCP draft / examples browser).
   const catalog = await getJson(base, '/api/packs');
   assert(Array.isArray(catalog.packs), 'GET /api/packs returns packs[]');
-  assert(catalog.packs.length >= 4, 'GET /api/packs returns at least 4 packs (Phase 5 catalog)', catalog.packs.length, '>= 4');
+  assert(catalog.packs.length === 0, 'GET /api/packs returns empty catalog (Phase 7q)', catalog.packs.length, 0);
+
+  // /api/examples — the 5 archived reference packs
+  const examples = await getJson(base, '/api/examples');
+  assert(Array.isArray(examples.examples), 'GET /api/examples returns examples[]');
+  assert(examples.examples.length === 5, 'examples lists all 5 archived packs', examples.examples.length, 5);
   for (const id of ['payment-service', 'target-advanced', 'production-curated', 'demo-skeleton']) {
-    const entry = catalog.packs.find(p => p.id === id);
-    assert(!!entry && entry.ok === true, `catalog entry '${id}' loads ok`, entry?.error, 'ok');
+    const entry = examples.examples.find(p => p.id === id);
+    assert(!!entry && entry.ok === true, `example '${id}' loads ok from examples/`, entry?.error, 'ok');
   }
-  const target = catalog.packs.find(p => p.id === 'target-advanced');
+  const target = examples.examples.find(p => p.id === 'target-advanced');
   assert(target?.criticality === 'tier-1', 'target-advanced declares tier-1');
-  const demo = catalog.packs.find(p => p.id === 'demo-skeleton');
+  const demo = examples.examples.find(p => p.id === 'demo-skeleton');
   assert(demo?.criticality === 'tier-3', 'demo-skeleton declares tier-3');
-  const example = catalog.packs.find(p => p.id === 'payment-service');
-  assert(!!example, 'catalog includes payment-service');
-  assert(example?.ok === true, 'payment-service loaded ok');
-  assert(example?.name === 'payment-service', 'payment-service name');
+  const example = examples.examples.find(p => p.id === 'payment-service');
+  assert(!!example, 'examples include payment-service');
   assert(example?.criticality === 'tier-1', 'payment-service criticality');
   assert(example?.environments?.length === 2, 'payment-service environments count');
-  const live = catalog.packs.find(p => p.id === 'production-live');
-  assert(!!live, 'catalog includes production-live entry');
-  // The cron writes packs/production-live.pack.yaml; in CI the file may not
-  // exist yet, in which case catalog reports ok:false with an error message.
+  const live = examples.examples.find(p => p.id === 'production-live');
+  assert(!!live, 'examples include production-live entry');
+  // The cron writes examples/production-live.pack.yaml; in CI the file
+  // may not exist yet, in which case the entry reports ok:false.
   if (live.ok) {
     assert(live.name === 'production-live', 'production-live pack name when present');
   } else {

@@ -2908,22 +2908,22 @@ function setupHomeAffordance() {
 function renderHomeView() {
   const view = $('#layer-view');
   if (!view) return;
-  // Default the compare-mode pickers to "repo vs live" when those packs exist.
-  const live = (state.catalog || []).find(p => p.ok && p.id === 'production-live');
-  const repoOk = (state.catalog || []).filter(p => p.ok && p.id !== 'production-live');
-  const defaultA = repoOk[0]?.id || (state.catalog.find(p => p.ok)?.id);
+  const catalogPacks = (state.catalog || []).filter(p => p.ok);
+  const hasCatalog = catalogPacks.length > 0;
+  const live   = catalogPacks.find(p => p.id === 'production-live');
+  const repoOk = catalogPacks.filter(p => p.id !== 'production-live');
+  const defaultA = repoOk[0]?.id || catalogPacks[0]?.id || '';
   const defaultB = live?.id || repoOk[1]?.id || defaultA;
-
-  const packOptions = (state.catalog || [])
-    .filter(p => p.ok)
+  const catalogOptions = catalogPacks
     .map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')} · ${escapeHtml(p.criticality || '?')}</option>`).join('');
 
   view.innerHTML = `
     <section class="home-hero">
       <h2 class="home-hero-title"><em>What do you want to do?</em></h2>
       <p class="home-hero-lede">
-        Start by picking one pack to analyze, or two packs to compare —
-        usually the repo-derived draft (A) against the live MCP snapshot (B).
+        The studio starts empty. Open a pack from disk — drop a YAML/JSON,
+        crawl your service repo, or draft from a live MCP — then analyze it
+        on its own or compare two side by side (typically repo vs live).
       </p>
 
       <div class="home-cards">
@@ -2935,33 +2935,32 @@ function renderHomeView() {
           </header>
           <p>Open one canonical v1.2 pack — score its conformance, browse its
              layers, compile it to native artefacts, deploy.</p>
-          <div class="home-card-form">
-            <label class="home-card-field">
-              <span class="home-card-key">Pack</span>
-              <select id="home-analyze-pack">
-                <option value="">— pick a pack —</option>
-                ${packOptions}
-              </select>
-            </label>
-            <button id="home-analyze-go" type="button" class="home-card-cta" disabled>
-              Open →
-            </button>
-          </div>
-          <div class="home-card-divider"><span>or create a new one</span></div>
-          <div class="home-card-shortcuts">
-            <button id="home-shortcut-upload" type="button" class="home-shortcut">
+          <div class="home-card-shortcuts home-card-shortcuts-primary">
+            <button id="home-shortcut-upload" type="button" class="home-shortcut home-shortcut-primary">
               <span class="home-shortcut-key">▤</span>
-              <span>Upload a YAML / JSON pack</span>
+              <span><strong>Upload a YAML / JSON pack</strong><br><em>drop a file, or pick from disk</em></span>
             </button>
             <button id="home-shortcut-crawl"  type="button" class="home-shortcut">
               <span class="home-shortcut-key">↻</span>
-              <span>New from repo <em>(Path A · crawler)</em></span>
+              <span><strong>New from repo</strong> <em>(Path A · crawler)</em></span>
             </button>
             <button id="home-shortcut-live"   type="button" class="home-shortcut">
               <span class="home-shortcut-key">○</span>
-              <span>New from live MCP <em>(Path B)</em></span>
+              <span><strong>New from live MCP</strong> <em>(Path B)</em></span>
             </button>
           </div>
+          ${hasCatalog ? `
+            <div class="home-card-divider"><span>or reopen a recent pack</span></div>
+            <div class="home-card-form">
+              <label class="home-card-field">
+                <span class="home-card-key">Pack</span>
+                <select id="home-analyze-pack">
+                  <option value="">— pick from catalog —</option>
+                  ${catalogOptions}
+                </select>
+              </label>
+              <button id="home-analyze-go" type="button" class="home-card-cta" disabled>Open →</button>
+            </div>` : ''}
         </article>
 
         <!-- Compare two packs -->
@@ -2972,46 +2971,107 @@ function renderHomeView() {
           </header>
           <p>Diff <em>repo vs live</em>, declared vs observed. See gaps,
              drift, and unverified declarations in context.</p>
-          <div class="home-card-form">
-            <label class="home-card-field">
-              <span class="home-card-key">PACK A <em>(typically the repo-derived draft)</em></span>
-              <select id="home-compare-a">${packOptions}</select>
-            </label>
-            <label class="home-card-field">
-              <span class="home-card-key">PACK B <em>(typically the live MCP snapshot)</em></span>
-              <select id="home-compare-b">${packOptions}</select>
-            </label>
-            <button id="home-compare-go" type="button" class="home-card-cta">
-              Compare →
-            </button>
-          </div>
-          ${live ? '' : `<p class="home-card-hint"><em>No production-live pack found yet. <button type="button" class="link-btn" id="home-hint-live">Refresh from MCP</button> to populate it, or pick any two packs to compare.</em></p>`}
+          ${hasCatalog && catalogPacks.length >= 2 ? `
+            <div class="home-card-form">
+              <label class="home-card-field">
+                <span class="home-card-key">PACK A <em>(typically the repo-derived draft)</em></span>
+                <select id="home-compare-a">${catalogOptions}</select>
+              </label>
+              <label class="home-card-field">
+                <span class="home-card-key">PACK B <em>(typically the live MCP snapshot)</em></span>
+                <select id="home-compare-b">${catalogOptions}</select>
+              </label>
+              <button id="home-compare-go" type="button" class="home-card-cta">Compare →</button>
+            </div>` : `
+            <p class="home-card-hint home-card-empty">
+              <em>Open at least two packs first — upload, crawl, or draft from a live MCP.
+              You'll be able to compare them once both are loaded.</em>
+            </p>`}
         </article>
       </div>
+
+      <!-- Browse archived examples -->
+      <details class="home-examples" id="home-examples-details">
+        <summary>Browse archived reference packs <span class="home-examples-count" id="home-examples-count">(checking…)</span></summary>
+        <p class="home-examples-lede">
+          Five reference packs shipped with the studio for demos and as
+          conformance benchmarks. Click one to open it like any other pack.
+        </p>
+        <div class="home-examples-list" id="home-examples-list">
+          <div class="placeholder">Loading examples…</div>
+        </div>
+      </details>
     </section>
   `;
 
-  // Wire: Analyze
+  // Wire catalog-driven controls (only present when catalog is non-empty)
   const analyzeSel = $('#home-analyze-pack');
   const analyzeGo  = $('#home-analyze-go');
-  analyzeSel.onchange = () => { analyzeGo.disabled = !analyzeSel.value; };
-  analyzeGo.onclick = () => enterAnalyzeMode(analyzeSel.value);
-
-  // Compare
+  if (analyzeSel && analyzeGo) {
+    analyzeSel.onchange = () => { analyzeGo.disabled = !analyzeSel.value; };
+    analyzeGo.onclick = () => enterAnalyzeMode(analyzeSel.value);
+  }
   const compA = $('#home-compare-a');
   const compB = $('#home-compare-b');
-  if (defaultA) compA.value = defaultA;
-  if (defaultB) compB.value = defaultB;
-  $('#home-compare-go').onclick = () => {
-    if (!compA.value || !compB.value || compA.value === compB.value) return;
-    enterCompareMode(compA.value, defaultEnvFor(compA.value), compB.value, defaultEnvFor(compB.value));
-  };
+  const compGo = $('#home-compare-go');
+  if (compA && compB && compGo) {
+    if (defaultA) compA.value = defaultA;
+    if (defaultB) compB.value = defaultB;
+    compGo.onclick = () => {
+      if (!compA.value || !compB.value || compA.value === compB.value) return;
+      enterCompareMode(compA.value, defaultEnvFor(compA.value), compB.value, defaultEnvFor(compB.value));
+    };
+  }
 
-  // Shortcuts — open the existing modals
+  // Creation shortcuts — open the existing modals
   $('#home-shortcut-upload').onclick = () => $('#upload-btn')?.click();
   $('#home-shortcut-crawl').onclick  = () => $('#crawl-btn')?.click();
   $('#home-shortcut-live').onclick   = () => $('#draft-mcp-btn')?.click();
-  $('#home-hint-live')?.addEventListener('click', () => $('#mcp-btn')?.click());
+
+  // Examples list — fetched lazily so an empty catalog doesn't block paint.
+  loadAndRenderHomeExamples();
+}
+
+async function loadAndRenderHomeExamples() {
+  try {
+    const r = await api('/api/examples');
+    const examples = r.examples || [];
+    // Cache for openExampleAsPack so it can populate state.catalog with
+    // the same catalog-entry shape (label/version/criticality/etc.) that
+    // /api/packs returns — not the adapted-pack shape.
+    state._examplesCache = examples;
+    $('#home-examples-count').textContent = `(${examples.length})`;
+    $('#home-examples-list').innerHTML = examples.length
+      ? examples.map(e => `
+          <button type="button" class="home-example-row" data-id="${escapeHtml(e.id)}" title="${escapeHtml(e.description || '')}">
+            <span class="home-example-name">${escapeHtml(e.label)}</span>
+            <span class="home-example-meta">v${escapeHtml(e.version || '?')} · ${escapeHtml(e.criticality || '?')}</span>
+            <span class="home-example-desc">${escapeHtml(e.description || '')}</span>
+          </button>`).join('')
+      : '<div class="placeholder">No archived examples available.</div>';
+    $('#home-examples-list').querySelectorAll('.home-example-row').forEach(b => {
+      b.onclick = () => openExampleAsPack(b.dataset.id);
+    });
+  } catch (e) {
+    $('#home-examples-list').innerHTML = `<div class="error">Could not load examples: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function openExampleAsPack(exampleId) {
+  // The server's /api/packs/:id/* routes look up examples via
+  // findPackMeta(), so we can just enter Analyze mode against the
+  // example id directly. We do need to inject the example into
+  // state.catalog so the pack-select dropdown + the catalog-entry
+  // resolver have a label to display.
+  state.catalog = state.catalog || [];
+  const cached = (state._examplesCache || []).find(p => p.id === exampleId);
+  if (!cached) {
+    toast(`Example not found: ${exampleId}`, 'error');
+    return;
+  }
+  const exists = state.catalog.find(p => p.id === exampleId);
+  if (!exists) state.catalog.push(cached);
+  enterAnalyzeMode(exampleId);
 }
 
 $('#drawer-close').onclick   = () => closeDrawer('b');

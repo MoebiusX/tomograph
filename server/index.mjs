@@ -48,36 +48,54 @@ const SCHEMA_PATH = resolve(
 const SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'));
 
 // ---------- pack catalog ----------
+//
+// The studio boots EMPTY by design (Phase 7q). No packs are auto-loaded.
+// The user opens a pack from disk via:
+//   - Upload (drag-drop or file picker)
+//   - "New from repo" (Path A — crawler)
+//   - "New from live" (Path B — MCP draft)
+//   - GET /api/examples to browse archived reference packs in examples/
+//
+// The five previously bundled packs (Payment service, Target advanced,
+// Production curated, Production live, Demo skeleton) now live under
+// examples/ as reference material, surfaced via /api/examples but not
+// auto-loaded into the catalog.
 
-const PACK_CATALOG = [
+const PACK_CATALOG = [];
+
+// Examples directory — archived reference packs. Browsed on demand via
+// the home screen's "Browse examples" link. Each entry mirrors the
+// catalog shape so the existing /api/packs/:id paths keep working when
+// the user opens an example.
+const EXAMPLE_PACKS = [
   {
     id: 'payment-service',
     label: 'Payment service (canonical example)',
-    path: 'vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml',
+    path: 'examples/payment-service.pack.yaml',
     description: "The spec repo's reference tier-1 pack — HTTP API + Kafka consumer.",
   },
   {
     id: 'target-advanced',
     label: 'Target advanced (tier-1 reference)',
-    path: 'packs/target-advanced.pack.yaml',
+    path: 'examples/target-advanced.pack.yaml',
     description: 'Aspirational tier-1 — 100% MUST conformance, all 5 SHOULDs pass.',
   },
   {
     id: 'production-curated',
     label: 'Production curated (tier-2 BAU)',
-    path: 'packs/production-curated.pack.yaml',
+    path: 'examples/production-curated.pack.yaml',
     description: 'Hand-curated tier-2 baseline with intentional gaps the conformance panel surfaces.',
   },
   {
     id: 'production-live',
     label: 'Production live (MCP fetcher)',
-    path: 'packs/production-live.pack.yaml',
+    path: 'examples/production-live.pack.yaml',
     description: 'Refreshed by the refresh-live-pack workflow. Reflects MCP-verifiable state.',
   },
   {
     id: 'demo-skeleton',
     label: 'Demo skeleton (tier-3 minimum)',
-    path: 'packs/demo-skeleton.pack.yaml',
+    path: 'examples/demo-skeleton.pack.yaml',
     description: "Smallest valid canonical v1.2 pack — every schema-required section with the leanest content.",
   },
 ];
@@ -172,8 +190,21 @@ app.get('/api/packs', (req, res) => {
   res.json({ packs: PACK_CATALOG.map(catalogEntry) });
 });
 
+// Opt-in lookup across catalog + examples — used by all the /api/packs/:id/*
+// routes so opening an example doesn't require a separate code path.
+function findPackMeta(id) {
+  return PACK_CATALOG.find(p => p.id === id)
+      || EXAMPLE_PACKS.find(p => p.id === id);
+}
+
+// Browse the archived reference packs without auto-loading them. The
+// home screen renders these as a small "Browse examples" affordance.
+app.get('/api/examples', (req, res) => {
+  res.json({ examples: EXAMPLE_PACKS.map(catalogEntry) });
+});
+
 app.get('/api/packs/:id', (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
     const canonical = loadPackFile(meta.path);
@@ -188,7 +219,7 @@ app.get('/api/packs/:id', (req, res) => {
 });
 
 app.get('/api/packs/:id/canonical', (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
     const canonical = loadPackFile(meta.path);
@@ -201,7 +232,7 @@ app.get('/api/packs/:id/canonical', (req, res) => {
 });
 
 app.get('/api/packs/:id/conformance', (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
     const canonical = loadPackFile(meta.path);
@@ -218,8 +249,8 @@ app.get('/api/diff', (req, res) => {
   const aId = typeof req.query.a === 'string' ? req.query.a : null;
   const bId = typeof req.query.b === 'string' ? req.query.b : null;
   if (!aId || !bId) return res.status(400).json({ error: 'query params `a` and `b` (pack ids) required' });
-  const aMeta = PACK_CATALOG.find(p => p.id === aId);
-  const bMeta = PACK_CATALOG.find(p => p.id === bId);
+  const aMeta = findPackMeta(aId);
+  const bMeta = findPackMeta(bId);
   if (!aMeta) return res.status(404).json({ error: `unknown pack: ${aId}` });
   if (!bMeta) return res.status(404).json({ error: `unknown pack: ${bId}` });
   const aEnv = typeof req.query.aEnv === 'string' && req.query.aEnv ? req.query.aEnv : null;
@@ -252,7 +283,7 @@ app.get('/api/compile/targets', (req, res) => {
 // compile-artifact?group=&flavor=&artifact= below.
 // ----------------------------------------------------------------
 app.get('/api/packs/:id/compile-catalog', (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
   try {
     const canonical = loadPackFile(meta.path);
@@ -276,7 +307,7 @@ app.get('/api/packs/:id/compile-catalog', (req, res) => {
 // the existing display path.
 // ----------------------------------------------------------------
 app.get('/api/packs/:id/compile-artifact', (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
   const group = String(req.query.group || '');
   const flavor = req.query.flavor ? String(req.query.flavor) : undefined;
@@ -396,7 +427,7 @@ function filterPromRulesScope(yamlText, scope) {
 // instead of failing the whole batch.
 // ----------------------------------------------------------------
 app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
   const body = req.body || {};
   const mcpUrl  = typeof body.mcpUrl  === 'string' ? body.mcpUrl.trim() : '';
@@ -490,7 +521,7 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
 });
 
 app.post('/api/packs/:id/deploy/:target', async (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
 
   const target = req.params.target;
@@ -583,7 +614,7 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
 });
 
 app.get('/api/packs/:id/compile/:target', (req, res) => {
-  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
   try {
     const canonical = loadPackFile(meta.path);
