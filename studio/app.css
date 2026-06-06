@@ -2348,6 +2348,47 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
   color: var(--ink-4);
 }
 
+/* The assurance loop — inline SVG cycle diagram. Rendered with the
+   studio's theme tokens so it auto-themes light/dark. Sits below the
+   manual alternatives as the explainer for visitors who haven't
+   connected yet but want to understand what the studio does. */
+.home-cycle {
+  margin-top: 48px;
+  padding: 24px 28px 28px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.home-cycle-head {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 10px;
+}
+.home-cycle-head::before, .home-cycle-head::after {
+  content: ''; flex: 1;
+  height: 1px; background: var(--line-2);
+}
+.home-cycle-head span {
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.home-cycle-lede {
+  margin: 0 auto 22px;
+  max-width: 640px;
+  font: 14px/1.6 var(--serif);
+  color: var(--ink-3);
+  text-align: center;
+}
+.home-cycle-svg {
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  height: auto;
+  overflow: visible;
+}
+
 .hdr-brand h1 { transition: color 150ms ease; }
 .hdr-brand h1:hover { color: var(--CMP); }
 

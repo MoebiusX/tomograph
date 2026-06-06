@@ -3770,6 +3770,98 @@ function renderHomeView() {
           </button>
         </div>
       </div>
+
+      <div class="home-cycle">
+        <div class="home-cycle-head"><span>the assurance loop</span></div>
+        <p class="home-cycle-lede">
+          The studio runs a continuous-improvement cycle: introspect the
+          current state, compare to a reference (a target tier) or to live
+          telemetry, and resolve the gap either by deploying to live or
+          retro-feeding the manifest. Schedule the loop and assurance
+          becomes a property of the system, not a one-time audit.
+        </p>
+        <svg class="home-cycle-svg" viewBox="0 0 760 260" role="img" aria-label="The observability assurance loop: introspect → compare → deploy or retro-feed → assure → cycle back">
+          <style>
+            .cyc-node       { fill: var(--card); stroke-width: 1.5; }
+            .cyc-intro      { stroke: var(--L1); }
+            .cyc-cmp        { stroke: var(--CMP); }
+            .cyc-deploy     { stroke: var(--BLD); }
+            .cyc-retro      { stroke: var(--ATL); }
+            .cyc-assure     { stroke: var(--ink); }
+            .cyc-title      { font: 600 13px/1 var(--sans); fill: var(--ink); letter-spacing: 0.06em; text-transform: uppercase; }
+            .cyc-sub        { font: italic 11px/1.2 var(--serif); fill: var(--ink-3); }
+            .cyc-arrow      { stroke: var(--ink-4); stroke-width: 1.5; fill: none; }
+            .cyc-loop       { stroke: var(--ink-4); stroke-width: 1.5; stroke-dasharray: 4,4; fill: none; }
+            .cyc-loop-label { font: italic 11.5px/1 var(--serif); fill: var(--ink-4); }
+            .cyc-branch-lbl { font: 600 9.5px/1 var(--mono); letter-spacing: 0.08em; fill: var(--ink-4); text-transform: uppercase; }
+          </style>
+          <defs>
+            <marker id="cyc-arrow-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+              <path d="M0,0 L10,5 L0,10 Z" fill="var(--ink-4)"/>
+            </marker>
+          </defs>
+
+          <!-- Top loop arrow: ASSURE → INTROSPECT (continuous cycle) -->
+          <path class="cyc-loop" d="M 685 100 C 720 -20, 60 -20, 95 100" marker-end="url(#cyc-arrow-head)"/>
+          <text class="cyc-loop-label" x="380" y="15" text-anchor="middle">continuous assurance — schedule the loop</text>
+
+          <!-- 1. INTROSPECT -->
+          <g transform="translate(30, 90)">
+            <rect class="cyc-node cyc-intro" width="130" height="80" rx="10"/>
+            <text class="cyc-title" x="65" y="32" text-anchor="middle">Introspect</text>
+            <text class="cyc-sub"   x="65" y="52" text-anchor="middle">connect to MCP</text>
+            <text class="cyc-sub"   x="65" y="66" text-anchor="middle">crawl · upload</text>
+          </g>
+
+          <!-- INTROSPECT → COMPARE -->
+          <line class="cyc-arrow" x1="160" y1="130" x2="200" y2="130" marker-end="url(#cyc-arrow-head)"/>
+
+          <!-- 2. COMPARE -->
+          <g transform="translate(200, 90)">
+            <rect class="cyc-node cyc-cmp" width="130" height="80" rx="10"/>
+            <text class="cyc-title" x="65" y="32" text-anchor="middle">Compare</text>
+            <text class="cyc-sub"   x="65" y="52" text-anchor="middle">vs maturity rubric</text>
+            <text class="cyc-sub"   x="65" y="66" text-anchor="middle">vs reference · vs live</text>
+          </g>
+
+          <!-- COMPARE → DEPLOY (top branch) -->
+          <path class="cyc-arrow" d="M 330 130 C 360 130, 380 130, 400 70" marker-end="url(#cyc-arrow-head)"/>
+          <text class="cyc-branch-lbl" x="365" y="98" text-anchor="middle">deploy gap</text>
+
+          <!-- COMPARE → RETRO-FEED (bottom branch) -->
+          <path class="cyc-arrow" d="M 330 130 C 360 130, 380 130, 400 190" marker-end="url(#cyc-arrow-head)"/>
+          <text class="cyc-branch-lbl" x="365" y="172" text-anchor="middle">drift gap</text>
+
+          <!-- 3a. DEPLOY (top) -->
+          <g transform="translate(400, 30)">
+            <rect class="cyc-node cyc-deploy" width="140" height="74" rx="10"/>
+            <text class="cyc-title" x="70" y="32" text-anchor="middle">Deploy</text>
+            <text class="cyc-sub"   x="70" y="50" text-anchor="middle">fix the live signal</text>
+            <text class="cyc-sub"   x="70" y="64" text-anchor="middle">via MCP write tools</text>
+          </g>
+
+          <!-- 3b. RETRO-FEED (bottom) -->
+          <g transform="translate(400, 156)">
+            <rect class="cyc-node cyc-retro" width="140" height="74" rx="10"/>
+            <text class="cyc-title" x="70" y="32" text-anchor="middle">Retro-feed</text>
+            <text class="cyc-sub"   x="70" y="50" text-anchor="middle">fix the manifest</text>
+            <text class="cyc-sub"   x="70" y="64" text-anchor="middle">verified → declared</text>
+          </g>
+
+          <!-- DEPLOY → ASSURE -->
+          <path class="cyc-arrow" d="M 540 67 C 580 67, 600 130, 620 130" marker-end="url(#cyc-arrow-head)"/>
+          <!-- RETRO-FEED → ASSURE -->
+          <path class="cyc-arrow" d="M 540 193 C 580 193, 600 130, 620 130" marker-end="url(#cyc-arrow-head)"/>
+
+          <!-- 4. ASSURE -->
+          <g transform="translate(620, 90)">
+            <rect class="cyc-node cyc-assure" width="120" height="80" rx="10"/>
+            <text class="cyc-title" x="60" y="32" text-anchor="middle">Assure</text>
+            <text class="cyc-sub"   x="60" y="52" text-anchor="middle">re-verify</text>
+            <text class="cyc-sub"   x="60" y="66" text-anchor="middle">on a schedule</text>
+          </g>
+        </svg>
+      </div>
     </section>
   `;
 
