@@ -28,11 +28,14 @@ import { compile, compilePrometheusRules, compileOtelCollector,
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
 
+// Bundled packs live under examples/ since Phase 7q archived them out
+// of packs/ so the studio boots empty. payment-service is the vendored
+// spec example and stays under vendor/.
 const FIXTURES = [
   { id: 'payment-service',     path: 'vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml' },
-  { id: 'target-advanced',     path: 'packs/target-advanced.pack.yaml' },
-  { id: 'production-curated',  path: 'packs/production-curated.pack.yaml' },
-  { id: 'demo-skeleton',       path: 'packs/demo-skeleton.pack.yaml' },
+  { id: 'target-advanced',     path: 'examples/target-advanced.pack.yaml' },
+  { id: 'production-curated',  path: 'examples/production-curated.pack.yaml' },
+  { id: 'demo-skeleton',       path: 'examples/demo-skeleton.pack.yaml' },
 ];
 
 const failures = [];

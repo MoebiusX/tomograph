@@ -4,7 +4,7 @@
  *
  * Build a canonical ObservabilityPack v1.2 manifest from a live MCP
  * server's responses, validate it against the vendored schema, and write
- * it as YAML to `packs/production-live.pack.yaml`.
+ * it as YAML to `examples/production-live.pack.yaml`.
  *
  * Phase 4 rewrite: emits canonical v1.2 only. No EMIT_FORMAT flag, no
  * studio-shape output. Sections MCP cannot directly verify (SLIs, SLOs,
@@ -20,7 +20,7 @@
  *
  * Env:
  *   MCP_URL   — MCP server endpoint. Default: https://mcp.example.com/observability
- *   OUTPUT    — Output path.         Default: packs/production-live.pack.yaml
+ *   OUTPUT    — Output path.         Default: examples/production-live.pack.yaml
  *   MCP_AUTH  — Optional bearer token if your MCP requires auth.
  *   PACK_NAME — Pack metadata.name.  Default: production-live
  *
@@ -42,7 +42,7 @@ const SCHEMA_PATH = resolve(__dirname, '..', 'vendor', 'observability-pack-spec'
 const SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'));
 
 const MCP_URL_DEFAULT  = process.env.MCP_URL  || 'https://mcp.example.com/observability';
-const OUTPUT           = process.env.OUTPUT   || 'packs/production-live.pack.yaml';
+const OUTPUT           = process.env.OUTPUT   || 'examples/production-live.pack.yaml';
 const MCP_AUTH_DEFAULT = process.env.MCP_AUTH || null;
 const PACK_NAME        = (process.env.PACK_NAME || 'production-live').toLowerCase();
 

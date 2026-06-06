@@ -8,7 +8,7 @@ cron.
 
 `tools/fetch-live-pack.mjs` builds a **canonical ObservabilityPack v1.2
 manifest** from MCP responses, validates it against the vendored schema,
-and writes it as YAML to `packs/production-live.pack.yaml`. The same path
+and writes it as YAML to `examples/production-live.pack.yaml`. The same path
 shows up in the studio's pack catalog (`/api/packs`) under the id
 `production-live`, so a refreshed pack is immediately visible to anyone
 hitting the studio.
@@ -72,7 +72,7 @@ Env vars:
 | Var | Default | Meaning |
 |---|---|---|
 | `MCP_URL` | `https://mcp.example.com/observability` | MCP server endpoint |
-| `OUTPUT` | `packs/production-live.pack.yaml` | Where to write the YAML pack |
+| `OUTPUT` | `examples/production-live.pack.yaml` | Where to write the YAML pack |
 | `MCP_AUTH` | _(none)_ | Bearer token if your MCP requires auth |
 | `PACK_NAME` | `production-live` | `metadata.name` of the produced pack |
 
@@ -117,13 +117,13 @@ jobs:
         env:
           MCP_URL:  ${{ secrets.MCP_URL }}
           MCP_AUTH: ${{ secrets.MCP_AUTH }}
-          OUTPUT:   packs/production-live.pack.yaml
+          OUTPUT:   examples/production-live.pack.yaml
         run: node tools/fetch-live-pack.mjs
 
       - name: Commit if changed
         run: |
-          git add packs/production-live.pack.yaml
-          git rm --ignore-unmatch packs/production-live.json   # legacy cleanup
+          git add examples/production-live.pack.yaml
+          git rm --ignore-unmatch packs/production-live.json packs/production-live.pack.yaml   # legacy cleanup
           if git diff --quiet --cached; then echo "no changes"
           else
             git commit -m "chore(live): refresh $(date -u +%FT%TZ)"
