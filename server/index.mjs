@@ -226,31 +226,128 @@ app.get('/api/compile/targets', (req, res) => {
   res.json({ targets: listTargets() });
 });
 
-// Per-target default MCP write tool names. The pack is the source of
-// truth; these tools apply the compiled artefact to the live platform.
-// Convention: tools accept { payload, content_type, environment,
-// filename, pack_source, target } and return whatever they like.
-const DEFAULT_DEPLOY_TOOLS = {
-  'prometheus-rules': 'apply_prometheus_rules',
-  'otel-collector':   'apply_otel_config',
-  'alertmanager':     'apply_alertmanager_config',
-  'grafana-dashboard':'apply_grafana_dashboard',
+// Deploy matrix — what's deployable, to which products, with what default
+// MCP tool. Spec §9's reference table lists more targets but for now we
+// only ship deploy paths to Grafana 12/13 (the version floor the spec
+// requires and the only platform where the rules + dashboards land
+// through a single unified API). OTel Collector + standalone
+// Alertmanager remain download-only; the compile output is still
+// emitted for hand-off, just not deployable from the UI.
+
+const DEPLOY_PRODUCTS = ['grafana'];
+const DEPLOY_VERSIONS = {
+  grafana: ['12', '13'],
 };
+const RULES_SCOPES = ['both', 'recording', 'alerting'];
+
+// (product, target) → default MCP tool name. The server lets the client
+// override via body.mcpTool; this dispatch supplies the convention.
+function defaultDeployTool({ product, target, scope }) {
+  if (product === 'grafana') {
+    if (target === 'prometheus-rules') {
+      if (scope === 'recording') return 'apply_grafana_recording_rules';
+      if (scope === 'alerting')  return 'apply_grafana_alerting_rules';
+      return 'apply_grafana_rules';   // both
+    }
+    if (target === 'grafana-dashboard') return 'apply_grafana_dashboard';
+  }
+  return null;   // not deployable
+}
+
+function targetIsDeployable(target) {
+  return target === 'prometheus-rules' || target === 'grafana-dashboard';
+}
+
+app.get('/api/deploy/matrix', (req, res) => {
+  // Surface the deployable targets + products + versions so the client
+  // can drive the UI from one source of truth.
+  res.json({
+    products: DEPLOY_PRODUCTS,
+    versions: DEPLOY_VERSIONS,
+    scopes: RULES_SCOPES,
+    targets: {
+      'prometheus-rules': {
+        deployable: true,
+        products: ['grafana'],
+        scopable: true,
+        scopes: RULES_SCOPES,
+        description: 'Recording + multi-window burn-rate alerting rules, applied via Grafana\'s unified alerting (Mimir-compatible) ruler.',
+      },
+      'grafana-dashboard': {
+        deployable: true,
+        products: ['grafana'],
+        scopable: false,
+        description: 'Grafana 12/13 dashboard JSON, applied via the dashboards API.',
+      },
+      'otel-collector': {
+        deployable: false,
+        reason: 'OTel Collector configs are environment-specific; emit and apply via your own deploy pipeline (kustomize / helm).',
+      },
+      'alertmanager': {
+        deployable: false,
+        reason: 'Standalone Alertmanager deploys are handled out-of-band; routes are folded into Grafana unified alerting for now.',
+      },
+    },
+  });
+});
+
+// Filter a prometheus-rules YAML payload down to recording rules only or
+// alerting rules only. This lives in the deploy path (not in compile)
+// because the compiled output remains canonical; scope is a deploy-time
+// concern.
+function filterPromRulesScope(yamlText, scope) {
+  if (!scope || scope === 'both') return yamlText;
+  // Parse with our mini YAML, drop rules of the other kind, re-emit.
+  // We keep the comment banner the compiler put at the top.
+  const headerMatch = yamlText.match(/^(\s*#[^\n]*\n)+/);
+  const header = headerMatch ? headerMatch[0] : '';
+  const obj = parseYaml(yamlText.replace(/^(\s*#[^\n]*\n)+/, ''));
+  if (!obj?.groups) return yamlText;
+  const wantKey = scope === 'recording' ? 'record' : 'alert';
+  obj.groups = obj.groups
+    .map(g => ({ ...g, rules: (g.rules || []).filter(r => wantKey in r) }))
+    .filter(g => (g.rules || []).length > 0);
+  return header + emitYaml(obj);
+}
 
 app.post('/api/packs/:id/deploy/:target', async (req, res) => {
   const meta = PACK_CATALOG.find(p => p.id === req.params.id);
   if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
 
   const target = req.params.target;
+  if (!targetIsDeployable(target)) {
+    return res.status(400).json({
+      ok: false, target,
+      error: `deploy not supported for target '${target}'. Deploy is currently limited to Grafana 12/13 — see GET /api/deploy/matrix.`,
+    });
+  }
+
   const body = req.body || {};
   const mcpUrl  = typeof body.mcpUrl  === 'string' ? body.mcpUrl.trim()  : '';
   const mcpAuth = typeof body.mcpAuth === 'string' ? body.mcpAuth        : null;
+  const product = (typeof body.targetProduct === 'string' && body.targetProduct.trim())
+    ? body.targetProduct.trim() : 'grafana';
+  const version = (typeof body.targetVersion === 'string' && body.targetVersion.trim())
+    ? body.targetVersion.trim() : '12';
+  const scope = (target === 'prometheus-rules' && typeof body.scope === 'string' && RULES_SCOPES.includes(body.scope))
+    ? body.scope : (target === 'prometheus-rules' ? 'both' : undefined);
+
+  if (!DEPLOY_PRODUCTS.includes(product)) {
+    return res.status(400).json({ ok: false, error: `unsupported target product: ${product}. Known: ${DEPLOY_PRODUCTS.join(', ')}.` });
+  }
+  if (!DEPLOY_VERSIONS[product]?.includes(version)) {
+    return res.status(400).json({ ok: false, error: `unsupported ${product} version: ${version}. Known: ${(DEPLOY_VERSIONS[product] || []).join(', ')}.` });
+  }
+
   const mcpTool = (typeof body.mcpTool === 'string' && body.mcpTool.trim())
     ? body.mcpTool.trim()
-    : (DEFAULT_DEPLOY_TOOLS[target] || `apply_${String(target).replace(/-/g, '_')}`);
+    : defaultDeployTool({ product, target, scope });
+  if (!mcpTool) {
+    return res.status(400).json({ ok: false, error: 'no default deploy tool for this (product, target) combination; pass mcpTool in body.' });
+  }
+
   const env = readEnv(req.query);
   const dashboardId = typeof req.query.dashboardId === 'string' ? req.query.dashboardId : undefined;
-
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
 
   const t0 = Date.now();
@@ -259,7 +356,13 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
     const { canonical: overlaid } = overlaidCanonical(canonical, env);
     const compiled = compile(overlaid, target, { dashboardId });
 
-    process.stderr.write(`[deploy] ${meta.id}@${canonical.metadata?.version || '?'} -> ${mcpUrl} via ${mcpTool} (${target}, env=${env || 'none'}, ${compiled.content.length}b)\n`);
+    // For rules deploy, apply the scope filter (recording-only / alerting-only).
+    const payload = (target === 'prometheus-rules')
+      ? filterPromRulesScope(compiled.content, scope)
+      : compiled.content;
+
+    process.stderr.write(`[deploy] ${meta.id}@${canonical.metadata?.version || '?'} -> ${mcpUrl} via ${mcpTool} ` +
+      `(${product} ${version}, target=${target}, scope=${scope || '—'}, env=${env || 'none'}, ${payload.length}b)\n`);
 
     const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth });
     await rpc('initialize', {
@@ -269,12 +372,15 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
     }).catch(() => {});
 
     const args = {
-      payload: compiled.content,
+      payload,
       content_type: compiled.contentType,
       environment: env || undefined,
       filename: compiled.filename,
       pack_source: `${meta.id}@${canonical.metadata?.version || '?'}`,
       target,
+      target_product: product,
+      target_version: version,
+      scope: scope || undefined,
     };
     const result = await callTool(mcpTool, args);
 
@@ -282,19 +388,18 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
     process.stderr.write(`[deploy]   ok in ${tookMs}ms\n`);
     res.json({
       ok: true,
-      target,
-      env,
-      tool: mcpTool,
-      mcpUrl,
+      target, env, tool: mcpTool, mcpUrl,
+      targetProduct: product, targetVersion: version, scope: scope || null,
       filename: compiled.filename,
-      bytes: compiled.content.length,
+      bytes: payload.length,
       tookMs,
       result,
     });
   } catch (e) {
     const tookMs = Date.now() - t0;
     process.stderr.write(`[deploy]   error in ${tookMs}ms: ${e.message}\n`);
-    res.status(502).json({ ok: false, error: e.message, tool: mcpTool, target, env, tookMs });
+    res.status(502).json({ ok: false, error: e.message, tool: mcpTool, target,
+      targetProduct: product, targetVersion: version, scope: scope || null, env, tookMs });
   }
 });
 

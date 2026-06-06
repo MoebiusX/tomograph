@@ -1636,6 +1636,37 @@ a:hover { color: var(--ink); }
   max-width: 720px;
 }
 .deploy-panel-body .mcp-field:last-of-type { grid-column: 1 / -1; }
+.deploy-trio {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 14px;
+  padding: 10px 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+}
+.deploy-trio .deploy-field select {
+  font: 12px/1.4 var(--mono);
+  padding: 4px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  background: var(--paper);
+  color: var(--ink);
+  width: 100%;
+}
+.ctrl-deploy-disabled {
+  display: inline-block;
+  padding: 5px 12px;
+  font: 11px/1.2 var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--ink-5);
+  background: var(--mute-bg);
+  border: 1px dashed var(--line-2);
+  border-radius: var(--r-sm);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
 .deploy-panel-actions {
   grid-column: 1 / -1;
   display: flex; align-items: center; gap: 10px;

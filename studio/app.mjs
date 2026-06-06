@@ -55,6 +55,10 @@ const state = {
   compileDashId: null,
   compileContent: null,        // { filename, contentType, text, source } | { error }
   compileTargets: null,        // catalog from /api/compile/targets
+  deployMatrix: null,          // catalog from /api/deploy/matrix
+  deployProduct: 'grafana',    // chosen target product
+  deployVersion: '12',         // chosen target version (string — matches matrix.versions)
+  deployScope: 'both',         // for prometheus-rules: both | recording | alerting
   mcpStatus: null,
 };
 
@@ -537,6 +541,20 @@ async function loadCompileTargets() {
   return state.compileTargets;
 }
 
+async function loadDeployMatrix() {
+  if (state.deployMatrix) return state.deployMatrix;
+  try { state.deployMatrix = await api('/api/deploy/matrix'); }
+  catch (_) { state.deployMatrix = { products: [], versions: {}, scopes: [], targets: {} }; }
+  return state.deployMatrix;
+}
+
+function isDeployable(target) {
+  return !!state.deployMatrix?.targets?.[target]?.deployable;
+}
+function targetScopable(target) {
+  return !!state.deployMatrix?.targets?.[target]?.scopable;
+}
+
 async function loadCompiled() {
   if (!state.selectedPackId || !state.compileTarget) { state.compileContent = null; return; }
   const params = new URLSearchParams();
@@ -681,9 +699,13 @@ function renderCompileView(host) {
     <div class="compile-buttons">
       <button class="ctrl-btn" id="copy-compiled" type="button">copy</button>
       <a class="ctrl-btn ctrl-link" id="download-compiled" download="${escapeHtml(c.filename)}">download</a>
-      <button class="ctrl-btn ctrl-deploy" id="deploy-compiled" type="button" title="Push this artefact to the live platform via MCP write tools">
-        deploy → <em>${escapeHtml(envLabel)}</em>
-      </button>
+      ${isDeployable(state.compileTarget) ? `
+        <button class="ctrl-btn ctrl-deploy" id="deploy-compiled" type="button" title="Push this artefact to the live platform via MCP write tools">
+          deploy → <em>${escapeHtml(envLabel)}</em>
+        </button>` : `
+        <span class="ctrl-btn ctrl-deploy-disabled" title="${escapeHtml(state.deployMatrix?.targets?.[state.compileTarget]?.reason || 'No deploy path configured for this target')}">
+          deploy ✕
+        </span>`}
     </div>
   `;
   stage.appendChild(actions);
@@ -694,7 +716,9 @@ function renderCompileView(host) {
   const deployPanel = document.createElement('div');
   deployPanel.className = 'deploy-panel';
   deployPanel.hidden = true;
-  deployPanel.innerHTML = renderDeployPanelMarkup();
+  if (isDeployable(state.compileTarget)) {
+    deployPanel.innerHTML = renderDeployPanelMarkup(state.compileTarget);
+  }
   stage.appendChild(deployPanel);
 
   const codeWrap = document.createElement('div');
@@ -713,49 +737,109 @@ function renderCompileView(host) {
   const blob = new Blob([c.text], { type: c.contentType });
   dl.href = URL.createObjectURL(blob);
 
-  actions.querySelector('#deploy-compiled').onclick = () => {
+  const deployBtn = actions.querySelector('#deploy-compiled');
+  if (deployBtn) deployBtn.onclick = () => {
     deployPanel.hidden = !deployPanel.hidden;
     if (!deployPanel.hidden) {
       // Prefill from persisted state.
       const urlInput = deployPanel.querySelector('#deploy-mcp-url');
-      if (!urlInput.value) {
+      if (urlInput && !urlInput.value) {
         const saved = (() => { try { return localStorage.getItem('mcpUrl'); } catch { return null; } })();
         urlInput.value = saved || state.mcpStatus?.url || '';
       }
-      // Default tool per target if not already set.
       const toolInput = deployPanel.querySelector('#deploy-mcp-tool');
-      if (!toolInput.value) toolInput.value = defaultDeployTool(state.compileTarget);
-      urlInput.focus();
+      if (toolInput && !toolInput.value) toolInput.value = computeDeployTool(state.compileTarget);
+      urlInput?.focus();
     }
   };
 
-  deployPanel.querySelector('#deploy-go-btn').onclick = () => doDeploy(deployPanel);
-  deployPanel.querySelector('#deploy-cancel-btn').onclick = () => { deployPanel.hidden = true; };
+  // Live re-derive the default tool name as the user changes product /
+  // version / scope. We DON'T overwrite a user-typed override — only when
+  // the input still matches the previous default do we refresh it.
+  function rewireDefaults() {
+    const toolInput = deployPanel.querySelector('#deploy-mcp-tool');
+    if (!toolInput) return;
+    const newDefault = computeDeployTool(state.compileTarget);
+    if (toolInput.value === toolInput.dataset.lastDefault || !toolInput.value) {
+      toolInput.value = newDefault;
+    }
+    toolInput.dataset.lastDefault = newDefault;
+  }
+  const prodSel = deployPanel.querySelector('#deploy-product');
+  if (prodSel) prodSel.addEventListener('change', () => { state.deployProduct = prodSel.value; rewireDefaults(); });
+  const verSel = deployPanel.querySelector('#deploy-version');
+  if (verSel) verSel.addEventListener('change', () => { state.deployVersion = verSel.value; rewireDefaults(); });
+  const scopeSel = deployPanel.querySelector('#deploy-scope');
+  if (scopeSel) scopeSel.addEventListener('change', () => { state.deployScope = scopeSel.value; rewireDefaults(); });
+
+  const goBtn2 = deployPanel.querySelector('#deploy-go-btn');
+  if (goBtn2) goBtn2.onclick = () => doDeploy(deployPanel);
+  const cancelBtn = deployPanel.querySelector('#deploy-cancel-btn');
+  if (cancelBtn) cancelBtn.onclick = () => { deployPanel.hidden = true; };
 }
 
-const DEFAULT_DEPLOY_TOOLS = {
-  'prometheus-rules':  'apply_prometheus_rules',
-  'otel-collector':    'apply_otel_config',
-  'alertmanager':      'apply_alertmanager_config',
-  'grafana-dashboard': 'apply_grafana_dashboard',
-};
-function defaultDeployTool(target) {
-  return DEFAULT_DEPLOY_TOOLS[target] || `apply_${String(target || '').replace(/-/g, '_')}`;
+// Mirror the server's defaultDeployTool function. Kept in sync with
+// server/index.mjs::defaultDeployTool.
+function computeDeployTool(target) {
+  const product = state.deployProduct;
+  const scope   = state.deployScope;
+  if (product === 'grafana') {
+    if (target === 'prometheus-rules') {
+      if (scope === 'recording') return 'apply_grafana_recording_rules';
+      if (scope === 'alerting')  return 'apply_grafana_alerting_rules';
+      return 'apply_grafana_rules';
+    }
+    if (target === 'grafana-dashboard') return 'apply_grafana_dashboard';
+  }
+  return `apply_${String(target || '').replace(/-/g, '_')}`;
 }
 
-function renderDeployPanelMarkup() {
+function renderDeployPanelMarkup(target) {
+  const matrix = state.deployMatrix || { products: ['grafana'], versions: { grafana: ['12', '13'] }, scopes: ['both', 'recording', 'alerting'] };
+  const products = matrix.products.length ? matrix.products : ['grafana'];
+  const versions = matrix.versions[state.deployProduct] || matrix.versions[products[0]] || ['12', '13'];
+  const scopes = matrix.scopes || ['both', 'recording', 'alerting'];
+  const scopable = targetScopable(target);
+
+  const scopeLabels = {
+    both:      'both — recording + alerting rules',
+    recording: 'recording rules only',
+    alerting:  'alerting rules only',
+  };
+
   return `
     <div class="deploy-panel-head">
       <div class="deploy-panel-title">Deploy via MCP write tool</div>
-      <div class="deploy-panel-sub">The compiled artefact is sent to the named MCP tool. The pack stays the source of truth — re-deploy any time by re-emitting from the pack.</div>
+      <div class="deploy-panel-sub">Target a specific product + version. The pack stays the source of truth — re-deploy any time by re-emitting from the pack.</div>
     </div>
     <div class="deploy-panel-body">
+      <div class="deploy-trio">
+        <label class="mcp-field deploy-field">
+          <span class="mcp-field-key">Target product</span>
+          <select id="deploy-product">
+            ${products.map(p => `<option value="${escapeHtml(p)}" ${p === state.deployProduct ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('')}
+          </select>
+        </label>
+        <label class="mcp-field deploy-field">
+          <span class="mcp-field-key">Target version</span>
+          <select id="deploy-version">
+            ${versions.map(v => `<option value="${escapeHtml(v)}" ${v === state.deployVersion ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
+          </select>
+        </label>
+        ${scopable ? `
+          <label class="mcp-field deploy-field">
+            <span class="mcp-field-key">Rules scope</span>
+            <select id="deploy-scope">
+              ${scopes.map(s => `<option value="${escapeHtml(s)}" ${s === state.deployScope ? 'selected' : ''}>${escapeHtml(scopeLabels[s] || s)}</option>`).join('')}
+            </select>
+          </label>` : ''}
+      </div>
       <label class="mcp-field">
         <span class="mcp-field-key">MCP URL</span>
         <input id="deploy-mcp-url" type="url" placeholder="https://your-mcp.example.com/observability" autocomplete="off">
       </label>
       <label class="mcp-field">
-        <span class="mcp-field-key">Tool name</span>
+        <span class="mcp-field-key">Tool name <em>(default per product · version · scope)</em></span>
         <input id="deploy-mcp-tool" type="text" placeholder="apply_*" autocomplete="off">
       </label>
       <label class="mcp-field">
@@ -774,8 +858,11 @@ function renderDeployPanelMarkup() {
 
 async function doDeploy(panel) {
   const url  = panel.querySelector('#deploy-mcp-url').value.trim();
-  const tool = panel.querySelector('#deploy-mcp-tool').value.trim() || defaultDeployTool(state.compileTarget);
+  const tool = panel.querySelector('#deploy-mcp-tool').value.trim() || computeDeployTool(state.compileTarget);
   const auth = panel.querySelector('#deploy-mcp-auth').value;
+  const product = panel.querySelector('#deploy-product')?.value || state.deployProduct;
+  const version = panel.querySelector('#deploy-version')?.value || state.deployVersion;
+  const scope   = panel.querySelector('#deploy-scope')?.value   || (targetScopable(state.compileTarget) ? state.deployScope : undefined);
   const statusEl = panel.querySelector('#deploy-status');
   const resultEl = panel.querySelector('#deploy-result');
   const setStatus = (msg, kind) => {
@@ -787,7 +874,7 @@ async function doDeploy(panel) {
 
   const goBtn = panel.querySelector('#deploy-go-btn');
   goBtn.disabled = true;
-  setStatus('contacting mcp…');
+  setStatus(`deploying to ${product} ${version}${scope && scope !== 'both' ? ' · ' + scope : ''}…`);
   resultEl.hidden = true;
 
   const qs = new URLSearchParams();
@@ -800,7 +887,14 @@ async function doDeploy(panel) {
     const r = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined, mcpTool: tool }),
+      body: JSON.stringify({
+        mcpUrl: url,
+        mcpAuth: auth || undefined,
+        mcpTool: tool,
+        targetProduct: product,
+        targetVersion: version,
+        scope,
+      }),
     });
     const ct = r.headers.get('content-type') || '';
     const raw = await r.text();
@@ -1997,6 +2091,14 @@ async function boot() {
   renderMcpBadge(state.mcpStatus);
   renderMcpStatusBody(state.mcpStatus);
   setInterval(() => renderMcpBadge(state.mcpStatus), 60_000);
+
+  // Deploy matrix is small, static-ish, and used by the compile view; load
+  // it in parallel with the first render so the deploy panel has it ready.
+  loadDeployMatrix().then(() => {
+    // If the compile view is already mounted, re-render to pick up the
+    // newly-known deployable flag.
+    if (state.activeLayer === 'COMPILE') renderMainView();
+  });
 
   await refresh();
 }

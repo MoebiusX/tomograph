@@ -202,9 +202,73 @@ try {
   });
   assert(deployBadMcp.status === 502, 'deploy unreachable MCP → 502');
   const deployErr = await deployBadMcp.json();
-  assert(deployErr.tool === 'apply_prometheus_rules',
-         'deploy 502 echoes the default MCP tool name for this target');
+  // Default deploy is to Grafana 12 with scope=both → apply_grafana_rules.
+  assert(deployErr.tool === 'apply_grafana_rules',
+         'deploy 502 echoes the default tool for prometheus-rules → Grafana 12 + scope=both');
   assert(deployErr.target === 'prometheus-rules', 'deploy 502 echoes the target');
+  assert(deployErr.targetProduct === 'grafana', 'deploy 502 echoes targetProduct');
+  assert(deployErr.targetVersion === '12', 'deploy 502 echoes targetVersion');
+  assert(deployErr.scope === 'both', 'deploy 502 echoes scope (both)');
+
+  // Deploy v2 — target product / version / scope wiring
+  const matrix = await getJson(base, '/api/deploy/matrix');
+  assert(Array.isArray(matrix.products) && matrix.products.includes('grafana'),
+         '/api/deploy/matrix lists grafana as a product');
+  assert(Array.isArray(matrix.versions?.grafana) && matrix.versions.grafana.includes('12') && matrix.versions.grafana.includes('13'),
+         '/api/deploy/matrix lists Grafana versions 12 and 13');
+  assert(matrix.targets?.['prometheus-rules']?.deployable === true,
+         'matrix marks prometheus-rules deployable');
+  assert(matrix.targets?.['grafana-dashboard']?.deployable === true,
+         'matrix marks grafana-dashboard deployable');
+  assert(matrix.targets?.['otel-collector']?.deployable === false,
+         'matrix marks otel-collector NOT deployable');
+  assert(matrix.targets?.['alertmanager']?.deployable === false,
+         'matrix marks alertmanager NOT deployable');
+
+  // Deploy on a non-deployable target → 400 with a clear message
+  const deployUndeployable = await fetch(`${base}/api/packs/payment-service/deploy/otel-collector`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no' }),
+  });
+  assert(deployUndeployable.status === 400, 'deploy to undeployable target → 400');
+  const undeployableBody = await deployUndeployable.json();
+  assert(/not supported/.test(undeployableBody.error || ''),
+         'undeployable error mentions "not supported"');
+
+  // Deploy with unknown target version → 400
+  const deployBadVer = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no', targetVersion: '11' }),
+  });
+  assert(deployBadVer.status === 400, 'deploy with bad target version → 400');
+  const badVerBody = await deployBadVer.json();
+  assert(/unsupported.*version/i.test(badVerBody.error || ''),
+         'bad-version error names the unsupported version');
+
+  // Deploy with scope=recording → default tool flips to recording variant
+  const deployRecording = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no', scope: 'recording' }),
+  });
+  assert(deployRecording.status === 502, 'deploy with scope=recording → 502 from unreachable mcp');
+  const recBody = await deployRecording.json();
+  assert(recBody.tool === 'apply_grafana_recording_rules',
+         'scope=recording defaults to apply_grafana_recording_rules');
+  assert(recBody.scope === 'recording', 'echoes scope=recording');
+
+  // Deploy with scope=alerting → default tool flips again
+  const deployAlerting = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no', scope: 'alerting', targetVersion: '13' }),
+  });
+  const alrBody = await deployAlerting.json();
+  assert(alrBody.tool === 'apply_grafana_alerting_rules',
+         'scope=alerting defaults to apply_grafana_alerting_rules');
+  assert(alrBody.targetVersion === '13', 'echoes Grafana 13');
 
   // /api/maturity-rubric
   const rubric = await getJson(base, '/api/maturity-rubric');
