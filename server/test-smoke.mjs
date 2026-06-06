@@ -457,6 +457,38 @@ try {
   assert(shell.includes('id="crawl-dropzone"'), 'shell includes the dropzone');
   assert(shell.includes('id="crawl-btn"'), 'shell includes the "new from repo" button');
 
+  // /lib/* — shared crawler + YAML library exposed to the browser so it
+  // can do classification BEFORE blasting a 3000-file repo at the
+  // server. Same module the CLI + server use.
+  const libCrawler = await fetch(`${base}/lib/crawler.mjs`);
+  assert(libCrawler.status === 200, '/lib/crawler.mjs served');
+  assert((libCrawler.headers.get('content-type') || '').includes('javascript'),
+         '/lib/crawler.mjs served as application/javascript');
+  const libCrawlerBody = await libCrawler.text();
+  assert(libCrawlerBody.includes('export function detectArtefactKind'),
+         '/lib/crawler.mjs exports detectArtefactKind for the browser');
+  const libMini = await fetch(`${base}/lib/mini-yaml.mjs`);
+  assert(libMini.status === 200, '/lib/mini-yaml.mjs served (transitive import target)');
+
+  // 413 PayloadTooLarge on /api/* must come back as JSON, not HTML.
+  // Build a body just over the 16 MB cap by repeating the smallest valid
+  // crawl shape.
+  const huge = '{"files":{' + Array.from({ length: 100 }, (_, i) =>
+    `"f${i}.yml":"${'x'.repeat(180 * 1024)}"`
+  ).join(',') + '}}';
+  const tooBig = await fetch(`${base}/api/crawl`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: huge,
+  });
+  assert(tooBig.status === 413, 'oversize /api/crawl request → 413');
+  const tooBigCt = tooBig.headers.get('content-type') || '';
+  assert(tooBigCt.includes('application/json'),
+         `413 response carries JSON content-type (got ${tooBigCt})`);
+  const tooBigBody = await tooBig.json();
+  assert(/too large/i.test(tooBigBody.error || ''),
+         '413 error message names the size problem');
+
   // Static assets
   const css = await getText(base, '/app.css');
   assert(css.includes('--L2X:'), '/app.css served with L2X palette');

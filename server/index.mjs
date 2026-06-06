@@ -142,6 +142,24 @@ app.set('trust proxy', false);
 app.use(express.json({ limit: '16mb' }));   // /api/crawl can carry a whole repo's worth of YAML
 app.use(express.text({ type: ['application/x-yaml', 'text/yaml', 'text/plain'], limit: '4mb' }));
 
+// Express's PayloadTooLargeError is thrown by the body parsers BEFORE
+// any of our handlers run, and the default error path returns HTML.
+// /api/* always wants JSON so the client can show a clean error and
+// hint the user toward client-side filtering instead of dumping a stack
+// trace into the dropzone.
+app.use((err, req, res, next) => {
+  if (err?.type === 'entity.too.large' || err?.status === 413) {
+    if ((req.path || '').startsWith('/api/')) {
+      const limit = err.limit ? Math.round(err.limit / 1024 / 1024) + 'MB' : '16MB';
+      return res.status(413).json({
+        ok: false,
+        error: `Request body too large (cap ${limit}). The crawler should filter to observability artefacts only — drop a large repo and the client will pre-classify; if you're hitting this you may have an in-flight build.`,
+      });
+    }
+  }
+  return next(err);
+});
+
 app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
@@ -654,6 +672,18 @@ app.post('/api/validate', (req, res) => {
 });
 
 // Static studio shell + assets.
+// Expose the shared crawler + YAML libraries so the browser can do
+// client-side artefact detection (filtering the staged file map BEFORE
+// posting to /api/crawl). Single source of truth — same module the
+// CLI and the server use.
+app.use('/lib', express.static(resolve(ROOT, 'tools/lib'), {
+  extensions: ['mjs', 'js'],
+  setHeaders: (res) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+  },
+}));
+
 app.use(express.static(STUDIO_DIR, { extensions: ['html'], index: 'index.html' }));
 
 // SPA-style fallback: any unknown GET returns the studio shell so the client

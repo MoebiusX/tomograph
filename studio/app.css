@@ -388,8 +388,8 @@ a:hover { color: var(--ink); }
   background: var(--paper);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
-  padding: 8px 10px;
-  max-height: 110px;
+  padding: 10px 12px;
+  max-height: 220px;
   overflow: auto;
 }
 .crawl-dropzone-files code {
@@ -400,6 +400,53 @@ a:hover { color: var(--ink); }
   word-break: break-all;
 }
 .crawl-staged-empty { color: var(--ink-5); font-style: italic; }
+.crawl-staged-counts {
+  font: 12px/1.5 var(--serif);
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+.crawl-staged-counts strong { color: var(--BLD); font-weight: 600; }
+.crawl-staged-bytes {
+  font: italic 11px/1.4 var(--serif);
+  color: var(--ink-4);
+  margin-left: 4px;
+}
+.crawl-staged-kinds {
+  margin: 4px 0 8px;
+  font: 11px/1.55 var(--mono);
+  color: var(--ink-3);
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--line);
+}
+.crawl-staged-kinds strong { color: var(--ink); font-weight: 600; }
+.crawl-staged-sample {
+  font: 11px/1.75 var(--mono);
+  color: var(--ink-3);
+}
+.crawl-staged-sample em {
+  font: italic 11.5px/1.5 var(--serif);
+  color: var(--ink-4);
+}
+.crawl-staged-skipped {
+  margin-top: 10px;
+  font: 11px/1.5 var(--mono);
+}
+.crawl-staged-skipped summary {
+  cursor: pointer;
+  color: var(--ink-4);
+  font-style: italic;
+  user-select: none;
+}
+.crawl-staged-skipped summary:hover { color: var(--ink); }
+.crawl-skipped-list {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: var(--code-bg);
+  border-radius: var(--r-sm);
+  color: var(--ink-4);
+  max-height: 140px;
+  overflow: auto;
+}
 
 .crawl-panel-actions {
   display: flex; align-items: center; gap: 10px;

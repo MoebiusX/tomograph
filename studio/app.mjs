@@ -2394,11 +2394,33 @@ function setRefreshStatus(msg, kind = '') {
 // ============================================================
 
 const CRAWL_SCAN_EXT = /\.(ya?ml|json)$/i;
-const CRAWL_IGNORE_DIRS = new Set(['.git', 'node_modules', 'vendor', 'dist', 'build', '.cache', '.next', '.terraform', '__pycache__']);
+const CRAWL_IGNORE_DIRS = new Set([
+  '.git', '.github', '.gitlab', '.circleci',     // CI and version control
+  'node_modules', 'vendor', 'venv', '.venv',
+  'dist', 'build', 'out', 'target', '.cache',
+  '.next', '.nuxt', '.svelte-kit',
+  '.terraform', '.serverless',
+  '__pycache__', '.pytest_cache', '.mypy_cache',
+  '.idea', '.vscode',
+  'coverage',
+]);
 const CRAWL_MAX_FILE_BYTES = 5 * 1024 * 1024;
+const CRAWL_PAYLOAD_SOFT_CAP = 15 * 1024 * 1024;  // leave 1 MB headroom under the 16 MB server cap
+
+// Lazy-loaded reference to the shared crawler library (also used by
+// the CLI and server). Importing it here lets us classify files in the
+// browser BEFORE posting — keeping payloads small and the user honest
+// about what's being sent.
+let _crawlerLib = null;
+async function getCrawlerLib() {
+  if (!_crawlerLib) _crawlerLib = await import('/lib/crawler.mjs');
+  return _crawlerLib;
+}
 
 const crawlState = {
-  files: new Map(),     // relPath → string content
+  files: new Map(),       // relPath → string content (ALL staged files)
+  classified: new Map(),  // relPath → kind (only files that match an artefact)
+  skipped: [],            // [{relPath, reason}] for the "what was skipped" disclosure
   rootName: null,
   lastResult: null,
 };
@@ -2511,7 +2533,7 @@ async function stageFileList(fileList, _rootHint) {
   finalizeStaging();
 }
 
-function finalizeStaging() {
+async function finalizeStaging() {
   const list = $('#crawl-staged-files');
   const go = $('#crawl-go-btn');
   const n = crawlState.files.size;
@@ -2520,16 +2542,86 @@ function finalizeStaging() {
     go.disabled = true;
     return;
   }
-  const sample = [...crawlState.files.keys()].slice(0, 10);
-  const more = n > sample.length ? ` <em>… and ${n - sample.length} more</em>` : '';
-  list.innerHTML = `<strong>${n}</strong> file${n === 1 ? '' : 's'} staged${crawlState.rootName ? ` from <code>${escapeHtml(crawlState.rootName)}/</code>` : ''}:<br>`
-    + sample.map(p => `<code>${escapeHtml(p)}</code>`).join('  ·  ') + more;
-  go.disabled = false;
+  // Run the shared classifier in the browser. Same heuristic the server
+  // uses — filename hints first, content sniff for ambiguous YAML.
+  list.innerHTML = '<span class="crawl-staged-empty">classifying…</span>';
+  crawlState.classified.clear();
+  crawlState.skipped = [];
+  let lib;
+  try { lib = await getCrawlerLib(); }
+  catch (e) {
+    list.innerHTML = `<span class="crawl-staged-empty">classifier unavailable (${escapeHtml(e.message)}); sending raw set</span>`;
+    // Fallback: treat every staged file as classified so behaviour
+    // degrades gracefully.
+    for (const k of crawlState.files.keys()) crawlState.classified.set(k, 'unknown');
+    go.disabled = false;
+    return;
+  }
+  let totalBytes = 0;
+  for (const [path, content] of crawlState.files) {
+    let kind = 'unknown';
+    try { kind = lib.detectArtefactKind(path, content); }
+    catch (_) { kind = 'unknown'; }
+    if (kind === 'unknown') {
+      crawlState.skipped.push({ relPath: path, reason: 'not an observability artefact' });
+      continue;
+    }
+    crawlState.classified.set(path, kind);
+    totalBytes += content.length;
+  }
+  if (totalBytes > CRAWL_PAYLOAD_SOFT_CAP) {
+    list.innerHTML = `<span class="crawl-staged-empty">payload too large after classification (${(totalBytes/1024/1024).toFixed(1)} MB). Reduce scope — drop a subdirectory instead.</span>`;
+    go.disabled = true;
+    return;
+  }
+  renderStagedList(totalBytes);
+  go.disabled = crawlState.classified.size === 0;
   if (crawlState.rootName && !$('#crawl-name').value) $('#crawl-name').value = crawlState.rootName;
+}
+
+function renderStagedList(totalBytes) {
+  const list = $('#crawl-staged-files');
+  const total = crawlState.files.size;
+  const classified = crawlState.classified.size;
+  const skipped = crawlState.skipped.length;
+
+  // Group classified by kind for a count-by-kind line.
+  const byKind = {};
+  for (const k of crawlState.classified.values()) byKind[k] = (byKind[k] || 0) + 1;
+  const kindCounts = Object.entries(byKind).sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `<strong>${n}</strong>&nbsp;${escapeHtml(k)}`).join(' · ');
+
+  const sample = [...crawlState.classified.keys()].slice(0, 8);
+  const sampleHtml = sample.length
+    ? sample.map(p => `<code>${escapeHtml(p)}</code>`).join('  ·  ')
+    + (classified > sample.length ? ` <em>… and ${classified - sample.length} more</em>` : '')
+    : '<em>nothing matched — drop a folder with docker-compose, Prometheus rules, Grafana dashboards, etc.</em>';
+
+  list.innerHTML = `
+    <div class="crawl-staged-counts">
+      <strong>${classified}</strong> observability artefact${classified === 1 ? '' : 's'} found
+      from <strong>${total}</strong> staged file${total === 1 ? '' : 's'}
+      ${crawlState.rootName ? ` (root <code>${escapeHtml(crawlState.rootName)}/</code>)` : ''}.
+      ${totalBytes ? `<span class="crawl-staged-bytes">${(totalBytes/1024).toFixed(1)} KB will be sent.</span>` : ''}
+    </div>
+    ${kindCounts ? `<div class="crawl-staged-kinds">${kindCounts}</div>` : ''}
+    <div class="crawl-staged-sample">${sampleHtml}</div>
+    ${skipped ? `
+      <details class="crawl-staged-skipped">
+        <summary>${skipped} file${skipped === 1 ? '' : 's'} skipped — not an observability artefact</summary>
+        <div class="crawl-skipped-list">${
+          crawlState.skipped.slice(0, 40)
+            .map(s => `<code>${escapeHtml(s.relPath)}</code>`).join('  ·  ')
+          + (skipped > 40 ? ` <em>… and ${skipped - 40} more</em>` : '')
+        }</div>
+      </details>` : ''}
+  `;
 }
 
 function resetCrawlStaged() {
   crawlState.files.clear();
+  crawlState.classified.clear();
+  crawlState.skipped = [];
   crawlState.rootName = null;
   crawlState.lastResult = null;
   finalizeStaging();
@@ -2543,11 +2635,19 @@ async function doCrawl() {
     statusEl.textContent = msg;
     statusEl.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
   };
-  if (crawlState.files.size === 0) { setStatus('drop a folder or pick files first', 'error'); return; }
+  if (crawlState.classified.size === 0) {
+    if (crawlState.files.size > 0) setStatus('no observability artefacts in the staged set; nothing to crawl', 'error');
+    else setStatus('drop a folder or pick files first', 'error');
+    return;
+  }
 
-  // Reshape the staged map to a plain object for transport.
+  // Only send the classified subset. This is the key change — even when
+  // the user drops a 3000-file repo, we transmit just the few
+  // observability artefacts the crawler will actually use.
   const files = {};
-  for (const [k, v] of crawlState.files) files[k] = v;
+  for (const k of crawlState.classified.keys()) {
+    files[k] = crawlState.files.get(k);
+  }
 
   const body = {
     files,
@@ -2559,7 +2659,7 @@ async function doCrawl() {
 
   const goBtn = $('#crawl-go-btn');
   goBtn.disabled = true;
-  setStatus(`crawling ${crawlState.files.size} files…`);
+  setStatus(`crawling ${crawlState.classified.size} artefact${crawlState.classified.size === 1 ? '' : 's'}…`);
 
   try {
     const r = await fetch('/api/crawl', {
