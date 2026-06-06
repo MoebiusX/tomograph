@@ -2004,141 +2004,254 @@ body[data-mode="home"] .tabs { display: none; }
 body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
 
 .home-hero {
-  max-width: 720px;
-  margin: 56px auto 32px;
+  max-width: 840px;
+  margin: 48px auto 32px;
   padding: 0 24px;
-  text-align: center;
 }
 .home-hero-title {
-  margin: 0 0 16px;
-  font: 600 36px/1.15 var(--serif);
+  margin: 0 0 14px;
+  font: 600 34px/1.15 var(--serif);
   letter-spacing: -0.005em;
   color: var(--ink);
 }
 .home-hero-lede {
-  margin: 0 auto 36px;
+  margin: 0 0 32px;
   font: 15px/1.6 var(--serif);
   color: var(--ink-3);
-  max-width: 600px;
+  max-width: 700px;
 }
-.home-hero-aside {
-  margin: 28px 0 0;
-  font: italic 13px/1.55 var(--serif);
-  color: var(--ink-4);
-}
-.home-hero-aside kbd {
-  display: inline-block;
-  margin: 0 2px;
-  padding: 2px 7px;
-  font: 600 11px/1.3 var(--mono);
-  font-style: normal;
+
+/* MCP connect card — the headline affordance. Eyebrow numbering shows
+   the user the journey: ① CONNECT → ② CAPABILITIES → adopt. */
+.home-mcp-card {
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--r-lg);
+  padding: 24px 28px 20px;
+  margin-bottom: 28px;
+  box-shadow: 0 1px 2px rgba(15,27,45,0.04);
+}
+.home-mcp-eyebrow {
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--L1);
+  margin-bottom: 14px;
+}
+.home-mcp-eyebrow-2 {
+  color: var(--BLD);
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-2);
+}
+.home-mcp-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.home-mcp-field {
+  display: flex; flex-direction: column; gap: 5px;
+}
+.home-mcp-key {
+  font: 500 10px/1.3 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.home-mcp-key em { font-style: italic; color: var(--ink-5); }
+.home-mcp-field input {
+  padding: 9px 12px;
+  font: 13px/1.4 var(--mono);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+}
+.home-mcp-field input:focus {
+  outline: 2px solid var(--L1);
+  outline-offset: 1px;
+  border-color: var(--L1);
+}
+.home-mcp-actions {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 14px;
+  margin-top: 4px;
+}
+.home-mcp-connect-btn {
+  padding: 11px 22px;
+  font: 600 14px/1.2 var(--sans);
+  letter-spacing: 0.01em;
+  background: var(--L1);
+  color: var(--paper);
+  border: 1px solid var(--L1);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: filter 150ms ease;
+}
+.home-mcp-connect-btn:hover { filter: brightness(0.92); }
+.home-mcp-connect-btn:disabled { opacity: 0.6; cursor: progress; }
+
+.home-mcp-status {
+  font: 12.5px/1.3 var(--mono);
+  color: var(--ink-3);
+}
+.home-mcp-status.is-pending { color: var(--ink-3); font-style: italic; }
+.home-mcp-status.is-ok      { color: var(--BLD); }
+.home-mcp-status.is-error   { color: var(--src-Missing, #DC2626); }
+
+/* Capabilities grid — 4-column summary of what the MCP exposed. Numbers
+   are big so a demo audience can read them from the back of the room. */
+.home-mcp-cap-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.home-mcp-cap {
+  padding: 14px 16px;
+  background: var(--paper);
+  border: 1px solid var(--line-2);
+  border-left: 3px solid var(--BLD);
+  border-radius: var(--r-sm);
+}
+.home-mcp-cap[data-cap="tools"]     { border-left-color: var(--L2); }
+.home-mcp-cap[data-cap="services"]  { border-left-color: var(--BLD); }
+.home-mcp-cap[data-cap="backends"]  { border-left-color: var(--ATL); }
+.home-mcp-cap[data-cap="anomalies"] { border-left-color: var(--L4); }
+.home-mcp-cap-num {
+  font: 600 28px/1 var(--serif);
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.home-mcp-cap-key {
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 8px;
+}
+.home-mcp-cap-detail {
+  font: 11.5px/1.55 var(--sans);
+  color: var(--ink-3);
+  word-break: break-word;
+}
+.home-mcp-cap-detail code {
+  font: 11px/1.3 var(--mono);
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin: 0 1px;
+}
+.home-mcp-cap-detail em { font-style: italic; color: var(--ink-5); }
+.home-mcp-cap-detail-unknown { color: var(--ink-4); margin-top: 4px; }
+.home-mcp-cap-detail-fail    { color: var(--src-Missing, #DC2626); margin-top: 4px; }
+
+.home-mcp-warnings {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--warn-bg);
+  border: 1px solid var(--CONF);
+  border-radius: var(--r-sm);
+}
+.home-mcp-warnings-head {
+  font: 600 11px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--CONF-text);
+  margin-bottom: 6px;
+}
+.home-mcp-warnings ul {
+  margin: 0; padding-left: 18px;
+  font: 12.5px/1.55 var(--sans);
   color: var(--ink-3);
 }
 
-/* Drop zone — one affordance, three input methods. The dashed border +
-   amber accent reads as an interactive surface; hover/drag-over lights
-   it up. Real drag-drop is wired at the body level (handleFile picks up
-   any drop on the window), so this is purely visual scaffolding. */
-.home-dropzone {
-  position: relative;
-  padding: 44px 32px 32px;
-  background: var(--card);
-  border: 2px dashed var(--line);
-  border-radius: var(--r-lg);
-  display: flex; flex-direction: column; align-items: center; gap: 18px;
-  transition: border-color 180ms ease, background 180ms ease;
+.home-mcp-adopt-bar {
+  display: flex; align-items: center; gap: 14px;
+  margin-top: 18px;
 }
-.home-dropzone:hover {
-  border-color: var(--L1);
-  background: var(--L1-tint);
+.home-mcp-adopt-btn {
+  padding: 12px 22px;
+  font: 600 15px/1.2 var(--sans);
+  letter-spacing: 0.01em;
+  background: var(--BLD);
+  color: var(--paper);
+  border: 1px solid var(--BLD);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px;
+  transition: filter 150ms ease, transform 100ms ease;
 }
-body.is-dragging .home-dropzone {
-  border-color: var(--L1);
-  background: var(--L1-tint);
-  border-style: solid;
-}
-.home-dropzone-icon {
-  font: 600 36px/1 var(--sans);
-  color: var(--L1);
-  background: var(--card);
-  border: 2px solid var(--L1);
+.home-mcp-adopt-btn:hover { filter: brightness(0.92); transform: translateY(-1px); }
+.home-mcp-adopt-arrow {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  background: rgba(255,255,255,0.2);
   border-radius: 50%;
-  width: 64px; height: 64px;
-  display: flex; align-items: center; justify-content: center;
+  font: 600 13px/1 var(--mono);
 }
-.home-dropzone-prompt {
-  font: 16px/1.4 var(--serif);
-  color: var(--ink);
+.home-mcp-adopt-hint {
+  font: italic 12.5px/1.3 var(--serif);
+  color: var(--ink-4);
 }
-.home-dropzone-prompt code {
-  font: 12.5px/1.3 var(--mono);
-  background: var(--code-bg);
-  border: 1px solid var(--line-2);
-  border-radius: 3px;
-  padding: 1px 6px;
-  margin: 0 2px;
-  color: var(--ink-3);
+
+/* Manual alternative — quieter than the MCP card, but still inviting. */
+.home-alt {
+  margin-top: 32px;
 }
-.home-dropzone-or {
+.home-alt-head {
   display: flex; align-items: center; gap: 10px;
-  width: 100%;
-  max-width: 320px;
+  margin-bottom: 14px;
 }
-.home-dropzone-or::before, .home-dropzone-or::after {
+.home-alt-head::before, .home-alt-head::after {
   content: ''; flex: 1;
   height: 1px; background: var(--line-2);
 }
-.home-dropzone-or span {
+.home-alt-head span {
   font: italic 12px/1.4 var(--serif);
   color: var(--ink-4);
 }
-.home-dropzone-buttons {
-  display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;
+.home-alt-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
 }
-.home-shortcut {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 10px 16px;
+.home-alt-btn {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 14px 16px;
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
-  font: 13px/1.3 var(--sans);
-  color: var(--ink);
+  text-align: left;
   cursor: pointer;
   transition: border-color 150ms ease, background 150ms ease;
 }
-.home-shortcut:hover {
-  border-color: var(--L1);
-  background: var(--L1-tint);
+.home-alt-btn:hover {
+  border-color: var(--ink-4);
+  background: var(--hover);
 }
-.home-shortcut-primary {
-  border-color: var(--L1);
-  background: var(--L1-tint);
-}
-.home-shortcut-primary:hover {
-  filter: brightness(0.97);
-}
-.home-shortcut-key {
+.home-alt-key {
   font: 600 14px/1 var(--mono);
-  color: var(--L1);
-  width: 22px; height: 22px;
-  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--ink-4);
 }
-.home-shortcut-label {
+.home-alt-label {
   font: 600 13px/1.3 var(--sans);
+  color: var(--ink);
+}
+.home-alt-sub {
+  font: italic 11.5px/1.4 var(--serif);
+  color: var(--ink-4);
 }
 
 .hdr-brand h1 { transition: color 150ms ease; }
 .hdr-brand h1:hover { color: var(--CMP); }
 
-@media (max-width: 600px) {
+@media (max-width: 720px) {
   .home-hero { margin-top: 32px; }
-  .home-hero-title { font-size: 28px; }
-  .home-dropzone { padding: 32px 20px 24px; }
-  .home-dropzone-buttons { flex-direction: column; align-items: stretch; }
-  .home-shortcut { justify-content: center; }
+  .home-hero-title { font-size: 26px; }
+  .home-mcp-form { grid-template-columns: 1fr; }
+  .home-mcp-cap-grid { grid-template-columns: 1fr 1fr; }
+  .home-alt-buttons { grid-template-columns: 1fr; }
 }
 
 /* ===================== COMPARE — SIDE-BY-SIDE (legacy) ===================== */

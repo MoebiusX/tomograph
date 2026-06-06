@@ -3692,53 +3692,192 @@ function renderHomeView() {
   const view = $('#layer-view');
   if (!view) return;
 
-  // Single affordance. One drop zone, three input methods. No two-card
-  // decision tree, no bundled examples disclosure, no "Compare two packs"
-  // upsell — picking Pack B from the header auto-switches to the compare
-  // view, so there's no separate entry point. The user's mental model is:
-  //   open the app → drop a pack → single view → (optional) add Pack B →
-  //   side-by-side. The home screen lives only at step 1.
+  // MCP-first home. The previous "Drop a pack to begin" undersold the
+  // studio for first-time visitors who don't yet HAVE a pack. The wow
+  // moment is the live MCP interrogation — paste a URL, click connect,
+  // watch the studio enumerate backends / services / topology / baselines
+  // / anomalies in real time. That's the demo Wednesday will lead with,
+  // so the home should mirror it. Manual paths (upload / crawl) stay
+  // available as secondary options below.
+  const lastMcpUrl = (() => { try { return localStorage.getItem('mcpUrl') || ''; } catch (_) { return ''; } })();
+
   view.innerHTML = `
     <section class="home-hero">
-      <h2 class="home-hero-title">Drop a pack to begin.</h2>
+      <h2 class="home-hero-title">Connect your observability platform.</h2>
       <p class="home-hero-lede">
-        Open a canonical v1.2 ObservabilityPack manifest from disk, crawl a service
-        repository for a draft, or fetch what's live via MCP. The studio renders
-        every layer, scores conformance against the tier rubric, and compiles to
-        native Prometheus / Grafana / OTel / Alertmanager artefacts.
+        The studio interrogates a live MCP server — backends, topology,
+        baselines, anomalies — and drafts a canonical v1.2 pack you can
+        review, refine, compile, and deploy. Type your MCP URL below and
+        connect.
       </p>
 
-      <div class="home-dropzone" id="home-dropzone">
-        <div class="home-dropzone-icon" aria-hidden="true">↓</div>
-        <div class="home-dropzone-prompt">drop a <code>.yaml</code> / <code>.yml</code> / <code>.json</code> pack here</div>
-        <div class="home-dropzone-or"><span>or</span></div>
-        <div class="home-dropzone-buttons">
-          <button id="home-shortcut-upload" type="button" class="home-shortcut home-shortcut-primary">
-            <span class="home-shortcut-key" aria-hidden="true">▤</span>
-            <span class="home-shortcut-label">Pick from disk</span>
+      <div class="home-mcp-card">
+        <div class="home-mcp-eyebrow">① CONNECT</div>
+        <div class="home-mcp-form">
+          <label class="home-mcp-field">
+            <span class="home-mcp-key">MCP URL</span>
+            <input id="home-mcp-url" type="url" placeholder="https://your-mcp.example.com/observability" autocomplete="off" value="${escapeHtml(lastMcpUrl)}">
+          </label>
+          <label class="home-mcp-field home-mcp-field-auth">
+            <span class="home-mcp-key">Auth token <em>(optional, not persisted)</em></span>
+            <input id="home-mcp-auth" type="password" placeholder="bearer token" autocomplete="off">
+          </label>
+          <div class="home-mcp-actions">
+            <button id="home-mcp-connect" type="button" class="home-mcp-connect-btn">Connect →</button>
+            <span id="home-mcp-status" class="home-mcp-status"></span>
+          </div>
+        </div>
+
+        <!-- Capabilities surface here once the MCP responds. The summary
+             returned by /api/draft-from-mcp carries everything we need:
+             discovered.backends, discovered.services, toolsCalled, toolsFailed,
+             baselines computed, active anomalies. -->
+        <div id="home-mcp-capabilities" class="home-mcp-capabilities" hidden></div>
+
+        <div id="home-mcp-adopt-bar" class="home-mcp-adopt-bar" hidden>
+          <button id="home-mcp-adopt" type="button" class="home-mcp-adopt-btn">
+            <span class="home-mcp-adopt-arrow">→</span>
+            Draft a pack from this MCP
           </button>
-          <button id="home-shortcut-crawl"  type="button" class="home-shortcut">
-            <span class="home-shortcut-key" aria-hidden="true">↻</span>
-            <span class="home-shortcut-label">Crawl a repo</span>
-          </button>
-          <button id="home-shortcut-live"   type="button" class="home-shortcut">
-            <span class="home-shortcut-key" aria-hidden="true">○</span>
-            <span class="home-shortcut-label">Draft from live MCP</span>
-          </button>
+          <span id="home-mcp-adopt-hint" class="home-mcp-adopt-hint"></span>
         </div>
       </div>
 
-      <p class="home-hero-aside">
-        Already have a pack open?
-        Use <kbd>Pack A</kbd> in the header to switch, or <kbd>Pack B</kbd> to compare.
-      </p>
+      <div class="home-alt">
+        <div class="home-alt-head"><span>or open a pack manually</span></div>
+        <div class="home-alt-buttons">
+          <button id="home-shortcut-upload" type="button" class="home-alt-btn">
+            <span class="home-alt-key" aria-hidden="true">▤</span>
+            <span class="home-alt-label">Drop a YAML / JSON pack</span>
+            <span class="home-alt-sub">canonical v1.2 manifest</span>
+          </button>
+          <button id="home-shortcut-crawl" type="button" class="home-alt-btn">
+            <span class="home-alt-key" aria-hidden="true">↻</span>
+            <span class="home-alt-label">Crawl a service repo</span>
+            <span class="home-alt-sub">walks Prom / OTel / Grafana / AM configs</span>
+          </button>
+        </div>
+      </div>
     </section>
   `;
 
-  // Creation shortcuts — open the existing modals / file picker.
+  // Wire MCP connect.
+  $('#home-mcp-connect').onclick = () => doHomeMcpConnect();
+  $('#home-mcp-url').onkeydown = (e) => { if (e.key === 'Enter') doHomeMcpConnect(); };
   $('#home-shortcut-upload').onclick = () => $('#upload-btn')?.click();
   $('#home-shortcut-crawl').onclick  = () => $('#crawl-btn')?.click();
-  $('#home-shortcut-live').onclick   = () => $('#draft-mcp-btn')?.click();
+}
+
+async function doHomeMcpConnect() {
+  const urlInput  = $('#home-mcp-url');
+  const authInput = $('#home-mcp-auth');
+  const statusEl  = $('#home-mcp-status');
+  const goBtn     = $('#home-mcp-connect');
+  const capEl     = $('#home-mcp-capabilities');
+  const adoptBar  = $('#home-mcp-adopt-bar');
+  if (!urlInput || !statusEl) return;
+
+  const url  = urlInput.value.trim();
+  const auth = authInput?.value || '';
+  if (!url) {
+    statusEl.textContent = 'enter your MCP URL first';
+    statusEl.className = 'home-mcp-status is-error';
+    return;
+  }
+  try { localStorage.setItem('mcpUrl', url); } catch (_) {}
+
+  goBtn.disabled = true;
+  statusEl.textContent = 'contacting MCP…';
+  statusEl.className = 'home-mcp-status is-pending';
+  capEl.hidden = true;
+  adoptBar.hidden = true;
+
+  try {
+    const r = await fetch('/api/draft-from-mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
+    });
+    const ct = r.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      throw new Error(`server returned ${r.status} ${ct || 'no content-type'}`);
+    }
+    const out = await r.json();
+    if (!out.ok) throw new Error(out.error || 'MCP draft failed');
+    draftMcpState.lastResult = out;
+
+    statusEl.textContent = `connected · ${out.summary.discovered.backends} backend(s) · ${out.tookMs}ms`;
+    statusEl.className = 'home-mcp-status is-ok';
+
+    renderHomeMcpCapabilities(out, capEl);
+    capEl.hidden = false;
+    adoptBar.hidden = false;
+
+    const hint = $('#home-mcp-adopt-hint');
+    if (hint) hint.textContent = out.canonical?.metadata?.name
+      ? `pack name: ${out.canonical.metadata.name}` : '';
+
+    $('#home-mcp-adopt').onclick = () => adoptDraftFromMcpResult();
+  } catch (e) {
+    statusEl.textContent = `error: ${e.message}`;
+    statusEl.className = 'home-mcp-status is-error';
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+function renderHomeMcpCapabilities(out, host) {
+  const s = out.summary?.discovered || {};
+  const ann = out.annotations || {};
+  const tools = (ann['mcp.toolsCalled'] || '').split(',').filter(Boolean);
+  const failed = (ann['mcp.toolsFailed'] || '').split(',').filter(Boolean);
+  const services = (ann['mcp.servicesDiscovered'] || '').split(',').filter(Boolean);
+  const baselines = parseInt(ann['mcp.baselinesComputed'] || '0', 10);
+  const anomalies = parseInt(ann['mcp.activeAnomalies'] || '0', 10);
+  const backends = s.backends ?? 0;
+
+  // Detect tools we recognise vs ones the studio doesn't know yet.
+  // Surfacing this honestly is what the user asked for several turns ago.
+  const knownTools = new Set([
+    'system_health', 'system_topology',
+    'anomalies_active', 'anomalies_baselines',
+    'zk_stats', 'zk_solvency',
+  ]);
+  const recognised   = tools.filter(t => knownTools.has(t));
+  const unrecognised = tools.filter(t => !knownTools.has(t));
+
+  host.innerHTML = `
+    <div class="home-mcp-eyebrow home-mcp-eyebrow-2">② CAPABILITIES DISCOVERED</div>
+    <div class="home-mcp-cap-grid">
+      <div class="home-mcp-cap" data-cap="tools">
+        <div class="home-mcp-cap-num">${tools.length}</div>
+        <div class="home-mcp-cap-key">tools called</div>
+        <div class="home-mcp-cap-detail">${recognised.length ? recognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ') : '<em>none</em>'}</div>
+        ${unrecognised.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-unknown">+${unrecognised.length} unrecognised: ${unrecognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
+        ${failed.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-fail">⚠ failed: ${failed.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
+      </div>
+      <div class="home-mcp-cap" data-cap="services">
+        <div class="home-mcp-cap-num">${services.length}</div>
+        <div class="home-mcp-cap-key">services discovered</div>
+        <div class="home-mcp-cap-detail">${services.length ? services.slice(0, 6).map(s => `<code>${escapeHtml(s)}</code>`).join(' ') + (services.length > 6 ? ` <em>+${services.length - 6} more</em>` : '') : '<em>none</em>'}</div>
+      </div>
+      <div class="home-mcp-cap" data-cap="backends">
+        <div class="home-mcp-cap-num">${backends}</div>
+        <div class="home-mcp-cap-key">backends inferred</div>
+        <div class="home-mcp-cap-detail">${backends ? 'metrics / logs / traces' : '<em>none</em>'}</div>
+      </div>
+      <div class="home-mcp-cap" data-cap="anomalies">
+        <div class="home-mcp-cap-num">${anomalies}</div>
+        <div class="home-mcp-cap-key">active anomalies</div>
+        <div class="home-mcp-cap-detail">${baselines} baseline${baselines === 1 ? '' : 's'} computed</div>
+      </div>
+    </div>
+    ${out.summary?.warnings?.length ? `
+      <div class="home-mcp-warnings">
+        <div class="home-mcp-warnings-head">⚠ honest gaps</div>
+        <ul>${out.summary.warnings.slice(0, 5).map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul>
+      </div>` : ''}
+  `;
 }
 
 async function loadAndCacheExamples() {
