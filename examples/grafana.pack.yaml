@@ -1,0 +1,596 @@
+# =============================================================================
+# ObservabilityPack: grafana
+# -----------------------------------------------------------------------------
+# State-of-the-art reference pack for Grafana 11.x — the visualisation and
+# unified alerting layer that sits on top of Prometheus / Mimir / Loki /
+# Tempo / Elasticsearch. Covers HTTP API health, datasource proxy success,
+# database query latency, dashboard render latency, unified alerting rule
+# evaluation, plugin request reliability, and authentication.
+#
+# Sourced from public references — see docs/catalogue-evidence/grafana.md
+# for the per-section evidence trail.
+#
+# Tier-2 100% MUST baseline.
+# =============================================================================
+
+apiVersion: observability.platform/v1
+kind: ObservabilityPack
+
+metadata:
+  name: grafana
+  version: 1.0.0
+  binding: otel-grafanalabs
+  owners:
+    - catalogue-curators
+    - team-platform-sre
+  imports:
+    - ref: platform/golden-signals-base@1.4
+    - ref: platform/std-alert-routes@3.0
+    - ref: platform/std-budget-policy@2.1
+  bindings:
+    service: grafana
+    environments: [prod, staging]
+    criticality: tier-2
+  labels:
+    category: observability
+    subcategory: visualisation
+    pack_class: reference
+  annotations:
+    catalogue_id: observability/grafana
+    docs: https://grafana.com/docs/grafana/latest/
+    target_versions: grafana 11.x, 10.4 LTS
+    evidence: docs/catalogue-evidence/grafana.md
+    paired_with: observability/prometheus
+    promote_for_certification: tier-2
+
+spec:
+
+  # ---------------------------------------------------------------------------
+  # OTel instrumentation contract
+  # ---------------------------------------------------------------------------
+  # Grafana 11+ exposes /metrics in Prometheus exposition format with the
+  # grafana_* metric family. OTel HTTP traces land when grafana is wrapped
+  # by an OTel-instrumented reverse proxy (nginx, envoy) or runs with the
+  # native OTel Go SDK enabled via feature flag.
+  # ---------------------------------------------------------------------------
+  otel:
+    semconv: "1.27.0"
+    resource_attributes:
+      required:
+        - service.name
+        - service.namespace
+        - service.version
+        - service.instance.id
+        - deployment.environment
+      custom:
+        - grafana.org
+        - grafana.role
+    sdk:
+      languages: [go]
+      sampling:
+        policy: parentbased_traceidratio
+        ratio: 0.1
+      propagators: [tracecontext, baggage]
+      log_correlation: true
+
+  # ---------------------------------------------------------------------------
+  # Telemetry backends
+  # ---------------------------------------------------------------------------
+  telemetry:
+    backends:
+      - id: metrics-prom
+        signal: metrics
+        product: prometheus
+        version: { declared: "2.55", min: "2.53", gating: warn }
+        endpoints: [https://prom-a.internal:9090, https://prom-b.internal:9090]
+        auth: { kind: bearer, secretRef: prometheus-token }
+        default: true
+      - id: metrics-mimir
+        signal: metrics
+        product: mimir
+        version: { declared: "2.13", min: "2.12", gating: warn }
+        endpoints: [https://mimir.internal/api/v1/push]
+        auth: { kind: bearer, secretRef: mimir-token }
+        tenant: observability
+      - id: logs-loki
+        signal: logs
+        product: loki
+        version: { declared: "3.2", min: "3.0", gating: warn }
+        endpoints: [https://loki.internal:3100]
+        auth: { kind: bearer, secretRef: loki-token }
+      - id: traces-tempo
+        signal: traces
+        product: tempo
+        version: { declared: "2.6", min: "2.5", gating: warn }
+        endpoints: [https://tempo.internal:3200]
+        auth: { kind: bearer, secretRef: tempo-token }
+
+  # ---------------------------------------------------------------------------
+  # Environments
+  # ---------------------------------------------------------------------------
+  environments:
+    prod:
+      target: ske
+      criticality: tier-2
+      backends: { metrics: metrics-mimir, logs: logs-loki, traces: traces-tempo }
+      overrides:
+        storage.metrics.retention: 13mo
+      promote_after: 30d
+    staging:
+      target: bare-k8s
+      criticality: tier-3
+      backends: { metrics: metrics-prom, logs: logs-loki, traces: traces-tempo }
+      suppress: [deploy_freezes]
+
+  # ---------------------------------------------------------------------------
+  # 1. SLIs — Grafana's eight operational vital signs
+  # ---------------------------------------------------------------------------
+  # PromQL uses Grafana's own self-metrics (grafana_* family) exposed on
+  # /metrics. Source: Grafana Internal Metrics documentation.
+  # ---------------------------------------------------------------------------
+  slis:
+
+    # --- HTTP API surface ---
+    - id: http_request_success_ratio
+      type: ratio
+      description: |
+        Fraction of HTTP requests returning non-5xx responses. Excludes
+        intentional 4xx (auth failures, validation errors) by treating
+        only 5xx as the failure class.
+      semconv_metric: http.server.request.duration
+      good: |
+        sum(rate(grafana_http_request_duration_seconds_count{status_code!~"5.."}[5m]))
+      total: |
+        sum(rate(grafana_http_request_duration_seconds_count[5m]))
+      owner: team-platform-sre
+
+    - id: http_request_latency_p99
+      type: threshold
+      description: 99th-percentile HTTP request latency, server-side, across all handlers.
+      semconv_metric: http.server.request.duration
+      query: |
+        histogram_quantile(0.99,
+          sum by (le)(rate(grafana_http_request_duration_seconds_bucket[5m])))
+      threshold: 1
+      unit: seconds
+
+    # --- Datasource proxy ---
+    - id: datasource_proxy_success_ratio
+      type: ratio
+      description: |
+        Fraction of datasource proxy requests (Grafana → Prometheus / Loki /
+        Tempo / Elasticsearch / Influx etc.) that returned a non-5xx
+        response. Failures here are the leading indicator that dashboards
+        will break.
+      semconv_metric: grafana.datasource.proxy.success
+      good: |
+        sum(rate(grafana_datasource_request_total{code!~"5.."}[5m]))
+      total: |
+        sum(rate(grafana_datasource_request_total[5m]))
+
+    - id: datasource_proxy_latency_p99
+      type: threshold
+      description: 99th-percentile datasource proxy request latency.
+      semconv_metric: grafana.datasource.proxy.duration
+      query: |
+        histogram_quantile(0.99,
+          sum by (le)(rate(grafana_datasource_request_duration_seconds_bucket[5m])))
+      threshold: 2
+      unit: seconds
+
+    # --- Database health ---
+    - id: database_query_latency_p99
+      type: threshold
+      description: |
+        99th-percentile latency of Grafana's internal database queries
+        (the metadata / dashboards / users / orgs store). Slow database
+        queries directly degrade the UI and alerting evaluation.
+      semconv_metric: grafana.database.query.duration
+      query: |
+        histogram_quantile(0.99,
+          sum by (le)(rate(grafana_database_query_duration_seconds_bucket[5m])))
+      threshold: 0.5
+      unit: seconds
+
+    # --- Unified alerting ---
+    - id: alerting_rule_evaluation_success_ratio
+      type: ratio
+      description: |
+        Fraction of unified alerting rule evaluations that succeeded vs.
+        attempted. Failures here mean alerts FIRE-OR-NOT incorrectly
+        and downstream notification reliability is undermined.
+      semconv_metric: grafana.alerting.rule.evaluation.success
+      good: |
+        sum(rate(grafana_alerting_rule_evaluations_total[5m])) -
+          sum(rate(grafana_alerting_rule_evaluation_failures_total[5m]))
+      total: |
+        sum(rate(grafana_alerting_rule_evaluations_total[5m]))
+
+    # --- Plugin reliability ---
+    - id: plugin_request_success_ratio
+      type: ratio
+      description: |
+        Fraction of plugin requests (datasource and app plugins) that
+        completed without error. Plugin failures often surface as broken
+        panels before the plugin itself is suspected.
+      semconv_metric: grafana.plugin.request.success
+      good: |
+        sum(rate(grafana_plugin_request_total{status="ok"}[5m]))
+      total: |
+        sum(rate(grafana_plugin_request_total[5m]))
+
+    # --- Authentication ---
+    - id: login_success_ratio
+      type: ratio
+      description: |
+        Fraction of login attempts that succeeded. Sudden drops indicate
+        an IDP outage (SAML / OAuth provider down) and need fast triage
+        even if downstream observability is unaffected.
+      semconv_metric: grafana.auth.login.success
+      good: |
+        sum(rate(grafana_api_login_post[5m])) +
+          sum(rate(grafana_api_login_oauth[5m])) +
+          sum(rate(grafana_api_login_saml[5m]))
+      total: |
+        sum(rate(grafana_api_login_post[5m])) +
+          sum(rate(grafana_api_login_oauth[5m])) +
+          sum(rate(grafana_api_login_saml[5m])) +
+          sum(rate(grafana_user_login_errors_total[5m]))
+
+  # ---------------------------------------------------------------------------
+  # 2. SLOs
+  # ---------------------------------------------------------------------------
+  slos:
+    - { id: http_request_success_99_9,           sli: http_request_success_ratio,                 objective: 0.999,  window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: http_request_latency_99_p99_1s,      sli: http_request_latency_p99,                   objective: 0.99,   window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: datasource_proxy_99_5,               sli: datasource_proxy_success_ratio,             objective: 0.995,  window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: datasource_proxy_latency_99_p99_2s,  sli: datasource_proxy_latency_p99,               objective: 0.99,   window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: database_query_99_p99_500ms,         sli: database_query_latency_p99,                 objective: 0.99,   window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: alerting_evaluation_99_95,           sli: alerting_rule_evaluation_success_ratio,     objective: 0.9995, window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: plugin_request_99_9,                 sli: plugin_request_success_ratio,               objective: 0.999,  window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: login_success_99_9,                  sli: login_success_ratio,                        objective: 0.999,  window: 7d,  error_budget_policy: ref:platform/std-budget-policy }
+
+  # ---------------------------------------------------------------------------
+  # 3. Pipelines — OTel Collector configuration
+  # ---------------------------------------------------------------------------
+  pipelines:
+
+    receivers:
+      - name: otlp
+        protocols: [grpc, http]
+        endpoint: 0.0.0.0:4317
+      - name: prometheus
+        scrape_configs:
+          - job_name: grafana
+            scrape_interval: 30s
+            kubernetes_sd_configs:
+              - { role: pod, namespaces: { names: [observability] } }
+            relabel_configs:
+              - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+                regex: grafana
+                action: keep
+
+    processors:
+      - name: memory_limiter
+        limit_percentage: 80
+      - name: batch
+        timeout: 10s
+      - name: resource
+        attributes:
+          - { key: grafana.org,  value: "${GRAFANA_ORG}",  action: upsert }
+          - { key: grafana.role, value: "${GRAFANA_ROLE}", action: upsert }
+          - { key: deployment.environment, value: "${ENV}", action: upsert }
+      - name: transform
+        log_statements:
+          - context: log
+            statements:
+              - set(attributes["service.namespace"], "observability") where attributes["service.namespace"] == nil
+
+    exporters:
+      metrics:
+        kind: prometheusremotewrite
+        endpoint: https://mimir.internal/api/v1/push
+        external_labels: { service: grafana }
+      logs:
+        kind: loki
+        endpoint: https://loki.internal:3100
+      traces:
+        kind: otlp
+        endpoint: tempo.internal:4317
+
+  # ---------------------------------------------------------------------------
+  # 4. Storage
+  # ---------------------------------------------------------------------------
+  storage:
+    metrics:
+      backend: mimir
+      version: "2.13"
+      retention: 13mo
+      remote_write:
+        - url: https://mimir.internal/api/v1/push
+          tenant: observability
+    logs:
+      backend: loki
+      version: "3.2"
+      retention: 90d
+    traces:
+      backend: tempo
+      version: "2.6"
+      retention: 14d
+      sampling: tail-based
+
+  # ---------------------------------------------------------------------------
+  # 5. Queries — recording rules
+  # ---------------------------------------------------------------------------
+  queries:
+    recording_rules:
+      - { name: grafana:http_request_success:ratio_5m,             expr: ref:slis.http_request_success_ratio,             interval: 30s }
+      - { name: grafana:http_request_success:error_ratio_5m,       expr: 1 - grafana:http_request_success:ratio_5m,       interval: 30s }
+      - { name: grafana:http_request:p99_5m,                       expr: ref:slis.http_request_latency_p99,               interval: 30s }
+      - { name: grafana:datasource_proxy:ratio_5m,                 expr: ref:slis.datasource_proxy_success_ratio,         interval: 30s }
+      - { name: grafana:datasource_proxy:error_ratio_5m,           expr: 1 - grafana:datasource_proxy:ratio_5m,           interval: 30s }
+      - { name: grafana:datasource_proxy:p99_5m,                   expr: ref:slis.datasource_proxy_latency_p99,           interval: 30s }
+      - { name: grafana:database_query:p99_5m,                     expr: ref:slis.database_query_latency_p99,             interval: 30s }
+      - { name: grafana:alerting_evaluation:ratio_5m,              expr: ref:slis.alerting_rule_evaluation_success_ratio, interval: 30s }
+      - { name: grafana:alerting_evaluation:error_ratio_5m,        expr: 1 - grafana:alerting_evaluation:ratio_5m,        interval: 30s }
+      - { name: grafana:plugin_request:ratio_5m,                   expr: ref:slis.plugin_request_success_ratio,           interval: 30s }
+      - { name: grafana:login_success:ratio_5m,                    expr: ref:slis.login_success_ratio,                    interval: 30s }
+      - { name: grafana:errorbudget:burn_1h,                       expr: grafana:http_request_success:error_ratio_5m / (1 - 0.999), interval: 1m }
+
+    derived_views:
+      - id: golden_signals_grafana
+        bind: ref:platform/golden-signals-view
+        params: { service: grafana }
+      - id: per_datasource_health
+        bind: ref:platform/per-resource-rollup
+        params: { sli: datasource_proxy_success_ratio, by: [datasource] }
+      - id: per_plugin_errors
+        bind: ref:platform/per-resource-rollup
+        params: { metric: grafana_plugin_request_total, by: [plugin_id, status] }
+
+  # ---------------------------------------------------------------------------
+  # 6. Dashboards
+  # ---------------------------------------------------------------------------
+  dashboards:
+    - id: grafana-overview
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: observability
+      source: file://dashboards/grafana-overview.json
+      datasources:
+        metrics: ref:platform/ds-mimir
+        logs:    ref:platform/ds-loki
+        traces:  ref:platform/ds-tempo
+      panel_bindings:
+        - { panel: sli-http-success,            binds_to: slis.http_request_success_ratio }
+        - { panel: sli-http-latency,            binds_to: slis.http_request_latency_p99 }
+        - { panel: sli-datasource-success,      binds_to: slis.datasource_proxy_success_ratio }
+        - { panel: sli-database-latency,        binds_to: slis.database_query_latency_p99 }
+        - { panel: slo-http-success,            binds_to: slos.http_request_success_99_9 }
+        - { panel: slo-datasource-success,      binds_to: slos.datasource_proxy_99_5 }
+
+    - id: grafana-alerting-health
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: observability
+      source: file://dashboards/grafana-alerting-health.json
+      datasources:
+        metrics: ref:platform/ds-mimir
+      panel_bindings:
+        - { panel: sli-alerting-evaluation,     binds_to: slis.alerting_rule_evaluation_success_ratio }
+        - { panel: slo-alerting-evaluation,     binds_to: slos.alerting_evaluation_99_95 }
+
+    - id: grafana-plugins-and-auth
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: observability
+      source: file://dashboards/grafana-plugins-and-auth.json
+      datasources:
+        metrics: ref:platform/ds-mimir
+      panel_bindings:
+        - { panel: sli-plugin-success,          binds_to: slis.plugin_request_success_ratio }
+        - { panel: sli-login-success,           binds_to: slis.login_success_ratio }
+        - { panel: slo-plugin-success,          binds_to: slos.plugin_request_99_9 }
+        - { panel: slo-login-success,           binds_to: slos.login_success_99_9 }
+
+    - id: grafana-slo-burn
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: observability
+      template: ref:platform/slo-burn-template
+      params: { slos: [ http_request_success_99_9, datasource_proxy_99_5, alerting_evaluation_99_95, login_success_99_9, database_query_99_p99_500ms ] }
+
+  # ---------------------------------------------------------------------------
+  # 7. Policy — multi-window burn-rate alerts (Google SRE playbook)
+  # ---------------------------------------------------------------------------
+  policy:
+    burn_rate_alerts:
+      - slo: http_request_success_99_9
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: http_request_latency_99_p99_1s
+        windows:
+          - { short: 10m, long: 1h, factor: 10, severity: SEV2 }
+          - { short: 1h,  long: 6h, factor: 4,  severity: SEV3 }
+
+      - slo: datasource_proxy_99_5
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: datasource_proxy_latency_99_p99_2s
+        windows:
+          - { short: 10m, long: 1h, factor: 10, severity: SEV2 }
+          - { short: 1h,  long: 6h, factor: 4,  severity: SEV3 }
+
+      - slo: database_query_99_p99_500ms
+        windows:
+          - { short: 10m, long: 1h, factor: 10, severity: SEV2 }
+          - { short: 1h,  long: 6h, factor: 4,  severity: SEV3 }
+
+      - slo: alerting_evaluation_99_95
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: plugin_request_99_9
+        windows:
+          - { short: 15m, long: 2h, factor: 8, severity: SEV2 }
+          - { short: 1h,  long: 6h, factor: 3, severity: SEV3 }
+
+      - slo: login_success_99_9
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+    forecasts:
+      - { slo: datasource_proxy_99_5,        method: holt-winters,          horizon: 7d, on_projected_breach: open_ticket }
+      - { slo: alerting_evaluation_99_95,    method: percentile-of-history, horizon: 3d, on_projected_breach: post_warning }
+
+  # ---------------------------------------------------------------------------
+  # 8. Alerting routes
+  # ---------------------------------------------------------------------------
+  alerting:
+    routes:
+      - severity: SEV1
+        channels:
+          - { msteams:  "#obs-platform-oncall" }
+          - { voice:    "pagerduty://observability" }
+      - severity: SEV2
+        channels:
+          - { msteams:  "#obs-platform-oncall" }
+          - { voice:    "pagerduty://observability-low" }
+      - severity: SEV3
+        channels:
+          - { msteams: "#obs-platform-team" }
+
+    dedup: ref:platform/std-dedup
+    suppress: [ maintenance_windows, deploy_freezes, dependency_outage ]
+
+  # ---------------------------------------------------------------------------
+  # 9. Remediation — guardrailed actions
+  # ---------------------------------------------------------------------------
+  remediation:
+    - trigger: alert:grafana-http-5xx-burn
+      runbook: file://runbooks/grafana-http-errors.md
+      automation: argo-workflow://restart-grafana-pod-rolling
+      guardrails:
+        max_invocations_per_hour: 2
+        requires_human_above: SEV1
+        rollback_on_failure: true
+        cooldown_after_success: 15m
+        circuit_breaker: { failures: 2, window: 1h }
+
+    - trigger: alert:grafana-datasource-proxy-burn
+      runbook: file://runbooks/grafana-datasource-down.md
+      automation: argo-workflow://reload-datasource-config
+      guardrails:
+        max_invocations_per_hour: 3
+        requires_human_above: SEV2
+        rollback_on_failure: true
+        cooldown_after_success: 10m
+
+    - trigger: alert:grafana-database-latency-burn
+      runbook: file://runbooks/grafana-database-slow.md
+      automation: argo-workflow://grafana-database-vacuum
+      guardrails:
+        max_invocations_per_hour: 1
+        requires_human_above: SEV2
+        rollback_on_failure: false
+        cooldown_after_success: 6h
+
+    - trigger: alert:grafana-login-success-burn
+      runbook: file://runbooks/grafana-idp-outage.md
+      automation: "manual-only"      # login failures usually indicate IDP outage; auto-acting risks lockout
+      guardrails:
+        max_invocations_per_hour: 1
+        requires_human_above: SEV1
+
+  # ---------------------------------------------------------------------------
+  # 10a. Baselines
+  # ---------------------------------------------------------------------------
+  baselines:
+    mttd_target_p50: 2m
+    mttd_target_p95: 5m
+    mttr_target_p50: 30m
+    mttr_target_p95: 1h
+    measurement_source: incident-mgmt + alertmanager firing timestamps
+    review_cadence: monthly
+    regression_gate: block_release_if_either_breaches_target
+
+  # ---------------------------------------------------------------------------
+  # 10b. Validation — chaos + synthetic
+  # ---------------------------------------------------------------------------
+  validation:
+
+    chaos_experiments:
+
+      - id: grafana-pod-kill
+        engine: chaos-mesh
+        target: grafana-server
+        steady_state_hypothesis: ref:slos.http_request_success_99_9
+        fault: { kind: pod-failure, fraction: 0.5, duration: 60s }
+        expected_alerts: [ grafana-http-5xx-burn-fast ]
+        expected_mttd: 2m
+        schedule: weekly
+        environment: staging
+
+      - id: grafana-database-slow
+        engine: chaos-mesh
+        target: grafana-database
+        steady_state_hypothesis: ref:slos.database_query_99_p99_500ms
+        fault: { kind: network-delay, delay: 100ms, duration: 5m }
+        expected_alerts: [ grafana-database-latency-burn ]
+        expected_mttd: 5m
+        schedule: monthly
+        environment: staging
+
+      - id: datasource-isolate
+        engine: chaos-mesh
+        target: grafana-server
+        steady_state_hypothesis: ref:slos.datasource_proxy_99_5
+        fault: { kind: network-partition, target: prometheus, duration: 3m }
+        expected_alerts: [ grafana-datasource-proxy-burn-fast ]
+        expected_mttd: 2m
+        schedule: monthly
+        environment: staging
+
+      - id: alerting-engine-stress
+        engine: chaos-mesh
+        target: grafana-server
+        steady_state_hypothesis: ref:slos.alerting_evaluation_99_95
+        fault: { kind: cpu-stress, percentage: 90, duration: 5m }
+        expected_alerts: [ grafana-alerting-evaluation-burn-fast ]
+        expected_mttd: 5m
+        schedule: monthly
+        environment: staging
+
+    synthetic_checks:
+
+      - id: grafana-api-canary
+        kind: blackbox-exporter
+        target: https://grafana.internal/api/health
+        interval: 30s
+        otel_instrumentation: true
+        assertions:
+          - { status_code: 200 }
+          - { latency_lt: 500ms }
+          - { body_contains: '"database":"ok"' }
+        on_fail_severity: SEV1
+
+      - id: grafana-login-canary
+        kind: k6
+        target: https://grafana.internal/login
+        interval: 5m
+        otel_instrumentation: true
+        assertions:
+          - { login_success: true }
+          - { session_cookie_set: true }
+        on_fail_severity: SEV2
+
+      - id: grafana-dashboard-render
+        kind: grafana-synthetics
+        target: https://grafana.internal/d/obs-overview
+        interval: 5m
+        assertions:
+          - { render_complete: true }
+          - { panel_errors: 0 }
+        on_fail_severity: SEV2

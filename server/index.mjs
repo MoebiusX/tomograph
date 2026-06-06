@@ -84,6 +84,13 @@ const EXAMPLE_PACKS = [
     catalogue: true,
   },
   {
+    id: 'grafana-reference',
+    label: 'Grafana (catalogue reference · tier-2)',
+    path: 'examples/grafana.pack.yaml',
+    description: 'State-of-the-art reference pack for Grafana 11.x including unified alerting. Eight operational vital signs (HTTP, datasource proxy, database, alerting evaluation, plugins, login), 4 chaos experiments, 3-layer synthetic checks. Paired with the Prometheus reference pack. Every section evidence-cited in docs/catalogue-evidence/grafana.md.',
+    catalogue: true,
+  },
+  {
     id: 'payment-service',
     label: 'Payment service (canonical example)',
     path: 'examples/payment-service.pack.yaml',
