@@ -46,6 +46,24 @@ const state = {
   // Primary view selector (top nav). One of: layers, conformance,
   // compile, atlas, schema. Compare mode hides conformance + compile.
   view: 'layers',
+  // Per-pack focus toggle (A | B). Surfaces the A|B switch on the
+  // conformance / compile / schema views when both packs are loaded so
+  // the user can read B's report without losing A. Resets to 'a' when
+  // Pack B is cleared. Stays 'a' until the user flips it.
+  viewFocus: 'a',
+  // Parallel slots for Pack B — populated when the user flips focus
+  // to B (or pre-fetched alongside loadPackB() so toggling is instant).
+  conformanceB: null,
+  compileCatalogB: null,        // mirrors compileCatalog for B
+  compileGroupB: 'rules',       // mirrors compileGroup for B
+  compileFlavorB: 'prometheus', // mirrors compileFlavor for B
+  compileArtifactB: 'all',      // mirrors compileArtifact for B
+  compileContentB: null,        // mirrors compileContent for B
+  // Traceability view preferences (persisted via Direction 3). Keys are
+  // `${layer}::${key}` strings — see compareKeyOf. Suppressed findings
+  // are hidden from their bucket; resolved findings render as resolved.
+  tracePrefs: { suppressed: [], resolved: [] },
+  traceOpen: { aligned: false, declaredNotVerified: true, verifiedNotDeclared: true, stale: true },
   // Secondary layer filter chips (only visible on view='layers').
   // 'all' stacks every layer; the layer ids narrow to one.
   layerFilter: 'all',
@@ -107,6 +125,152 @@ async function loadCatalog() {
   state.catalog = packs || [];
 }
 
+// ---------- focus (A | B) ----------
+//
+// Conformance / Compile / Schema render a single pack at a time. When
+// both A and B are loaded the user can flip focus between them via the
+// toggle in the view nav. effectiveFocus() falls back to 'a' if focus is
+// 'b' but Pack B isn't loaded — defensive, since the toggle is hidden
+// in that state anyway.
+function effectiveFocus() {
+  return (state.viewFocus === 'b' && state.packB) ? 'b' : 'a';
+}
+function focusedPackId()   { return effectiveFocus() === 'b' ? state.compareBId  : state.selectedPackId; }
+function focusedEnv()      { return effectiveFocus() === 'b' ? state.compareBEnv : state.selectedEnv; }
+function focusedPack()     { return effectiveFocus() === 'b' ? state.packB       : state.pack; }
+
+function focusedConformance()     { return effectiveFocus() === 'b' ? state.conformanceB     : state.conformance; }
+function setFocusedConformance(v) { if (effectiveFocus() === 'b') state.conformanceB = v; else state.conformance = v; }
+
+function focusedCompileCatalog()     { return effectiveFocus() === 'b' ? state.compileCatalogB     : state.compileCatalog; }
+function setFocusedCompileCatalog(v) { if (effectiveFocus() === 'b') state.compileCatalogB = v; else state.compileCatalog = v; }
+function focusedCompileContent()     { return effectiveFocus() === 'b' ? state.compileContentB     : state.compileContent; }
+function setFocusedCompileContent(v) { if (effectiveFocus() === 'b') state.compileContentB = v; else state.compileContent = v; }
+function focusedCompileGroup()       { return effectiveFocus() === 'b' ? state.compileGroupB       : state.compileGroup; }
+function setFocusedCompileGroup(v)   { if (effectiveFocus() === 'b') state.compileGroupB = v; else state.compileGroup = v; }
+function focusedCompileFlavor()      { return effectiveFocus() === 'b' ? state.compileFlavorB      : state.compileFlavor; }
+function setFocusedCompileFlavor(v)  { if (effectiveFocus() === 'b') state.compileFlavorB = v; else state.compileFlavor = v; }
+function focusedCompileArtifact()    { return effectiveFocus() === 'b' ? state.compileArtifactB    : state.compileArtifact; }
+function setFocusedCompileArtifact(v){ if (effectiveFocus() === 'b') state.compileArtifactB = v; else state.compileArtifact = v; }
+
+function setViewFocus(focus) {
+  if (state.viewFocus === focus) return;
+  state.viewFocus = focus;
+  // Cached content for the newly-focused side may be stale or missing —
+  // dropping it forces a lazy-load on the next render.
+  if (effectiveFocus() === 'b' && !state.compileCatalogB) state.compileContentB = null;
+  renderTabs();
+  renderMainView();
+}
+
+// ---------- persistence (localStorage) ----------
+//
+// The studio used to forget everything on refresh: which pack was open,
+// which view you were on, your layer filter, your compare slice. That's
+// fine for a demo but cruel for a tool you live in for hours. We persist
+// a small whitelist of state under a versioned key and re-hydrate on
+// boot — re-fetching packs the normal way (no skipping validation) so a
+// pack that vanished from the catalog just drops silently.
+const PERSIST_KEY = 'studioState.v1';
+const PERSIST_FIELDS = [
+  'selectedPackId', 'selectedEnv',
+  'compareBId', 'compareBEnv',
+  'view', 'layerFilter',
+  'compareSlice', 'compareSearch',
+  'viewFocus',
+  'atlasVariant', 'arborView',
+  'compileGroup', 'compileFlavor', 'compileArtifact',
+  'compileGroupB', 'compileFlavorB', 'compileArtifactB',
+  'tracePrefs',
+];
+const persistence = {
+  _suspended: true,  // boot-phase guard — flipped to false once rehydrate finishes
+  _timer: null,
+  suspend() { this._suspended = true; if (this._timer) { clearTimeout(this._timer); this._timer = null; } },
+  resume()  { this._suspended = false; },
+  read() {
+    try {
+      const raw = localStorage.getItem(PERSIST_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      return (data && typeof data === 'object') ? data : null;
+    } catch (_) { return null; }
+  },
+  write() {
+    if (this._suspended) return;
+    const snap = {};
+    for (const k of PERSIST_FIELDS) snap[k] = state[k];
+    try { localStorage.setItem(PERSIST_KEY, JSON.stringify(snap)); } catch (_) {}
+  },
+  schedule() {
+    if (this._suspended) return;
+    if (this._timer) clearTimeout(this._timer);
+    this._timer = setTimeout(() => { this._timer = null; this.write(); }, 250);
+  },
+  clear() { try { localStorage.removeItem(PERSIST_KEY); } catch (_) {} },
+};
+
+// Rehydrate state from the persistence key. Called once after the
+// catalog + examples are loaded so we can validate pack IDs before
+// trying to load them. Returns true if it took the studio out of home
+// mode; the caller falls back to goHome() otherwise.
+async function rehydrateFromPersistence() {
+  const saved = persistence.read();
+  if (!saved) return false;
+  const allKnown = [...(state.catalog || []), ...(state._examplesCache || [])];
+  const aMeta = allKnown.find(p => p.id === saved.selectedPackId);
+  if (!aMeta) {
+    // Pack A is gone — drop the whole snapshot. Half-restoring a session
+    // (view/filter but no pack) would just confuse.
+    persistence.clear();
+    return false;
+  }
+
+  // Restore non-pack UI fields up-front so the first render shows them.
+  if (typeof saved.view === 'string')          state.view = saved.view;
+  if (typeof saved.layerFilter === 'string')   state.layerFilter = saved.layerFilter;
+  if (typeof saved.compareSlice === 'string')  state.compareSlice = saved.compareSlice;
+  if (typeof saved.compareSearch === 'string') state.compareSearch = saved.compareSearch;
+  if (saved.viewFocus === 'a' || saved.viewFocus === 'b') state.viewFocus = saved.viewFocus;
+  if (typeof saved.atlasVariant === 'string')  state.atlasVariant = saved.atlasVariant;
+  if (typeof saved.arborView === 'string')     state.arborView = saved.arborView;
+  if (typeof saved.compileGroup === 'string')  state.compileGroup = saved.compileGroup;
+  if (typeof saved.compileFlavor === 'string') state.compileFlavor = saved.compileFlavor;
+  if (typeof saved.compileArtifact === 'string') state.compileArtifact = saved.compileArtifact;
+  if (typeof saved.compileGroupB === 'string')  state.compileGroupB = saved.compileGroupB;
+  if (typeof saved.compileFlavorB === 'string') state.compileFlavorB = saved.compileFlavorB;
+  if (typeof saved.compileArtifactB === 'string') state.compileArtifactB = saved.compileArtifactB;
+  if (saved.tracePrefs && typeof saved.tracePrefs === 'object') {
+    state.tracePrefs = {
+      suppressed: Array.isArray(saved.tracePrefs.suppressed) ? saved.tracePrefs.suppressed : [],
+      resolved:   Array.isArray(saved.tracePrefs.resolved)   ? saved.tracePrefs.resolved   : [],
+    };
+  }
+
+  // Make sure the picker can label an archived example by pushing the
+  // catalog-entry shape into state.catalog (same trick renderPackBSelect uses).
+  if (!state.catalog.find(p => p.id === aMeta.id)) state.catalog.push(aMeta);
+  enterAnalyzeMode(aMeta.id, saved.selectedEnv);
+
+  // Pack B (optional) — only if both the ID still resolves AND we had
+  // env-B persisted. We don't pre-fetch B's pack object; loadPackB does that.
+  const bMeta = saved.compareBId ? allKnown.find(p => p.id === saved.compareBId) : null;
+  if (bMeta) {
+    if (!state.catalog.find(p => p.id === bMeta.id)) state.catalog.push(bMeta);
+    state.compareBId  = bMeta.id;
+    state.compareBEnv = saved.compareBEnv || defaultEnvFor(bMeta.id);
+    loadPackB().then(() => {
+      refreshDiff();
+      applyModeChrome();
+      renderPackBSelect();
+      renderEnvBSelect();
+      renderTabs();
+      renderMainView();
+    });
+  }
+  return true;
+}
+
 async function loadPack(id, env) {
   const q = env ? `?env=${encodeURIComponent(env)}` : '';
   const [pack, conformance] = await Promise.all([
@@ -158,6 +322,91 @@ function renderPackSelect() {
     state.selectedPackId = sel.value;
     state.selectedEnv = defaultEnvFor(state.selectedPackId);
     refresh();
+  };
+}
+
+// Pack B picker — sits next to Pack A in the header. Empty by default
+// (shows "— none —"). Picking a pack here loads Pack B in place; the
+// view nav grows to include Compare + Atlas without leaving single mode.
+// Sources of pack options: state.catalog (live + crawled + uploaded)
+// PLUS the archived /api/examples list (fetched once, cached).
+function renderPackBSelect() {
+  const sel = $('#pack-b-select');
+  if (!sel) return;
+  // Merge catalog + cached examples, dedup by id, drop the active Pack A.
+  const cat = state.catalog || [];
+  const ex  = state._examplesCache || [];
+  const seen = new Set();
+  const options = [];
+  for (const p of [...cat, ...ex]) {
+    if (!p?.id || !p.ok) continue;
+    if (p.id === state.selectedPackId) continue;
+    if (seen.has(p.id)) continue;
+    seen.add(p.id);
+    options.push(p);
+  }
+  // Sort by label so the list is stable across re-renders.
+  options.sort((a, b) => (a.label || a.id).localeCompare(b.label || b.id));
+  sel.innerHTML = '<option value="">— none —</option>'
+    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')} · ${escapeHtml(p.criticality || '?')}</option>`).join('');
+  sel.value = state.compareBId || '';
+  sel.onchange = () => {
+    const newId = sel.value || null;
+    if (newId === state.compareBId) return;
+    state.compareBId = newId;
+    state.compareBEnv = newId ? defaultEnvFor(newId) : null;
+    state.packB = null; state.diff = null;
+    // Reset B-side state slots (they belong to whatever pack was just removed).
+    state.conformanceB = null;
+    state.compileCatalogB = null;
+    state.compileContentB = null;
+    // Focus snaps back to A — no point pointing at a pack that's gone.
+    state.viewFocus = 'a';
+    if (!newId) {
+      // User cleared Pack B — back to single-pack focus. If the active
+      // view was a cross-pack one, fall back to Layers.
+      if (state.view === 'compare' || state.view === 'atlas') state.view = 'layers';
+      applyModeChrome();
+      renderTabs();
+      renderMainView();
+      return;
+    }
+    // Push the chosen pack into state.catalog (if not already present)
+    // so loadPackB() + the catalog-entry resolver have a label to read.
+    if (!state.catalog.find(p => p.id === newId)) {
+      const ex = (state._examplesCache || []).find(p => p.id === newId);
+      if (ex) state.catalog.push(ex);
+    }
+    // Lazy-load B then refresh tabs + view.
+    loadPackB().then(() => { refreshDiff(); applyModeChrome(); renderEnvBSelect(); renderTabs(); renderMainView(); });
+  };
+  renderEnvBSelect();
+}
+
+function renderEnvBSelect() {
+  const sel = $('#env-b-select');
+  if (!sel) return;
+  sel.innerHTML = '';
+  const entry = state.catalog.find(p => p.id === state.compareBId);
+  const envs = entry?.environments || [];
+  if (!envs.length) {
+    const opt = document.createElement('option');
+    opt.value = ''; opt.textContent = '— none —';
+    sel.appendChild(opt);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  for (const e of envs) {
+    const opt = document.createElement('option');
+    opt.value = e; opt.textContent = e;
+    sel.appendChild(opt);
+  }
+  sel.value = state.compareBEnv || envs[0];
+  sel.onchange = () => {
+    state.compareBEnv = sel.value || null;
+    state.packB = null; state.diff = null;
+    loadPackB().then(() => { refreshDiff(); renderTabs(); renderMainView(); });
   };
 }
 
@@ -294,26 +543,57 @@ function renderTabs() {
   tabs.appendChild(renderLayerFilterChips());
 }
 
+// Focus toggle (A | B). Visible only when both packs are loaded AND the
+// active view renders a single pack — conformance, compile, schema. The
+// other views (layers/compare/atlas) already show both packs.
+function renderFocusToggle() {
+  const wrap = document.createElement('div');
+  wrap.className = 'focus-toggle';
+  const showToggle = !!state.packB && ['conformance', 'compile', 'schema'].includes(state.view);
+  if (!showToggle) { wrap.hidden = true; return wrap; }
+  const cur = effectiveFocus();
+
+  const label = document.createElement('span');
+  label.className = 'focus-toggle-key';
+  label.textContent = 'FOCUS';
+  wrap.appendChild(label);
+
+  const mkBtn = (side, pack) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.side = side;
+    b.className = 'focus-toggle-btn' + (cur === side ? ' is-active' : '');
+    b.textContent = side.toUpperCase();
+    b.title = `Focus PACK ${side.toUpperCase()} — ${pack?.id || ''}`;
+    b.onclick = () => setViewFocus(side);
+    return b;
+  };
+  wrap.appendChild(mkBtn('a', state.pack));
+  wrap.appendChild(mkBtn('b', state.packB));
+  return wrap;
+}
+
 function renderPrimaryViewNav() {
   const nav = document.createElement('div');
   nav.className = 'view-nav';
 
   // Decide which views are available for the current mode.
-  const views = (state.mode === 'compare')
-    ? [
-        { id: 'layers',     label: 'Layers',     hint: 'Side-by-side per-layer comparison.' },
-        { id: 'atlas',      label: 'Atlas',      hint: 'Side-by-side atlas variants — Stratigraphy, Periodic, Constellation, Skyline, Transit, Arbor.' },
-        { id: 'schema',     label: 'Schema',     hint: 'Maturity rubric + spec compliance.' },
-      ]
-    : [
-        { id: 'layers',     label: 'Layers',     hint: 'Browse artefacts by layer (L1..GOV).' },
-        { id: 'conformance',label: 'Conformance',hint: 'Maturity rubric per tier with pass/fail.' },
-        { id: 'compile',    label: 'Compile',    hint: 'Per-artefact compilation to native platform format.' },
-        { id: 'schema',     label: 'Schema',     hint: 'Maturity score + canonical schema view.' },
-        // Atlas omitted from single mode — the variants are diff-driven
-        // (A vs B). To use them, pick "Compare two packs" from the home
-        // screen and choose this pack as side A.
-      ];
+  // View nav adapts to what's loaded — no rigid mode locking.
+  //   Pack A only  → Layers · Conformance · Compile · Schema
+  //   Pack B added → adds Compare + Atlas (cross-pack views)
+  // User toggles Pack B from the header picker; the view nav refreshes.
+  const hasB = !!state.packB;
+  const views = [
+    { id: 'layers',     label: 'Layers',     hint: 'Browse artefacts by layer (L1..GOV).' },
+    { id: 'conformance',label: 'Conformance',hint: 'Maturity rubric per tier with pass/fail.' },
+    { id: 'compile',    label: 'Compile',    hint: 'Per-artefact compilation to native platform format.' },
+    ...(hasB ? [
+      { id: 'compare',     label: 'Compare',     hint: 'Side-by-side per-layer comparison of PACK A vs PACK B.' },
+      { id: 'traceability',label: 'Traceability',hint: 'Repo vs live: aligned / declared-not-verified / verified-not-declared / stale.' },
+      { id: 'atlas',       label: 'Atlas',       hint: 'Cross-pack atlas variants — Stratigraphy, Periodic, Constellation, Skyline, Transit, Arbor.' },
+    ] : []),
+    { id: 'schema',     label: 'Schema',     hint: 'Maturity score + canonical schema view.' },
+  ];
   const active = state.view || 'layers';
 
   for (const v of views) {
@@ -332,6 +612,7 @@ function renderPrimaryViewNav() {
     };
     nav.appendChild(b);
   }
+  nav.appendChild(renderFocusToggle());
   return nav;
 }
 
@@ -380,25 +661,23 @@ function renderLayerFilterChips() {
 function renderMainView() {
   const view = $('#layer-view');
   view.innerHTML = '';
+  // Persistence: every mutation chain ends here, so this is the single
+  // hook for the debounced write. Cheap when suspended (boot phase).
+  persistence.schedule();
   if (state.mode === 'home') { renderHomeView(); return; }
   if (!state.pack) { view.innerHTML = '<div class="placeholder">Loading pack…</div>'; return; }
 
-  // Compare mode always renders the side-by-side compare view, with
-  // its own sub-views (Layers / Atlas / Schema) selected via the
-  // primary view nav above.
-  if (state.mode === 'compare') {
-    if (state.view === 'atlas')   { renderAtlasView(view); return; }
-    if (state.view === 'schema')  { view.appendChild(renderConformanceView()); return; }
-    renderCompareView(view);   // 'layers' (default)
-    return;
-  }
-
-  // Single mode — dispatch on view.
+  // Mode-free dispatch (Phase 7r): the view nav decides what to render
+  // based on what's loaded. 'compare' and 'atlas' only appear in the
+  // nav when state.packB is truthy, so we can reach them here without
+  // needing a separate 'compare' mode.
   switch (state.view) {
-    case 'conformance': view.appendChild(renderConformanceView()); return;
-    case 'compile':     renderCompileView(view); return;
-    case 'atlas':       renderAtlasView(view); return;
-    case 'schema':      view.appendChild(renderConformanceView()); return;
+    case 'compare':      renderCompareView(view); return;
+    case 'traceability': renderTraceabilityView(view); return;
+    case 'atlas':        renderAtlasView(view); return;
+    case 'conformance':  view.appendChild(renderConformanceView()); return;
+    case 'compile':      renderCompileView(view); return;
+    case 'schema':       view.appendChild(renderConformanceView()); return;
     case 'layers':
     default:
       renderLayersView(view);
@@ -548,8 +827,10 @@ function renderConformanceView() {
   const wrap = document.createElement('section');
   wrap.className = 'section conformance-view';
   wrap.dataset.layer = 'CONF';
+  wrap.dataset.focus = effectiveFocus();
 
-  const c = state.conformance;
+  const c = focusedConformance();
+  const pk = focusedPack();
   if (!c) {
     wrap.innerHTML = '<div class="placeholder">conformance report unavailable</div>';
     return wrap;
@@ -557,9 +838,10 @@ function renderConformanceView() {
 
   const head = document.createElement('div');
   head.className = 'section-head';
+  const focusBadge = state.packB ? ` · pack ${effectiveFocus().toUpperCase()} (${escapeHtml(pk?.id || '')})` : '';
   head.innerHTML = `
     <span class="section-num">CONF</span>
-    <span class="section-name">Maturity rubric · ${escapeHtml(c.declaredTier)}</span>
+    <span class="section-name">Maturity rubric · ${escapeHtml(c.declaredTier)}${focusBadge}</span>
     <span class="section-count">${c.scorePercent}% overall · ${c.mustPercent}% MUST</span>
   `;
   wrap.appendChild(head);
@@ -657,27 +939,30 @@ function targetScopable(target) {
 }
 
 async function loadCompileCatalog() {
-  if (!state.selectedPackId) return null;
+  const packId = focusedPackId();
+  const env = focusedEnv();
+  if (!packId) return null;
   const params = new URLSearchParams();
-  if (state.selectedEnv) params.set('env', state.selectedEnv);
+  if (env) params.set('env', env);
   try {
-    const r = await fetch(`/api/packs/${encodeURIComponent(state.selectedPackId)}/compile-catalog?${params}`);
+    const r = await fetch(`/api/packs/${encodeURIComponent(packId)}/compile-catalog?${params}`);
     if (!r.ok) return null;
-    state.compileCatalog = await r.json();
+    const cat = await r.json();
+    setFocusedCompileCatalog(cat);
     // Reconcile current selection with what's available (the pack may
     // have changed since last view).
-    const groups = state.compileCatalog.groups || [];
-    const g = groups.find(x => x.id === state.compileGroup) || groups[0];
-    if (!g) return state.compileCatalog;
-    state.compileGroup = g.id;
-    if (!g.flavors?.some(f => f.id === state.compileFlavor)) {
-      state.compileFlavor = g.flavors?.[0]?.id || null;
+    const groups = cat.groups || [];
+    const g = groups.find(x => x.id === focusedCompileGroup()) || groups[0];
+    if (!g) return cat;
+    setFocusedCompileGroup(g.id);
+    if (!g.flavors?.some(f => f.id === focusedCompileFlavor())) {
+      setFocusedCompileFlavor(g.flavors?.[0]?.id || null);
     }
-    if (!g.items?.some(it => it.id === state.compileArtifact)) {
-      state.compileArtifact = g.items?.[0]?.id || 'all';
+    if (!g.items?.some(it => it.id === focusedCompileArtifact())) {
+      setFocusedCompileArtifact(g.items?.[0]?.id || 'all');
     }
-  } catch (_) { state.compileCatalog = null; }
-  return state.compileCatalog;
+  } catch (_) { setFocusedCompileCatalog(null); }
+  return focusedCompileCatalog();
 }
 
 // Map (group, flavor) → legacy deploy target id used by isDeployable() and the
@@ -693,14 +978,16 @@ function legacyDeployTargetFor(group) {
 }
 
 async function loadCompiled() {
-  if (!state.selectedPackId) { state.compileContent = null; return; }
+  const packId = focusedPackId();
+  const env = focusedEnv();
+  if (!packId) { setFocusedCompileContent(null); return; }
   // Reset cached content so a switch between artifacts/flavors re-fetches.
   const params = new URLSearchParams();
-  if (state.selectedEnv) params.set('env', state.selectedEnv);
-  params.set('group', state.compileGroup);
-  if (state.compileFlavor)   params.set('flavor', state.compileFlavor);
-  if (state.compileArtifact) params.set('artifact', state.compileArtifact);
-  const url = `/api/packs/${encodeURIComponent(state.selectedPackId)}/compile-artifact?${params}`;
+  if (env) params.set('env', env);
+  params.set('group', focusedCompileGroup());
+  if (focusedCompileFlavor())   params.set('flavor', focusedCompileFlavor());
+  if (focusedCompileArtifact()) params.set('artifact', focusedCompileArtifact());
+  const url = `/api/packs/${encodeURIComponent(packId)}/compile-artifact?${params}`;
   try {
     const r = await fetch(url);
     const ct = r.headers.get('content-type') || '';
@@ -710,22 +997,22 @@ async function loadCompiled() {
         const j = await r.json().catch(() => null);
         if (j?.error) msg = j.error;
       }
-      state.compileContent = { error: msg };
+      setFocusedCompileContent({ error: msg });
       return;
     }
     const text = await r.text();
-    state.compileContent = {
+    setFocusedCompileContent({
       filename: parseCdFilename(r.headers.get('content-disposition'))
-        || `${state.selectedPackId}.${state.compileGroup}.${state.compileArtifact}`,
+        || `${packId}.${focusedCompileGroup()}.${focusedCompileArtifact()}`,
       contentType: ct.split(';')[0].trim(),
       text,
       source: r.headers.get('x-pack-source'),
       group: r.headers.get('x-compile-group'),
       flavor: r.headers.get('x-compile-flavor'),
       artifact: r.headers.get('x-compile-artifact'),
-    };
+    });
   } catch (e) {
-    state.compileContent = { error: e.message };
+    setFocusedCompileContent({ error: e.message });
   }
 }
 
@@ -739,13 +1026,16 @@ function renderCompileView(host) {
   const section = document.createElement('section');
   section.className = 'section compile-view';
   section.dataset.layer = 'COMPILE';
+  section.dataset.focus = effectiveFocus();
 
+  const focusedPk = focusedPack();
   const head = document.createElement('div');
   head.className = 'section-head';
+  const focusBadge = state.packB ? ` · pack ${effectiveFocus().toUpperCase()}` : '';
   head.innerHTML = `
     <span class="section-num">BLD</span>
-    <span class="section-name">Compile — pack as the source of truth</span>
-    <span class="section-count">${escapeHtml(state.pack?.id || '')}</span>
+    <span class="section-name">Compile — pack as the source of truth${focusBadge}</span>
+    <span class="section-count">${escapeHtml(focusedPk?.id || '')}</span>
   `;
   section.appendChild(head);
 
@@ -771,15 +1061,15 @@ function renderCompileView(host) {
   stage.className = 'compile-stage';
   grid.appendChild(stage);
 
-  // Fetch catalog if missing.
-  if (!state.compileCatalog) {
+  // Fetch catalog if missing for the focused pack.
+  if (!focusedCompileCatalog()) {
     nav.innerHTML = '<div class="compile-loading">Loading artifacts…</div>';
     stage.innerHTML = '<div class="placeholder">Loading the artifact catalog…</div>';
-    loadCompileCatalog().then(() => { state.compileContent = null; renderMainView(); });
+    loadCompileCatalog().then(() => { setFocusedCompileContent(null); renderMainView(); });
     return;
   }
 
-  const catalog = state.compileCatalog;
+  const catalog = focusedCompileCatalog();
   const groups = catalog.groups || [];
   if (!groups.length) {
     nav.innerHTML = '<div class="placeholder">This pack has nothing compilable yet — add SLOs, dashboards, or pipelines to the source.</div>';
@@ -789,7 +1079,7 @@ function renderCompileView(host) {
   // ---- Left nav: artifact tree ----
   for (const g of groups) {
     const groupEl = document.createElement('div');
-    groupEl.className = 'compile-group' + (g.id === state.compileGroup ? ' is-active-group' : '');
+    groupEl.className = 'compile-group' + (g.id === focusedCompileGroup() ? ' is-active-group' : '');
     groupEl.innerHTML = `
       <div class="compile-group-head">
         <span class="compile-group-label">${escapeHtml(g.label)}</span>
@@ -800,7 +1090,7 @@ function renderCompileView(host) {
     list.className = 'compile-item-list';
     for (const it of (g.items || [])) {
       const li = document.createElement('li');
-      const selected = (g.id === state.compileGroup) && (it.id === state.compileArtifact);
+      const selected = (g.id === focusedCompileGroup()) && (it.id === focusedCompileArtifact());
       li.className = 'compile-item' + (selected ? ' is-active' : '');
       li.innerHTML = `
         <button type="button" class="compile-item-btn" title="${escapeHtml(it.subtitle || '')}">
@@ -812,13 +1102,13 @@ function renderCompileView(host) {
         </button>
       `;
       li.querySelector('button').onclick = () => {
-        state.compileGroup = g.id;
-        state.compileArtifact = it.id;
+        setFocusedCompileGroup(g.id);
+        setFocusedCompileArtifact(it.id);
         // Reconcile flavor with the chosen group.
-        if (!g.flavors?.some(f => f.id === state.compileFlavor)) {
-          state.compileFlavor = g.flavors?.[0]?.id || null;
+        if (!g.flavors?.some(f => f.id === focusedCompileFlavor())) {
+          setFocusedCompileFlavor(g.flavors?.[0]?.id || null);
         }
-        state.compileContent = null;
+        setFocusedCompileContent(null);
         renderMainView();
       };
       list.appendChild(li);
@@ -828,9 +1118,9 @@ function renderCompileView(host) {
   }
 
   // ---- Right stage: flavor pills + platform badge + compiled output ----
-  const activeGroup = groups.find(g => g.id === state.compileGroup) || groups[0];
-  const activeFlavor = activeGroup?.flavors?.find(f => f.id === state.compileFlavor) || activeGroup?.flavors?.[0];
-  const activeItem = (activeGroup?.items || []).find(it => it.id === state.compileArtifact);
+  const activeGroup = groups.find(g => g.id === focusedCompileGroup()) || groups[0];
+  const activeFlavor = activeGroup?.flavors?.find(f => f.id === focusedCompileFlavor()) || activeGroup?.flavors?.[0];
+  const activeItem = (activeGroup?.items || []).find(it => it.id === focusedCompileArtifact());
 
   // Platform callout — the explicit answer to "where does this land?"
   const callout = document.createElement('div');
@@ -852,13 +1142,13 @@ function renderCompileView(host) {
     for (const f of activeGroup.flavors) {
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'compile-flavor-pill' + (f.id === state.compileFlavor ? ' is-active' : '');
+      b.className = 'compile-flavor-pill' + (f.id === focusedCompileFlavor() ? ' is-active' : '');
       b.innerHTML = `${escapeHtml(f.label)}`;
       b.title = `${f.platform} · ${f.description}`;
       b.onclick = () => {
-        if (state.compileFlavor === f.id) return;
-        state.compileFlavor = f.id;
-        state.compileContent = null;
+        if (focusedCompileFlavor() === f.id) return;
+        setFocusedCompileFlavor(f.id);
+        setFocusedCompileContent(null);
         renderMainView();
       };
       flavorBar.appendChild(b);
@@ -878,7 +1168,7 @@ function renderCompileView(host) {
   }
 
   // Content
-  if (!state.compileContent) {
+  if (!focusedCompileContent()) {
     const ph = document.createElement('div');
     ph.className = 'placeholder';
     ph.textContent = 'Compiling…';
@@ -886,18 +1176,18 @@ function renderCompileView(host) {
     loadCompiled().then(() => renderMainView());
     return;
   }
-  if (state.compileContent.error) {
+  if (focusedCompileContent().error) {
     const err = document.createElement('div');
     err.className = 'error';
-    err.textContent = `Compile failed: ${state.compileContent.error}`;
+    err.textContent = `Compile failed: ${focusedCompileContent().error}`;
     stage.appendChild(err);
     return;
   }
-  const c = state.compileContent;
+  const c = focusedCompileContent();
   // Map current selection to the legacy target name the deploy path expects.
-  state.compileTarget = legacyDeployTargetFor(state.compileGroup) || state.compileTarget;
+  state.compileTarget = legacyDeployTargetFor(focusedCompileGroup()) || state.compileTarget;
 
-  const envLabel = state.selectedEnv || 'none';
+  const envLabel = focusedEnv() || 'none';
   const actions = document.createElement('div');
   actions.className = 'compile-actions';
   actions.innerHTML = `
@@ -949,7 +1239,7 @@ function renderCompileView(host) {
   dl.href = URL.createObjectURL(blob);
 
   const deployBtn = actions.querySelector('#deploy-compiled');
-  if (deployBtn) deployBtn.onclick = () => openDeployModal({ packId: state.selectedPackId });
+  if (deployBtn) deployBtn.onclick = () => openDeployModal({ packId: focusedPackId() });
 
   // Live re-derive the default tool name as the user changes product /
   // version / scope. We DON'T overwrite a user-typed override — only when
@@ -1076,10 +1366,11 @@ async function doDeploy(panel) {
   resultEl.hidden = true;
 
   const qs = new URLSearchParams();
-  if (state.selectedEnv) qs.set('env', state.selectedEnv);
+  const deployEnv = focusedEnv();
+  if (deployEnv) qs.set('env', deployEnv);
   if (state.compileDashId) qs.set('dashboardId', state.compileDashId);
   const target = state.compileTarget;
-  const path = `/api/packs/${encodeURIComponent(state.selectedPackId)}/deploy/${encodeURIComponent(target)}?${qs}`;
+  const path = `/api/packs/${encodeURIComponent(focusedPackId())}/deploy/${encodeURIComponent(target)}?${qs}`;
 
   try {
     const r = await fetch(path, {
@@ -1159,10 +1450,317 @@ async function loadDiff() {
 
 async function refreshDiff() {
   await loadDiff();
-  // Invalidate B's full layered pack so the atlas refetches.
-  state.packB = null;
+  // Don't nullify state.packB here — earlier code paths set it and rely
+  // on the diff being decoupled from the pack itself. The previous
+  // "invalidate B so the atlas refetches" comment was wrong: the atlas
+  // dispatches on state.packB directly, so nulling it here just forced
+  // a redundant network round-trip AND silently broke the view nav's
+  // "Compare/Atlas appear when B is loaded" rule on every diff refresh.
   renderTabs();
   renderMainView();
+}
+
+// ============================================================
+// TRACEABILITY VIEW — repo vs live, but actionable
+// ============================================================
+//
+// Compare shows raw deltas per layer. Useful for engineers reading the
+// diff first-hand, but it leaves the harder question — "what should I do
+// about this?" — to the reader. Traceability answers that by binning
+// every artefact across both packs into one of four buckets:
+//
+//   Aligned             both packs have it AND the shape matches
+//   Declared, not verified   only in pack A (the manifest)
+//   Verified, not declared   only in pack B (live)
+//   Stale declaration   both packs have it but the shapes diverge
+//
+// Convention: Pack A is treated as the manifest ("declared"), Pack B as
+// the live signal ("verified"). The unlock means either pack can be in
+// either slot, but most repo-vs-live flows put the repo pack in A and
+// the MCP-fetched pack in B (that's where the home screen + the cron
+// fetcher both put them).
+//
+// Severity:
+//   - Declared-not-verified on a tier-1 SLI/SLO  → red  (the spec
+//     contractually promised an outcome and we can't see it in live)
+//   - Stale declaration                           → amber
+//   - Everything else                             → neutral
+//
+// Per-finding actions:
+//   - Open      jumps to the layers view + opens the drawer
+//   - Suppress  hides the row from this bucket (persisted via tracePrefs)
+//   - Resolve   marks the row resolved (persisted via tracePrefs)
+
+const TRACE_LAYERS = ['L1', 'L2', 'L2X', 'L3', 'L4', 'L5', 'GOV'];
+
+// Strip volatile fields before comparing two artefacts for shape equality.
+function stripVolatileArt(art) {
+  if (!art || typeof art !== 'object') return art;
+  // _sub is the L4 sub-group marker we added for flattening.
+  // annotations include MCP refresh timestamps and source tags that
+  // legitimately differ between repo and live.
+  const { _sub, annotations, ...rest } = art;
+  return rest;
+}
+
+function artefactsShapeEqual(a, b) {
+  try { return JSON.stringify(stripVolatileArt(a)) === JSON.stringify(stripVolatileArt(b)); }
+  catch (_) { return false; }
+}
+
+// Walk both packs and bin every artefact key into a bucket. The key is
+// `${layer}::${compareKeyOf(art)}` so the same id in two different
+// layers doesn't collide.
+function categorizeTrace(packA, packB) {
+  const buckets = { aligned: [], declaredNotVerified: [], verifiedNotDeclared: [], stale: [] };
+  for (const L of TRACE_LAYERS) {
+    const aItems = layerItemsFor(packA, L);
+    const bItems = layerItemsFor(packB, L);
+    const aMap = new Map();
+    const bMap = new Map();
+    for (const it of aItems) {
+      const k = compareKeyOf(it);
+      if (k) aMap.set(k, it);
+    }
+    for (const it of bItems) {
+      const k = compareKeyOf(it);
+      if (k) bMap.set(k, it);
+    }
+    const allKeys = new Set([...aMap.keys(), ...bMap.keys()]);
+    for (const k of allKeys) {
+      const a = aMap.get(k);
+      const b = bMap.get(k);
+      const findingKey = `${L}::${k}`;
+      const layerTier = packA?.meta?.criticality || packB?.meta?.criticality || 'tier-3';
+      if (a && b) {
+        if (artefactsShapeEqual(a, b)) buckets.aligned.push({ layer: L, key: k, findingKey, a, b, tier: layerTier });
+        else buckets.stale.push({ layer: L, key: k, findingKey, a, b, tier: layerTier });
+      } else if (a) {
+        buckets.declaredNotVerified.push({ layer: L, key: k, findingKey, a, tier: layerTier });
+      } else {
+        buckets.verifiedNotDeclared.push({ layer: L, key: k, findingKey, b, tier: layerTier });
+      }
+    }
+  }
+  return buckets;
+}
+
+// Severity hint for a finding. Tier-1 SLIs/SLOs that are declared but
+// not verified are the red flags. Stale is always amber. Everything
+// else is neutral.
+function traceFindingSeverity(bucket, finding) {
+  if (bucket === 'declaredNotVerified') {
+    if (finding.tier === 'tier-1' && finding.layer === 'L1') return 'red';
+    return 'neutral';
+  }
+  if (bucket === 'stale') return 'amber';
+  return 'neutral';
+}
+
+const BUCKET_META = {
+  aligned:             { label: 'Aligned',                blurb: 'Declared in repo AND shape matches in live. Nothing to do.' },
+  declaredNotVerified: { label: 'Declared, not verified', blurb: 'In the repo manifest but absent from live. Stale spec, or live collection broken.' },
+  verifiedNotDeclared: { label: 'Verified, not declared', blurb: 'Live signal exists with no entry in the repo. Drift or out-of-band telemetry.' },
+  stale:               { label: 'Stale declaration',      blurb: 'Both sides have it, but the live shape diverges from the declared shape. Reconcile.' },
+};
+
+function ensureTracePrefs() {
+  if (!state.tracePrefs || typeof state.tracePrefs !== 'object') state.tracePrefs = { suppressed: [], resolved: [] };
+  if (!Array.isArray(state.tracePrefs.suppressed)) state.tracePrefs.suppressed = [];
+  if (!Array.isArray(state.tracePrefs.resolved))   state.tracePrefs.resolved = [];
+}
+
+function isTraceSuppressed(findingKey) {
+  ensureTracePrefs();
+  return state.tracePrefs.suppressed.includes(findingKey);
+}
+function isTraceResolved(findingKey) {
+  ensureTracePrefs();
+  return state.tracePrefs.resolved.includes(findingKey);
+}
+function toggleTraceSuppressed(findingKey) {
+  ensureTracePrefs();
+  const i = state.tracePrefs.suppressed.indexOf(findingKey);
+  if (i >= 0) state.tracePrefs.suppressed.splice(i, 1);
+  else state.tracePrefs.suppressed.push(findingKey);
+}
+function toggleTraceResolved(findingKey) {
+  ensureTracePrefs();
+  const i = state.tracePrefs.resolved.indexOf(findingKey);
+  if (i >= 0) state.tracePrefs.resolved.splice(i, 1);
+  else state.tracePrefs.resolved.push(findingKey);
+}
+
+function renderTraceabilityView(host) {
+  ensureTracePrefs();
+  const section = document.createElement('section');
+  section.className = 'section trace-view';
+  section.dataset.layer = 'TRACE';
+
+  if (!state.pack || !state.packB) {
+    section.innerHTML = '<div class="placeholder">Load Pack A and Pack B first.</div>';
+    host.appendChild(section);
+    return;
+  }
+
+  const buckets = categorizeTrace(state.pack, state.packB);
+  const suppressedSet = new Set(state.tracePrefs.suppressed);
+  const resolvedSet   = new Set(state.tracePrefs.resolved);
+
+  // Section head with totals.
+  const totalAligned = buckets.aligned.length;
+  const totalDnV     = buckets.declaredNotVerified.length;
+  const totalVnD     = buckets.verifiedNotDeclared.length;
+  const totalStale   = buckets.stale.length;
+  const total        = totalAligned + totalDnV + totalVnD + totalStale;
+  const head = document.createElement('div');
+  head.className = 'section-head';
+  head.innerHTML = `
+    <span class="section-num">TRC</span>
+    <span class="section-name">Traceability · pack A (declared) vs pack B (verified)</span>
+    <span class="section-count">${total} artefact${total === 1 ? '' : 's'}</span>
+  `;
+  section.appendChild(head);
+
+  const lede = document.createElement('div');
+  lede.className = 'trace-lede';
+  lede.innerHTML = `
+    Pack A is treated as the manifest (<em>declared</em>) and Pack B as the live signal (<em>verified</em>).
+    Every artefact lands in one of four buckets; per-row actions persist locally so suppressions and
+    resolutions survive a refresh.
+  `;
+  section.appendChild(lede);
+
+  // Headline cards — one per bucket. Click to scroll to its section.
+  const headlineGrid = document.createElement('div');
+  headlineGrid.className = 'trace-headline-grid';
+  const order = ['aligned', 'declaredNotVerified', 'verifiedNotDeclared', 'stale'];
+  for (const key of order) {
+    const items = buckets[key];
+    const meta  = BUCKET_META[key];
+    const count = items.length;
+    const open  = state.traceOpen?.[key];
+    const card  = document.createElement('button');
+    card.type = 'button';
+    card.className = 'trace-headline trace-headline-' + key;
+    card.dataset.open = String(!!open);
+    card.innerHTML = `
+      <div class="trace-headline-key">${escapeHtml(meta.label)}</div>
+      <div class="trace-headline-count">${count}</div>
+      <div class="trace-headline-blurb">${escapeHtml(meta.blurb)}</div>
+    `;
+    card.onclick = () => {
+      if (!state.traceOpen) state.traceOpen = {};
+      state.traceOpen[key] = !state.traceOpen[key];
+      renderMainView();
+    };
+    headlineGrid.appendChild(card);
+  }
+  section.appendChild(headlineGrid);
+
+  // Per-bucket details. Each finding row carries Open / Suppress / Resolve.
+  for (const key of order) {
+    const items = buckets[key];
+    const meta  = BUCKET_META[key];
+    const open  = !!state.traceOpen?.[key];
+    const block = document.createElement('div');
+    block.className = 'trace-block trace-block-' + key;
+    block.hidden = !open;
+
+    const blockHead = document.createElement('div');
+    blockHead.className = 'trace-block-head';
+    blockHead.innerHTML = `
+      <span class="trace-block-label">${escapeHtml(meta.label)}</span>
+      <span class="trace-block-count">${items.length}</span>
+    `;
+    block.appendChild(blockHead);
+
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'trace-empty';
+      empty.textContent = 'no findings in this bucket';
+      block.appendChild(empty);
+      section.appendChild(block);
+      continue;
+    }
+
+    // Hide suppressed rows by default; reveal under a "show suppressed" toggle.
+    const visible    = items.filter(f => !suppressedSet.has(f.findingKey));
+    const suppressed = items.filter(f =>  suppressedSet.has(f.findingKey));
+
+    const list = document.createElement('div');
+    list.className = 'trace-list';
+    for (const f of visible) list.appendChild(renderTraceRow(key, f, resolvedSet));
+    block.appendChild(list);
+
+    if (suppressed.length) {
+      const sup = document.createElement('details');
+      sup.className = 'trace-suppressed';
+      const sum = document.createElement('summary');
+      sum.textContent = `${suppressed.length} suppressed finding${suppressed.length === 1 ? '' : 's'}`;
+      sup.appendChild(sum);
+      const supList = document.createElement('div');
+      supList.className = 'trace-list trace-list-suppressed';
+      for (const f of suppressed) supList.appendChild(renderTraceRow(key, f, resolvedSet));
+      sup.appendChild(supList);
+      block.appendChild(sup);
+    }
+    section.appendChild(block);
+  }
+
+  host.appendChild(section);
+}
+
+function renderTraceRow(bucketKey, finding, resolvedSet) {
+  const sev = traceFindingSeverity(bucketKey, finding);
+  const resolved = resolvedSet.has(finding.findingKey);
+  const row = document.createElement('div');
+  row.className = 'trace-row';
+  row.dataset.sev = sev;
+  row.dataset.resolved = String(resolved);
+
+  // Side primary — for declaredNotVerified use A, for verifiedNotDeclared use B,
+  // for stale + aligned use A (it's the manifest).
+  const primary = (bucketKey === 'verifiedNotDeclared') ? finding.b : finding.a;
+  const title = primary?.title || primary?.id || primary?.defines || finding.key;
+  const sub   = primary?.desc || primary?.tool || '';
+
+  row.innerHTML = `
+    <div class="trace-row-pill">
+      <span class="trace-row-layer">${escapeHtml(finding.layer)}</span>
+      <span class="trace-row-sev" data-sev="${sev}">${sev === 'red' ? '✕' : sev === 'amber' ? '⚠' : '·'}</span>
+    </div>
+    <div class="trace-row-body">
+      <div class="trace-row-title">${escapeHtml(String(title || finding.key))}</div>
+      <div class="trace-row-sub">${escapeHtml(sub)}</div>
+      <div class="trace-row-key"><code>${escapeHtml(finding.findingKey)}</code></div>
+    </div>
+    <div class="trace-row-actions">
+      <button type="button" class="trace-action" data-act="open" title="Open the artefact drawer on the Layers view">open</button>
+      <button type="button" class="trace-action" data-act="resolve" title="Toggle resolved (persists locally)">${resolved ? '✓ resolved' : 'mark resolved'}</button>
+      <button type="button" class="trace-action" data-act="suppress" title="Hide this finding from the bucket (persists locally)">suppress</button>
+    </div>
+  `;
+
+  row.querySelector('[data-act="open"]').onclick = () => {
+    state.view = 'layers';
+    state.layerFilter = finding.layer === 'L4' ? 'L4' : finding.layer;
+    state.activeLayer = finding.layer;
+    state.activeCardKey = finding.key;
+    renderTabs();
+    renderMainView();
+    // Open the drawer for the artefact if we can find it.
+    const pack = (bucketKey === 'verifiedNotDeclared') ? state.packB : state.pack;
+    const items = layerItemsFor(pack, finding.layer);
+    const art = items.find(it => compareKeyOf(it) === finding.key);
+    if (art) {
+      const layerDef = LAYER_DEFS.find(d => d.id === finding.layer) || { id: finding.layer };
+      try { openDrawer(art, layerDef, null); } catch (_) {}
+    }
+  };
+  row.querySelector('[data-act="resolve"]').onclick = () => { toggleTraceResolved(finding.findingKey); renderMainView(); };
+  row.querySelector('[data-act="suppress"]').onclick = () => { toggleTraceSuppressed(finding.findingKey); renderMainView(); };
+  return row;
 }
 
 function renderCompareView(view) {
@@ -2028,9 +2626,25 @@ function renderCompareColumn(label, cls, items, def, inBothPairs = null) {
 // ---------- atlas view ----------
 
 async function loadPackB() {
-  if (!state.compareBId) { state.packB = null; return; }
+  if (!state.compareBId) {
+    state.packB = null;
+    state.conformanceB = null;
+    state.compileCatalogB = null;
+    state.compileContentB = null;
+    return;
+  }
   const q = state.compareBEnv ? `?env=${encodeURIComponent(state.compareBEnv)}` : '';
-  state.packB = await api(`/api/packs/${encodeURIComponent(state.compareBId)}${q}`);
+  // Fetch pack + conformance in parallel so flipping focus to B is
+  // instant (no extra network round-trip).
+  const [pack, conformance] = await Promise.all([
+    api(`/api/packs/${encodeURIComponent(state.compareBId)}${q}`),
+    api(`/api/packs/${encodeURIComponent(state.compareBId)}/conformance${q}`).catch(() => null),
+  ]);
+  state.packB = pack;
+  state.conformanceB = conformance;
+  // Reset cached compile state for B so first-visit re-fetches.
+  state.compileCatalogB = null;
+  state.compileContentB = null;
 }
 
 function renderAtlasView(view) {
@@ -2752,6 +3366,7 @@ async function handleFile(file) {
     state.mode = 'single';
     applyModeChrome();
     renderPackSelect();
+    renderPackBSelect();
     renderEnvSelect();
     renderMeta();
     renderTabs();
@@ -2799,6 +3414,7 @@ async function refresh() {
     state.compileContent = null;
     renderEnvSelect();
     renderPackSelect();
+    renderPackBSelect();
     renderMeta();
     renderTabs();
     renderMainView();
@@ -2818,6 +3434,27 @@ async function boot() {
 
   setupUpload();
   setupTheme();
+  // Eagerly fetch /api/examples so the Pack B picker has the archived
+  // reference packs available even before the user visits the home
+  // examples disclosure. AWAITED so the persistence rehydrate below can
+  // validate saved pack IDs against the merged catalog ∪ examples set.
+  await loadAndCacheExamples();
+  // Wire the Pack B "×" clear button.
+  $('#pack-b-clear')?.addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    state.compareBId = null; state.compareBEnv = null;
+    state.packB = null; state.diff = null;
+    // Drop B's parallel state slots + reset focus to A.
+    state.conformanceB = null;
+    state.compileCatalogB = null;
+    state.compileContentB = null;
+    state.viewFocus = 'a';
+    if (state.view === 'compare' || state.view === 'atlas') state.view = 'layers';
+    applyModeChrome();
+    renderPackBSelect();
+    renderTabs();
+    renderMainView();
+  });
   setupMcpPanel();
   setupCrawlPanel();
   setupDraftFromMcpPanel();
@@ -2836,8 +3473,12 @@ async function boot() {
     if (state.mode !== 'home' && state.activeLayer === 'COMPILE') renderMainView();
   });
 
-  // Land on the empty home screen — user picks Analyze or Compare.
-  goHome();
+  // Try to rehydrate from the previous session before falling back to
+  // home. Persistence stays suspended until rehydrate finishes so the
+  // boot-time mutations don't fire `schedule()` writes.
+  const restored = await rehydrateFromPersistence();
+  persistence.resume();
+  if (!restored) goHome();
 }
 
 // ============================================================
@@ -2851,8 +3492,24 @@ function goHome() {
   state.diff = null;
   state.compileCatalog = null;
   state.compileContent = null;
+  // Going home is the user saying "start over" — clear the persisted
+  // pack/compare-B IDs so the next reload doesn't re-enter analyze mode.
+  state.selectedPackId = null;
+  state.selectedEnv = null;
+  state.compareBId = null;
+  state.compareBEnv = null;
+  state.conformanceB = null;
+  state.compileCatalogB = null;
+  state.compileContentB = null;
+  state.viewFocus = 'a';
+  // Reset view so the next pack lands on the default browse, not on
+  // whatever the previous session left selected (e.g. Compile, which
+  // would be weird with no pack loaded yet).
+  state.view = 'layers';
+  state.layerFilter = 'all';
   applyModeChrome();
   renderHomeView();
+  persistence.schedule();
 }
 
 function enterAnalyzeMode(packId, env) {
@@ -2893,6 +3550,16 @@ function applyModeChrome() {
   const envSel  = $('#env-select')?.parentElement;
   if (packSel) packSel.hidden = isHome;
   if (envSel)  envSel.hidden  = isHome;
+  // Pack B picker stays visible whenever we're not on home — empty until
+  // the user picks something. This is the unlock: no more rigid single
+  // vs compare mode.
+  const packBCtrl = $('#ctrl-pack-b');
+  const envBCtrl  = $('#ctrl-env-b');
+  if (packBCtrl) packBCtrl.hidden = isHome;
+  if (envBCtrl)  envBCtrl.hidden  = isHome || !state.packB;
+  // Clear-B button only when B is loaded.
+  const clearB = $('#pack-b-clear');
+  if (clearB) clearB.hidden = !state.packB;
   const meta = $('#meta');   if (meta) meta.hidden = isHome;
   const tabs = $('#layer-tabs'); if (tabs) tabs.hidden = isHome;
 }
@@ -3032,6 +3699,17 @@ function renderHomeView() {
 
   // Examples list — fetched lazily so an empty catalog doesn't block paint.
   loadAndRenderHomeExamples();
+}
+
+async function loadAndCacheExamples() {
+  if (state._examplesCache?.length) return state._examplesCache;
+  try {
+    const r = await api('/api/examples');
+    state._examplesCache = r.examples || [];
+    // Re-render the Pack B picker so the newly available options appear.
+    renderPackBSelect();
+  } catch (_) { state._examplesCache = []; }
+  return state._examplesCache;
 }
 
 async function loadAndRenderHomeExamples() {
@@ -3220,6 +3898,7 @@ async function refreshLive() {
       // Refresh the catalog so the production-live entry's ok-state updates.
       await loadCatalog();
       renderPackSelect();
+    renderPackBSelect();
     }
   } catch (e) {
     setRefreshStatus(`error: ${e.message}`, 'error');
@@ -3615,6 +4294,7 @@ async function adoptCrawlResult() {
     state.mode = 'single';
     applyModeChrome();
     renderPackSelect();
+    renderPackBSelect();
     renderEnvSelect();
     renderMeta();
     renderTabs();
@@ -4186,6 +4866,7 @@ async function adoptDraftFromMcpResult() {
     state.mode = 'single';
     applyModeChrome();
     renderPackSelect();
+    renderPackBSelect();
     renderEnvSelect();
     renderMeta();
     renderTabs();
