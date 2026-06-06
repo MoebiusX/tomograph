@@ -110,7 +110,22 @@ function check(file) {
     try { parsed = JSON.parse(json); } catch (e) { parsed = null; }
     assert(!!parsed, 'grafana-dashboard JSON parses');
     if (parsed) {
-      assert(parsed.schemaVersion >= 30, 'grafana schemaVersion >= 30', parsed.schemaVersion, '>= 30');
+      // The schema's documented floor is 30 (legacy Grafana 9 era).
+      // Spec-mandated support window today is Grafana 12 / 13. Bundled
+      // packs declare their own schemaVersion when they need an older
+      // installation supported; when they don't, the compiler emits 41+
+      // (Grafana 12 baseline).
+      assert(parsed.schemaVersion >= 30, 'grafana schemaVersion meets schema floor (≥30)', parsed.schemaVersion, '≥ 30');
+      if (file.id === 'demo-skeleton') {
+        assert(parsed.schemaVersion >= 41,
+               'default schemaVersion targets Grafana 12+ when pack does not pin one',
+               parsed.schemaVersion, '≥ 41');
+      }
+      if (file.id === 'target-advanced') {
+        assert(parsed.schemaVersion === 41,
+               'target-advanced dashboards pin Grafana 12 schemaVersion (41)',
+               parsed.schemaVersion, 41);
+      }
       assert(parsed.uid?.startsWith('obs-pack-'), 'grafana uid prefixed obs-pack-');
       assert(Array.isArray(parsed.panels), 'grafana panels is an array');
       assert(parsed.tags?.includes('observability-pack'), 'grafana dashboard tagged observability-pack');

@@ -8,7 +8,7 @@
 //   prometheus-rules   Prometheus recording + multi-window burn-rate alerts
 //   otel-collector     OTel Collector config (receivers/processors/exporters)
 //   alertmanager       Alertmanager route tree + receivers
-//   grafana-dashboard  Grafana 11 dashboard JSON (one pack section per call)
+//   grafana-dashboard  Grafana 12/13 dashboard JSON (one pack section per call)
 //
 // Pure ESM, browser-friendly. No Node APIs.
 //
@@ -448,8 +448,22 @@ export function compileOtelCollector(canonical) {
 }
 
 // ============================================================
-// 4) Grafana 11 dashboard JSON — one per dashboards[] entry
+// 4) Grafana dashboard JSON — one per dashboards[] entry.
+//
+// Target: Grafana 12 / 13 (the spec's required-support floor). The
+// default schemaVersion is GRAFANA_DEFAULT_SCHEMA_VERSION below; packs
+// MAY pin their own via `dashboards[].provider.schemaVersion` (the
+// schema floor is 30, so older Grafana installs still validate) but
+// the compiler's default emits a dashboard whose schema lines up with
+// Grafana 12's migration table and is forward-compatible with 13.
+//
+// Panel format pinned to features stable across 12 → 13:
+//   - datasource as `{type, uid}` (object form, mandatory since v10)
+//   - fieldConfig.defaults.thresholds in `mode: 'absolute'` with steps
+//   - timeseries options/legend in the post-v10 shape
 // ============================================================
+
+const GRAFANA_DEFAULT_SCHEMA_VERSION = 41;   // Grafana 12.x baseline
 
 export function compileGrafanaDashboard(canonical, dashboardId) {
   const dash = (canonical?.spec?.dashboards || []).find(d => d.id === dashboardId);
@@ -566,7 +580,7 @@ export function compileGrafanaDashboard(canonical, dashboardId) {
     description: `Compiled from ${nameOf(canonical)} pack. Do not hand-edit — re-emit from the pack.`,
     tags: ['observability-pack', svcS],
     timezone: 'browser',
-    schemaVersion: dash.provider?.schemaVersion ?? 39,
+    schemaVersion: dash.provider?.schemaVersion ?? GRAFANA_DEFAULT_SCHEMA_VERSION,
     version: 1,
     refresh: '30s',
     time: { from: 'now-6h', to: 'now' },
