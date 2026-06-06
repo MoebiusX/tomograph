@@ -383,6 +383,112 @@ function filterPromRulesScope(yamlText, scope) {
   return header + emitYaml(obj);
 }
 
+// ----------------------------------------------------------------
+// POST /api/packs/:id/deploy-bulk — multi-artefact deploy.
+// Body: {
+//   mcpUrl, mcpAuth?,
+//   targetProduct, targetVersion, targetFolder?,
+//   items: [{ group, flavor?, artifact?, dashboardId?, scope? }, ...]
+// }
+// Iterates items, compiling each via compileArtifact() and pushing
+// to the MCP tool the dispatcher chooses based on group + flavor.
+// Returns per-item ok/error so the UI can show partial success
+// instead of failing the whole batch.
+// ----------------------------------------------------------------
+app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
+  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
+  const body = req.body || {};
+  const mcpUrl  = typeof body.mcpUrl  === 'string' ? body.mcpUrl.trim() : '';
+  const mcpAuth = typeof body.mcpAuth === 'string' ? body.mcpAuth : null;
+  const product = (typeof body.targetProduct === 'string' && body.targetProduct.trim()) ? body.targetProduct.trim() : 'grafana';
+  const version = (typeof body.targetVersion === 'string' && body.targetVersion.trim()) ? body.targetVersion.trim() : '12';
+  const folder  = typeof body.targetFolder === 'string' ? body.targetFolder.trim() : '';
+  const items = Array.isArray(body.items) ? body.items : null;
+  const env = readEnv(req.query);
+
+  if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  if (!items || items.length === 0) return res.status(400).json({ ok: false, error: 'items array required and must be non-empty' });
+  if (!DEPLOY_PRODUCTS.includes(product)) return res.status(400).json({ ok: false, error: `unsupported target product: ${product}` });
+  if (!DEPLOY_VERSIONS[product]?.includes(version)) return res.status(400).json({ ok: false, error: `unsupported ${product} version: ${version}` });
+
+  const t0 = Date.now();
+  const canonical = loadPackFile(meta.path);
+  const { canonical: overlaid } = overlaidCanonical(canonical, env);
+
+  // Map item.group → legacy target id used by defaultDeployTool.
+  const targetFor = (group) => {
+    if (group === 'rules') return 'prometheus-rules';
+    if (group === 'dashboards') return 'grafana-dashboard';
+    return group;
+  };
+
+  const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth });
+  await rpc('initialize', {
+    protocolVersion: '2025-06-18',
+    capabilities: {},
+    clientInfo: { name: 'observabilitypack-studio-deploy-bulk', version: '0.3.0' },
+  }).catch(() => {});
+
+  const results = [];
+  process.stderr.write(`[deploy-bulk] ${meta.id} -> ${mcpUrl} (${items.length} item${items.length === 1 ? '' : 's'}, ${product} ${version})\n`);
+
+  for (const item of items) {
+    const itStart = Date.now();
+    const itemTarget = targetFor(item.group);
+    try {
+      const compiled = compileArtifact(overlaid, {
+        group: item.group,
+        flavor: item.flavor,
+        artifact: item.artifact || 'all',
+        dashboardId: item.dashboardId,
+      });
+      const scope = item.scope || (itemTarget === 'prometheus-rules' ? 'both' : undefined);
+      const tool = defaultDeployTool({ product, target: itemTarget, scope });
+      if (!tool) {
+        results.push({ item, ok: false, error: `no default deploy tool for (${product}, ${itemTarget})`, tookMs: Date.now() - itStart });
+        continue;
+      }
+      // Filter rules to scope if applicable.
+      const payload = (itemTarget === 'prometheus-rules' && scope && scope !== 'both')
+        ? filterPromRulesScope(compiled.content, scope)
+        : compiled.content;
+      const result = await callTool(tool, {
+        payload,
+        content_type: compiled.contentType,
+        environment: env || undefined,
+        filename: compiled.filename,
+        pack_source: `${meta.id}@${overlaid?.metadata?.version || '?'}`,
+        target: itemTarget,
+        target_product: product,
+        target_version: version,
+        scope,
+        folder: folder || undefined,
+        artifact_group: item.group,
+        artifact_flavor: item.flavor,
+        artifact_id: item.artifact,
+      });
+      results.push({ item, ok: true, tool, bytes: payload.length, tookMs: Date.now() - itStart, result });
+    } catch (e) {
+      results.push({ item, ok: false, error: e.message, tookMs: Date.now() - itStart });
+    }
+  }
+  const totalMs = Date.now() - t0;
+  const okCount = results.filter(r => r.ok).length;
+  const failCount = results.length - okCount;
+  process.stderr.write(`[deploy-bulk]   done in ${totalMs}ms: ${okCount} ok / ${failCount} failed\n`);
+  res.status(failCount > 0 && okCount === 0 ? 502 : 200).json({
+    ok: failCount === 0,
+    results,
+    summary: { total: results.length, ok: okCount, failed: failCount },
+    targetProduct: product,
+    targetVersion: version,
+    targetFolder: folder || null,
+    env,
+    tookMs: totalMs,
+  });
+});
+
 app.post('/api/packs/:id/deploy/:target', async (req, res) => {
   const meta = PACK_CATALOG.find(p => p.id === req.params.id);
   if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });

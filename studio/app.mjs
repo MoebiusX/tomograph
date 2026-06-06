@@ -855,20 +855,7 @@ function renderCompileView(host) {
   dl.href = URL.createObjectURL(blob);
 
   const deployBtn = actions.querySelector('#deploy-compiled');
-  if (deployBtn) deployBtn.onclick = () => {
-    deployPanel.hidden = !deployPanel.hidden;
-    if (!deployPanel.hidden) {
-      // Prefill from persisted state.
-      const urlInput = deployPanel.querySelector('#deploy-mcp-url');
-      if (urlInput && !urlInput.value) {
-        const saved = (() => { try { return localStorage.getItem('mcpUrl'); } catch { return null; } })();
-        urlInput.value = saved || state.mcpStatus?.url || '';
-      }
-      const toolInput = deployPanel.querySelector('#deploy-mcp-tool');
-      if (toolInput && !toolInput.value) toolInput.value = computeDeployTool(state.compileTarget);
-      urlInput?.focus();
-    }
-  };
+  if (deployBtn) deployBtn.onclick = () => openDeployModal({ packId: state.selectedPackId });
 
   // Live re-derive the default tool name as the user changes product /
   // version / scope. We DON'T overwrite a user-typed override — only when
@@ -1196,6 +1183,9 @@ function renderComparePackHeader(side, pack, diffMeta) {
       <button class="cpc-action-btn" data-action="coverage" title="Show coverage breakdown by layer + sub-bucket">
         <span class="cpc-action-icon">∑</span> coverage
       </button>
+      <button class="cpc-action-btn cpc-action-deploy" data-action="deploy" title="Open the deploy modal scoped to this pack">
+        <span class="cpc-action-icon">↑</span> deploy
+      </button>
     </div>
   `;
   // Wire the action buttons. Evaluate opens the maturity popover;
@@ -1204,6 +1194,12 @@ function renderComparePackHeader(side, pack, diffMeta) {
   if (evalBtn) evalBtn.onclick = (e) => { e.stopPropagation(); openMaturityPopover(side, pack, card); };
   const covBtn = card.querySelector('[data-action="coverage"]');
   if (covBtn) covBtn.onclick = (e) => { e.stopPropagation(); openCoveragePopover(side, pack, card); };
+  const depBtn = card.querySelector('[data-action="deploy"]');
+  if (depBtn) depBtn.onclick = (e) => {
+    e.stopPropagation();
+    const packId = (side === 'a') ? state.selectedPackId : state.compareBId;
+    openDeployModal({ packId });
+  };
   return card;
 }
 
@@ -2649,6 +2645,7 @@ async function boot() {
   setupMcpPanel();
   setupCrawlPanel();
   setupDraftFromMcpPanel();
+  setupDeployModal();
 
   // Initial live-status load + 60s soft-refresh of the badge so "3m ago"
   // ticks forward without manual reload.
@@ -3229,6 +3226,383 @@ async function adoptCrawlResult() {
 const draftMcpState = {
   lastResult: null,
 };
+
+// ============================================================
+// Deploy modal — full per-artefact picker. Replaces the inline
+// deploy panel that used to live below the compile output.
+//
+// Drives off /api/packs/:id/compile-catalog to enumerate every
+// individually deployable artefact in the active pack, surfaces a
+// type-filter row (Alert rule / Recording rule / Dashboard) +
+// per-row checkboxes, and POSTs to /api/packs/:id/deploy-bulk
+// with the selected items.
+// ============================================================
+
+const DEPLOY_PROFILES_KEY = 'deployProfiles.v1';
+
+const deployModalState = {
+  manifest: null,        // [{id, type, name, group, flavor, artifact, dashboardId, scope}]
+  packId: null,
+  selected: new Set(),
+  inflight: false,
+};
+
+function setupDeployModal() {
+  const modal = $('#deploy-modal');
+  if (!modal) return;
+  $('#deploy-modal-close').onclick   = () => closeDeployModal();
+  $('#deploy-modal-cancel').onclick  = () => closeDeployModal();
+  $('#deploy-modal-go').onclick      = () => doDeployBulk();
+
+  $('#deploy-profile-save').onclick  = () => saveDeployProfile();
+  $('#deploy-profile-delete').onclick = () => deleteDeployProfile();
+  $('#deploy-target-profile').onchange = () => loadDeployProfile($('#deploy-target-profile').value);
+
+  // Recompute the target summary line on any target field change.
+  for (const id of ['deploy-target-profile','deploy-target-url','deploy-target-folder','deploy-target-product','deploy-target-version','deploy-target-mcp']) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input',  updateDeployTargetSummary);
+    if (el) el.addEventListener('change', updateDeployTargetSummary);
+  }
+
+  // Pack picker rebuilds the manifest.
+  $('#deploy-source-pack').onchange = () => loadDeployManifest($('#deploy-source-pack').value);
+
+  // Type filter checkboxes hide rows.
+  $('#deploy-type-filters').addEventListener('change', () => renderDeployManifestTable());
+
+  // Manifest toolbar
+  $('#deploy-manifest-toggle').onchange = (e) => bulkSelectVisibleManifest(e.target.checked);
+  $('#deploy-manifest-all').onclick     = () => bulkSelectVisibleManifest(true);
+  $('#deploy-manifest-none').onclick    = () => bulkSelectVisibleManifest(false);
+
+  // Esc closes
+  modal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDeployModal(); });
+}
+
+function openDeployModal({ packId, packLabel } = {}) {
+  const modal = $('#deploy-modal');
+  if (!modal) return;
+  if (!state.deployMatrix) loadDeployMatrix().then(() => populateDeployTargetSelects());
+  else populateDeployTargetSelects();
+  populateDeploySourcePackSelect(packId || state.selectedPackId);
+  populateDeployProfileSelect();
+  modal.hidden = false;
+  modal.focus?.();
+  $('#deploy-modal-status').textContent = '';
+  $('#deploy-modal-result').hidden = true;
+  loadDeployManifest(packId || state.selectedPackId);
+  updateDeployTargetSummary();
+}
+
+function closeDeployModal() {
+  const modal = $('#deploy-modal');
+  if (modal) modal.hidden = true;
+}
+
+function populateDeployTargetSelects() {
+  const matrix = state.deployMatrix || { products: ['grafana'], versions: { grafana: ['12', '13'] } };
+  const prodSel = $('#deploy-target-product');
+  prodSel.innerHTML = matrix.products.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+  prodSel.value = state.deployProduct || matrix.products[0];
+  const verSel = $('#deploy-target-version');
+  const versions = matrix.versions[prodSel.value] || ['12'];
+  verSel.innerHTML = versions.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+  verSel.value = state.deployVersion || versions[0];
+}
+
+function populateDeploySourcePackSelect(activeId) {
+  const sel = $('#deploy-source-pack');
+  sel.innerHTML = '';
+  for (const p of (state.catalog || [])) {
+    if (!p.ok) continue;
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = `${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`;
+    sel.appendChild(opt);
+  }
+  sel.value = activeId || state.selectedPackId;
+}
+
+function updateDeployTargetSummary() {
+  const prof = $('#deploy-target-profile').selectedOptions?.[0]?.textContent?.trim() || '(no profile)';
+  const url  = $('#deploy-target-url').value.trim() || '—';
+  const prod = $('#deploy-target-product').value || '—';
+  const ver  = $('#deploy-target-version').value || '—';
+  $('#deploy-target-summary').textContent = `Target: ${prof}  |  ${prod} ${ver}  |  ${url}`;
+}
+
+// ----- Profiles in localStorage -----
+
+function loadDeployProfiles() {
+  try { return JSON.parse(localStorage.getItem(DEPLOY_PROFILES_KEY) || '{}'); }
+  catch { return {}; }
+}
+function saveDeployProfiles(profiles) {
+  try { localStorage.setItem(DEPLOY_PROFILES_KEY, JSON.stringify(profiles)); } catch (_) {}
+}
+function populateDeployProfileSelect() {
+  const sel = $('#deploy-target-profile');
+  const profiles = loadDeployProfiles();
+  sel.innerHTML = '<option value="">(no profile — fill manually)</option>'
+    + Object.keys(profiles).sort().map(k => `<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`).join('');
+}
+function loadDeployProfile(name) {
+  if (!name) return;
+  const p = loadDeployProfiles()[name];
+  if (!p) return;
+  $('#deploy-target-url').value     = p.targetUrl || '';
+  $('#deploy-target-folder').value  = p.folder || '';
+  $('#deploy-target-product').value = p.product || 'grafana';
+  $('#deploy-target-version').value = p.version || '12';
+  $('#deploy-target-mcp').value     = p.mcpUrl || '';
+  updateDeployTargetSummary();
+}
+function saveDeployProfile() {
+  const name = prompt('Profile name (e.g. "Prod Grafana"):', $('#deploy-target-profile').selectedOptions?.[0]?.value || '');
+  if (!name) return;
+  const profiles = loadDeployProfiles();
+  profiles[name] = {
+    targetUrl: $('#deploy-target-url').value.trim(),
+    folder:    $('#deploy-target-folder').value.trim(),
+    product:   $('#deploy-target-product').value,
+    version:   $('#deploy-target-version').value,
+    mcpUrl:    $('#deploy-target-mcp').value.trim(),
+  };
+  saveDeployProfiles(profiles);
+  populateDeployProfileSelect();
+  $('#deploy-target-profile').value = name;
+  updateDeployTargetSummary();
+  toast(`Saved deploy profile: ${name}`);
+}
+function deleteDeployProfile() {
+  const name = $('#deploy-target-profile').value;
+  if (!name) return;
+  if (!confirm(`Delete deploy profile "${name}"?`)) return;
+  const profiles = loadDeployProfiles();
+  delete profiles[name];
+  saveDeployProfiles(profiles);
+  populateDeployProfileSelect();
+  toast(`Deleted profile: ${name}`);
+}
+
+// ----- Manifest (per-artefact rows) -----
+
+async function loadDeployManifest(packId) {
+  deployModalState.packId = packId;
+  deployModalState.selected = new Set();
+  const tbody = $('#deploy-manifest-tbody');
+  tbody.innerHTML = '<tr><td colspan="5" class="placeholder">Loading manifest…</td></tr>';
+  try {
+    const params = new URLSearchParams();
+    if (state.selectedEnv) params.set('env', state.selectedEnv);
+    const cat = await api(`/api/packs/${encodeURIComponent(packId)}/compile-catalog?${params}`);
+    deployModalState.manifest = catalogToManifest(cat);
+    // Default-select all deployable rows.
+    for (const row of deployModalState.manifest) {
+      if (row.deployable) deployModalState.selected.add(row.key);
+    }
+    renderDeployManifestTable();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="error">Could not load manifest: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+// Map a compile catalog (groups → items) to a flat manifest with
+// per-row deploy semantics. Rules' per-SLO items expand into separate
+// recording + alerting rows so the type filter is meaningful.
+function catalogToManifest(catalog) {
+  const out = [];
+  for (const g of (catalog.groups || [])) {
+    const deployable = g.flavors?.some(f => f.deployable);
+    if (g.id === 'rules') {
+      // Per-SLO items: each becomes TWO rows (recording + alerting).
+      // The 'all' bundle becomes one row of each flavor as well.
+      for (const it of g.items) {
+        if (it.kind === 'rules-slo') {
+          out.push({
+            key: `rules:recording:slo:${it.sloId}`,
+            type: 'recording',
+            name: `${it.label} (recording rules)`,
+            id: it.sloId,
+            group: 'rules', flavor: 'prometheus', artifact: `slo:${it.sloId}`, scope: 'recording',
+            deployable, source: 'Repo',
+          });
+          out.push({
+            key: `rules:alert:slo:${it.sloId}`,
+            type: 'alert',
+            name: `${it.label} (burn-rate alerts)`,
+            id: it.sloId,
+            group: 'rules', flavor: 'prometheus', artifact: `slo:${it.sloId}`, scope: 'alerting',
+            deployable, source: 'Repo',
+          });
+        } else if (it.kind === 'rules-declared') {
+          out.push({
+            key: `rules:recording:declared:${it.ruleIndex}`,
+            type: 'recording',
+            name: it.label,
+            id: it.ruleName || it.id,
+            group: 'rules', flavor: 'prometheus', artifact: `declared:${it.ruleIndex}`, scope: 'recording',
+            deployable, source: 'Repo',
+          });
+        }
+      }
+    } else if (g.id === 'dashboards') {
+      for (const it of g.items) {
+        if (it.kind !== 'dashboard') continue;
+        out.push({
+          key: `dashboards:${it.dashboardId}`,
+          type: 'dashboard',
+          name: it.label,
+          id: it.dashboardId,
+          subtitle: it.subtitle,
+          group: 'dashboards', flavor: 'grafana', dashboardId: it.dashboardId,
+          deployable, source: 'Repo',
+        });
+      }
+    }
+    // pipelines + alertmanager are excluded from the Grafana deploy
+    // surface — they're emitted by compile but not deployable here.
+  }
+  return out;
+}
+
+function renderDeployManifestTable() {
+  const tbody = $('#deploy-manifest-tbody');
+  const types = new Set([...document.querySelectorAll('#deploy-type-filters input:checked')].map(i => i.value));
+  const rows = (deployModalState.manifest || []).filter(r => types.has(r.type));
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="placeholder">No artefacts of the selected types in this pack.</td></tr>';
+    updateManifestCounter(0, 0);
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `
+    <tr class="${deployModalState.selected.has(r.key) ? 'is-checked' : ''}" data-key="${escapeHtml(r.key)}">
+      <td class="deploy-col-check"><input type="checkbox" ${deployModalState.selected.has(r.key) ? 'checked' : ''}></td>
+      <td><span class="type-pill type-pill-${escapeHtml(r.type)}">${escapeHtml(r.type === 'recording' ? 'Recording rule' : r.type === 'alert' ? 'Alert rule' : 'Dashboard')}</span></td>
+      <td><code>${escapeHtml(r.id)}</code></td>
+      <td>${escapeHtml(r.name)}</td>
+      <td><span class="source-chip" data-source="${escapeHtml(r.source)}">${escapeHtml(r.source)}</span></td>
+    </tr>
+  `).join('');
+  // Per-row toggle
+  tbody.querySelectorAll('tr').forEach(tr => {
+    const cb = tr.querySelector('input[type=checkbox]');
+    cb.onchange = () => {
+      const k = tr.dataset.key;
+      if (cb.checked) deployModalState.selected.add(k);
+      else deployModalState.selected.delete(k);
+      tr.classList.toggle('is-checked', cb.checked);
+      updateManifestCounter(rows.filter(r => deployModalState.selected.has(r.key)).length, rows.length);
+    };
+  });
+  updateManifestCounter(rows.filter(r => deployModalState.selected.has(r.key)).length, rows.length);
+}
+
+function bulkSelectVisibleManifest(checked) {
+  const types = new Set([...document.querySelectorAll('#deploy-type-filters input:checked')].map(i => i.value));
+  for (const r of (deployModalState.manifest || [])) {
+    if (!types.has(r.type)) continue;
+    if (checked) deployModalState.selected.add(r.key);
+    else deployModalState.selected.delete(r.key);
+  }
+  renderDeployManifestTable();
+}
+
+function updateManifestCounter(selected, total) {
+  $('#deploy-manifest-counter').textContent = `${selected} of ${total} artefact${total === 1 ? '' : 's'} selected`;
+  const goBtn = $('#deploy-modal-go');
+  if (goBtn) goBtn.disabled = selected === 0;
+  const toggle = $('#deploy-manifest-toggle');
+  if (toggle) {
+    toggle.checked = total > 0 && selected === total;
+    toggle.indeterminate = selected > 0 && selected < total;
+  }
+}
+
+async function doDeployBulk() {
+  if (deployModalState.inflight) return;
+  const url  = $('#deploy-target-mcp').value.trim();
+  const auth = $('#deploy-target-auth').value;
+  const folder = $('#deploy-target-folder').value.trim();
+  const product = $('#deploy-target-product').value;
+  const version = $('#deploy-target-version').value;
+  const statusEl = $('#deploy-modal-status');
+  const setStatus = (msg, kind) => {
+    statusEl.textContent = msg;
+    statusEl.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
+  };
+  if (!url) { setStatus('mcp url required', 'error'); return; }
+  if (deployModalState.selected.size === 0) { setStatus('select at least one artefact', 'error'); return; }
+
+  const items = [...deployModalState.selected].map(k => {
+    const row = (deployModalState.manifest || []).find(r => r.key === k);
+    return row && {
+      group:       row.group,
+      flavor:      row.flavor,
+      artifact:    row.artifact,
+      dashboardId: row.dashboardId,
+      scope:       row.scope,
+    };
+  }).filter(Boolean);
+
+  deployModalState.inflight = true;
+  const goBtn = $('#deploy-modal-go');
+  goBtn.disabled = true;
+  setStatus(`deploying ${items.length} artefact${items.length === 1 ? '' : 's'}…`);
+
+  try {
+    const qs = new URLSearchParams();
+    if (state.selectedEnv) qs.set('env', state.selectedEnv);
+    const path = `/api/packs/${encodeURIComponent(deployModalState.packId)}/deploy-bulk?${qs}`;
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mcpUrl: url, mcpAuth: auth || undefined,
+        targetProduct: product, targetVersion: version, targetFolder: folder || undefined,
+        items,
+      }),
+    });
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    if (!ct.includes('application/json')) {
+      setStatus(`server returned ${r.status} ${ct || 'no content-type'}`, 'error');
+      return;
+    }
+    const body = JSON.parse(raw);
+    if (body.summary) {
+      const { ok, failed, total } = body.summary;
+      setStatus(`${ok}/${total} deployed in ${body.tookMs}ms · ${failed} failed`, failed === 0 ? 'ok' : 'error');
+    }
+    renderDeployBulkResult(body);
+  } catch (e) {
+    setStatus(`error: ${e.message}`, 'error');
+  } finally {
+    deployModalState.inflight = false;
+    goBtn.disabled = false;
+  }
+}
+
+function renderDeployBulkResult(body) {
+  const el = $('#deploy-modal-result');
+  el.hidden = false;
+  const rows = (body.results || []).map(r => `
+    <tr class="${r.ok ? 'is-ok' : 'is-err'}">
+      <td>${r.ok ? '✓' : '✗'}</td>
+      <td><code>${escapeHtml(r.item?.group || '')}/${escapeHtml(r.item?.artifact || '')}</code></td>
+      <td>${r.ok ? `${r.bytes || 0} b · ${r.tool || ''}` : escapeHtml(r.error || 'failed')}</td>
+      <td>${r.tookMs || 0} ms</td>
+    </tr>
+  `).join('');
+  el.innerHTML = `
+    <h4>Deploy result</h4>
+    <table class="deploy-result-table">
+      <thead><tr><th></th><th>Artefact</th><th>Detail</th><th>Took</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
 
 function setupDraftFromMcpPanel() {
   const btn = $('#draft-mcp-btn');

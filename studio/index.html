@@ -107,6 +107,116 @@
   <div id="drawer-a-panels"></div>
 </aside>
 
+<div class="deploy-modal" id="deploy-modal" role="dialog" aria-labelledby="deploy-modal-title" hidden>
+  <div class="deploy-modal-head">
+    <div class="deploy-modal-title">
+      <span class="deploy-modal-arrow">↑</span>
+      <h2 id="deploy-modal-title"><em>Deploy to Grafana</em></h2>
+    </div>
+    <button class="drawer-close" id="deploy-modal-close" type="button" aria-label="Close deploy modal">esc</button>
+  </div>
+  <p class="deploy-modal-lede">Select artefacts and target, then deploy to a Grafana instance.</p>
+
+  <div class="deploy-modal-body">
+    <!-- Target section -->
+    <section class="deploy-section">
+      <div class="deploy-section-head">TARGET</div>
+      <div class="deploy-field-grid">
+        <label class="deploy-field">
+          <span class="deploy-field-key">Target profile</span>
+          <select id="deploy-target-profile"></select>
+        </label>
+        <label class="deploy-field deploy-field-actions">
+          <span class="deploy-field-key">&nbsp;</span>
+          <span class="deploy-profile-actions">
+            <button id="deploy-profile-save" type="button" class="ctrl-btn" title="Save current target settings as a profile">save</button>
+            <button id="deploy-profile-delete" type="button" class="ctrl-btn" title="Delete the selected profile">delete</button>
+          </span>
+        </label>
+      </div>
+      <label class="deploy-field">
+        <span class="deploy-field-key">Target URL</span>
+        <input id="deploy-target-url" type="url" placeholder="https://grafana.example.net" autocomplete="off">
+      </label>
+      <div class="deploy-field-grid">
+        <label class="deploy-field">
+          <span class="deploy-field-key">Auth <em>(user:password or token, not persisted)</em></span>
+          <input id="deploy-target-auth" type="password" placeholder="bearer token" autocomplete="off">
+        </label>
+        <label class="deploy-field">
+          <span class="deploy-field-key">Grafana folder</span>
+          <input id="deploy-target-folder" type="text" placeholder="observability-pack" autocomplete="off">
+        </label>
+      </div>
+      <div class="deploy-field-grid">
+        <label class="deploy-field">
+          <span class="deploy-field-key">Product</span>
+          <select id="deploy-target-product"></select>
+        </label>
+        <label class="deploy-field">
+          <span class="deploy-field-key">Version</span>
+          <select id="deploy-target-version"></select>
+        </label>
+        <label class="deploy-field">
+          <span class="deploy-field-key">MCP URL <em>(the gateway, not Grafana directly)</em></span>
+          <input id="deploy-target-mcp" type="url" placeholder="https://your-mcp.example.com/observability" autocomplete="off">
+        </label>
+      </div>
+      <div class="deploy-section-foot" id="deploy-target-summary">Target: —</div>
+    </section>
+
+    <!-- Source pack + type filters -->
+    <section class="deploy-section">
+      <div class="deploy-section-head">SOURCE PACK &amp; ARTEFACT TYPES</div>
+      <label class="deploy-field">
+        <span class="deploy-field-key">Pack</span>
+        <select id="deploy-source-pack"></select>
+      </label>
+      <div class="deploy-type-filters" id="deploy-type-filters">
+        <label class="deploy-type-checkbox"><input type="checkbox" value="alert"     checked><span class="type-pill type-pill-alert">Alert rule</span></label>
+        <label class="deploy-type-checkbox"><input type="checkbox" value="recording" checked><span class="type-pill type-pill-recording">Recording rule</span></label>
+        <label class="deploy-type-checkbox"><input type="checkbox" value="dashboard" checked><span class="type-pill type-pill-dashboard">Dashboard</span></label>
+      </div>
+    </section>
+
+    <!-- Manifest preview -->
+    <section class="deploy-section">
+      <div class="deploy-section-head deploy-manifest-head">
+        MANIFEST PREVIEW
+        <span class="deploy-manifest-counter" id="deploy-manifest-counter">0 of 0 artefacts selected</span>
+      </div>
+      <div class="deploy-manifest-toolbar">
+        <button id="deploy-manifest-all"  type="button" class="ctrl-btn">select all</button>
+        <button id="deploy-manifest-none" type="button" class="ctrl-btn">clear</button>
+      </div>
+      <div class="deploy-manifest-wrap">
+        <table class="deploy-manifest-table" id="deploy-manifest-table">
+          <thead>
+            <tr>
+              <th class="deploy-col-check"><input type="checkbox" id="deploy-manifest-toggle" aria-label="Select all"></th>
+              <th>Type</th>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody id="deploy-manifest-tbody">
+            <tr><td colspan="5" class="placeholder">Pick a pack to see its artefacts.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div class="deploy-modal-actions">
+    <span id="deploy-modal-status" class="mcp-refresh-status"></span>
+    <button id="deploy-modal-cancel" type="button" class="ctrl-btn">cancel</button>
+    <button id="deploy-modal-go"     type="button" class="mcp-refresh-btn"><span class="deploy-go-icon">↑</span> Deploy</button>
+  </div>
+
+  <div class="deploy-modal-result" id="deploy-modal-result" hidden></div>
+</div>
+
 <div class="crawl-panel" id="draft-mcp-panel" role="dialog" aria-labelledby="draft-mcp-panel-title" hidden>
   <div class="crawl-panel-head">
     <div id="draft-mcp-panel-title" class="mcp-panel-title">Draft a pack from a live MCP server</div>
