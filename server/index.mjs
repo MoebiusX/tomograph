@@ -30,6 +30,7 @@ import express from 'express';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { parse as parseYaml, emit as emitYaml } from '../tools/lib/mini-yaml.mjs';
 import { adapt, listEnvironments, applyEnvironmentOverlay } from '../tools/lib/adapter.mjs';
 import { validateCanonical, SPEC_VERSION } from '../tools/lib/validator.mjs';
@@ -132,19 +133,26 @@ function slugify(s) {
     .slice(0, 40) || 'pack';
 }
 
-function shortHash() {
-  // Deterministic-enough id without crypto. We just need uniqueness within
-  // the process lifetime; six hex chars give us 16M slots.
-  let h = 0;
-  for (const _ of Array(8)) h = (h * 31 + Math.floor(Math.random() * 1e9)) | 0;
-  return Math.abs(h).toString(16).padStart(6, '0').slice(0, 6);
+// Deterministic content hash — same canonical → same id across restarts,
+// engineers, and environments. The first 8 hex chars of SHA-256 over the
+// JSON.stringify of the canonical pack object. 8 chars = 32 bits = ~4B
+// slots, comfortably collision-free for the demo's 20-pack cap. Run-time
+// annotations (metadata.annotations.mcp.refreshedAt etc.) ARE included in
+// the hash on purpose — two packs that differ only in their refreshedAt
+// timestamp are genuinely different snapshots and deserve distinct ids.
+function contentHash(canonical) {
+  const json = JSON.stringify(canonical || {});
+  return createHash('sha256').update(json).digest('hex').slice(0, 8);
 }
 
 function registerUploadedPack(canonical, source) {
   const slug = slugify(canonical?.metadata?.name || source || 'pack');
-  // Append a short suffix so two uploads with the same metadata.name don't
-  // overwrite each other.
-  const id = `uploaded-${slug}-${shortHash()}`;
+  const id = `uploaded-${slug}-${contentHash(canonical)}`;
+  // Idempotent: if the same canonical content was already registered,
+  // delete + re-insert refreshes its LRU position without minting a new
+  // id. That makes re-upload safe (no duplicate entries) AND keeps the
+  // user's pick alive when they're actively working with that pack.
+  if (UPLOADED_PACKS.has(id)) UPLOADED_PACKS.delete(id);
   UPLOADED_PACKS.set(id, { canonical, source: source || 'upload', createdAt: Date.now() });
   // Evict the oldest if we've blown the cap.
   while (UPLOADED_PACKS.size > MAX_UPLOADS) {
