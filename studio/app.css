@@ -557,6 +557,22 @@ a:hover { color: var(--ink); }
 .crawl-result-actions .mcp-refresh-btn {
   background: var(--BLD); border-color: var(--BLD);
 }
+.draft-mcp-tools {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  font: 10.5px/1.5 var(--mono);
+}
+.draft-mcp-tool {
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  background: var(--code-bg);
+  color: var(--ink-3);
+}
+.draft-mcp-tool.is-ok {
+  background: var(--ok-bg, #E8F4ED); color: var(--ok-text, #166534);
+}
+.draft-mcp-tool.is-failed {
+  background: var(--err-bg, #FBEAE9); color: var(--err-text, #991B1B);
+}
 @media (max-width: 880px) {
   .crawl-result-grid { grid-template-columns: 1fr; }
   .crawl-result-yaml, .crawl-result-side { max-height: 300px; }

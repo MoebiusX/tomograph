@@ -457,6 +457,29 @@ try {
   assert(shell.includes('id="crawl-dropzone"'), 'shell includes the dropzone');
   assert(shell.includes('id="crawl-btn"'), 'shell includes the "new from repo" button');
 
+  // Shell carries the Path B "new from live" surface (Phase 7n)
+  assert(shell.includes('id="draft-mcp-panel"'), 'shell includes #draft-mcp-panel');
+  assert(shell.includes('id="draft-mcp-btn"'), 'shell includes the "new from live" button');
+  assert(shell.includes('id="draft-mcp-go-btn"'), 'shell includes the draft submit button');
+
+  // /api/draft-from-mcp — empty body
+  const draftEmpty = await fetch(`${base}/api/draft-from-mcp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert(draftEmpty.status === 400, 'POST /api/draft-from-mcp without mcpUrl → 400');
+  const draftEmptyBody = await draftEmpty.json();
+  assert(/mcpUrl/.test(draftEmptyBody.error || ''),
+         'draft-from-mcp 400 mentions mcpUrl');
+
+  // /api/draft-from-mcp — unreachable MCP returns 502 with JSON
+  const draftBad = await fetch(`${base}/api/draft-from-mcp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no-mcp' }),
+  });
+  assert(draftBad.status === 502, 'POST /api/draft-from-mcp unreachable → 502');
+  assert((draftBad.headers.get('content-type') || '').includes('application/json'),
+         'draft-from-mcp 502 is JSON');
+
   // /lib/* — shared crawler + YAML library exposed to the browser so it
   // can do classification BEFORE blasting a 3000-file repo at the
   // server. Same module the CLI + server use.
@@ -497,6 +520,8 @@ try {
   assert(js.includes('LAYER_DEFS'), '/app.mjs served');
   assert(js.includes('setupCrawlPanel'), '/app.mjs wires setupCrawlPanel');
   assert(js.includes('renderCrawlResult'), '/app.mjs ships renderCrawlResult');
+  assert(js.includes('setupDraftFromMcpPanel'), '/app.mjs wires setupDraftFromMcpPanel (Phase 7n)');
+  assert(js.includes('renderDraftMcpResult'), '/app.mjs ships renderDraftMcpResult');
   const atlasJs = await getText(base, '/atlases.mjs');
   // The full atlas roster is restored as of Phase 7h.
   for (const fn of ['renderStrata', 'renderPeriodic', 'renderConstellation', 'renderSkyline', 'renderTransit', 'renderArbor']) {

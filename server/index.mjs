@@ -540,6 +540,107 @@ app.get('/api/live-status', (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------
+// POST /api/draft-from-mcp — Path B of the pack-creation journey.
+//
+// Parallel to POST /api/crawl, but the source is a live MCP server
+// instead of a repo file map. Builds a canonical v1.2 pack from what
+// the MCP can attest to (system_health, system_topology, baselines,
+// active anomalies) and returns it for review WITHOUT writing it to
+// disk. The studio shows the preview + summary; "use this pack"
+// round-trips it through /api/validate just like the crawler flow.
+//
+// Body: { mcpUrl, mcpAuth?, packName? }
+// Response: { ok, canonical, canonicalYaml, summary, validation,
+//             conformance, annotations, tookMs }
+// ----------------------------------------------------------------
+app.post('/api/draft-from-mcp', async (req, res) => {
+  const body = req.body || {};
+  const mcpUrl  = typeof body.mcpUrl  === 'string' && body.mcpUrl.trim() ? body.mcpUrl.trim() : null;
+  const mcpAuth = typeof body.mcpAuth === 'string' && body.mcpAuth ? body.mcpAuth : null;
+  const packName = typeof body.packName === 'string' && body.packName.trim()
+    ? body.packName.trim()
+    : null;
+  if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+
+  const t0 = Date.now();
+  try {
+    process.stderr.write(`[draft-from-mcp] POST -> ${mcpUrl}\n`);
+    const fetched = await fetchMcp({ mcpUrl, mcpAuth });
+    const refreshedAt = new Date().toISOString();
+    const pack = buildCanonicalPack({ refreshedAt, mcpUrl, packName, ...fetched });
+    const errors = validateCanonical(pack, SCHEMA);
+
+    // Build a discovery summary in the same shape the crawler returns,
+    // so the client can render BOTH path A and path B drafts with the
+    // same review component.
+    const ann = pack.metadata?.annotations || {};
+    const summary = {
+      source: 'mcp',
+      mcpUrl,
+      refreshedAt,
+      discovered: {
+        backends:        Number(ann['mcp.servicesDiscovered'] || 0),
+        toolsCalled:    (ann['mcp.toolsCalled']    || '').split(',').filter(Boolean),
+        toolsFailed:    (ann['mcp.toolsFailed']    || '').split(',').filter(Boolean),
+        activeAnomalies: Number(ann['mcp.activeAnomalies'] || 0),
+      },
+      warnings: [],
+      tier: pack.metadata?.bindings?.criticality || 'tier-3',
+    };
+    if ((summary.discovered.toolsFailed || []).length) {
+      summary.warnings.push(`MCP tools that failed: ${summary.discovered.toolsFailed.join(', ')}`);
+    }
+    if (!pack.spec?.slis || pack.spec.slis.length === 0) {
+      summary.warnings.push('MCP doesn\'t expose SLI definitions — the draft pack has no SLIs/SLOs. Add them by hand or merge with a repo-derived draft via Path A.');
+    }
+    if (!pack.spec?.dashboards || pack.spec.dashboards.length === 0) {
+      summary.warnings.push('No dashboards inferred from live state. If the platform serves Grafana, declare them in the pack and re-deploy from there.');
+    }
+
+    const conformance = evaluateConformance(pack);
+    const canonicalYaml = banner(pack) + emitYaml(pack);
+    process.stderr.write(`[draft-from-mcp]   ok in ${Date.now() - t0}ms; ` +
+      `valid=${errors.length === 0}; ` +
+      `services=${summary.discovered.backends}; ` +
+      `failed=${summary.discovered.toolsFailed.join(',') || 'none'}\n`);
+
+    res.json({
+      ok: true,
+      canonical: pack,
+      canonicalYaml,
+      summary,
+      annotations: ann,
+      validation: { ok: errors.length === 0, errors },
+      conformance,
+      tookMs: Date.now() - t0,
+    });
+  } catch (e) {
+    process.stderr.write(`[draft-from-mcp]   error in ${Date.now() - t0}ms: ${e.message}\n`);
+    res.status(502).json({ ok: false, error: e.message, tookMs: Date.now() - t0 });
+  }
+});
+
+function banner(pack) {
+  return [
+    `# =============================================================================`,
+    `# ObservabilityPack: ${pack.metadata?.name || 'unnamed'}  (drafted from live MCP)`,
+    `# Source         : ${pack.metadata?.annotations?.['mcp.url'] || 'unknown'}`,
+    `# Drafted at     : ${pack.metadata?.annotations?.['mcp.refreshedAt'] || new Date().toISOString()}`,
+    `# Tools called   : ${pack.metadata?.annotations?.['mcp.toolsCalled']    || '(none)'}`,
+    `# Tools failed   : ${pack.metadata?.annotations?.['mcp.toolsFailed']    || 'none'}`,
+    `# Services found : ${pack.metadata?.annotations?.['mcp.servicesDiscovered'] || 0}`,
+    `# -----------------------------------------------------------------------------`,
+    `# This is a DRAFT. The MCP can attest to what's live (backends, topology,`,
+    `# baselines, active anomalies). It CANNOT supply your declared SLIs/SLOs,`,
+    `# dashboards, policy, or remediation — those belong in the pack you author or`,
+    `# crawl from the repo. Merge this draft with a repo-derived draft to get a`,
+    `# tier-2-complete pack.`,
+    `# =============================================================================`,
+    '',
+  ].join('\n');
+}
+
 app.post('/api/refresh-live', async (req, res) => {
   const body = req.body || {};
   const mcpUrl = typeof body.mcpUrl === 'string' && body.mcpUrl.trim() ? body.mcpUrl.trim() : null;

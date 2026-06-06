@@ -2204,6 +2204,7 @@ async function boot() {
   setupTheme();
   setupMcpPanel();
   setupCrawlPanel();
+  setupDraftFromMcpPanel();
 
   // Initial live-status load + 60s soft-refresh of the badge so "3m ago"
   // ticks forward without manual reload.
@@ -2766,6 +2767,181 @@ async function adoptCrawlResult() {
     renderMainView();
     $('#crawl-panel').hidden = true;
     toast(`Loaded crawled draft for ${out.canonical.metadata.name}`);
+  } catch (e) {
+    toast(`Adopt failed: ${e.message}`, 'error');
+  }
+}
+
+// ============================================================
+// Draft-from-MCP panel — Path B of pack creation.
+//
+// Parallel to the crawler (Path A). The SRE enters their MCP URL,
+// optionally an auth token, and a pack name; the server hits the
+// MCP, builds a canonical pack from what the MCP can attest to, and
+// returns it for review. Adoption round-trips through /api/validate
+// like every other pack path.
+// ============================================================
+
+const draftMcpState = {
+  lastResult: null,
+};
+
+function setupDraftFromMcpPanel() {
+  const btn = $('#draft-mcp-btn');
+  if (!btn) return;
+  const panel    = $('#draft-mcp-panel');
+  const closeBtn = $('#draft-mcp-panel-close');
+  const goBtn    = $('#draft-mcp-go-btn');
+  const resetBtn = $('#draft-mcp-reset-btn');
+  const resultCloseBtn = $('#draft-mcp-result-close');
+  const adoptBtn = $('#draft-mcp-adopt-btn');
+
+  btn.onclick = () => {
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) {
+      // Pre-fill URL from the same localStorage slot the MCP refresh
+      // panel uses, so the SRE doesn't have to retype.
+      const urlInput = $('#draft-mcp-url');
+      if (!urlInput.value) {
+        try { urlInput.value = localStorage.getItem('mcpUrl') || ''; } catch (_) {}
+      }
+      urlInput.focus();
+    }
+  };
+  closeBtn.onclick = () => { panel.hidden = true; };
+  resultCloseBtn.onclick = () => { $('#draft-mcp-result').hidden = true; };
+  resetBtn.onclick = () => {
+    $('#draft-mcp-url').value = '';
+    $('#draft-mcp-auth').value = '';
+    $('#draft-mcp-name').value = '';
+    $('#draft-mcp-result').hidden = true;
+    $('#draft-mcp-status').textContent = '';
+    draftMcpState.lastResult = null;
+  };
+  goBtn.onclick = () => doDraftFromMcp();
+  adoptBtn.onclick = () => adoptDraftFromMcpResult();
+}
+
+async function doDraftFromMcp() {
+  const url  = $('#draft-mcp-url').value.trim();
+  const auth = $('#draft-mcp-auth').value;
+  const name = $('#draft-mcp-name').value.trim();
+  const statusEl = $('#draft-mcp-status');
+  const setStatus = (msg, kind) => {
+    statusEl.textContent = msg;
+    statusEl.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
+  };
+  if (!url) { setStatus('mcp url required', 'error'); return; }
+  try { localStorage.setItem('mcpUrl', url); } catch (_) {}
+
+  const goBtn = $('#draft-mcp-go-btn');
+  goBtn.disabled = true;
+  setStatus('contacting mcp…');
+  $('#draft-mcp-result').hidden = true;
+
+  try {
+    const r = await fetch('/api/draft-from-mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined, packName: name || undefined }),
+    });
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    if (!ct.includes('application/json')) {
+      setStatus(`server returned ${r.status} ${ct || 'no content-type'} — restart \`npm run dev\` if you just changed server code`, 'error');
+      return;
+    }
+    const out = JSON.parse(raw);
+    if (!out.ok) { setStatus(`error: ${out.error || 'unknown'}`, 'error'); return; }
+    draftMcpState.lastResult = out;
+    renderDraftMcpResult(out);
+    setStatus(`drafted in ${out.tookMs}ms · ${out.summary.discovered.backends} backend(s) discovered`, 'ok');
+  } catch (e) {
+    setStatus(`error: ${e.message}`, 'error');
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+function renderDraftMcpResult(out) {
+  const resBox = $('#draft-mcp-result');
+  resBox.hidden = false;
+
+  $('#draft-mcp-result-sub').textContent =
+    `${out.canonical.metadata.name} · ${out.canonical.metadata.bindings?.criticality || 'tier-3'} · MCP @ ${out.summary.mcpUrl}`;
+  $('#draft-mcp-result-yaml').textContent = out.canonicalYaml;
+
+  // Validation
+  const v = out.validation;
+  $('#draft-mcp-result-validation').innerHTML = `
+    <h4>schema validation</h4>
+    ${v.ok
+      ? `<div class="crawl-pill crawl-pill-ok">✓ valid v1.2</div>`
+      : `<div class="crawl-pill crawl-pill-err">✗ ${v.errors.length} schema error(s)</div>
+         <ul class="crawl-result-errs">${v.errors.slice(0, 8).map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`}
+  `;
+
+  // Discovery summary
+  const d = out.summary.discovered;
+  $('#draft-mcp-result-summary').innerHTML = `
+    <h4>what the MCP attested</h4>
+    <table class="crawl-summary-table">
+      <tr><td>backends</td><td>${d.backends}</td></tr>
+      <tr><td>active anomalies</td><td>${d.activeAnomalies}</td></tr>
+      <tr><td>MCP tools called</td><td>${(d.toolsCalled || []).length}</td></tr>
+    </table>
+    <div class="crawl-inferred">
+      <em>refreshed</em>: ${escapeHtml(out.summary.refreshedAt)}
+    </div>
+  `;
+
+  // Warnings
+  const w = out.summary.warnings || [];
+  $('#draft-mcp-result-warnings').innerHTML = w.length
+    ? `<h4>what to refine</h4><ul class="crawl-warnings">${w.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>`
+    : `<h4>what to refine</h4><div class="crawl-pill crawl-pill-ok">nothing flagged</div>`;
+
+  // Tools chip
+  const tools = d.toolsCalled || [];
+  const fails = d.toolsFailed || [];
+  $('#draft-mcp-result-tools').innerHTML = `
+    <h4>mcp tools</h4>
+    <div class="draft-mcp-tools">
+      ${tools.map(t => `<code class="draft-mcp-tool ${fails.includes(t) ? 'is-failed' : 'is-ok'}">${escapeHtml(t)}</code>`).join(' ')}
+      ${tools.length === 0 ? '<em class="crawl-staged-empty">no tools called</em>' : ''}
+    </div>
+  `;
+
+  // Download link
+  const dl = $('#draft-mcp-download-btn');
+  const blob = new Blob([out.canonicalYaml], { type: 'application/x-yaml' });
+  if (dl.href.startsWith('blob:')) URL.revokeObjectURL(dl.href);
+  dl.href = URL.createObjectURL(blob);
+  dl.download = `${out.canonical.metadata.name}.pack.yaml`;
+}
+
+async function adoptDraftFromMcpResult() {
+  const out = draftMcpState.lastResult;
+  if (!out) return;
+  try {
+    const res = await validateUploaded(out.canonicalYaml, 'application/x-yaml', state.selectedEnv);
+    if (!res.ok) {
+      toast(`Could not adopt — ${res.errors.length} validation error(s)`, 'error');
+      return;
+    }
+    state.pack = res.adapted;
+    state.conformance = res.conformance;
+    state.symbolTable = buildSymbolTable(res.adapted);
+    state.uploadedSource = `${out.canonical.metadata.name} (live draft)`;
+    state.activeLayer = 'L1';
+    state.activeCardKey = null;
+    renderPackSelect();
+    renderEnvSelect();
+    renderMeta();
+    renderTabs();
+    renderMainView();
+    $('#draft-mcp-panel').hidden = true;
+    toast(`Loaded live draft for ${out.canonical.metadata.name}`);
   } catch (e) {
     toast(`Adopt failed: ${e.message}`, 'error');
   }
