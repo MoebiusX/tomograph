@@ -2,7 +2,7 @@ apiVersion: observability.platform/v1
 kind: ObservabilityPack
 metadata:
   name: production-live
-  version: 0.29679241.0
+  version: 0.29679243.0
   owners:
     - mcp-fetcher
   bindings:
@@ -11,21 +11,21 @@ metadata:
       - prod
     criticality: tier-2
   annotations:
-    mcp.refreshedAt: 2026-06-06T14:01:23.023Z
+    mcp.refreshedAt: 2026-06-06T14:03:23.036Z
     mcp.url: https://www.krystaline.io/mcp/public
-    mcp.toolsCalled: system_health,system_topology,anomalies_active,anomalies_baselines
-    mcp.toolsFailed: ''
-    mcp.probesAttempted: metric_names,scrape_configs,alert_rules,dashboards,recording_rules
+    mcp.toolsCalled: system_health,system_topology,anomalies_baselines
+    mcp.toolsFailed: anomalies_active
+    mcp.probesAttempted: scrape_configs,metric_names,recording_rules,alert_rules,dashboards
     mcp.probesSucceeded: ''
     mcp.servicesDiscovered: kx-exchange,kx-matcher,kx-wallet
     mcp.baselinesComputed: "0"
-    mcp.activeAnomalies: "10"
-    mcp.verified.otel: 2026-06-06T14:01:23.023Z
-    mcp.verified.telemetry.backends.metrics-prom: 2026-06-06T14:01:23.023Z
-    mcp.verified.slis.kx_exchange_availability: 2026-06-06T14:01:23.023Z
-    mcp.verified.slis.kx_matcher_availability: 2026-06-06T14:01:23.023Z
-    mcp.verified.slis.kx_wallet_availability: 2026-06-06T14:01:23.023Z
-    mcp.verified.baselines: 2026-06-06T14:01:23.023Z
+    mcp.activeAnomalies: "0"
+    mcp.verified.otel: 2026-06-06T14:03:23.036Z
+    mcp.verified.telemetry.backends.metrics-prom: 2026-06-06T14:03:23.036Z
+    mcp.verified.slis.kx_exchange_availability: 2026-06-06T14:03:23.036Z
+    mcp.verified.slis.kx_matcher_availability: 2026-06-06T14:03:23.036Z
+    mcp.verified.slis.kx_wallet_availability: 2026-06-06T14:03:23.036Z
+    mcp.verified.baselines: 2026-06-06T14:03:23.036Z
 spec:
   otel:
     semconv: 1.27.0
