@@ -61,6 +61,13 @@ async function api(path, opts = {}) {
     const body = await r.text().catch(() => '');
     throw new Error(`${r.status} ${r.statusText} on ${path}${body ? ': ' + body.slice(0, 200) : ''}`);
   }
+  // Some routes might be missing on a stale server, returning an HTML
+  // fallback even at 200. Sniff the content-type first.
+  const ct = r.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    const body = await r.text().catch(() => '');
+    throw new Error(`${path}: server returned non-JSON (${ct || 'no content-type'}, ${r.status}). Restart \`npm run dev\` if the route is new.${body ? '\n' + body.slice(0, 200) : ''}`);
+  }
   return r.json();
 }
 
@@ -246,7 +253,11 @@ function renderTabs() {
   }
   if (state.catalog.filter(p => p.ok).length >= 2) {
     const def = COMPARE_TAB;
-    const label = state.diff ? `${state.diff.summary.inBoth}/${state.diff.summary.union}` : 'pick';
+    // state.diff may be null (not yet loaded), {error: '...'} (fetch
+    // failed — e.g. stale dev server without /api/diff), or the real
+    // result. Guard against the error shape.
+    const sum = state.diff?.summary;
+    const label = sum ? `${sum.inBoth}/${sum.union}` : (state.diff?.error ? 'err' : 'pick');
     tabs.appendChild(renderTab(def, label, true));
     const aDef = ATLAS_TAB;
     tabs.appendChild(renderTab(aDef, state.atlasVariant, true));
@@ -516,7 +527,13 @@ async function loadDiff() {
   if (state.selectedEnv) params.set('aEnv', state.selectedEnv);
   if (state.compareBEnv) params.set('bEnv', state.compareBEnv);
   try {
-    state.diff = await api(`/api/diff?${params}`);
+    const result = await api(`/api/diff?${params}`);
+    // Sanity-check the shape so a stale server returning some other JSON
+    // doesn't crash later renderers.
+    if (!result || !result.summary || !result.layers) {
+      throw new Error('server returned an unexpected shape — restart `npm run dev`?');
+    }
+    state.diff = result;
   } catch (e) {
     state.diff = { error: e.message };
   }
@@ -559,7 +576,7 @@ function renderCompareView(view) {
   if (state.diff.error) {
     const err = document.createElement('div');
     err.className = 'error';
-    err.textContent = state.diff.error;
+    err.textContent = `Diff failed: ${state.diff.error}`;
     scaffold.appendChild(err);
     return;
   }
@@ -1583,7 +1600,28 @@ async function refreshLive() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
     });
-    const body = await r.json();
+    // Read as text first so we can surface a useful error if the server
+    // returned HTML (typical when the dev server is stale and the route
+    // doesn't exist yet — Express's default 404 is HTML).
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    let body;
+    if (!ct.includes('application/json')) {
+      const hint = r.status === 404
+        ? 'server returned 404 — does it have /api/refresh-live? Restart `npm run dev`.'
+        : `server returned ${r.status} ${ct || 'no content-type'}`;
+      setRefreshStatus(`error: ${hint}`, 'error');
+      $('#mcp-btn').dataset.mcpState = 'error';
+      console.error('[refresh-live] non-JSON response:', raw.slice(0, 400));
+      return;
+    }
+    try { body = JSON.parse(raw); }
+    catch (e) {
+      setRefreshStatus(`error: malformed JSON response (${e.message})`, 'error');
+      $('#mcp-btn').dataset.mcpState = 'error';
+      console.error('[refresh-live] bad JSON:', raw.slice(0, 400));
+      return;
+    }
     if (!body.ok) {
       setRefreshStatus(`error: ${body.error || 'unknown'}`, 'error');
       $('#mcp-btn').dataset.mcpState = 'error';
