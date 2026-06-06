@@ -44,10 +44,49 @@ async function walk(root) {
   return out;
 }
 
+const USAGE = `\
+crawl-repo — Path A of pack creation.
+
+Walks a service repository and emits a draft canonical ObservabilityPack
+v1.2 manifest by introspecting common observability artefacts.
+
+  Usage:
+    node tools/crawl-repo.mjs <repo-path> [options]
+    npm run crawl -- <repo-path> [options]
+
+  Options:
+    --name <slug>        metadata.name for the draft pack
+                         (default: basename of <repo-path>)
+    --env <name>         environment tag in metadata.bindings.environments
+                         (default: prod)
+    --criticality <t>    tier-1 | tier-2 | tier-3 (default: inferred from
+                         what was discovered in the repo)
+    --binding <name>     metadata.binding (default: otel-elastic-prometheus-grafana)
+    --owners a,b,c       comma-separated metadata.owners list
+                         (default: team-platform)
+    -h, --help           print this message
+
+  Output:
+    stdout — the canonical YAML (pipe to a file or to npm run validate)
+    stderr — a summary of what was discovered, classified, and stubbed
+
+  What gets detected:
+    - docker-compose.yml services → spec.telemetry.backends[]
+    - Prometheus rules files     → spec.queries.recording_rules / policy.burn_rate_alerts
+    - alertmanager.yml           → spec.alerting.routes[]
+    - OTel Collector configs     → spec.pipelines
+    - Grafana dashboard JSONs    → spec.dashboards[]
+
+  Example:
+    npm run crawl -- ./payments-svc --name payments --criticality tier-2 > payments.pack.yaml
+    npm run validate -- payments.pack.yaml      # sanity check the draft
+`;
+
 function parseArgs(argv) {
   const out = { repoPath: null };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
+    if (a === '-h' || a === '--help') { out.help = true; continue; }
     if (!a.startsWith('--') && !out.repoPath) { out.repoPath = a; continue; }
     if (a === '--name')        out.repoName = argv[++i];
     else if (a === '--env')         out.environment = argv[++i];
@@ -60,8 +99,9 @@ function parseArgs(argv) {
 
 async function main() {
   const opts = parseArgs(process.argv);
+  if (opts.help) { process.stdout.write(USAGE); process.exit(0); }
   if (!opts.repoPath) {
-    process.stderr.write('usage: crawl-repo.mjs <path> [--name foo] [--env prod] [--criticality tier-2]\n');
+    process.stderr.write(USAGE);
     process.exit(2);
   }
   const st = await stat(opts.repoPath).catch(() => null);

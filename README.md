@@ -97,15 +97,50 @@ Each layered artefact carries one of three source tags:
 - **Conformance tab** — overall MUST% + SHOULD%; per-dimension pass/fail; full clause list with severity + applies-tier + spec section reference.
 - **Upload** — drag-and-drop a `.yaml` / `.yml` / `.json` pack onto the studio, or click the **upload** button. Goes to `POST /api/validate`; pass → swap in the adapted result; fail → error panel with the validator findings.
 
-## Loading your own packs
+## Creating + loading your own packs
 
-Three ways:
+There are three paths an SRE can take to get a pack in front of the studio:
+
+### Path A — crawl a service repository
+
+Drafts a canonical v1.2 pack from `docker-compose.yml`, Prometheus rules files,
+`alertmanager.yml`, OTel Collector configs, and Grafana dashboard JSONs found
+in the repo. Both forms run the same library:
+
+```bash
+# CLI form — pipe the draft to a file, summary on stderr
+npm run crawl -- path/to/service-repo --name payments --env prod > draft.pack.yaml
+node tools/crawl-repo.mjs path/to/repo --criticality tier-2 --owners team-payments
+
+# Studio form — header → "new from repo" button → drop a folder
+# (the browser pre-classifies files locally so only matched artefacts are sent)
+```
+
+Output is honest about what was discovered vs stubbed: every artefact carries
+an `evidence` pointer back to its source file, and stub sections add a
+warning the engineer should refine. The CLI prints the summary to stderr so
+you can pipe stdout cleanly:
+
+```bash
+npm run crawl -- ./payments-service 2>summary.txt > payments.pack.yaml
+npm run validate -- payments.pack.yaml      # sanity check the draft
+```
+
+### Path B — interrogate a live MCP server
+
+```bash
+MCP_URL=… npm run fetch-live           # writes packs/production-live.pack.yaml
+```
+
+See **MCP integration** below.
+
+### Path C — load a hand-authored pack
 
 1. **Drop a file.** Drag a canonical `.yaml` / `.yml` / `.json` pack anywhere on the studio window (uses `POST /api/validate`).
 2. **Catalog file.** Add to `packs/`, then add an entry to `PACK_CATALOG` in [`server/index.mjs`](server/index.mjs).
 3. **API.** Hit `POST /api/validate` directly with the pack body for headless validation + adaptation.
 
-The CLI variants of the same flow:
+The CLI variants of the validate / adapt flow:
 
 ```bash
 npm run validate -- path/to/pack.yaml
