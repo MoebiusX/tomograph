@@ -44,6 +44,17 @@ const BACKEND_PATTERNS = [
   { match: /^pyroscope|grafana\/pyroscope/i,                              product: 'pyroscope',               signal: 'profiles' },
   { match: /fluent[-/]?bit|fluent-bit/i,                                  product: 'fluent-bit',              signal: 'logs' },
   { match: /timberio\/vector|vector:/i,                                   product: 'vector',                  signal: 'collection' },
+  // Additional common production stacks
+  { match: /victoriametrics\/victoria-metrics|victoriametrics\/vmselect|victoriametrics\/vminsert|victoriametrics\/vmstorage|victoriametrics\/vmagent/i,
+                                                                          product: 'victoriametrics',         signal: 'metrics' },
+  { match: /victoriametrics\/vmalert/i,                                   product: 'vmalert',                 signal: 'alerting' },
+  { match: /kube-state-metrics/i,                                          product: 'kube-state-metrics',      signal: 'metrics' },
+  { match: /prom\/node-exporter|node_exporter/i,                          product: 'node-exporter',           signal: 'metrics' },
+  { match: /grafana\/promtail|promtail:/i,                                product: 'promtail',                signal: 'logs' },
+  { match: /grafana\/k6|loadimpact\/k6/i,                                 product: 'k6',                      signal: 'metrics' },
+  { match: /^otel\/opentelemetry-collector-contrib/i,                     product: 'opentelemetry-collector', signal: 'collection' },
+  { match: /opensearchproject\/opensearch|opensearch:/i,                  product: 'opensearch',              signal: 'logs' },
+  { match: /datadog\/agent|datadoghq\/agent/i,                            product: 'datadog-agent',           signal: 'collection' },
 ];
 
 // ============================================================
@@ -498,11 +509,26 @@ function walkRoute(route, out, receivers) {
   const channels = recv ? receiverChannels(recv) : [];
   if (sev || channels.length) {
     out.push({
-      severity: sev ? sev.toString().toUpperCase() : 'SEV2',
+      severity: normalizeSeverity(sev),
       channels: channels.length ? channels : [{ msteams: `#${recvName || 'oncall'}` }],
     });
   }
   for (const child of route.routes || []) walkRoute(child, out, receivers);
+}
+
+// Map Prometheus / Alertmanager severity labels to the spec v1.2
+// enum: SEV1 (critical) / SEV2 (warning) / SEV3 (info) / SEV4 (debug).
+// If the input already matches SEV1..SEV4, pass through. Common
+// Prometheus conventions map as below.
+function normalizeSeverity(s) {
+  if (!s) return 'SEV2';
+  const up = String(s).toUpperCase();
+  if (/^SEV[1234]$/.test(up)) return up;
+  if (/^(CRITICAL|FATAL|EMERGENCY|PAGE)$/.test(up)) return 'SEV1';
+  if (/^(WARNING|ERROR|MAJOR|HIGH)$/.test(up))      return 'SEV2';
+  if (/^(INFO|NOTICE|MINOR|LOW)$/.test(up))         return 'SEV3';
+  if (/^(DEBUG|TRACE)$/.test(up))                   return 'SEV4';
+  return 'SEV2';
 }
 
 function receiverChannels(recv) {
