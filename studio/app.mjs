@@ -2881,14 +2881,31 @@ function renderDraftMcpResult(out) {
          <ul class="crawl-result-errs">${v.errors.slice(0, 8).map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`}
   `;
 
-  // Discovery summary
+  // Discovery summary — show what the MCP actually attested, not just
+  // raw tool counts. Rows are present only when the value is non-zero
+  // or the probe was attempted (so the SRE sees what was asked vs found).
   const d = out.summary.discovered;
+  const row = (label, value, dim = false) =>
+    `<tr${dim ? ' class="is-dim"' : ''}><td>${escapeHtml(label)}</td><td>${typeof value === 'number' ? value : escapeHtml(String(value))}</td></tr>`;
+  const probesA = new Set(d.probesAttempted || []);
+  const probesS = new Set(d.probesSucceeded || []);
+  const probeRow = (label, key, value) => {
+    if (!probesA.has(key)) return '';
+    const succeeded = probesS.has(key);
+    if (!succeeded) return row(label, '— probed, none found', true);
+    return row(label, value || 0);
+  };
   $('#draft-mcp-result-summary').innerHTML = `
     <h4>what the MCP attested</h4>
     <table class="crawl-summary-table">
-      <tr><td>backends</td><td>${d.backends}</td></tr>
-      <tr><td>active anomalies</td><td>${d.activeAnomalies}</td></tr>
-      <tr><td>MCP tools called</td><td>${(d.toolsCalled || []).length}</td></tr>
+      ${row('services', (d.servicesDiscovered || []).length)}
+      ${row('backends', d.backends)}
+      ${row('active anomalies', d.activeAnomalies)}
+      ${probeRow('recording rules', 'recording_rules', d.recordingRules)}
+      ${probeRow('alert rules',     'alert_rules',     d.alertRules)}
+      ${probeRow('dashboards',      'dashboards',      d.dashboards)}
+      ${probeRow('scrape jobs',     'scrape_configs',  (d.scrapeJobs || []).length)}
+      ${probeRow('metric names',    'metric_names',    d.metricNamesCount)}
     </table>
     <div class="crawl-inferred">
       <em>refreshed</em>: ${escapeHtml(out.summary.refreshedAt)}

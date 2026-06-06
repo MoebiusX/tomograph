@@ -533,6 +533,7 @@ a:hover { color: var(--ink); }
 }
 .crawl-summary-table td:first-child { color: var(--ink-4); }
 .crawl-summary-table td:last-child  { text-align: right; color: var(--ink); font-weight: 600; }
+.crawl-summary-table tr.is-dim td { color: var(--ink-5); font-weight: 400; font-style: italic; }
 .crawl-inferred {
   margin-top: 6px;
   font: italic 11px/1.5 var(--serif);

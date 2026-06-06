@@ -575,27 +575,56 @@ app.post('/api/draft-from-mcp', async (req, res) => {
     // so the client can render BOTH path A and path B drafts with the
     // same review component.
     const ann = pack.metadata?.annotations || {};
+    const probesAttempted = (ann['mcp.probesAttempted'] || '').split(',').filter(Boolean);
+    const probesSucceeded = (ann['mcp.probesSucceeded'] || '').split(',').filter(Boolean);
     const summary = {
       source: 'mcp',
       mcpUrl,
       refreshedAt,
       discovered: {
-        backends:        Number(ann['mcp.servicesDiscovered'] || 0),
+        backends:        (pack.spec?.telemetry?.backends || []).length,
+        servicesDiscovered: (ann['mcp.servicesDiscovered'] || '').split(',').filter(Boolean),
         toolsCalled:    (ann['mcp.toolsCalled']    || '').split(',').filter(Boolean),
         toolsFailed:    (ann['mcp.toolsFailed']    || '').split(',').filter(Boolean),
         activeAnomalies: Number(ann['mcp.activeAnomalies'] || 0),
+        // Probe-discovered facts — counts only, full data lives in the
+        // pack itself (spec.queries.recording_rules etc.)
+        recordingRules:  Number(ann['mcp.discovered.recording_rules'] || (pack.spec?.queries?.recording_rules || []).length),
+        alertRules:      Number(ann['mcp.discovered.alert_rules'] || 0),
+        dashboards:      Number(ann['mcp.discovered.dashboards'] || (pack.spec?.dashboards || []).length),
+        scrapeJobs:     (ann['mcp.discovered.scrape_jobs'] || '').split(',').filter(Boolean),
+        metricNamesCount: Number(ann['mcp.discovered.metric_names_count'] || 0),
+        probesAttempted, probesSucceeded,
       },
       warnings: [],
       tier: pack.metadata?.bindings?.criticality || 'tier-3',
     };
+
+    // Warnings — only flag a gap when we ASKED and got nothing, never
+    // when we never asked. The MCP probe table is the contract for
+    // "what we tried."
     if ((summary.discovered.toolsFailed || []).length) {
       summary.warnings.push(`MCP tools that failed: ${summary.discovered.toolsFailed.join(', ')}`);
     }
-    if (!pack.spec?.slis || pack.spec.slis.length === 0) {
-      summary.warnings.push('MCP doesn\'t expose SLI definitions — the draft pack has no SLIs/SLOs. Add them by hand or merge with a repo-derived draft via Path A.');
+    const attemptedNothing = (k) => probesAttempted.includes(k) && !probesSucceeded.includes(k);
+    if (attemptedNothing('recording_rules')) {
+      summary.warnings.push('Recording-rule probes returned empty. The SLI/SLO sections were synthesised from system_health — if your platform has Prometheus/Mimir rules, the MCP isn\'t exposing them yet.');
     }
-    if (!pack.spec?.dashboards || pack.spec.dashboards.length === 0) {
-      summary.warnings.push('No dashboards inferred from live state. If the platform serves Grafana, declare them in the pack and re-deploy from there.');
+    if (attemptedNothing('alert_rules')) {
+      summary.warnings.push('Alert-rule probes returned empty. Burn-rate alerts are synthesized from SLOs; existing fired alerts couldn\'t be surfaced.');
+    }
+    if (attemptedNothing('dashboards')) {
+      summary.warnings.push('Dashboard probes returned empty. The dashboards section is a stub — point the MCP at Grafana\'s /api/search to populate it.');
+    }
+    if (attemptedNothing('scrape_configs')) {
+      summary.warnings.push('Scrape-config probes returned empty. spec.telemetry.scrape_evidence is unknown — declare scrape jobs in the pack by hand if you can.');
+    }
+    if (attemptedNothing('metric_names')) {
+      summary.warnings.push('Metric-inventory probes returned empty. The metrics actually exported by the platform couldn\'t be enumerated.');
+    }
+    // Hard guards regardless of probes (the live state has to satisfy SOMETHING).
+    if ((pack.spec?.slis || []).length === 0) {
+      summary.warnings.push('No SLIs at all — recording rules + system_health both came up empty.');
     }
 
     const conformance = evaluateConformance(pack);
