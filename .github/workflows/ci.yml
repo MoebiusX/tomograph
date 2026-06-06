@@ -59,6 +59,9 @@ jobs:
       - name: Bundled-pack regression suite (validate + adapt + conformance)
         run: npm run test:packs
 
+      - name: Pack compiler regression suite (Prometheus / OTel / Alertmanager / Grafana)
+        run: npm run test:compile
+
       - name: Server smoke test (start, hit each route, assert)
         run: npm run test:server
 

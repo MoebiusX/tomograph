@@ -37,6 +37,12 @@
   --ATL-tint:  #ECF1F8;
   --ATL-text:  #0F1B2D;
 
+  /* Build / compile accent — terminal green ("the pack is the program") */
+  --BLD:       #047857;
+  --BLD-bg:    #D1FAE5;
+  --BLD-tint:  #ECFDF5;
+  --BLD-text:  #064E3B;
+
   /* Compare bucket palette: A=blue, both=neutral, B=orange — chosen to
      read as "alternatives" rather than "good/bad", since one isn't
      better than the other. */
@@ -106,6 +112,11 @@
   --ATL-bg:    #1A2436;
   --ATL-tint:  #131A28;
   --ATL-text:  #D5DEEB;
+
+  --BLD:       #34D399;
+  --BLD-bg:    #103024;
+  --BLD-tint:  #0B2418;
+  --BLD-text:  #A7F3D0;
 
   --cmp-a:     #5A99D4;  --cmp-a-bg:    #18283A;
   --cmp-b:     #FBBF24;  --cmp-b-bg:    #3A2A10;
@@ -441,6 +452,13 @@ a:hover { color: var(--ink); }
   font-weight: 600;
   font-style: italic;
   text-transform: lowercase;
+}
+.tab[data-layer="COMPILE"] { --accent: var(--BLD); }
+.tab[data-layer="COMPILE"] .tab-count {
+  background: var(--BLD-bg); color: var(--BLD-text);
+  font-weight: 600;
+  text-transform: lowercase;
+  font-family: var(--mono);
 }
 
 /* ===================== LAYER VIEW ===================== */
@@ -1145,7 +1163,312 @@ a:hover { color: var(--ink); }
   accent-color: var(--ATL);
 }
 
-.periodic-gap text { user-select: none; }
+/* ===================== ATLAS · STRATA ===================== */
+.strata-svg { display: block; max-width: 100%; height: auto; cursor: default; }
+.strata-band { cursor: pointer; }
+.strata-band:hover path { stroke-width: 2; }
+.strata-wrap { background: #FAFAF7; padding: 8px 0; border-radius: var(--r-md); }
+[data-theme="dark"] .strata-wrap {
+  /* The strata SVG uses hardcoded light colors (faithful port of the
+     1812-era plate). On dark, give it its own light "paper" panel so the
+     plate reads as the illustration it is. */
+  background: #F6F2E6;
+}
+.strata-legend {
+  margin-top: 10px;
+  padding: 8px 14px;
+  font: 12px/1.55 var(--mono);
+  color: var(--ink-3);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.strata-legend code {
+  background: var(--hover);
+  padding: 1px 5px; border-radius: var(--r-sm);
+  font-size: 11px;
+}
+
+/* ===================== ATLAS · PERIODIC TABLE ===================== */
+.periodic-wrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  background: var(--card);
+}
+.periodic-foot {
+  grid-column: 1 / -1;
+  padding: 12px 14px;
+  font: 12px/1.55 var(--mono);
+  color: var(--ink-4);
+  background: var(--paper);
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+}
+.periodic-foot strong { color: var(--ink-2); font-weight: 600; }
+
+.periodic-side {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--card);
+  overflow: hidden;
+}
+.periodic-head {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+  display: grid; gap: 4px;
+}
+.periodic-head .label {
+  font: 11px/1 var(--mono);
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-4);
+}
+.periodic-head .name {
+  font: 500 17px/1.1 var(--serif);
+  font-style: italic;
+  color: var(--ink);
+}
+.periodic-head .coverage {
+  font: 11px/1.3 var(--mono);
+  color: var(--ink-3);
+}
+.periodic-head .coverage strong {
+  color: var(--ink-2); font-weight: 600;
+}
+
+.periodic-rows { padding: 8px 8px 12px; }
+.periodic-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 8px;
+  align-items: start;
+  margin-bottom: 6px;
+}
+.periodic-row-label {
+  font: 700 12px/1 var(--mono);
+  letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 6px 4px;
+  text-align: right;
+}
+.periodic-row-label .pct {
+  display: block;
+  margin-top: 4px;
+  font: 9px/1 var(--mono);
+  letter-spacing: 0.02em;
+  color: var(--ink-4);
+  text-transform: none;
+}
+.periodic-cells {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
+  gap: 4px;
+}
+
+/* Element-style cell — square with a left source stripe, atomic number top-left,
+   2-letter "symbol" centre, truncated name across the bottom. */
+.pcell {
+  position: relative;
+  display: grid;
+  grid-template-rows: 12px 1fr 14px;
+  align-items: center;
+  justify-items: center;
+  min-height: 58px;
+  padding: 4px 4px 3px 8px;
+  border: 1px solid var(--ink-5);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  text-align: center;
+  transition: transform .08s ease-out, box-shadow .08s ease-out;
+}
+.pcell:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(15,27,45,0.10);
+}
+.pcell .pstripe {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 4px;
+  border-top-left-radius: var(--r-sm);
+  border-bottom-left-radius: var(--r-sm);
+}
+.pcell .pnum {
+  justify-self: start;
+  margin-left: 2px;
+  font: 700 9px/1 var(--mono);
+  color: var(--ink-4);
+}
+.pcell .psym {
+  font: 700 18px/1 var(--serif);
+  font-style: normal;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+.pcell .pname {
+  width: 100%;
+  font: 8.5px/1.15 var(--mono);
+  color: var(--ink-4);
+  word-break: break-word;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pcell .pstar {
+  position: absolute;
+  top: 2px; right: 4px;
+  font-size: 9px;
+  color: var(--src-Verified);
+  pointer-events: none;
+}
+
+/* Source-tag tints — subtle background tint that doesn't fight the stripe. */
+.pcell.src-Declared { background: var(--card); }
+.pcell.src-Verified { background: linear-gradient(to bottom right, var(--card) 65%, rgba(6,182,212,0.10)); }
+.pcell.src-Missing  { background: linear-gradient(to bottom right, var(--card) 65%, rgba(220,38,38,0.08)); }
+
+/* Predicted gap: dashed border, no fill, faded text — Mendeleev's hole. */
+.pcell.empty {
+  border-style: dashed;
+  border-color: var(--src-Missing);
+  background: transparent;
+  opacity: 0.85;
+}
+.pcell.empty .pstripe { background: var(--src-Missing); }
+.pcell.empty .psym {
+  color: var(--src-Missing);
+  font-style: italic;
+}
+.pcell.empty .pnum, .pcell.empty .pname { color: var(--src-Missing); opacity: 0.7; }
+
+.pcell.added .pstar { color: var(--src-Verified); }
+
+/* ===================== COMPILE VIEW ===================== */
+.drawer[data-layer="COMPILE"] { --accent: var(--BLD); }
+.compile-view { --accent: var(--BLD); --accent-bg: var(--BLD-bg); --accent-tint: var(--BLD-tint); }
+.compile-view .section-head {
+  border-color: var(--BLD); background: var(--BLD-tint);
+}
+.compile-lede {
+  padding: 12px 18px;
+  border: 1px solid var(--BLD); border-top: none;
+  background: var(--card);
+  font: 13px/1.55 var(--serif);
+  font-style: italic;
+  color: var(--ink-3);
+}
+.compile-lede code {
+  background: var(--BLD-bg);
+  color: var(--BLD-text);
+  padding: 1px 5px; border-radius: var(--r-sm);
+  font: 11px/1.2 var(--mono);
+  font-style: normal;
+}
+
+.compile-targets {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 10px 16px;
+  border: 1px solid var(--BLD); border-top: none;
+  background: var(--paper);
+}
+.compile-target {
+  display: inline-flex; align-items: baseline; gap: 8px;
+  padding: 8px 12px;
+  background: var(--card);
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-family: var(--mono);
+}
+.compile-target:hover { border-color: var(--BLD); color: var(--ink); }
+.compile-target.is-active {
+  background: var(--BLD); color: var(--paper);
+  border-color: var(--BLD);
+}
+.compile-target .ct-label {
+  font-size: 12px; font-weight: 500; letter-spacing: 0.02em;
+}
+.compile-target .ct-ext {
+  font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+  opacity: 0.7;
+}
+.compile-loading {
+  padding: 4px 10px;
+  font: 11px/1.4 var(--mono);
+  color: var(--ink-4);
+}
+
+.compile-subselect {
+  display: flex;
+  padding: 10px 16px;
+  border: 1px solid var(--BLD); border-top: none;
+  background: var(--paper);
+}
+
+.compile-stage {
+  border: 1px solid var(--BLD); border-top: none;
+  background: var(--card);
+  min-height: 480px;
+}
+
+.compile-actions {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line-2);
+  background: var(--paper);
+}
+.compile-meta {
+  display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+  font: 11px/1.3 var(--mono);
+  color: var(--ink-3);
+}
+.compile-meta code {
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--BLD-tint);
+  padding: 2px 6px; border-radius: var(--r-sm);
+  border: 1px solid var(--BLD-bg);
+}
+.compile-meta .muted { color: var(--ink-4); }
+.compile-buttons { display: flex; gap: 8px; }
+.compile-buttons .ctrl-link {
+  text-decoration: none;
+  border-style: solid;
+  background: var(--BLD); color: var(--paper);
+  border-color: var(--BLD);
+}
+.compile-buttons .ctrl-link:hover {
+  background: var(--BLD-text); border-color: var(--BLD-text); color: var(--BLD-bg);
+}
+
+.compile-code-wrap {
+  background: var(--code-bg);
+  overflow: auto;
+  max-height: 70vh;
+}
+.compile-code {
+  margin: 0;
+  padding: 18px 22px;
+  font: 12.5px/1.65 var(--mono);
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  white-space: pre;
+  tab-size: 2;
+}
+/* "language" hints — subtle left rule + label */
+.compile-code::before {
+  content: '';
+  display: block;
+  height: 2px;
+  width: 40px;
+  background: var(--BLD);
+  margin-bottom: 12px;
+}
 
 /* ===================== RESPONSIVE ===================== */
 @media (max-width: 700px) {

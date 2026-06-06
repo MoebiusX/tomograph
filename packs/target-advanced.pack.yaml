@@ -199,7 +199,7 @@ spec:
   # ---------------------------------------------------------------------------
   dashboards:
     - id: edge-service-overview
-      provider: { kind: grafana, version: "11.3", schemaVersion: 39 }
+      provider: { kind: grafana, version: "12.3", schemaVersion: 41 }
       folder: platform-edge
       source: file://dashboards/edge-overview.json
       datasources:
@@ -212,20 +212,20 @@ spec:
         - { panel: slo-gateway-availability, binds_to: slos.gateway_availability_99_9 }
 
     - id: edge-slo-burn
-      provider: { kind: grafana, version: "11.3", schemaVersion: 39 }
+      provider: { kind: grafana, version: "12.3", schemaVersion: 41 }
       folder: platform-edge
       template: ref:platform/slo-burn-template
       params:
         slos: [gateway_availability_99_9, gateway_latency_99_p99_400ms, cache_hit_98, upstream_success_99_95]
 
     - id: edge-deployment
-      provider: { kind: grafana, version: "11.3", schemaVersion: 39 }
+      provider: { kind: grafana, version: "12.3", schemaVersion: 41 }
       folder: platform-edge
       template: ref:platform/deployment-overlay-template
       params: { service: platform-edge }
 
     - id: edge-customer-impact
-      provider: { kind: grafana, version: "11.3", schemaVersion: 39 }
+      provider: { kind: grafana, version: "12.3", schemaVersion: 41 }
       folder: platform-edge
       template: ref:platform/per-tenant-template
       params: { view: golden_signals }

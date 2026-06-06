@@ -134,6 +134,48 @@ try {
   const unknownPack = await fetch(`${base}/api/diff?a=target-advanced&b=nope`);
   assert(unknownPack.status === 404, 'diff with unknown pack id → 404');
 
+  // /api/compile/targets
+  const compTargets = await getJson(base, '/api/compile/targets');
+  assert(Array.isArray(compTargets.targets) && compTargets.targets.length === 4,
+         '/api/compile/targets returns 4 target descriptors');
+  const targetIds = compTargets.targets.map(t => t.id);
+  for (const need of ['prometheus-rules', 'otel-collector', 'alertmanager', 'grafana-dashboard']) {
+    assert(targetIds.includes(need), `compile target catalog includes ${need}`);
+  }
+
+  // /api/packs/:id/compile/prometheus-rules
+  const rulesRes = await fetch(`${base}/api/packs/payment-service/compile/prometheus-rules`);
+  assert(rulesRes.status === 200, 'compile prometheus-rules → 200');
+  const rulesCt = rulesRes.headers.get('content-type') || '';
+  assert(rulesCt.includes('application/x-yaml'), 'rules content-type is yaml', rulesCt, 'application/x-yaml');
+  assert(rulesRes.headers.get('x-pack-source') === 'payment-service@1.5.0',
+         'rules carry X-Pack-Source provenance header');
+  assert(rulesRes.headers.get('x-compile-target') === 'prometheus-rules',
+         'rules carry X-Compile-Target header');
+  const rulesText = await rulesRes.text();
+  assert(rulesText.includes('groups:'),  'rules text contains groups:');
+  assert(rulesText.includes(':ratio_5m'), 'rules emit :ratio_5m records');
+  assert(rulesText.includes('burn_'),     'rules emit burn-rate alerts');
+
+  // /api/packs/:id/compile/grafana-dashboard?dashboardId=...&download=1
+  const dashRes = await fetch(`${base}/api/packs/payment-service/compile/grafana-dashboard?dashboardId=payment-overview&download=1`);
+  assert(dashRes.status === 200, 'grafana dashboard compile → 200');
+  assert((dashRes.headers.get('content-type') || '').includes('application/json'),
+         'dashboard content-type is json');
+  assert((dashRes.headers.get('content-disposition') || '').includes('attachment'),
+         'download=1 returns Content-Disposition: attachment');
+  const dashJson = await dashRes.json();
+  assert(dashJson.schemaVersion >= 30, 'dashboard schemaVersion >= 30');
+  assert(Array.isArray(dashJson.panels), 'dashboard has panels[]');
+
+  // /api/packs/:id/compile/<unknown> → 400
+  const badTarget = await fetch(`${base}/api/packs/payment-service/compile/no-such-target`);
+  assert(badTarget.status === 400, 'unknown compile target → 400');
+
+  // /api/packs/<unknown>/compile/prometheus-rules → 404
+  const badPack = await fetch(`${base}/api/packs/does-not-exist/compile/prometheus-rules`);
+  assert(badPack.status === 404, 'unknown pack on compile → 404');
+
   // /api/maturity-rubric
   const rubric = await getJson(base, '/api/maturity-rubric');
   assert(rubric.specVersion === '1.2', 'rubric specVersion 1.2');
@@ -203,8 +245,10 @@ try {
   const js = await getText(base, '/app.mjs');
   assert(js.includes('LAYER_DEFS'), '/app.mjs served');
   const atlasJs = await getText(base, '/atlases.mjs');
-  assert(atlasJs.includes('renderStrata') && atlasJs.includes('renderArbor'),
-         '/atlases.mjs served with all 6 renderers');
+  // Phase 7c (re-port) ships strata + periodic faithfully. Constellation,
+  // Skyline, Transit, and Arbor return as their own restoration PRs.
+  assert(atlasJs.includes('renderStrata') && atlasJs.includes('renderPeriodic'),
+         '/atlases.mjs served with strata + periodic renderers');
 } finally {
   await new Promise(r => srv.close(r));
 }

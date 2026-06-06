@@ -36,6 +36,7 @@ import { validateCanonical, SPEC_VERSION } from '../tools/lib/validator.mjs';
 import { evaluateConformance, RUBRIC } from '../tools/lib/conformance.mjs';
 import { fetchMcp, buildCanonicalPack } from '../tools/fetch-live-pack.mjs';
 import { diffPacks } from '../tools/lib/diff.mjs';
+import { compile, listTargets } from '../tools/lib/compile.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -212,6 +213,43 @@ app.get('/api/diff', (req, res) => {
     res.json(diffPacks(aLayered, bLayered));
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------- pack compiler ----------
+//
+// The pack is the source of truth; this endpoint emits the real
+// platform artefacts (Prometheus rules, OTel Collector config, etc.)
+// derived from it. Spec §9's reference implementation table made real.
+
+app.get('/api/compile/targets', (req, res) => {
+  res.json({ targets: listTargets() });
+});
+
+app.get('/api/packs/:id/compile/:target', (req, res) => {
+  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
+  try {
+    const canonical = loadPackFile(meta.path);
+    const env = readEnv(req.query);
+    const { canonical: overlaid } = overlaidCanonical(canonical, env);
+    const opts = {
+      dashboardId: typeof req.query.dashboardId === 'string' && req.query.dashboardId
+        ? req.query.dashboardId : undefined,
+    };
+    const out = compile(overlaid, req.params.target, opts);
+    const isDownload = req.query.download === '1';
+    res.setHeader('Content-Type', out.contentType + '; charset=utf-8');
+    if (isDownload) {
+      res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+    } else {
+      res.setHeader('Content-Disposition', `inline; filename="${out.filename}"`);
+    }
+    res.setHeader('X-Pack-Source', `${meta.id}@${canonical?.metadata?.version || '?'}`);
+    res.setHeader('X-Compile-Target', req.params.target);
+    res.send(out.content);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 

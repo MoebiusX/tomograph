@@ -28,6 +28,7 @@ const L4_SUBGROUPS = [
 ];
 
 const CONFORMANCE_TAB = { id: 'CONF',    num: 'CONF', name: 'Conformance' };
+const COMPILE_TAB     = { id: 'COMPILE', num: 'BLD',  name: 'Compile' };
 const COMPARE_TAB     = { id: 'COMPARE', num: 'CMP',  name: 'Compare' };
 const ATLAS_TAB       = { id: 'ATLAS',   num: 'ATL',  name: 'Atlas' };
 
@@ -47,6 +48,10 @@ const state = {
   packB: null,                 // B's full layered pack (for atlases)
   atlasVariant: 'strata',      // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit' | 'arbor'
   atlasMorph: 0,               // 0..1 for the constellation slider
+  compileTarget: 'prometheus-rules',
+  compileDashId: null,
+  compileContent: null,        // { filename, contentType, text, source } | { error }
+  compileTargets: null,        // catalog from /api/compile/targets
   mcpStatus: null,
 };
 
@@ -60,6 +65,13 @@ async function api(path, opts = {}) {
   if (!r.ok) {
     const body = await r.text().catch(() => '');
     throw new Error(`${r.status} ${r.statusText} on ${path}${body ? ': ' + body.slice(0, 200) : ''}`);
+  }
+  // Some routes might be missing on a stale server, returning an HTML
+  // fallback even at 200. Sniff the content-type first.
+  const ct = r.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    const body = await r.text().catch(() => '');
+    throw new Error(`${path}: server returned non-JSON (${ct || 'no content-type'}, ${r.status}). Restart \`npm run dev\` if the route is new.${body ? '\n' + body.slice(0, 200) : ''}`);
   }
   return r.json();
 }
@@ -244,9 +256,17 @@ function renderTabs() {
     const label = `${conf.mustPercent}% MUST`;
     tabs.appendChild(renderTab(def, label, true));
   }
+  if (state.pack?.meta?.apiVersion) {
+    const shortLabel = (state.compileTarget || '').split('-')[0] || 'targets';
+    tabs.appendChild(renderTab(COMPILE_TAB, shortLabel, true));
+  }
   if (state.catalog.filter(p => p.ok).length >= 2) {
     const def = COMPARE_TAB;
-    const label = state.diff ? `${state.diff.summary.inBoth}/${state.diff.summary.union}` : 'pick';
+    // state.diff may be null (not yet loaded), {error: '...'} (fetch
+    // failed — e.g. stale dev server without /api/diff), or the real
+    // result. Guard against the error shape.
+    const sum = state.diff?.summary;
+    const label = sum ? `${sum.inBoth}/${sum.union}` : (state.diff?.error ? 'err' : 'pick');
     tabs.appendChild(renderTab(def, label, true));
     const aDef = ATLAS_TAB;
     tabs.appendChild(renderTab(aDef, state.atlasVariant, true));
@@ -276,6 +296,11 @@ function renderMainView() {
 
   if (state.activeLayer === 'CONF') {
     view.appendChild(renderConformanceView());
+    return;
+  }
+
+  if (state.activeLayer === 'COMPILE') {
+    renderCompileView(view);
     return;
   }
 
@@ -493,6 +518,186 @@ function renderConformanceView() {
   return wrap;
 }
 
+// ---------- COMPILE view ----------
+//
+// Pack -> real, ingestible platform artefacts. The pack is the contract;
+// this is the program. Spec §9's reference-implementation table made real.
+
+async function loadCompileTargets() {
+  if (state.compileTargets) return state.compileTargets;
+  try {
+    const r = await api('/api/compile/targets');
+    state.compileTargets = r.targets || [];
+  } catch (_) {
+    state.compileTargets = [];
+  }
+  return state.compileTargets;
+}
+
+async function loadCompiled() {
+  if (!state.selectedPackId || !state.compileTarget) { state.compileContent = null; return; }
+  const params = new URLSearchParams();
+  if (state.selectedEnv)   params.set('env', state.selectedEnv);
+  if (state.compileDashId) params.set('dashboardId', state.compileDashId);
+  const url = `/api/packs/${encodeURIComponent(state.selectedPackId)}/compile/${encodeURIComponent(state.compileTarget)}?${params}`;
+  try {
+    const r = await fetch(url);
+    const ct = r.headers.get('content-type') || '';
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      if (ct.includes('application/json')) {
+        const j = await r.json().catch(() => null);
+        if (j?.error) msg = j.error;
+      }
+      state.compileContent = { error: msg };
+      return;
+    }
+    const text = await r.text();
+    state.compileContent = {
+      filename: parseCdFilename(r.headers.get('content-disposition'))
+        || `${state.selectedPackId}.${state.compileTarget}`,
+      contentType: ct.split(';')[0].trim(),
+      text,
+      source: r.headers.get('x-pack-source'),
+    };
+  } catch (e) {
+    state.compileContent = { error: e.message };
+  }
+}
+
+function parseCdFilename(cd) {
+  if (!cd) return null;
+  const m = /filename="([^"]+)"/.exec(cd);
+  return m ? m[1] : null;
+}
+
+function renderCompileView(host) {
+  const section = document.createElement('section');
+  section.className = 'section compile-view';
+  section.dataset.layer = 'COMPILE';
+
+  const head = document.createElement('div');
+  head.className = 'section-head';
+  head.innerHTML = `
+    <span class="section-num">BLD</span>
+    <span class="section-name">Compile — pack as the source of truth</span>
+    <span class="section-count">${escapeHtml(state.pack?.id || '')}</span>
+  `;
+  section.appendChild(head);
+
+  const lede = document.createElement('div');
+  lede.className = 'compile-lede';
+  lede.innerHTML = `
+    The pack is the contract; this is what it becomes when compiled. Change the YAML, regenerate everything below.
+    Each output is real and ingestible by its target — drop the rules into Prometheus's <code>rule_files:</code>,
+    the OTel Collector YAML into <code>--config</code>, the dashboard JSON into <code>grafana-cli dashboards import</code>,
+    the Alertmanager file into <code>--config.file</code>.
+  `;
+  section.appendChild(lede);
+
+  const pills = document.createElement('div');
+  pills.className = 'compile-targets';
+  if (!state.compileTargets) {
+    pills.innerHTML = '<span class="compile-loading">Loading targets…</span>';
+    loadCompileTargets().then(() => { renderTabs(); renderMainView(); });
+  } else {
+    for (const t of state.compileTargets) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'compile-target' + (t.id === state.compileTarget ? ' is-active' : '');
+      b.innerHTML = `
+        <span class="ct-label">${escapeHtml(t.label)}</span>
+        <span class="ct-ext">${escapeHtml(t.extension)}</span>
+      `;
+      b.title = t.description;
+      b.onclick = () => {
+        state.compileTarget = t.id;
+        state.compileContent = null;
+        if (t.id === 'grafana-dashboard' && !state.compileDashId) {
+          const first = state.pack?.layers?.L3?.find(a => /^DASH-/.test(a.id));
+          state.compileDashId = first?.spec?.id || null;
+        }
+        renderTabs(); renderMainView();
+      };
+      pills.appendChild(b);
+    }
+  }
+  section.appendChild(pills);
+
+  // Grafana sub-selector
+  if (state.compileTarget === 'grafana-dashboard' && state.pack) {
+    const dashWrap = document.createElement('div');
+    dashWrap.className = 'compile-subselect';
+    dashWrap.innerHTML = `<label class="ctrl"><span class="ctrl-key">DASHBOARD</span><select id="compile-dash"></select></label>`;
+    const sel = dashWrap.querySelector('#compile-dash');
+    const dashboards = (state.pack.layers?.L3 || []).filter(a => /^DASH-/.test(a.id));
+    if (!dashboards.length) {
+      const opt = document.createElement('option');
+      opt.textContent = '— no dashboards declared —'; opt.disabled = true;
+      sel.appendChild(opt); sel.disabled = true;
+    } else {
+      if (!state.compileDashId) state.compileDashId = dashboards[0].spec?.id || dashboards[0].title;
+      for (const d of dashboards) {
+        const id = d.spec?.id || d.title;
+        const opt = document.createElement('option');
+        opt.value = id; opt.textContent = id + (d.spec?.folder ? ` · ${d.spec.folder}` : '');
+        sel.appendChild(opt);
+      }
+      sel.value = state.compileDashId;
+      sel.onchange = () => { state.compileDashId = sel.value; state.compileContent = null; renderMainView(); };
+    }
+    section.appendChild(dashWrap);
+  }
+
+  const stage = document.createElement('div');
+  stage.className = 'compile-stage';
+  section.appendChild(stage);
+  host.appendChild(section);
+
+  if (!state.compileContent) {
+    stage.innerHTML = '<div class="placeholder">Compiling…</div>';
+    loadCompiled().then(() => renderMainView());
+    return;
+  }
+  if (state.compileContent.error) {
+    stage.innerHTML = `<div class="error">Compile failed: ${escapeHtml(state.compileContent.error)}</div>`;
+    return;
+  }
+  const c = state.compileContent;
+
+  const actions = document.createElement('div');
+  actions.className = 'compile-actions';
+  actions.innerHTML = `
+    <div class="compile-meta">
+      <code>${escapeHtml(c.filename)}</code>
+      <span class="muted">${escapeHtml(c.contentType)}</span>
+      <span class="muted">${c.text.length.toLocaleString()} bytes</span>
+      ${c.source ? `<span class="muted">from <code>${escapeHtml(c.source)}</code></span>` : ''}
+    </div>
+    <div class="compile-buttons">
+      <button class="ctrl-btn" id="copy-compiled" type="button">copy</button>
+      <a class="ctrl-btn ctrl-link" id="download-compiled" download="${escapeHtml(c.filename)}">download</a>
+    </div>
+  `;
+  stage.appendChild(actions);
+
+  const codeWrap = document.createElement('div');
+  codeWrap.className = 'compile-code-wrap';
+  const code = document.createElement('pre');
+  code.className = 'compile-code ' + (c.contentType === 'application/json' ? 'lang-json' : 'lang-yaml');
+  code.textContent = c.text;
+  codeWrap.appendChild(code);
+  stage.appendChild(codeWrap);
+
+  actions.querySelector('#copy-compiled').onclick = async () => {
+    try { await navigator.clipboard.writeText(c.text); toast('Copied to clipboard'); }
+    catch (e) { toast('Copy failed: ' + e.message, 'error'); }
+  };
+  const dl = actions.querySelector('#download-compiled');
+  const blob = new Blob([c.text], { type: c.contentType });
+  dl.href = URL.createObjectURL(blob);
+}
+
 // ---------- compare view ----------
 
 const COMPARE_LAYERS = [
@@ -516,7 +721,13 @@ async function loadDiff() {
   if (state.selectedEnv) params.set('aEnv', state.selectedEnv);
   if (state.compareBEnv) params.set('bEnv', state.compareBEnv);
   try {
-    state.diff = await api(`/api/diff?${params}`);
+    const result = await api(`/api/diff?${params}`);
+    // Sanity-check the shape so a stale server returning some other JSON
+    // doesn't crash later renderers.
+    if (!result || !result.summary || !result.layers) {
+      throw new Error('server returned an unexpected shape — restart `npm run dev`?');
+    }
+    state.diff = result;
   } catch (e) {
     state.diff = { error: e.message };
   }
@@ -559,7 +770,7 @@ function renderCompareView(view) {
   if (state.diff.error) {
     const err = document.createElement('div');
     err.className = 'error';
-    err.textContent = state.diff.error;
+    err.textContent = `Diff failed: ${state.diff.error}`;
     scaffold.appendChild(err);
     return;
   }
@@ -801,6 +1012,10 @@ function renderAtlasView(view) {
   view.appendChild(section);
 
   // Render — fetch packB lazily if missing
+  const atlasOpts = {
+    morph: state.atlasMorph,
+    onArtefactClick: (artefact, layerId) => openDrawer(artefact, { id: layerId }, null),
+  };
   const dataset = datasetFor();
   if (!dataset.b) {
     stage.innerHTML = '<div class="placeholder">Loading pack B…</div>';
@@ -808,10 +1023,10 @@ function renderAtlasView(view) {
       state.packB ? Promise.resolve() : loadPackB(),
       state.diff  ? Promise.resolve() : loadDiff(),
     ]).then(() => {
-      renderAtlas(state.atlasVariant, stage, datasetFor(), { morph: state.atlasMorph });
+      renderAtlas(state.atlasVariant, stage, datasetFor(), atlasOpts);
     });
   } else {
-    renderAtlas(state.atlasVariant, stage, dataset, { morph: state.atlasMorph });
+    renderAtlas(state.atlasVariant, stage, dataset, atlasOpts);
   }
 }
 
@@ -1583,7 +1798,28 @@ async function refreshLive() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
     });
-    const body = await r.json();
+    // Read as text first so we can surface a useful error if the server
+    // returned HTML (typical when the dev server is stale and the route
+    // doesn't exist yet — Express's default 404 is HTML).
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    let body;
+    if (!ct.includes('application/json')) {
+      const hint = r.status === 404
+        ? 'server returned 404 — does it have /api/refresh-live? Restart `npm run dev`.'
+        : `server returned ${r.status} ${ct || 'no content-type'}`;
+      setRefreshStatus(`error: ${hint}`, 'error');
+      $('#mcp-btn').dataset.mcpState = 'error';
+      console.error('[refresh-live] non-JSON response:', raw.slice(0, 400));
+      return;
+    }
+    try { body = JSON.parse(raw); }
+    catch (e) {
+      setRefreshStatus(`error: malformed JSON response (${e.message})`, 'error');
+      $('#mcp-btn').dataset.mcpState = 'error';
+      console.error('[refresh-live] bad JSON:', raw.slice(0, 400));
+      return;
+    }
     if (!body.ok) {
       setRefreshStatus(`error: ${body.error || 'unknown'}`, 'error');
       $('#mcp-btn').dataset.mcpState = 'error';
