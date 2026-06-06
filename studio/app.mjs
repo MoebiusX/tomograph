@@ -3501,6 +3501,7 @@ async function boot() {
 
   setupUpload();
   setupTheme();
+  setupResetButton();
   // Eagerly fetch /api/examples so the Pack B picker has the archived
   // reference packs available even before the user visits the home
   // examples disclosure. AWAITED so the persistence rehydrate below can
@@ -3637,6 +3638,44 @@ function applyModeChrome() {
   if (clearB) clearB.hidden = !state.packB || onCompare;
   const meta = $('#meta');   if (meta) meta.hidden = isHome;
   const tabs = $('#layer-tabs'); if (tabs) tabs.hidden = isHome;
+}
+
+// RESET button — clears EVERYTHING (server uploads + client persistence)
+// and reloads. Hard-refresh alone doesn't reset the studio because
+// persistence rehydrates the previous pack, and uploaded packs sit in
+// the server's in-memory map until the process restarts. This button
+// gives the user one click for a true clean slate without bouncing
+// `npm run dev`.
+function setupResetButton() {
+  const btn = $('#reset-btn');
+  if (!btn) return;
+  btn.onclick = async () => {
+    const ok = confirm('Reset the studio?\n\n' +
+      'This will:\n' +
+      '  • drop every uploaded / crawled / drafted pack from the server\n' +
+      '  • clear saved view + filter + focus + trace preferences from localStorage\n' +
+      '  • reload the page to the empty home screen\n\n' +
+      'Catalog-shipped example packs are unaffected (they live on disk).');
+    if (!ok) return;
+    // 1. Stop persistence from racing the reload + writing stale state.
+    try { persistence.suspend(); } catch (_) {}
+    // 2. Wipe localStorage. Keep theme so the user's dark/light choice
+    //    survives — that's not session state, it's a preference.
+    try {
+      const theme = localStorage.getItem('studioTheme');
+      localStorage.clear();
+      if (theme) localStorage.setItem('studioTheme', theme);
+    } catch (_) {}
+    // 3. Drop server-side uploads. If the endpoint is unreachable we
+    //    still reload — the client-side reset is the higher-leverage part.
+    try {
+      await fetch('/api/uploads', { method: 'DELETE' });
+    } catch (_) {}
+    // 4. Reload. location.reload(true) is non-standard in modern Firefox;
+    //    plain reload() picks up server changes since the navigation
+    //    bypasses the disk cache for HTML.
+    location.reload();
+  };
 }
 
 // Logo click returns home.

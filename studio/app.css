@@ -208,7 +208,14 @@ a:hover { color: var(--ink); }
   color: var(--ink-4);
   margin-top: 6px;
 }
-.hdr-controls { display: flex; gap: 14px; align-items: center; }
+.hdr-controls {
+  display: flex; gap: 14px; align-items: center;
+  /* Wrap when the row would push past the viewport. PACK A + ENV A +
+     PACK B + ENV B + UPLOAD + NEW FROM REPO + NEW FROM LIVE + MCP +
+     THEME + RESET + API is wider than 1080px on most desktops. */
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
 .ctrl {
   display: inline-flex; align-items: center; gap: 8px;
   border: 1px solid var(--line);
@@ -262,6 +269,15 @@ a:hover { color: var(--ink); }
   padding: 8px 10px; cursor: pointer;
 }
 .ctrl-btn:hover { color: var(--ink); border-color: var(--ink-3); background: var(--hover); }
+/* RESET — visually quieter than the primary actions but unmistakably
+   destructive on hover, so a misclick gives a visible warning before
+   the confirm dialog. */
+.ctrl-reset { color: var(--ink-4); }
+.ctrl-reset:hover {
+  color: var(--src-Missing, #DC2626);
+  border-color: var(--src-Missing, #DC2626);
+  background: var(--fail-bg);
+}
 
 /* MCP button + dot + age */
 .mcp-btn { display: inline-flex; align-items: center; gap: 6px; }
