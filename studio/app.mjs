@@ -59,6 +59,11 @@ const state = {
   compileFlavorB: 'prometheus', // mirrors compileFlavor for B
   compileArtifactB: 'all',      // mirrors compileArtifact for B
   compileContentB: null,        // mirrors compileContent for B
+  // Traceability view preferences (persisted via Direction 3). Keys are
+  // `${layer}::${key}` strings — see compareKeyOf. Suppressed findings
+  // are hidden from their bucket; resolved findings render as resolved.
+  tracePrefs: { suppressed: [], resolved: [] },
+  traceOpen: { aligned: false, declaredNotVerified: true, verifiedNotDeclared: true, stale: true },
   // Secondary layer filter chips (only visible on view='layers').
   // 'all' stacks every layer; the layer ids narrow to one.
   layerFilter: 'all',
@@ -176,6 +181,7 @@ const PERSIST_FIELDS = [
   'atlasVariant', 'arborView',
   'compileGroup', 'compileFlavor', 'compileArtifact',
   'compileGroupB', 'compileFlavorB', 'compileArtifactB',
+  'tracePrefs',
 ];
 const persistence = {
   _suspended: true,  // boot-phase guard — flipped to false once rehydrate finishes
@@ -234,6 +240,12 @@ async function rehydrateFromPersistence() {
   if (typeof saved.compileGroupB === 'string')  state.compileGroupB = saved.compileGroupB;
   if (typeof saved.compileFlavorB === 'string') state.compileFlavorB = saved.compileFlavorB;
   if (typeof saved.compileArtifactB === 'string') state.compileArtifactB = saved.compileArtifactB;
+  if (saved.tracePrefs && typeof saved.tracePrefs === 'object') {
+    state.tracePrefs = {
+      suppressed: Array.isArray(saved.tracePrefs.suppressed) ? saved.tracePrefs.suppressed : [],
+      resolved:   Array.isArray(saved.tracePrefs.resolved)   ? saved.tracePrefs.resolved   : [],
+    };
+  }
 
   // Make sure the picker can label an archived example by pushing the
   // catalog-entry shape into state.catalog (same trick renderPackBSelect uses).
@@ -576,8 +588,9 @@ function renderPrimaryViewNav() {
     { id: 'conformance',label: 'Conformance',hint: 'Maturity rubric per tier with pass/fail.' },
     { id: 'compile',    label: 'Compile',    hint: 'Per-artefact compilation to native platform format.' },
     ...(hasB ? [
-      { id: 'compare',  label: 'Compare',    hint: 'Side-by-side per-layer comparison of PACK A vs PACK B.' },
-      { id: 'atlas',    label: 'Atlas',      hint: 'Cross-pack atlas variants — Stratigraphy, Periodic, Constellation, Skyline, Transit, Arbor.' },
+      { id: 'compare',     label: 'Compare',     hint: 'Side-by-side per-layer comparison of PACK A vs PACK B.' },
+      { id: 'traceability',label: 'Traceability',hint: 'Repo vs live: aligned / declared-not-verified / verified-not-declared / stale.' },
+      { id: 'atlas',       label: 'Atlas',       hint: 'Cross-pack atlas variants — Stratigraphy, Periodic, Constellation, Skyline, Transit, Arbor.' },
     ] : []),
     { id: 'schema',     label: 'Schema',     hint: 'Maturity score + canonical schema view.' },
   ];
@@ -659,11 +672,12 @@ function renderMainView() {
   // nav when state.packB is truthy, so we can reach them here without
   // needing a separate 'compare' mode.
   switch (state.view) {
-    case 'compare':     renderCompareView(view); return;
-    case 'atlas':       renderAtlasView(view); return;
-    case 'conformance': view.appendChild(renderConformanceView()); return;
-    case 'compile':     renderCompileView(view); return;
-    case 'schema':      view.appendChild(renderConformanceView()); return;
+    case 'compare':      renderCompareView(view); return;
+    case 'traceability': renderTraceabilityView(view); return;
+    case 'atlas':        renderAtlasView(view); return;
+    case 'conformance':  view.appendChild(renderConformanceView()); return;
+    case 'compile':      renderCompileView(view); return;
+    case 'schema':       view.appendChild(renderConformanceView()); return;
     case 'layers':
     default:
       renderLayersView(view);
@@ -1444,6 +1458,309 @@ async function refreshDiff() {
   // "Compare/Atlas appear when B is loaded" rule on every diff refresh.
   renderTabs();
   renderMainView();
+}
+
+// ============================================================
+// TRACEABILITY VIEW — repo vs live, but actionable
+// ============================================================
+//
+// Compare shows raw deltas per layer. Useful for engineers reading the
+// diff first-hand, but it leaves the harder question — "what should I do
+// about this?" — to the reader. Traceability answers that by binning
+// every artefact across both packs into one of four buckets:
+//
+//   Aligned             both packs have it AND the shape matches
+//   Declared, not verified   only in pack A (the manifest)
+//   Verified, not declared   only in pack B (live)
+//   Stale declaration   both packs have it but the shapes diverge
+//
+// Convention: Pack A is treated as the manifest ("declared"), Pack B as
+// the live signal ("verified"). The unlock means either pack can be in
+// either slot, but most repo-vs-live flows put the repo pack in A and
+// the MCP-fetched pack in B (that's where the home screen + the cron
+// fetcher both put them).
+//
+// Severity:
+//   - Declared-not-verified on a tier-1 SLI/SLO  → red  (the spec
+//     contractually promised an outcome and we can't see it in live)
+//   - Stale declaration                           → amber
+//   - Everything else                             → neutral
+//
+// Per-finding actions:
+//   - Open      jumps to the layers view + opens the drawer
+//   - Suppress  hides the row from this bucket (persisted via tracePrefs)
+//   - Resolve   marks the row resolved (persisted via tracePrefs)
+
+const TRACE_LAYERS = ['L1', 'L2', 'L2X', 'L3', 'L4', 'L5', 'GOV'];
+
+// Strip volatile fields before comparing two artefacts for shape equality.
+function stripVolatileArt(art) {
+  if (!art || typeof art !== 'object') return art;
+  // _sub is the L4 sub-group marker we added for flattening.
+  // annotations include MCP refresh timestamps and source tags that
+  // legitimately differ between repo and live.
+  const { _sub, annotations, ...rest } = art;
+  return rest;
+}
+
+function artefactsShapeEqual(a, b) {
+  try { return JSON.stringify(stripVolatileArt(a)) === JSON.stringify(stripVolatileArt(b)); }
+  catch (_) { return false; }
+}
+
+// Walk both packs and bin every artefact key into a bucket. The key is
+// `${layer}::${compareKeyOf(art)}` so the same id in two different
+// layers doesn't collide.
+function categorizeTrace(packA, packB) {
+  const buckets = { aligned: [], declaredNotVerified: [], verifiedNotDeclared: [], stale: [] };
+  for (const L of TRACE_LAYERS) {
+    const aItems = layerItemsFor(packA, L);
+    const bItems = layerItemsFor(packB, L);
+    const aMap = new Map();
+    const bMap = new Map();
+    for (const it of aItems) {
+      const k = compareKeyOf(it);
+      if (k) aMap.set(k, it);
+    }
+    for (const it of bItems) {
+      const k = compareKeyOf(it);
+      if (k) bMap.set(k, it);
+    }
+    const allKeys = new Set([...aMap.keys(), ...bMap.keys()]);
+    for (const k of allKeys) {
+      const a = aMap.get(k);
+      const b = bMap.get(k);
+      const findingKey = `${L}::${k}`;
+      const layerTier = packA?.meta?.criticality || packB?.meta?.criticality || 'tier-3';
+      if (a && b) {
+        if (artefactsShapeEqual(a, b)) buckets.aligned.push({ layer: L, key: k, findingKey, a, b, tier: layerTier });
+        else buckets.stale.push({ layer: L, key: k, findingKey, a, b, tier: layerTier });
+      } else if (a) {
+        buckets.declaredNotVerified.push({ layer: L, key: k, findingKey, a, tier: layerTier });
+      } else {
+        buckets.verifiedNotDeclared.push({ layer: L, key: k, findingKey, b, tier: layerTier });
+      }
+    }
+  }
+  return buckets;
+}
+
+// Severity hint for a finding. Tier-1 SLIs/SLOs that are declared but
+// not verified are the red flags. Stale is always amber. Everything
+// else is neutral.
+function traceFindingSeverity(bucket, finding) {
+  if (bucket === 'declaredNotVerified') {
+    if (finding.tier === 'tier-1' && finding.layer === 'L1') return 'red';
+    return 'neutral';
+  }
+  if (bucket === 'stale') return 'amber';
+  return 'neutral';
+}
+
+const BUCKET_META = {
+  aligned:             { label: 'Aligned',                blurb: 'Declared in repo AND shape matches in live. Nothing to do.' },
+  declaredNotVerified: { label: 'Declared, not verified', blurb: 'In the repo manifest but absent from live. Stale spec, or live collection broken.' },
+  verifiedNotDeclared: { label: 'Verified, not declared', blurb: 'Live signal exists with no entry in the repo. Drift or out-of-band telemetry.' },
+  stale:               { label: 'Stale declaration',      blurb: 'Both sides have it, but the live shape diverges from the declared shape. Reconcile.' },
+};
+
+function ensureTracePrefs() {
+  if (!state.tracePrefs || typeof state.tracePrefs !== 'object') state.tracePrefs = { suppressed: [], resolved: [] };
+  if (!Array.isArray(state.tracePrefs.suppressed)) state.tracePrefs.suppressed = [];
+  if (!Array.isArray(state.tracePrefs.resolved))   state.tracePrefs.resolved = [];
+}
+
+function isTraceSuppressed(findingKey) {
+  ensureTracePrefs();
+  return state.tracePrefs.suppressed.includes(findingKey);
+}
+function isTraceResolved(findingKey) {
+  ensureTracePrefs();
+  return state.tracePrefs.resolved.includes(findingKey);
+}
+function toggleTraceSuppressed(findingKey) {
+  ensureTracePrefs();
+  const i = state.tracePrefs.suppressed.indexOf(findingKey);
+  if (i >= 0) state.tracePrefs.suppressed.splice(i, 1);
+  else state.tracePrefs.suppressed.push(findingKey);
+}
+function toggleTraceResolved(findingKey) {
+  ensureTracePrefs();
+  const i = state.tracePrefs.resolved.indexOf(findingKey);
+  if (i >= 0) state.tracePrefs.resolved.splice(i, 1);
+  else state.tracePrefs.resolved.push(findingKey);
+}
+
+function renderTraceabilityView(host) {
+  ensureTracePrefs();
+  const section = document.createElement('section');
+  section.className = 'section trace-view';
+  section.dataset.layer = 'TRACE';
+
+  if (!state.pack || !state.packB) {
+    section.innerHTML = '<div class="placeholder">Load Pack A and Pack B first.</div>';
+    host.appendChild(section);
+    return;
+  }
+
+  const buckets = categorizeTrace(state.pack, state.packB);
+  const suppressedSet = new Set(state.tracePrefs.suppressed);
+  const resolvedSet   = new Set(state.tracePrefs.resolved);
+
+  // Section head with totals.
+  const totalAligned = buckets.aligned.length;
+  const totalDnV     = buckets.declaredNotVerified.length;
+  const totalVnD     = buckets.verifiedNotDeclared.length;
+  const totalStale   = buckets.stale.length;
+  const total        = totalAligned + totalDnV + totalVnD + totalStale;
+  const head = document.createElement('div');
+  head.className = 'section-head';
+  head.innerHTML = `
+    <span class="section-num">TRC</span>
+    <span class="section-name">Traceability · pack A (declared) vs pack B (verified)</span>
+    <span class="section-count">${total} artefact${total === 1 ? '' : 's'}</span>
+  `;
+  section.appendChild(head);
+
+  const lede = document.createElement('div');
+  lede.className = 'trace-lede';
+  lede.innerHTML = `
+    Pack A is treated as the manifest (<em>declared</em>) and Pack B as the live signal (<em>verified</em>).
+    Every artefact lands in one of four buckets; per-row actions persist locally so suppressions and
+    resolutions survive a refresh.
+  `;
+  section.appendChild(lede);
+
+  // Headline cards — one per bucket. Click to scroll to its section.
+  const headlineGrid = document.createElement('div');
+  headlineGrid.className = 'trace-headline-grid';
+  const order = ['aligned', 'declaredNotVerified', 'verifiedNotDeclared', 'stale'];
+  for (const key of order) {
+    const items = buckets[key];
+    const meta  = BUCKET_META[key];
+    const count = items.length;
+    const open  = state.traceOpen?.[key];
+    const card  = document.createElement('button');
+    card.type = 'button';
+    card.className = 'trace-headline trace-headline-' + key;
+    card.dataset.open = String(!!open);
+    card.innerHTML = `
+      <div class="trace-headline-key">${escapeHtml(meta.label)}</div>
+      <div class="trace-headline-count">${count}</div>
+      <div class="trace-headline-blurb">${escapeHtml(meta.blurb)}</div>
+    `;
+    card.onclick = () => {
+      if (!state.traceOpen) state.traceOpen = {};
+      state.traceOpen[key] = !state.traceOpen[key];
+      renderMainView();
+    };
+    headlineGrid.appendChild(card);
+  }
+  section.appendChild(headlineGrid);
+
+  // Per-bucket details. Each finding row carries Open / Suppress / Resolve.
+  for (const key of order) {
+    const items = buckets[key];
+    const meta  = BUCKET_META[key];
+    const open  = !!state.traceOpen?.[key];
+    const block = document.createElement('div');
+    block.className = 'trace-block trace-block-' + key;
+    block.hidden = !open;
+
+    const blockHead = document.createElement('div');
+    blockHead.className = 'trace-block-head';
+    blockHead.innerHTML = `
+      <span class="trace-block-label">${escapeHtml(meta.label)}</span>
+      <span class="trace-block-count">${items.length}</span>
+    `;
+    block.appendChild(blockHead);
+
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'trace-empty';
+      empty.textContent = 'no findings in this bucket';
+      block.appendChild(empty);
+      section.appendChild(block);
+      continue;
+    }
+
+    // Hide suppressed rows by default; reveal under a "show suppressed" toggle.
+    const visible    = items.filter(f => !suppressedSet.has(f.findingKey));
+    const suppressed = items.filter(f =>  suppressedSet.has(f.findingKey));
+
+    const list = document.createElement('div');
+    list.className = 'trace-list';
+    for (const f of visible) list.appendChild(renderTraceRow(key, f, resolvedSet));
+    block.appendChild(list);
+
+    if (suppressed.length) {
+      const sup = document.createElement('details');
+      sup.className = 'trace-suppressed';
+      const sum = document.createElement('summary');
+      sum.textContent = `${suppressed.length} suppressed finding${suppressed.length === 1 ? '' : 's'}`;
+      sup.appendChild(sum);
+      const supList = document.createElement('div');
+      supList.className = 'trace-list trace-list-suppressed';
+      for (const f of suppressed) supList.appendChild(renderTraceRow(key, f, resolvedSet));
+      sup.appendChild(supList);
+      block.appendChild(sup);
+    }
+    section.appendChild(block);
+  }
+
+  host.appendChild(section);
+}
+
+function renderTraceRow(bucketKey, finding, resolvedSet) {
+  const sev = traceFindingSeverity(bucketKey, finding);
+  const resolved = resolvedSet.has(finding.findingKey);
+  const row = document.createElement('div');
+  row.className = 'trace-row';
+  row.dataset.sev = sev;
+  row.dataset.resolved = String(resolved);
+
+  // Side primary — for declaredNotVerified use A, for verifiedNotDeclared use B,
+  // for stale + aligned use A (it's the manifest).
+  const primary = (bucketKey === 'verifiedNotDeclared') ? finding.b : finding.a;
+  const title = primary?.title || primary?.id || primary?.defines || finding.key;
+  const sub   = primary?.desc || primary?.tool || '';
+
+  row.innerHTML = `
+    <div class="trace-row-pill">
+      <span class="trace-row-layer">${escapeHtml(finding.layer)}</span>
+      <span class="trace-row-sev" data-sev="${sev}">${sev === 'red' ? '✕' : sev === 'amber' ? '⚠' : '·'}</span>
+    </div>
+    <div class="trace-row-body">
+      <div class="trace-row-title">${escapeHtml(String(title || finding.key))}</div>
+      <div class="trace-row-sub">${escapeHtml(sub)}</div>
+      <div class="trace-row-key"><code>${escapeHtml(finding.findingKey)}</code></div>
+    </div>
+    <div class="trace-row-actions">
+      <button type="button" class="trace-action" data-act="open" title="Open the artefact drawer on the Layers view">open</button>
+      <button type="button" class="trace-action" data-act="resolve" title="Toggle resolved (persists locally)">${resolved ? '✓ resolved' : 'mark resolved'}</button>
+      <button type="button" class="trace-action" data-act="suppress" title="Hide this finding from the bucket (persists locally)">suppress</button>
+    </div>
+  `;
+
+  row.querySelector('[data-act="open"]').onclick = () => {
+    state.view = 'layers';
+    state.layerFilter = finding.layer === 'L4' ? 'L4' : finding.layer;
+    state.activeLayer = finding.layer;
+    state.activeCardKey = finding.key;
+    renderTabs();
+    renderMainView();
+    // Open the drawer for the artefact if we can find it.
+    const pack = (bucketKey === 'verifiedNotDeclared') ? state.packB : state.pack;
+    const items = layerItemsFor(pack, finding.layer);
+    const art = items.find(it => compareKeyOf(it) === finding.key);
+    if (art) {
+      const layerDef = LAYER_DEFS.find(d => d.id === finding.layer) || { id: finding.layer };
+      try { openDrawer(art, layerDef, null); } catch (_) {}
+    }
+  };
+  row.querySelector('[data-act="resolve"]').onclick = () => { toggleTraceResolved(finding.findingKey); renderMainView(); };
+  row.querySelector('[data-act="suppress"]').onclick = () => { toggleTraceSuppressed(finding.findingKey); renderMainView(); };
+  return row;
 }
 
 function renderCompareView(view) {
