@@ -118,6 +118,33 @@ try {
   assert(Array.isArray(rubric.clauses) && rubric.clauses.length >= 20, 'rubric clauses present');
   assert(!('evaluate' in (rubric.clauses[0] || {})), 'rubric clauses do not leak evaluate function');
 
+  // /api/live-status — returns either {present: false} or details
+  const liveStatus = await getJson(base, '/api/live-status');
+  assert('present' in liveStatus, '/api/live-status responds with `present` flag');
+  if (liveStatus.present) {
+    assert(typeof liveStatus.refreshedAt === 'string' || liveStatus.refreshedAt === null,
+           'live-status surfaces refreshedAt when present');
+  }
+
+  // POST /api/refresh-live — missing mcpUrl
+  const badRefresh = await fetch(`${base}/api/refresh-live`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert(badRefresh.status === 400, 'POST /api/refresh-live rejects empty body with 400');
+  const badRefreshBody = await badRefresh.json();
+  assert(badRefreshBody.ok === false && /mcpUrl/.test(badRefreshBody.error || ''),
+         'refresh-live error mentions mcpUrl');
+
+  // POST /api/refresh-live — unreachable mcpUrl
+  const unreachable = await fetch(`${base}/api/refresh-live`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no-mcp' }),
+  });
+  assert(unreachable.status === 502, 'POST /api/refresh-live surfaces 502 on MCP failure');
+
   // POST /api/validate — valid canonical (use staging-with-effective shape rejected by additionalProperties)
   // Send a minimal valid canonical pack: re-fetch the raw vendored example via the canonical route (without env)
   const raw = await getJson(base, '/api/packs/payment-service/canonical');

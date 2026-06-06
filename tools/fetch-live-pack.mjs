@@ -41,73 +41,80 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = resolve(__dirname, '..', 'vendor', 'observability-pack-spec', `v${SPEC_VERSION}`, 'observability-pack.schema.json');
 const SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'));
 
-const MCP_URL  = process.env.MCP_URL  || 'https://mcp.example.com/observability';
-const OUTPUT   = process.env.OUTPUT   || 'packs/production-live.pack.yaml';
-const AUTH     = process.env.MCP_AUTH || null;
-const PACK_NAME = (process.env.PACK_NAME || 'production-live').toLowerCase();
+const MCP_URL_DEFAULT  = process.env.MCP_URL  || 'https://mcp.example.com/observability';
+const OUTPUT           = process.env.OUTPUT   || 'packs/production-live.pack.yaml';
+const MCP_AUTH_DEFAULT = process.env.MCP_AUTH || null;
+const PACK_NAME        = (process.env.PACK_NAME || 'production-live').toLowerCase();
 
 // ============================================================
-// MCP client — same wire protocol as before.
+// MCP client — same wire protocol as before. Parameterised by
+// (mcpUrl, mcpAuth) so the server's POST /api/refresh-live endpoint
+// can drive it from the request body without spawning a subprocess.
 // ============================================================
 
-let mcpSession = null;
-let nextId = 1;
+export function createMcpClient({ mcpUrl, mcpAuth = null } = {}) {
+  if (!mcpUrl) throw new Error('createMcpClient: mcpUrl required');
+  let session = null;
+  let nextId = 1;
 
-async function mcpRequest(method, params = {}) {
-  const headers = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json, text/event-stream',
-    'MCP-Protocol-Version': '2025-06-18',
-  };
-  if (AUTH)       headers['Authorization'] = `Bearer ${AUTH}`;
-  if (mcpSession) headers['Mcp-Session-Id'] = mcpSession;
+  async function rpc(method, params = {}) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream',
+      'MCP-Protocol-Version': '2025-06-18',
+    };
+    if (mcpAuth) headers['Authorization'] = `Bearer ${mcpAuth}`;
+    if (session) headers['Mcp-Session-Id'] = session;
 
-  const res = await fetch(MCP_URL, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ jsonrpc: '2.0', id: nextId++, method, params }),
-  });
-  if (!res.ok) throw new Error(`MCP HTTP ${res.status} on ${method}: ${await res.text().catch(() => '')}`);
-  if (res.headers.get('mcp-session-id')) mcpSession = res.headers.get('mcp-session-id');
+    const res = await fetch(mcpUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: nextId++, method, params }),
+    });
+    if (!res.ok) throw new Error(`MCP HTTP ${res.status} on ${method}: ${await res.text().catch(() => '')}`);
+    if (res.headers.get('mcp-session-id')) session = res.headers.get('mcp-session-id');
 
-  const ctype = res.headers.get('content-type') || '';
-  if (ctype.includes('text/event-stream')) {
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (value) buf += decoder.decode(value, { stream: true });
-      const frameEnd = buf.indexOf('\n\n');
-      if (frameEnd !== -1) {
-        const frame = buf.slice(0, frameEnd);
-        const text = frame.split('\n').filter(l => l.startsWith('data:')).map(l => l.replace(/^data:\s?/, '')).join('\n');
-        if (text) {
-          const obj = JSON.parse(text);
-          if (obj.error) throw new Error(`${method}: ${obj.error.message}`);
-          return obj.result;
+    const ctype = res.headers.get('content-type') || '';
+    if (ctype.includes('text/event-stream')) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value) buf += decoder.decode(value, { stream: true });
+        const frameEnd = buf.indexOf('\n\n');
+        if (frameEnd !== -1) {
+          const frame = buf.slice(0, frameEnd);
+          const text = frame.split('\n').filter(l => l.startsWith('data:')).map(l => l.replace(/^data:\s?/, '')).join('\n');
+          if (text) {
+            const obj = JSON.parse(text);
+            if (obj.error) throw new Error(`${method}: ${obj.error.message}`);
+            return obj.result;
+          }
+          buf = buf.slice(frameEnd + 2);
         }
-        buf = buf.slice(frameEnd + 2);
+        if (done) break;
       }
-      if (done) break;
+      throw new Error(`MCP ${method}: SSE stream ended with no complete frame`);
     }
-    throw new Error(`MCP ${method}: SSE stream ended with no complete frame`);
+    const data = await res.json();
+    if (data.error) throw new Error(`${method}: ${data.error.message}`);
+    return data.result;
   }
-  const data = await res.json();
-  if (data.error) throw new Error(`${method}: ${data.error.message}`);
-  return data.result;
-}
 
-async function callTool(name, args = {}) {
-  const result = await mcpRequest('tools/call', { name, arguments: args });
-  if (result?.isError) {
-    const txt = result?.content?.map(c => c.text).filter(Boolean).join(' ') || 'tool returned isError';
-    throw new Error(`${name}: ${txt}`);
+  async function callTool(name, args = {}) {
+    const result = await rpc('tools/call', { name, arguments: args });
+    if (result?.isError) {
+      const txt = result?.content?.map(c => c.text).filter(Boolean).join(' ') || 'tool returned isError';
+      throw new Error(`${name}: ${txt}`);
+    }
+    const text = result?.content?.[0]?.text;
+    if (typeof text !== 'string') return result;
+    try { return JSON.parse(text); }
+    catch { return text; }
   }
-  const text = result?.content?.[0]?.text;
-  if (typeof text !== 'string') return result;
-  try { return JSON.parse(text); }
-  catch { return text; }
+
+  return { rpc, callTool };
 }
 
 // ============================================================
@@ -344,13 +351,15 @@ export function buildCanonicalPack({
 // Entrypoint
 // ============================================================
 
-async function fetchMcp() {
+export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
+  if (!mcpUrl) throw new Error('fetchMcp: mcpUrl required');
+  const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth });
   const errors = {};
   const safe = async (name, fn) => {
     try { return await fn(); } catch (e) { errors[name] = e.message; return null; }
   };
 
-  await mcpRequest('initialize', {
+  await rpc('initialize', {
     protocolVersion: '2025-06-18',
     capabilities: {},
     clientInfo: { name: 'observabilitypack-studio-fetcher', version: '0.3.0' },
@@ -369,17 +378,32 @@ async function fetchMcp() {
   return { health, topology, anomaliesActive, baselinesData, errors };
 }
 
-async function main() {
-  process.stderr.write(`[fetch-live-pack] talking to ${MCP_URL}\n`);
-  const fetched = await fetchMcp();
-  const refreshedAt = new Date().toISOString();
-  const pack = buildCanonicalPack({ refreshedAt, mcpUrl: MCP_URL, ...fetched });
-
+// Convenience entrypoint used by the CLI + the server: end-to-end build,
+// validate, and (optionally) write to disk. Returns the canonical pack.
+export async function buildAndValidate({ mcpUrl, mcpAuth, packName, refreshedAt }) {
+  const fetched = await fetchMcp({ mcpUrl, mcpAuth });
+  const at = refreshedAt || new Date().toISOString();
+  const pack = buildCanonicalPack({ refreshedAt: at, mcpUrl, packName, ...fetched });
   const errors = validateCanonical(pack, SCHEMA);
   if (errors.length) {
+    const err = new Error(`built pack failed schema validation (${errors.length} error${errors.length === 1 ? '' : 's'})`);
+    err.details = errors;
+    throw err;
+  }
+  return { pack, refreshedAt: at };
+}
+
+async function main() {
+  process.stderr.write(`[fetch-live-pack] talking to ${MCP_URL_DEFAULT}\n`);
+  const fetched = await fetchMcp({ mcpUrl: MCP_URL_DEFAULT, mcpAuth: MCP_AUTH_DEFAULT });
+  const refreshedAt = new Date().toISOString();
+  const pack = buildCanonicalPack({ refreshedAt, mcpUrl: MCP_URL_DEFAULT, ...fetched });
+
+  const errs = validateCanonical(pack, SCHEMA);
+  if (errs.length) {
     process.stderr.write(`[fetch-live-pack] built pack failed validation:\n`);
-    for (const e of errors) process.stderr.write(`    ${e}\n`);
-    throw new Error(`built pack failed schema validation (${errors.length} error${errors.length === 1 ? '' : 's'})`);
+    for (const e of errs) process.stderr.write(`    ${e}\n`);
+    throw new Error(`built pack failed schema validation (${errs.length} error${errs.length === 1 ? '' : 's'})`);
   }
 
   mkdirSync(dirname(OUTPUT), { recursive: true });

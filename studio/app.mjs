@@ -1112,11 +1112,208 @@ async function boot() {
   state.selectedEnv = firstOk.environments?.[0] || null;
   renderPackSelect();
   setupUpload();
+  setupTheme();
+  setupMcpPanel();
+
+  // Initial live-status load + 60s soft-refresh of the badge so "3m ago"
+  // ticks forward without manual reload.
+  state.mcpStatus = await loadLiveStatus();
+  renderMcpBadge(state.mcpStatus);
+  renderMcpStatusBody(state.mcpStatus);
+  setInterval(() => renderMcpBadge(state.mcpStatus), 60_000);
+
   await refresh();
 }
 
 $('#drawer-close').onclick = closeDrawer;
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeDrawer(); closeMcpPanel(); } });
+
+// ---------- MCP refresh panel ----------
+
+const MCP_STALE_HOURS = 1;
+
+async function loadLiveStatus() {
+  try { return await api('/api/live-status'); }
+  catch { return { present: false }; }
+}
+
+function fmtRelative(iso) {
+  if (!iso) return '';
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return '';
+  const secs = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (secs < 90)        return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 90)        return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 36)       return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function renderMcpBadge(status) {
+  const btn = $('#mcp-btn');
+  const ageEl = $('#mcp-btn-age');
+  if (!btn || !ageEl) return;
+  if (!status?.present) {
+    btn.dataset.mcpState = 'idle';
+    ageEl.textContent = 'idle';
+    btn.title = 'No live pack yet — open to refresh from MCP';
+    return;
+  }
+  const stale = status.refreshedAt && (Date.now() - Date.parse(status.refreshedAt) > MCP_STALE_HOURS * 3600_000);
+  const errored = (status.toolsFailed || '').trim() !== '';
+  btn.dataset.mcpState = errored ? 'error' : stale ? 'stale' : 'fresh';
+  ageEl.textContent = fmtRelative(status.refreshedAt) || '—';
+  btn.title = errored
+    ? `MCP refresh had errors (${status.toolsFailed})`
+    : `Last refresh ${fmtRelative(status.refreshedAt)} from ${status.url || 'unknown'}`;
+}
+
+function renderMcpStatusBody(status) {
+  const el = $('#mcp-status-body');
+  if (!el) return;
+  if (!status?.present) {
+    el.innerHTML = '<em>No production-live pack on disk yet.</em>';
+    return;
+  }
+  const rows = [
+    ['refreshed',  status.refreshedAt ? `${fmtRelative(status.refreshedAt)} (${escapeHtml(status.refreshedAt)})` : '—'],
+    ['mcp url',    status.url || '—'],
+    ['tools called',  status.toolsCalled || '—'],
+    ['tools failed',  status.toolsFailed || 'none'],
+    ['services',   status.servicesDiscovered || '—'],
+    ['baselines',  status.baselinesComputed || '0'],
+    ['anomalies',  status.activeAnomalies   || '0'],
+  ];
+  el.innerHTML = '<dl>' + rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${k === 'refreshed' ? v : escapeHtml(v)}</dd>`).join('') + '</dl>';
+}
+
+function openMcpPanel() {
+  const panel = $('#mcp-panel');
+  if (!panel) return;
+  panel.hidden = false;
+  $('#mcp-btn').setAttribute('aria-expanded', 'true');
+  const urlInput = $('#mcp-url');
+  // pre-fill: saved value > server-known value > empty
+  if (!urlInput.value) {
+    const saved = (() => { try { return localStorage.getItem('mcpUrl'); } catch { return null; } })();
+    const liveUrl = state.mcpStatus?.url || null;
+    urlInput.value = saved || liveUrl || '';
+  }
+  urlInput.focus();
+}
+function closeMcpPanel() {
+  const panel = $('#mcp-panel');
+  if (panel) panel.hidden = true;
+  const btn = $('#mcp-btn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+async function refreshLive() {
+  const url = $('#mcp-url').value.trim();
+  const auth = $('#mcp-auth').value;
+  if (!url) {
+    setRefreshStatus('mcp url required', 'error');
+    return;
+  }
+  try { localStorage.setItem('mcpUrl', url); } catch (_) {}
+  const btn = $('#mcp-refresh-btn');
+  btn.disabled = true;
+  $('#mcp-btn').dataset.mcpState = 'active';
+  setRefreshStatus('contacting mcp…');
+  try {
+    const r = await fetch('/api/refresh-live', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
+    });
+    const body = await r.json();
+    if (!body.ok) {
+      setRefreshStatus(`error: ${body.error || 'unknown'}`, 'error');
+      $('#mcp-btn').dataset.mcpState = 'error';
+      return;
+    }
+    setRefreshStatus(`refreshed · ${fmtRelative(body.refreshedAt)}`, 'ok');
+    // Replace live status from response annotations + refetch authoritative status
+    state.mcpStatus = await loadLiveStatus();
+    renderMcpBadge(state.mcpStatus);
+    renderMcpStatusBody(state.mcpStatus);
+    toast('Live pack refreshed');
+    // If the user is currently viewing production-live, reload it so the
+    // adapter projection updates.
+    if (state.selectedPackId === 'production-live') {
+      await refresh();
+    } else {
+      // Refresh the catalog so the production-live entry's ok-state updates.
+      await loadCatalog();
+      renderPackSelect();
+    }
+  } catch (e) {
+    setRefreshStatus(`error: ${e.message}`, 'error');
+    $('#mcp-btn').dataset.mcpState = 'error';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function setRefreshStatus(msg, kind = '') {
+  const el = $('#mcp-refresh-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
+}
+
+function setupMcpPanel() {
+  const btn = $('#mcp-btn');
+  if (!btn) return;
+  btn.onclick = () => {
+    const open = !$('#mcp-panel').hidden;
+    if (open) closeMcpPanel(); else openMcpPanel();
+  };
+  $('#mcp-panel-close').onclick = closeMcpPanel;
+  $('#mcp-refresh-btn').onclick = refreshLive;
+
+  // Close on outside click
+  document.addEventListener('click', (e) => {
+    const panel = $('#mcp-panel');
+    if (panel.hidden) return;
+    if (e.target.closest('#mcp-panel') || e.target.closest('#mcp-btn')) return;
+    closeMcpPanel();
+  });
+}
+
+// ---------- theme ----------
+
+// ---------- theme ----------
+// The inline script in <head> already applied the persisted/system theme
+// before paint. Here we wire the toggle and keep the studio in sync with
+// the system preference if the user hasn't pinned one.
+
+function setupTheme() {
+  const btn = $('#theme-toggle');
+  if (!btn) return;
+  const apply = (t) => document.documentElement.setAttribute('data-theme', t);
+  const current = () => document.documentElement.getAttribute('data-theme') || 'light';
+
+  btn.onclick = () => {
+    const next = current() === 'dark' ? 'light' : 'dark';
+    apply(next);
+    try { localStorage.setItem('studioTheme', next); } catch (_) {}
+    btn.setAttribute('title', `Switch to ${next === 'dark' ? 'light' : 'dark'} mode`);
+  };
+  btn.setAttribute('title', `Switch to ${current() === 'dark' ? 'light' : 'dark'} mode`);
+
+  // Follow the system preference when the user hasn't explicitly chosen.
+  try {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    mq.addEventListener?.('change', (e) => {
+      const explicit = localStorage.getItem('studioTheme');
+      if (explicit !== 'light' && explicit !== 'dark') {
+        apply(e.matches ? 'dark' : 'light');
+      }
+    });
+  } catch (_) {}
+}
 
 // ---------- helpers ----------
 
