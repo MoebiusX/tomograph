@@ -3860,48 +3860,44 @@ function renderHomeMcpCapabilities(out, host) {
     catch (_) { return 'mcp'; }
   })();
 
-  // Executive-summary layout: a narrative line up top, then a four-row
-  // signal report. Each row is a single metric with the number set in
-  // serif and a one-line interpretation in sans. No widget boxes.
+  // Four-card grid: each capability owns its own card with detail
+  // content inside. Connection status sits above as a pulse-dot line.
+  // Styling kept from the premium pass (subtle borders, serif numbers,
+  // ink-tone accents) but the per-card content is back so the user can
+  // SEE which tools were called, which services were discovered, etc.
   host.innerHTML = `
     <div class="home-mcp-report">
       <div class="home-mcp-report-head">
         <span class="home-mcp-report-dot" aria-hidden="true"></span>
         Connected to <strong>${escapeHtml(mcpHost)}</strong>${out.tookMs ? ` <span class="home-mcp-report-meta">· ${out.tookMs}ms</span>` : ''}
       </div>
-      <div class="home-mcp-report-body">
-        <div class="home-mcp-signal">
-          <div class="home-mcp-signal-num">${services.length}</div>
-          <div class="home-mcp-signal-text">
-            <span class="home-mcp-signal-label">services</span>
-            <span class="home-mcp-signal-detail">${services.length ? services.slice(0, 5).map(s => escapeHtml(s)).join(', ') + (services.length > 5 ? `, +${services.length - 5} more` : '') : 'none discovered'}</span>
-          </div>
+      <div class="home-mcp-cap-grid">
+        <div class="home-mcp-cap" data-cap="tools">
+          <div class="home-mcp-cap-num">${tools.length}</div>
+          <div class="home-mcp-cap-key">tools called</div>
+          <div class="home-mcp-cap-detail">${recognised.length ? recognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ') : '<em>unrecognised set</em>'}</div>
+          ${unrecognised.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-unknown">+${unrecognised.length} unrecognised: ${unrecognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
+          ${failed.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-fail">⚠ failed: ${failed.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
         </div>
-        <div class="home-mcp-signal">
-          <div class="home-mcp-signal-num">${backends}</div>
-          <div class="home-mcp-signal-text">
-            <span class="home-mcp-signal-label">backends</span>
-            <span class="home-mcp-signal-detail">${backends ? 'metrics, logs, traces — pipelines inferred from topology' : 'none observed'}</span>
-          </div>
+        <div class="home-mcp-cap" data-cap="services">
+          <div class="home-mcp-cap-num">${services.length}</div>
+          <div class="home-mcp-cap-key">services discovered</div>
+          <div class="home-mcp-cap-detail">${services.length ? services.slice(0, 6).map(s => `<code>${escapeHtml(s)}</code>`).join(' ') + (services.length > 6 ? `<div class="home-mcp-cap-more">+${services.length - 6} more</div>` : '') : '<em>none</em>'}</div>
         </div>
-        <div class="home-mcp-signal">
-          <div class="home-mcp-signal-num">${tools.length}</div>
-          <div class="home-mcp-signal-text">
-            <span class="home-mcp-signal-label">tools exposed</span>
-            <span class="home-mcp-signal-detail">${recognised.length ? recognised.join(', ') : 'unrecognised set'}${unrecognised.length ? ` · <span class="home-mcp-signal-extra">+${unrecognised.length} unrecognised</span>` : ''}${failed.length ? ` · <span class="home-mcp-signal-fail">⚠ ${failed.length} failed</span>` : ''}</span>
-          </div>
+        <div class="home-mcp-cap" data-cap="backends">
+          <div class="home-mcp-cap-num">${backends}</div>
+          <div class="home-mcp-cap-key">backends inferred</div>
+          <div class="home-mcp-cap-detail">${backends ? 'metrics / logs / traces<div class="home-mcp-cap-meta">pipelines inferred from topology</div>' : '<em>none observed</em>'}</div>
         </div>
-        <div class="home-mcp-signal">
-          <div class="home-mcp-signal-num">${anomalies}</div>
-          <div class="home-mcp-signal-text">
-            <span class="home-mcp-signal-label">active anomalies</span>
-            <span class="home-mcp-signal-detail">${baselines} baseline${baselines === 1 ? '' : 's'} computed from recent telemetry</span>
-          </div>
+        <div class="home-mcp-cap" data-cap="anomalies">
+          <div class="home-mcp-cap-num">${anomalies}</div>
+          <div class="home-mcp-cap-key">active anomalies</div>
+          <div class="home-mcp-cap-detail">${baselines} baseline${baselines === 1 ? '' : 's'} computed<div class="home-mcp-cap-meta">from recent telemetry</div></div>
         </div>
       </div>
       ${out.summary?.warnings?.length ? `
         <div class="home-mcp-gaps">
-          <div class="home-mcp-gaps-head">Honest gaps</div>
+          <div class="home-mcp-gaps-head">⚠ Honest gaps</div>
           <ul>${out.summary.warnings.slice(0, 5).map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul>
         </div>` : ''}
     </div>
