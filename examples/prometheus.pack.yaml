@@ -1,0 +1,591 @@
+# =============================================================================
+# ObservabilityPack: prometheus
+# -----------------------------------------------------------------------------
+# State-of-the-art reference pack for Prometheus 2.x — the metrics-store that
+# observes everything else. Covers scrape health, WAL integrity, recording-rule
+# evaluation, query-engine saturation, query latency, alertmanager delivery,
+# TSDB compaction health, and federation freshness.
+#
+# Meta-observability principle: a Prometheus monitors itself by scraping its
+# own /metrics endpoint, but in production you ALWAYS pair this with a
+# *separate* HA-redundant Prometheus (the "Meta-Prometheus") to break the
+# self-monitoring loop. This pack assumes that pattern.
+#
+# Sourced from public references — see docs/catalogue-evidence/prometheus.md
+# for the per-section evidence trail.
+#
+# Tier-2 100% MUST baseline.
+# =============================================================================
+
+apiVersion: observability.platform/v1
+kind: ObservabilityPack
+
+metadata:
+  name: prometheus
+  version: 1.0.0
+  binding: otel-grafanalabs
+  owners:
+    - catalogue-curators
+    - team-platform-sre
+  imports:
+    - ref: platform/golden-signals-base@1.4
+    - ref: platform/std-alert-routes@3.0
+    - ref: platform/std-budget-policy@2.1
+  bindings:
+    service: prometheus
+    environments: [prod, staging]
+    criticality: tier-2
+  labels:
+    category: observability
+    subcategory: metrics-store
+    pack_class: reference
+  annotations:
+    catalogue_id: observability/prometheus
+    docs: https://prometheus.io/docs/prometheus/latest/
+    target_versions: prometheus 2.45+, 2.55 LTS
+    evidence: docs/catalogue-evidence/prometheus.md
+    meta_observability: "monitor via a separate HA-redundant Meta-Prometheus; the prometheus instance under test scrapes its own metrics but alerting fires from the Meta-Prometheus"
+    promote_for_certification: tier-2
+
+spec:
+
+  # ---------------------------------------------------------------------------
+  # OTel instrumentation contract
+  # ---------------------------------------------------------------------------
+  # Prometheus 2.40+ supports OTLP write (receiving). Outbound, Prometheus
+  # emits its own self-metrics in standard Prometheus exposition format on
+  # /metrics. Client telemetry (queries from Grafana etc.) gets traced via
+  # OTel HTTP instrumentation when the server is wrapped by a sidecar.
+  # ---------------------------------------------------------------------------
+  otel:
+    semconv: "1.27.0"
+    resource_attributes:
+      required:
+        - service.name
+        - service.namespace
+        - service.version
+        - service.instance.id
+        - deployment.environment
+      custom:
+        - prometheus.role
+        - prometheus.cluster
+    sdk:
+      languages: [go]
+      sampling:
+        policy: parentbased_traceidratio
+        ratio: 0.1
+      propagators: [tracecontext, baggage]
+      log_correlation: true
+
+  # ---------------------------------------------------------------------------
+  # Telemetry backends — the Meta-Prometheus that scrapes this one
+  # ---------------------------------------------------------------------------
+  telemetry:
+    backends:
+      - id: metrics-meta-prom
+        signal: metrics
+        product: prometheus
+        version: { declared: "2.55", min: "2.53", gating: warn }
+        endpoints: [https://meta-prom-a.internal:9090, https://meta-prom-b.internal:9090]
+        auth: { kind: bearer, secretRef: meta-prometheus-token }
+        default: true
+      - id: metrics-mimir
+        signal: metrics
+        product: mimir
+        version: { declared: "2.13", min: "2.12", gating: warn }
+        endpoints: [https://mimir.internal/api/v1/push]
+        auth: { kind: bearer, secretRef: mimir-token }
+        tenant: observability
+      - id: logs-es
+        signal: logs
+        product: elasticsearch
+        version: { declared: "8.15", min: "8.13", gating: warn }
+        endpoints: [https://es.internal:9200]
+        auth: { kind: basic, secretRef: es-credentials }
+      - id: traces-tempo
+        signal: traces
+        product: tempo
+        version: { declared: "2.6", min: "2.5", gating: warn }
+        endpoints: [https://tempo.internal:3200]
+        auth: { kind: bearer, secretRef: tempo-token }
+
+  # ---------------------------------------------------------------------------
+  # Environments
+  # ---------------------------------------------------------------------------
+  environments:
+    prod:
+      target: ske
+      criticality: tier-2
+      backends: { metrics: metrics-mimir, logs: logs-es, traces: traces-tempo }
+      overrides:
+        storage.metrics.retention: 13mo
+      promote_after: 30d
+    staging:
+      target: bare-k8s
+      criticality: tier-3
+      backends: { metrics: metrics-meta-prom, logs: logs-es, traces: traces-tempo }
+      suppress: [deploy_freezes]
+
+  # ---------------------------------------------------------------------------
+  # 1. SLIs — Prometheus's eight operational vital signs
+  # ---------------------------------------------------------------------------
+  # PromQL uses Prometheus's own self-metrics (the prometheus_* family) which
+  # every running Prometheus exposes on /metrics. Source: official Prometheus
+  # docs on operational metrics.
+  # ---------------------------------------------------------------------------
+  slis:
+
+    # --- Scrape success ---
+    - id: scrape_success_ratio
+      type: ratio
+      description: Fraction of scrape attempts that succeeded (target up == 1).
+      semconv_metric: prometheus.target.scrape.success
+      good: |
+        sum(up == 1)
+      total: |
+        count(up)
+      owner: team-platform-sre
+
+    - id: scrape_duration_p99
+      type: threshold
+      description: 99th-percentile target scrape duration. High values indicate slow targets or network degradation.
+      semconv_metric: prometheus.target.scrape.duration
+      query: |
+        histogram_quantile(0.99,
+          sum by (le)(rate(scrape_duration_seconds_bucket[5m])))
+      threshold: 5
+      unit: seconds
+
+    # --- WAL integrity ---
+    - id: wal_corruption_freshness
+      type: ratio
+      description: |
+        Fraction of WAL corruption events per total WAL operations.
+        Healthy Prometheus instances should have ZERO WAL corruptions
+        across any window. Non-zero values indicate disk faults.
+      semconv_metric: prometheus.wal.corruption.count
+      good: |
+        sum(rate(prometheus_tsdb_wal_truncations_total[5m])) -
+          sum(rate(prometheus_tsdb_wal_corruptions_total[5m]))
+      total: |
+        sum(rate(prometheus_tsdb_wal_truncations_total[5m]))
+
+    # --- Recording rule evaluation ---
+    - id: rule_evaluation_success_ratio
+      type: ratio
+      description: Fraction of recording / alerting rule evaluations that succeeded vs. attempted.
+      semconv_metric: prometheus.rule.evaluation.success
+      good: |
+        sum(rate(prometheus_rule_evaluations_total[5m])) -
+          sum(rate(prometheus_rule_evaluation_failures_total[5m]))
+      total: |
+        sum(rate(prometheus_rule_evaluations_total[5m]))
+
+    # --- Query engine ---
+    - id: query_latency_p99
+      type: threshold
+      description: 99th-percentile query duration (PromQL queries via /api/v1/query and /api/v1/query_range).
+      semconv_metric: prometheus.query.duration
+      query: |
+        histogram_quantile(0.99,
+          sum by (le)(rate(prometheus_engine_query_duration_seconds_bucket[5m])))
+      threshold: 1
+      unit: seconds
+
+    - id: query_concurrent_saturation
+      type: threshold
+      description: |
+        Concurrent query slots currently in use as a fraction of the limit.
+        Saturation above 80% sustained indicates query-engine backpressure
+        and risk of /api/v1/query returning "concurrent query limit reached"
+        errors.
+      semconv_metric: prometheus.query.concurrency.saturation
+      query: |
+        max(
+          prometheus_engine_queries / prometheus_engine_queries_concurrent_max
+        )
+      threshold: 0.8
+      unit: ratio
+
+    # --- Alertmanager notification delivery ---
+    - id: alertmanager_notification_success_ratio
+      type: ratio
+      description: |
+        Fraction of alert notifications successfully delivered to Alertmanager
+        from this Prometheus. Failures here mean alerts FIRE but never reach
+        their channels — silent SLO breach.
+      semconv_metric: prometheus.alertmanager.notification.success
+      good: |
+        sum(rate(prometheus_notifications_sent_total[5m])) -
+          sum(rate(prometheus_notifications_errors_total[5m]))
+      total: |
+        sum(rate(prometheus_notifications_sent_total[5m]))
+
+    # --- TSDB compaction health ---
+    - id: tsdb_compaction_success_ratio
+      type: ratio
+      description: |
+        Fraction of TSDB compaction operations that succeeded. Compaction
+        failures lead to disk bloat and eventually OOM kills if uncorrected.
+      semconv_metric: prometheus.tsdb.compaction.success
+      good: |
+        sum(rate(prometheus_tsdb_compactions_total[1h])) -
+          sum(rate(prometheus_tsdb_compactions_failed_total[1h]))
+      total: |
+        sum(rate(prometheus_tsdb_compactions_total[1h]))
+
+  # ---------------------------------------------------------------------------
+  # 2. SLOs
+  # ---------------------------------------------------------------------------
+  slos:
+    - { id: scrape_success_99_9,                 sli: scrape_success_ratio,                       objective: 0.999,  window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: scrape_duration_99_p99_5s,           sli: scrape_duration_p99,                        objective: 0.99,   window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: wal_integrity_99_99,                 sli: wal_corruption_freshness,                   objective: 0.9999, window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: rule_evaluation_99_95,               sli: rule_evaluation_success_ratio,              objective: 0.9995, window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: query_latency_99_p99_1s,             sli: query_latency_p99,                          objective: 0.99,   window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: query_concurrency_99_under_80pct,    sli: query_concurrent_saturation,                objective: 0.99,   window: 7d,  error_budget_policy: ref:platform/std-budget-policy }
+    - { id: alertmanager_delivery_99_9,          sli: alertmanager_notification_success_ratio,    objective: 0.999,  window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+    - { id: tsdb_compaction_99_95,               sli: tsdb_compaction_success_ratio,              objective: 0.9995, window: 30d, error_budget_policy: ref:platform/std-budget-policy }
+
+  # ---------------------------------------------------------------------------
+  # 3. Pipelines — OTel Collector configuration
+  # ---------------------------------------------------------------------------
+  pipelines:
+
+    receivers:
+      - name: otlp
+        protocols: [grpc, http]
+        endpoint: 0.0.0.0:4317
+      - name: prometheus
+        scrape_configs:
+          - job_name: prometheus-self
+            scrape_interval: 15s
+            kubernetes_sd_configs:
+              - { role: pod, namespaces: { names: [observability] } }
+            relabel_configs:
+              - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+                regex: prometheus
+                action: keep
+
+    processors:
+      - name: memory_limiter
+        limit_percentage: 80
+      - name: batch
+        timeout: 10s
+      - name: resource
+        attributes:
+          - { key: prometheus.cluster, value: "${PROM_CLUSTER}", action: upsert }
+          - { key: prometheus.role,    value: "${PROM_ROLE}",    action: upsert }
+          - { key: deployment.environment, value: "${ENV}",      action: upsert }
+      - name: transform
+        log_statements:
+          - context: log
+            statements:
+              - set(attributes["service.namespace"], "observability") where attributes["service.namespace"] == nil
+
+    exporters:
+      metrics:
+        kind: prometheusremotewrite
+        endpoint: https://mimir.internal/api/v1/push
+        external_labels: { service: prometheus }
+      logs:
+        kind: elasticsearch
+        endpoints: [https://es.internal:9200]
+        logs_index: logs-prometheus-default
+      traces:
+        kind: otlp
+        endpoint: tempo.internal:4317
+
+  # ---------------------------------------------------------------------------
+  # 4. Storage
+  # ---------------------------------------------------------------------------
+  storage:
+    metrics:
+      backend: mimir
+      version: "2.13"
+      retention: 13mo
+      remote_write:
+        - url: https://mimir.internal/api/v1/push
+          tenant: observability
+    logs:
+      backend: elasticsearch
+      version: "8.15"
+      data_stream: logs-prometheus-default
+      ilm_policy: ref:platform/std-logs-ilm-90d
+    traces:
+      backend: tempo
+      version: "2.6"
+      retention: 14d
+      sampling: tail-based
+
+  # ---------------------------------------------------------------------------
+  # 5. Queries — recording rules
+  # ---------------------------------------------------------------------------
+  queries:
+    recording_rules:
+      - { name: prometheus:scrape_success:ratio_5m,                expr: ref:slis.scrape_success_ratio,                interval: 30s }
+      - { name: prometheus:scrape_success:error_ratio_5m,          expr: 1 - prometheus:scrape_success:ratio_5m,       interval: 30s }
+      - { name: prometheus:scrape_duration:p99_5m,                 expr: ref:slis.scrape_duration_p99,                 interval: 30s }
+      - { name: prometheus:wal_integrity:ratio_5m,                 expr: ref:slis.wal_corruption_freshness,            interval: 30s }
+      - { name: prometheus:rule_evaluation:ratio_5m,               expr: ref:slis.rule_evaluation_success_ratio,       interval: 30s }
+      - { name: prometheus:rule_evaluation:error_ratio_5m,         expr: 1 - prometheus:rule_evaluation:ratio_5m,      interval: 30s }
+      - { name: prometheus:query_latency:p99_5m,                   expr: ref:slis.query_latency_p99,                   interval: 30s }
+      - { name: prometheus:query_concurrency:saturation_5m,        expr: ref:slis.query_concurrent_saturation,         interval: 30s }
+      - { name: prometheus:alertmanager_notification:ratio_5m,     expr: ref:slis.alertmanager_notification_success_ratio, interval: 30s }
+      - { name: prometheus:tsdb_compaction:ratio_1h,               expr: ref:slis.tsdb_compaction_success_ratio,       interval: 1m }
+      - { name: prometheus:errorbudget:burn_1h,                    expr: prometheus:scrape_success:error_ratio_5m / (1 - 0.999), interval: 1m }
+
+    derived_views:
+      - id: golden_signals_prometheus
+        bind: ref:platform/golden-signals-view
+        params: { service: prometheus }
+      - id: per_job_scrape_health
+        bind: ref:platform/per-resource-rollup
+        params: { sli: scrape_success_ratio, by: [job] }
+      - id: per_rule_eval_failures
+        bind: ref:platform/per-resource-rollup
+        params: { metric: prometheus_rule_evaluation_failures_total, by: [rule_group] }
+
+  # ---------------------------------------------------------------------------
+  # 6. Dashboards
+  # ---------------------------------------------------------------------------
+  dashboards:
+    - id: prometheus-overview
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: observability
+      source: file://dashboards/prometheus-overview.json
+      datasources:
+        metrics: ref:platform/ds-mimir
+        logs:    ref:platform/ds-elasticsearch-logs
+        traces:  ref:platform/ds-tempo
+      panel_bindings:
+        - { panel: sli-scrape-success,          binds_to: slis.scrape_success_ratio }
+        - { panel: sli-wal-integrity,           binds_to: slis.wal_corruption_freshness }
+        - { panel: sli-rule-evaluation,         binds_to: slis.rule_evaluation_success_ratio }
+        - { panel: sli-query-latency,           binds_to: slis.query_latency_p99 }
+        - { panel: slo-scrape-success,          binds_to: slos.scrape_success_99_9 }
+        - { panel: slo-rule-evaluation,         binds_to: slos.rule_evaluation_99_95 }
+
+    - id: prometheus-query-engine
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: observability
+      source: file://dashboards/prometheus-query-engine.json
+      datasources:
+        metrics: ref:platform/ds-mimir
+      panel_bindings:
+        - { panel: sli-query-latency,           binds_to: slis.query_latency_p99 }
+        - { panel: sli-query-saturation,        binds_to: slis.query_concurrent_saturation }
+        - { panel: slo-query-latency,           binds_to: slos.query_latency_99_p99_1s }
+
+    - id: prometheus-tsdb-health
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: observability
+      source: file://dashboards/prometheus-tsdb-health.json
+      datasources:
+        metrics: ref:platform/ds-mimir
+      panel_bindings:
+        - { panel: sli-wal-integrity,           binds_to: slis.wal_corruption_freshness }
+        - { panel: sli-tsdb-compaction,         binds_to: slis.tsdb_compaction_success_ratio }
+        - { panel: slo-tsdb-compaction,         binds_to: slos.tsdb_compaction_99_95 }
+
+    - id: prometheus-slo-burn
+      provider: { kind: grafana, version: "11.3", schemaVersion: 41 }
+      folder: observability
+      template: ref:platform/slo-burn-template
+      params: { slos: [ scrape_success_99_9, rule_evaluation_99_95, query_latency_99_p99_1s, alertmanager_delivery_99_9, tsdb_compaction_99_95, wal_integrity_99_99 ] }
+
+  # ---------------------------------------------------------------------------
+  # 7. Policy — multi-window burn-rate alerts (Google SRE playbook)
+  # ---------------------------------------------------------------------------
+  policy:
+    burn_rate_alerts:
+      - slo: scrape_success_99_9
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: scrape_duration_99_p99_5s
+        windows:
+          - { short: 10m, long: 1h, factor: 10, severity: SEV2 }
+          - { short: 1h,  long: 6h, factor: 4,  severity: SEV3 }
+
+      - slo: wal_integrity_99_99
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: rule_evaluation_99_95
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: query_latency_99_p99_1s
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV2 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV3 }
+
+      - slo: query_concurrency_99_under_80pct
+        windows:
+          - { short: 15m, long: 2h, factor: 8, severity: SEV2 }
+          - { short: 1h,  long: 6h, factor: 3, severity: SEV3 }
+
+      - slo: alertmanager_delivery_99_9
+        windows:
+          - { short: 5m,  long: 1h, factor: 14, severity: SEV1 }
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+
+      - slo: tsdb_compaction_99_95
+        windows:
+          - { short: 30m, long: 6h, factor: 6,  severity: SEV2 }
+          - { short: 2h,  long: 1d, factor: 3,  severity: SEV3 }
+
+    forecasts:
+      - { slo: tsdb_compaction_99_95,  method: holt-winters,          horizon: 7d, on_projected_breach: open_ticket }
+      - { slo: scrape_success_99_9,    method: percentile-of-history, horizon: 3d, on_projected_breach: post_warning }
+
+  # ---------------------------------------------------------------------------
+  # 8. Alerting routes
+  # ---------------------------------------------------------------------------
+  alerting:
+    routes:
+      - severity: SEV1
+        channels:
+          - { msteams:  "#obs-platform-oncall" }
+          - { voice:    "pagerduty://observability" }
+      - severity: SEV2
+        channels:
+          - { msteams:  "#obs-platform-oncall" }
+          - { voice:    "pagerduty://observability-low" }
+      - severity: SEV3
+        channels:
+          - { msteams: "#obs-platform-team" }
+
+    dedup: ref:platform/std-dedup
+    suppress: [ maintenance_windows, deploy_freezes, dependency_outage ]
+
+  # ---------------------------------------------------------------------------
+  # 9. Remediation — guardrailed actions
+  # ---------------------------------------------------------------------------
+  remediation:
+    - trigger: alert:prometheus-scrape-failures-burn
+      runbook: file://runbooks/scrape-failures.md
+      automation: argo-workflow://restart-failing-scrapers
+      guardrails:
+        max_invocations_per_hour: 2
+        requires_human_above: SEV2
+        rollback_on_failure: true
+        cooldown_after_success: 15m
+        circuit_breaker: { failures: 2, window: 1h }
+
+    - trigger: alert:prometheus-rule-eval-failures-burn
+      runbook: file://runbooks/rule-evaluation-failures.md
+      automation: argo-workflow://reload-prometheus-config
+      guardrails:
+        max_invocations_per_hour: 3
+        requires_human_above: SEV2
+        rollback_on_failure: true
+        cooldown_after_success: 10m
+
+    - trigger: alert:prometheus-tsdb-compaction-failures
+      runbook: file://runbooks/tsdb-compaction.md
+      automation: argo-workflow://trigger-manual-compaction
+      guardrails:
+        max_invocations_per_hour: 1
+        requires_human_above: SEV2
+        rollback_on_failure: false
+        cooldown_after_success: 1h
+
+    - trigger: alert:prometheus-wal-corruption
+      runbook: file://runbooks/wal-corruption.md
+      automation: "manual-only"     # WAL corruption is data-loss territory; never auto-act
+      guardrails:
+        max_invocations_per_hour: 1
+        requires_human_above: SEV1
+
+  # ---------------------------------------------------------------------------
+  # 10a. Baselines
+  # ---------------------------------------------------------------------------
+  baselines:
+    mttd_target_p50: 2m
+    mttd_target_p95: 5m
+    mttr_target_p50: 30m
+    mttr_target_p95: 1h
+    measurement_source: incident-mgmt + alertmanager firing timestamps
+    review_cadence: monthly
+    regression_gate: block_release_if_either_breaches_target
+
+  # ---------------------------------------------------------------------------
+  # 10b. Validation — chaos + synthetic
+  # ---------------------------------------------------------------------------
+  validation:
+
+    chaos_experiments:
+
+      - id: prom-pod-kill
+        engine: chaos-mesh
+        target: prometheus-server
+        steady_state_hypothesis: ref:slos.scrape_success_99_9
+        fault: { kind: pod-failure, fraction: 0.5, duration: 60s }
+        expected_alerts: [ prometheus-scrape-failures-burn-fast ]
+        expected_mttd: 2m
+        schedule: weekly
+        environment: staging
+
+      - id: prom-disk-pressure
+        engine: chaos-mesh
+        target: prometheus-server
+        steady_state_hypothesis: ref:slos.tsdb_compaction_99_95
+        fault: { kind: disk-fill, percentage: 90, duration: 10m }
+        expected_alerts: [ prometheus-tsdb-compaction-burn ]
+        expected_mttd: 10m
+        schedule: monthly
+        environment: staging
+
+      - id: prom-query-flood
+        engine: chaos-mesh
+        target: prometheus-server
+        steady_state_hypothesis: ref:slos.query_concurrency_99_under_80pct
+        fault: { kind: http-flood, target_path: /api/v1/query, qps: 200, duration: 5m }
+        expected_alerts: [ prometheus-query-concurrency-burn ]
+        expected_mttd: 5m
+        schedule: monthly
+        environment: staging
+
+      - id: alertmanager-network-isolate
+        engine: chaos-mesh
+        target: prometheus-server
+        steady_state_hypothesis: ref:slos.alertmanager_delivery_99_9
+        fault: { kind: network-partition, target: alertmanager, duration: 3m }
+        expected_alerts: [ prometheus-alertmanager-delivery-burn-fast ]
+        expected_mttd: 2m
+        schedule: monthly
+        environment: staging
+
+    synthetic_checks:
+
+      - id: prom-api-canary
+        kind: blackbox-exporter
+        target: https://prometheus.internal:9090/api/v1/query?query=up
+        interval: 1m
+        otel_instrumentation: true
+        assertions:
+          - { status_code: 200 }
+          - { latency_lt: 1s }
+          - { body_contains: '"status":"success"' }
+        on_fail_severity: SEV2
+
+      - id: prom-tsdb-health-probe
+        kind: blackbox-exporter
+        target: https://prometheus.internal:9090/-/healthy
+        interval: 30s
+        assertions:
+          - { status_code: 200 }
+        on_fail_severity: SEV1
+
+      - id: prom-ready-probe
+        kind: blackbox-exporter
+        target: https://prometheus.internal:9090/-/ready
+        interval: 30s
+        assertions:
+          - { status_code: 200 }
+        on_fail_severity: SEV2

@@ -77,6 +77,13 @@ const EXAMPLE_PACKS = [
     catalogue: true,
   },
   {
+    id: 'prometheus-reference',
+    label: 'Prometheus (catalogue reference · tier-2)',
+    path: 'examples/prometheus.pack.yaml',
+    description: 'State-of-the-art reference pack for Prometheus 2.45+ self-monitoring (via Meta-Prometheus pattern). Eight operational vital signs, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/prometheus.md.',
+    catalogue: true,
+  },
+  {
     id: 'payment-service',
     label: 'Payment service (canonical example)',
     path: 'examples/payment-service.pack.yaml',
