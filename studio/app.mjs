@@ -353,12 +353,12 @@ function renderPackBSelect() {
     state.conformanceB = null;
     state.compileCatalogB = null;
     state.compileContentB = null;
-    // Focus snaps back to A — no point pointing at a pack that's gone.
-    state.viewFocus = 'a';
     if (!newId) {
-      // User cleared Pack B — back to single-pack focus. If the active
-      // view was a cross-pack one, fall back to Layers.
-      if (state.view === 'compare' || state.view === 'atlas') state.view = 'layers';
+      // User cleared Pack B — back to single-pack focus.
+      state.viewFocus = 'a';
+      if (state.view === 'compare' || state.view === 'atlas' || state.view === 'traceability') {
+        state.view = 'layers';
+      }
       applyModeChrome();
       renderTabs();
       renderMainView();
@@ -370,8 +370,22 @@ function renderPackBSelect() {
       const ex = (state._examplesCache || []).find(p => p.id === newId);
       if (ex) state.catalog.push(ex);
     }
-    // Lazy-load B then refresh tabs + view.
-    loadPackB().then(() => { refreshDiff(); applyModeChrome(); renderEnvBSelect(); renderTabs(); renderMainView(); });
+    // Lazy-load B then refresh tabs + view. Auto-switch to Compare —
+    // picking Pack B IS the user's intent to compare; making them then
+    // click Compare separately was the source of "I changed Pack B and
+    // lost the comparison" confusion. Preserve any cross-pack view
+    // they had already chosen (Atlas, Traceability) so we don't fight
+    // the user when they switched away deliberately.
+    const crossPackViews = new Set(['compare', 'atlas', 'traceability']);
+    const wantedAutoSwitch = !crossPackViews.has(state.view);
+    loadPackB().then(() => {
+      refreshDiff();
+      applyModeChrome();
+      renderEnvBSelect();
+      if (wantedAutoSwitch) state.view = 'compare';
+      renderTabs();
+      renderMainView();
+    });
   };
   renderEnvBSelect();
 }
@@ -3432,16 +3446,21 @@ function setupUpload() {
     if (!e.dataTransfer?.types?.includes('Files')) return;
     dragDepth++;
     overlay.hidden = false;
+    document.body.classList.add('is-dragging');
   });
   document.addEventListener('dragleave', () => {
     dragDepth = Math.max(0, dragDepth - 1);
-    if (dragDepth === 0) overlay.hidden = true;
+    if (dragDepth === 0) {
+      overlay.hidden = true;
+      document.body.classList.remove('is-dragging');
+    }
   });
   document.addEventListener('dragover', (e) => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
   document.addEventListener('drop', (e) => {
     if (!e.dataTransfer?.files?.length) return;
     e.preventDefault();
     dragDepth = 0; overlay.hidden = true;
+    document.body.classList.remove('is-dragging');
     handleFile(e.dataTransfer.files[0]);
   });
 }
@@ -3620,128 +3639,54 @@ function setupHomeAffordance() {
 function renderHomeView() {
   const view = $('#layer-view');
   if (!view) return;
-  const catalogPacks = (state.catalog || []).filter(p => p.ok);
-  const hasCatalog = catalogPacks.length > 0;
-  const live   = catalogPacks.find(p => p.id === 'production-live');
-  const repoOk = catalogPacks.filter(p => p.id !== 'production-live');
-  const defaultA = repoOk[0]?.id || catalogPacks[0]?.id || '';
-  const defaultB = live?.id || repoOk[1]?.id || defaultA;
-  const catalogOptions = catalogPacks
-    .map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')} · ${escapeHtml(p.criticality || '?')}</option>`).join('');
 
+  // Single affordance. One drop zone, three input methods. No two-card
+  // decision tree, no bundled examples disclosure, no "Compare two packs"
+  // upsell — picking Pack B from the header auto-switches to the compare
+  // view, so there's no separate entry point. The user's mental model is:
+  //   open the app → drop a pack → single view → (optional) add Pack B →
+  //   side-by-side. The home screen lives only at step 1.
   view.innerHTML = `
     <section class="home-hero">
-      <h2 class="home-hero-title"><em>What do you want to do?</em></h2>
+      <h2 class="home-hero-title">Drop a pack to begin.</h2>
       <p class="home-hero-lede">
-        The studio starts empty. Open a pack from disk — drop a YAML/JSON,
-        crawl your service repo, or draft from a live MCP — then analyze it
-        on its own or compare two side by side (typically repo vs live).
+        Open a canonical v1.2 ObservabilityPack manifest from disk, crawl a service
+        repository for a draft, or fetch what's live via MCP. The studio renders
+        every layer, scores conformance against the tier rubric, and compiles to
+        native Prometheus / Grafana / OTel / Alertmanager artefacts.
       </p>
 
-      <div class="home-cards">
-        <!-- Analyze a single pack -->
-        <article class="home-card home-card-analyze">
-          <header class="home-card-head">
-            <span class="home-card-num">①</span>
-            <h3>Analyze a pack</h3>
-          </header>
-          <p>Open one canonical v1.2 pack — score its conformance, browse its
-             layers, compile it to native artefacts, deploy.</p>
-          <div class="home-card-shortcuts home-card-shortcuts-primary">
-            <button id="home-shortcut-upload" type="button" class="home-shortcut home-shortcut-primary">
-              <span class="home-shortcut-key">▤</span>
-              <span><strong>Upload a YAML / JSON pack</strong><br><em>drop a file, or pick from disk</em></span>
-            </button>
-            <button id="home-shortcut-crawl"  type="button" class="home-shortcut">
-              <span class="home-shortcut-key">↻</span>
-              <span><strong>New from repo</strong> <em>(Path A · crawler)</em></span>
-            </button>
-            <button id="home-shortcut-live"   type="button" class="home-shortcut">
-              <span class="home-shortcut-key">○</span>
-              <span><strong>New from live MCP</strong> <em>(Path B)</em></span>
-            </button>
-          </div>
-          ${hasCatalog ? `
-            <div class="home-card-divider"><span>or reopen a recent pack</span></div>
-            <div class="home-card-form">
-              <label class="home-card-field">
-                <span class="home-card-key">Pack</span>
-                <select id="home-analyze-pack">
-                  <option value="">— pick from catalog —</option>
-                  ${catalogOptions}
-                </select>
-              </label>
-              <button id="home-analyze-go" type="button" class="home-card-cta" disabled>Open →</button>
-            </div>` : ''}
-        </article>
-
-        <!-- Compare two packs -->
-        <article class="home-card home-card-compare">
-          <header class="home-card-head">
-            <span class="home-card-num">②</span>
-            <h3>Compare two packs</h3>
-          </header>
-          <p>Diff <em>repo vs live</em>, declared vs observed. See gaps,
-             drift, and unverified declarations in context.</p>
-          ${hasCatalog && catalogPacks.length >= 2 ? `
-            <div class="home-card-form">
-              <label class="home-card-field">
-                <span class="home-card-key">PACK A <em>(typically the repo-derived draft)</em></span>
-                <select id="home-compare-a">${catalogOptions}</select>
-              </label>
-              <label class="home-card-field">
-                <span class="home-card-key">PACK B <em>(typically the live MCP snapshot)</em></span>
-                <select id="home-compare-b">${catalogOptions}</select>
-              </label>
-              <button id="home-compare-go" type="button" class="home-card-cta">Compare →</button>
-            </div>` : `
-            <p class="home-card-hint home-card-empty">
-              <em>Open at least two packs first — upload, crawl, or draft from a live MCP.
-              You'll be able to compare them once both are loaded.</em>
-            </p>`}
-        </article>
+      <div class="home-dropzone" id="home-dropzone">
+        <div class="home-dropzone-icon" aria-hidden="true">↓</div>
+        <div class="home-dropzone-prompt">drop a <code>.yaml</code> / <code>.yml</code> / <code>.json</code> pack here</div>
+        <div class="home-dropzone-or"><span>or</span></div>
+        <div class="home-dropzone-buttons">
+          <button id="home-shortcut-upload" type="button" class="home-shortcut home-shortcut-primary">
+            <span class="home-shortcut-key" aria-hidden="true">▤</span>
+            <span class="home-shortcut-label">Pick from disk</span>
+          </button>
+          <button id="home-shortcut-crawl"  type="button" class="home-shortcut">
+            <span class="home-shortcut-key" aria-hidden="true">↻</span>
+            <span class="home-shortcut-label">Crawl a repo</span>
+          </button>
+          <button id="home-shortcut-live"   type="button" class="home-shortcut">
+            <span class="home-shortcut-key" aria-hidden="true">○</span>
+            <span class="home-shortcut-label">Draft from live MCP</span>
+          </button>
+        </div>
       </div>
 
-      <!-- Browse archived examples -->
-      <details class="home-examples" id="home-examples-details">
-        <summary>Browse archived reference packs <span class="home-examples-count" id="home-examples-count">(checking…)</span></summary>
-        <p class="home-examples-lede">
-          Five reference packs shipped with the studio for demos and as
-          conformance benchmarks. Click one to open it like any other pack.
-        </p>
-        <div class="home-examples-list" id="home-examples-list">
-          <div class="placeholder">Loading examples…</div>
-        </div>
-      </details>
+      <p class="home-hero-aside">
+        Already have a pack open?
+        Use <kbd>Pack A</kbd> in the header to switch, or <kbd>Pack B</kbd> to compare.
+      </p>
     </section>
   `;
 
-  // Wire catalog-driven controls (only present when catalog is non-empty)
-  const analyzeSel = $('#home-analyze-pack');
-  const analyzeGo  = $('#home-analyze-go');
-  if (analyzeSel && analyzeGo) {
-    analyzeSel.onchange = () => { analyzeGo.disabled = !analyzeSel.value; };
-    analyzeGo.onclick = () => enterAnalyzeMode(analyzeSel.value);
-  }
-  const compA = $('#home-compare-a');
-  const compB = $('#home-compare-b');
-  const compGo = $('#home-compare-go');
-  if (compA && compB && compGo) {
-    if (defaultA) compA.value = defaultA;
-    if (defaultB) compB.value = defaultB;
-    compGo.onclick = () => {
-      if (!compA.value || !compB.value || compA.value === compB.value) return;
-      enterCompareMode(compA.value, defaultEnvFor(compA.value), compB.value, defaultEnvFor(compB.value));
-    };
-  }
-
-  // Creation shortcuts — open the existing modals
+  // Creation shortcuts — open the existing modals / file picker.
   $('#home-shortcut-upload').onclick = () => $('#upload-btn')?.click();
   $('#home-shortcut-crawl').onclick  = () => $('#crawl-btn')?.click();
   $('#home-shortcut-live').onclick   = () => $('#draft-mcp-btn')?.click();
-
-  // Examples list — fetched lazily so an empty catalog doesn't block paint.
-  loadAndRenderHomeExamples();
 }
 
 async function loadAndCacheExamples() {
@@ -3755,47 +3700,12 @@ async function loadAndCacheExamples() {
   return state._examplesCache;
 }
 
-async function loadAndRenderHomeExamples() {
-  try {
-    const r = await api('/api/examples');
-    const examples = r.examples || [];
-    // Cache for openExampleAsPack so it can populate state.catalog with
-    // the same catalog-entry shape (label/version/criticality/etc.) that
-    // /api/packs returns — not the adapted-pack shape.
-    state._examplesCache = examples;
-    $('#home-examples-count').textContent = `(${examples.length})`;
-    $('#home-examples-list').innerHTML = examples.length
-      ? examples.map(e => `
-          <button type="button" class="home-example-row" data-id="${escapeHtml(e.id)}" title="${escapeHtml(e.description || '')}">
-            <span class="home-example-name">${escapeHtml(e.label)}</span>
-            <span class="home-example-meta">v${escapeHtml(e.version || '?')} · ${escapeHtml(e.criticality || '?')}</span>
-            <span class="home-example-desc">${escapeHtml(e.description || '')}</span>
-          </button>`).join('')
-      : '<div class="placeholder">No archived examples available.</div>';
-    $('#home-examples-list').querySelectorAll('.home-example-row').forEach(b => {
-      b.onclick = () => openExampleAsPack(b.dataset.id);
-    });
-  } catch (e) {
-    $('#home-examples-list').innerHTML = `<div class="error">Could not load examples: ${escapeHtml(e.message)}</div>`;
-  }
-}
-
-async function openExampleAsPack(exampleId) {
-  // The server's /api/packs/:id/* routes look up examples via
-  // findPackMeta(), so we can just enter Analyze mode against the
-  // example id directly. We do need to inject the example into
-  // state.catalog so the pack-select dropdown + the catalog-entry
-  // resolver have a label to display.
-  state.catalog = state.catalog || [];
-  const cached = (state._examplesCache || []).find(p => p.id === exampleId);
-  if (!cached) {
-    toast(`Example not found: ${exampleId}`, 'error');
-    return;
-  }
-  const exists = state.catalog.find(p => p.id === exampleId);
-  if (!exists) state.catalog.push(cached);
-  enterAnalyzeMode(exampleId);
-}
+// loadAndRenderHomeExamples + openExampleAsPack lived here until the
+// home-screen redesign — they powered the "Browse archived reference
+// packs" disclosure. Dropped now that the home screen is just the
+// drop-zone affordance + 3 input buttons; example packs are still
+// reachable as Pack B options (loadAndCacheExamples populates them in
+// the picker) but no longer surface on the empty start screen.
 
 $('#drawer-close').onclick   = () => closeDrawer('b');
 $('#drawer-a-close').onclick = () => closeDrawer('a');
