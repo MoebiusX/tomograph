@@ -1787,6 +1787,173 @@ a:hover { color: var(--ink); }
   min-height: 480px;
 }
 
+/* ============================================================
+   Compile redesign (Phase 7m) — per-artifact picker grid.
+   Left rail = artifact tree; right pane = flavor pills + platform
+   callout + compiled output. The .compile-stage above is reused
+   for the right pane.
+   ============================================================ */
+.compile-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) 1fr;
+  gap: 0;
+  border: 1px solid var(--BLD); border-top: none;
+  background: var(--card);
+}
+.compile-grid > .compile-nav {
+  border-right: 1px solid var(--line-2);
+  background: var(--paper);
+  padding: 4px 0;
+  max-height: 80vh;
+  overflow: auto;
+}
+.compile-grid > .compile-stage {
+  border: none;
+  min-height: 480px;
+  max-height: 80vh;
+  overflow: auto;
+}
+.compile-group {
+  border-bottom: 1px solid var(--line);
+}
+.compile-group:last-child { border-bottom: none; }
+.compile-group-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 12px 16px 6px;
+  font: 500 11px/1.3 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.compile-group.is-active-group .compile-group-head { color: var(--BLD); }
+.compile-group-count {
+  font: 10px/1.2 var(--mono);
+  background: var(--code-bg);
+  color: var(--ink-4);
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+.compile-item-list {
+  list-style: none; margin: 0; padding: 0 0 8px;
+}
+.compile-item-btn {
+  width: 100%;
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 16px;
+  background: none;
+  border: none;
+  border-left: 3px solid transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--ink-3);
+  font-family: var(--sans);
+}
+.compile-item-btn:hover {
+  background: var(--BLD-tint);
+  color: var(--ink);
+}
+.compile-item.is-active .compile-item-btn {
+  background: var(--BLD-tint);
+  color: var(--ink);
+  border-left-color: var(--BLD);
+}
+.compile-item-bullet {
+  font: 12px/1.4 var(--mono);
+  color: var(--BLD);
+  width: 12px; flex-shrink: 0;
+}
+.compile-item.is-active .compile-item-bullet { color: var(--BLD); }
+.compile-item-body {
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 0;
+}
+.compile-item-label {
+  font: 500 12px/1.35 var(--mono);
+  color: inherit;
+  word-break: break-word;
+}
+.compile-item-sub {
+  font: italic 11px/1.4 var(--serif);
+  color: var(--ink-4);
+}
+
+/* Right-pane: platform callout + flavor bar + artifact head */
+.compile-callout {
+  padding: 12px 18px;
+  background: var(--BLD-tint);
+  border-bottom: 1px solid var(--line-2);
+}
+.compile-callout-head {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.compile-callout-label {
+  font: 500 10px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--BLD);
+}
+.compile-callout-platform {
+  font: 600 13px/1.3 var(--mono);
+  color: var(--ink);
+}
+.compile-callout-body {
+  font: italic 12px/1.55 var(--serif);
+  color: var(--ink-3);
+}
+.compile-flavor-bar {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  padding: 10px 18px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line-2);
+}
+.compile-flavor-key {
+  font: 500 10px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-right: 6px;
+}
+.compile-flavor-pill {
+  padding: 5px 12px;
+  font: 11.5px/1.3 var(--mono);
+  background: var(--card);
+  color: var(--ink-3);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.compile-flavor-pill:hover { border-color: var(--BLD); color: var(--ink); }
+.compile-flavor-pill.is-active {
+  background: var(--BLD); color: var(--paper);
+  border-color: var(--BLD);
+}
+.compile-artifact-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 12px 18px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.compile-artifact-label {
+  font: 500 14px/1.3 var(--serif);
+  font-style: italic;
+  color: var(--ink);
+}
+.compile-artifact-sub {
+  font: 11px/1.4 var(--mono);
+  color: var(--ink-4);
+}
+
+@media (max-width: 880px) {
+  .compile-grid {
+    grid-template-columns: 1fr;
+  }
+  .compile-grid > .compile-nav {
+    border-right: none;
+    border-bottom: 1px solid var(--line-2);
+    max-height: 280px;
+  }
+}
+
 .compile-actions {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; flex-wrap: wrap;

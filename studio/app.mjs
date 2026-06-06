@@ -54,7 +54,12 @@ const state = {
   compileTarget: 'prometheus-rules',
   compileDashId: null,
   compileContent: null,        // { filename, contentType, text, source } | { error }
-  compileTargets: null,        // catalog from /api/compile/targets
+  compileTargets: null,        // legacy catalog from /api/compile/targets
+  // Per-artifact compile state (Phase 7m).
+  compileCatalog: null,        // { groups: [...] } from /api/packs/:id/compile-catalog
+  compileGroup: 'rules',       // 'rules' | 'dashboards' | 'pipelines' | 'alertmanager'
+  compileFlavor: 'prometheus', // chosen flavor for the active group
+  compileArtifact: 'all',      // chosen leaf in the artifact tree
   deployMatrix: null,          // catalog from /api/deploy/matrix
   deployProduct: 'grafana',    // chosen target product
   deployVersion: '12',         // chosen target version (string — matches matrix.versions)
@@ -555,12 +560,51 @@ function targetScopable(target) {
   return !!state.deployMatrix?.targets?.[target]?.scopable;
 }
 
-async function loadCompiled() {
-  if (!state.selectedPackId || !state.compileTarget) { state.compileContent = null; return; }
+async function loadCompileCatalog() {
+  if (!state.selectedPackId) return null;
   const params = new URLSearchParams();
-  if (state.selectedEnv)   params.set('env', state.selectedEnv);
-  if (state.compileDashId) params.set('dashboardId', state.compileDashId);
-  const url = `/api/packs/${encodeURIComponent(state.selectedPackId)}/compile/${encodeURIComponent(state.compileTarget)}?${params}`;
+  if (state.selectedEnv) params.set('env', state.selectedEnv);
+  try {
+    const r = await fetch(`/api/packs/${encodeURIComponent(state.selectedPackId)}/compile-catalog?${params}`);
+    if (!r.ok) return null;
+    state.compileCatalog = await r.json();
+    // Reconcile current selection with what's available (the pack may
+    // have changed since last view).
+    const groups = state.compileCatalog.groups || [];
+    const g = groups.find(x => x.id === state.compileGroup) || groups[0];
+    if (!g) return state.compileCatalog;
+    state.compileGroup = g.id;
+    if (!g.flavors?.some(f => f.id === state.compileFlavor)) {
+      state.compileFlavor = g.flavors?.[0]?.id || null;
+    }
+    if (!g.items?.some(it => it.id === state.compileArtifact)) {
+      state.compileArtifact = g.items?.[0]?.id || 'all';
+    }
+  } catch (_) { state.compileCatalog = null; }
+  return state.compileCatalog;
+}
+
+// Map (group, flavor) → legacy deploy target id used by isDeployable() and the
+// deploy panel. Until per-artifact deploy lands, deploys are still
+// per-target (whole-file) so we resolve the active selection to the
+// closest legacy target name.
+function legacyDeployTargetFor(group) {
+  if (group === 'rules')        return 'prometheus-rules';
+  if (group === 'dashboards')   return 'grafana-dashboard';
+  if (group === 'pipelines')    return 'otel-collector';
+  if (group === 'alertmanager') return 'alertmanager';
+  return null;
+}
+
+async function loadCompiled() {
+  if (!state.selectedPackId) { state.compileContent = null; return; }
+  // Reset cached content so a switch between artifacts/flavors re-fetches.
+  const params = new URLSearchParams();
+  if (state.selectedEnv) params.set('env', state.selectedEnv);
+  params.set('group', state.compileGroup);
+  if (state.compileFlavor)   params.set('flavor', state.compileFlavor);
+  if (state.compileArtifact) params.set('artifact', state.compileArtifact);
+  const url = `/api/packs/${encodeURIComponent(state.selectedPackId)}/compile-artifact?${params}`;
   try {
     const r = await fetch(url);
     const ct = r.headers.get('content-type') || '';
@@ -576,10 +620,13 @@ async function loadCompiled() {
     const text = await r.text();
     state.compileContent = {
       filename: parseCdFilename(r.headers.get('content-disposition'))
-        || `${state.selectedPackId}.${state.compileTarget}`,
+        || `${state.selectedPackId}.${state.compileGroup}.${state.compileArtifact}`,
       contentType: ct.split(';')[0].trim(),
       text,
       source: r.headers.get('x-pack-source'),
+      group: r.headers.get('x-compile-group'),
+      flavor: r.headers.get('x-compile-flavor'),
+      artifact: r.headers.get('x-compile-artifact'),
     };
   } catch (e) {
     state.compileContent = { error: e.message };
@@ -609,82 +656,150 @@ function renderCompileView(host) {
   const lede = document.createElement('div');
   lede.className = 'compile-lede';
   lede.innerHTML = `
-    The pack is the contract; this is what it becomes when compiled. Change the YAML, regenerate everything below.
-    Each output is real and ingestible by its target — drop the rules into Prometheus's <code>rule_files:</code>,
-    the OTel Collector YAML into <code>--config</code>, the dashboard JSON into <code>grafana-cli dashboards import</code>,
-    the Alertmanager file into <code>--config.file</code>.
+    Pick an artifact on the left and choose its target flavor. Each leaf compiles individually — one SLO's rules,
+    one dashboard, or the full file. Every output declares its platform explicitly so you know whether you're
+    holding a <em>Prometheus / Mimir</em> rules file or a <em>Grafana-managed</em> provisioning YAML.
   `;
   section.appendChild(lede);
 
-  const pills = document.createElement('div');
-  pills.className = 'compile-targets';
-  if (!state.compileTargets) {
-    pills.innerHTML = '<span class="compile-loading">Loading targets…</span>';
-    loadCompileTargets().then(() => { renderTabs(); renderMainView(); });
-  } else {
-    for (const t of state.compileTargets) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'compile-target' + (t.id === state.compileTarget ? ' is-active' : '');
-      b.innerHTML = `
-        <span class="ct-label">${escapeHtml(t.label)}</span>
-        <span class="ct-ext">${escapeHtml(t.extension)}</span>
-      `;
-      b.title = t.description;
-      b.onclick = () => {
-        state.compileTarget = t.id;
-        state.compileContent = null;
-        if (t.id === 'grafana-dashboard' && !state.compileDashId) {
-          const first = state.pack?.layers?.L3?.find(a => /^DASH-/.test(a.id));
-          state.compileDashId = first?.spec?.id || null;
-        }
-        renderTabs(); renderMainView();
-      };
-      pills.appendChild(b);
-    }
-  }
-  section.appendChild(pills);
-
-  // Grafana sub-selector
-  if (state.compileTarget === 'grafana-dashboard' && state.pack) {
-    const dashWrap = document.createElement('div');
-    dashWrap.className = 'compile-subselect';
-    dashWrap.innerHTML = `<label class="ctrl"><span class="ctrl-key">DASHBOARD</span><select id="compile-dash"></select></label>`;
-    const sel = dashWrap.querySelector('#compile-dash');
-    const dashboards = (state.pack.layers?.L3 || []).filter(a => /^DASH-/.test(a.id));
-    if (!dashboards.length) {
-      const opt = document.createElement('option');
-      opt.textContent = '— no dashboards declared —'; opt.disabled = true;
-      sel.appendChild(opt); sel.disabled = true;
-    } else {
-      if (!state.compileDashId) state.compileDashId = dashboards[0].spec?.id || dashboards[0].title;
-      for (const d of dashboards) {
-        const id = d.spec?.id || d.title;
-        const opt = document.createElement('option');
-        opt.value = id; opt.textContent = id + (d.spec?.folder ? ` · ${d.spec.folder}` : '');
-        sel.appendChild(opt);
-      }
-      sel.value = state.compileDashId;
-      sel.onchange = () => { state.compileDashId = sel.value; state.compileContent = null; renderMainView(); };
-    }
-    section.appendChild(dashWrap);
-  }
-
-  const stage = document.createElement('div');
-  stage.className = 'compile-stage';
-  section.appendChild(stage);
+  // ---- Grid: left nav (artifact tree) + right stage ----
+  const grid = document.createElement('div');
+  grid.className = 'compile-grid';
+  section.appendChild(grid);
   host.appendChild(section);
 
+  const nav = document.createElement('aside');
+  nav.className = 'compile-nav';
+  grid.appendChild(nav);
+  const stage = document.createElement('div');
+  stage.className = 'compile-stage';
+  grid.appendChild(stage);
+
+  // Fetch catalog if missing.
+  if (!state.compileCatalog) {
+    nav.innerHTML = '<div class="compile-loading">Loading artifacts…</div>';
+    stage.innerHTML = '<div class="placeholder">Loading the artifact catalog…</div>';
+    loadCompileCatalog().then(() => { state.compileContent = null; renderMainView(); });
+    return;
+  }
+
+  const catalog = state.compileCatalog;
+  const groups = catalog.groups || [];
+  if (!groups.length) {
+    nav.innerHTML = '<div class="placeholder">This pack has nothing compilable yet — add SLOs, dashboards, or pipelines to the source.</div>';
+    return;
+  }
+
+  // ---- Left nav: artifact tree ----
+  for (const g of groups) {
+    const groupEl = document.createElement('div');
+    groupEl.className = 'compile-group' + (g.id === state.compileGroup ? ' is-active-group' : '');
+    groupEl.innerHTML = `
+      <div class="compile-group-head">
+        <span class="compile-group-label">${escapeHtml(g.label)}</span>
+        <span class="compile-group-count">${(g.items || []).length}</span>
+      </div>
+    `;
+    const list = document.createElement('ul');
+    list.className = 'compile-item-list';
+    for (const it of (g.items || [])) {
+      const li = document.createElement('li');
+      const selected = (g.id === state.compileGroup) && (it.id === state.compileArtifact);
+      li.className = 'compile-item' + (selected ? ' is-active' : '');
+      li.innerHTML = `
+        <button type="button" class="compile-item-btn" title="${escapeHtml(it.subtitle || '')}">
+          <span class="compile-item-bullet" aria-hidden="true">${selected ? '●' : '○'}</span>
+          <span class="compile-item-body">
+            <span class="compile-item-label">${escapeHtml(it.label)}</span>
+            ${it.subtitle ? `<span class="compile-item-sub">${escapeHtml(it.subtitle)}</span>` : ''}
+          </span>
+        </button>
+      `;
+      li.querySelector('button').onclick = () => {
+        state.compileGroup = g.id;
+        state.compileArtifact = it.id;
+        // Reconcile flavor with the chosen group.
+        if (!g.flavors?.some(f => f.id === state.compileFlavor)) {
+          state.compileFlavor = g.flavors?.[0]?.id || null;
+        }
+        state.compileContent = null;
+        renderMainView();
+      };
+      list.appendChild(li);
+    }
+    groupEl.appendChild(list);
+    nav.appendChild(groupEl);
+  }
+
+  // ---- Right stage: flavor pills + platform badge + compiled output ----
+  const activeGroup = groups.find(g => g.id === state.compileGroup) || groups[0];
+  const activeFlavor = activeGroup?.flavors?.find(f => f.id === state.compileFlavor) || activeGroup?.flavors?.[0];
+  const activeItem = (activeGroup?.items || []).find(it => it.id === state.compileArtifact);
+
+  // Platform callout — the explicit answer to "where does this land?"
+  const callout = document.createElement('div');
+  callout.className = 'compile-callout';
+  callout.innerHTML = `
+    <div class="compile-callout-head">
+      <span class="compile-callout-label">TARGET PLATFORM</span>
+      <span class="compile-callout-platform">${escapeHtml(activeFlavor?.platform || '—')}</span>
+    </div>
+    <div class="compile-callout-body">${escapeHtml(activeFlavor?.description || '')}</div>
+  `;
+  stage.appendChild(callout);
+
+  // Flavor pills (if multiple)
+  if ((activeGroup?.flavors || []).length > 1) {
+    const flavorBar = document.createElement('div');
+    flavorBar.className = 'compile-flavor-bar';
+    flavorBar.innerHTML = `<span class="compile-flavor-key">FLAVOR</span>`;
+    for (const f of activeGroup.flavors) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'compile-flavor-pill' + (f.id === state.compileFlavor ? ' is-active' : '');
+      b.innerHTML = `${escapeHtml(f.label)}`;
+      b.title = `${f.platform} · ${f.description}`;
+      b.onclick = () => {
+        if (state.compileFlavor === f.id) return;
+        state.compileFlavor = f.id;
+        state.compileContent = null;
+        renderMainView();
+      };
+      flavorBar.appendChild(b);
+    }
+    stage.appendChild(flavorBar);
+  }
+
+  // Active artifact heading
+  if (activeItem) {
+    const head2 = document.createElement('div');
+    head2.className = 'compile-artifact-head';
+    head2.innerHTML = `
+      <span class="compile-artifact-label">${escapeHtml(activeItem.label)}</span>
+      ${activeItem.subtitle ? `<span class="compile-artifact-sub">${escapeHtml(activeItem.subtitle)}</span>` : ''}
+    `;
+    stage.appendChild(head2);
+  }
+
+  // Content
   if (!state.compileContent) {
-    stage.innerHTML = '<div class="placeholder">Compiling…</div>';
+    const ph = document.createElement('div');
+    ph.className = 'placeholder';
+    ph.textContent = 'Compiling…';
+    stage.appendChild(ph);
     loadCompiled().then(() => renderMainView());
     return;
   }
   if (state.compileContent.error) {
-    stage.innerHTML = `<div class="error">Compile failed: ${escapeHtml(state.compileContent.error)}</div>`;
+    const err = document.createElement('div');
+    err.className = 'error';
+    err.textContent = `Compile failed: ${state.compileContent.error}`;
+    stage.appendChild(err);
     return;
   }
   const c = state.compileContent;
+  // Map current selection to the legacy target name the deploy path expects.
+  state.compileTarget = legacyDeployTargetFor(state.compileGroup) || state.compileTarget;
 
   const envLabel = state.selectedEnv || 'none';
   const actions = document.createElement('div');
@@ -2054,6 +2169,10 @@ function setupUpload() {
 async function refresh() {
   try {
     await loadPack(state.selectedPackId, state.selectedEnv);
+    // Compile catalog is pack/env-specific — invalidate on switch so the
+    // tree re-fetches the new pack's artifacts.
+    state.compileCatalog = null;
+    state.compileContent = null;
     renderEnvSelect();
     renderPackSelect();
     renderMeta();

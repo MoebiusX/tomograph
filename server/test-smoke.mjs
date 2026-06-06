@@ -172,6 +172,72 @@ try {
   const badTarget = await fetch(`${base}/api/packs/payment-service/compile/no-such-target`);
   assert(badTarget.status === 400, 'unknown compile target → 400');
 
+  // --- Compile redesign (Phase 7m): per-artifact catalog + endpoint ---
+  const compCat = await getJson(base, '/api/packs/payment-service/compile-catalog');
+  assert(Array.isArray(compCat.groups), 'compile-catalog returns groups');
+  const groupIds = compCat.groups.map(g => g.id);
+  assert(groupIds.includes('rules'), 'catalog has a rules group');
+  assert(groupIds.includes('dashboards'), 'catalog has a dashboards group');
+  assert(groupIds.includes('pipelines'), 'catalog has a pipelines group');
+  assert(groupIds.includes('alertmanager'), 'catalog has an alertmanager group');
+  const rulesGroup = compCat.groups.find(g => g.id === 'rules');
+  const rulesFlavorIds = rulesGroup.flavors.map(f => f.id);
+  assert(rulesFlavorIds.includes('prometheus'), 'rules group has Prometheus flavor');
+  assert(rulesFlavorIds.includes('grafana-managed'), 'rules group has Grafana-managed flavor');
+  for (const f of rulesGroup.flavors) {
+    assert(typeof f.platform === 'string' && f.platform.length > 5,
+           `flavor "${f.id}" declares an explicit target platform string`);
+    assert(typeof f.description === 'string' && f.description.length > 10,
+           `flavor "${f.id}" declares a description`);
+  }
+  const rulesItemIds = rulesGroup.items.map(it => it.id);
+  assert(rulesItemIds.includes('all'),                    'rules items include "all"');
+  assert(rulesItemIds.some(id => id.startsWith('slo:')),  'rules items include per-SLO entries');
+  const firstSloId = rulesItemIds.find(id => id.startsWith('slo:'));
+
+  // Per-artifact compile: Prometheus per-SLO
+  const promSloRes = await fetch(`${base}/api/packs/payment-service/compile-artifact?group=rules&flavor=prometheus&artifact=${encodeURIComponent(firstSloId)}`);
+  assert(promSloRes.status === 200, 'per-SLO Prometheus compile → 200');
+  assert((promSloRes.headers.get('content-type') || '').includes('application/x-yaml'),
+         'per-SLO Prometheus content-type is yaml');
+  assert(promSloRes.headers.get('x-compile-flavor') === 'prometheus',
+         'per-SLO Prometheus echoes X-Compile-Flavor');
+  assert(promSloRes.headers.get('x-compile-artifact') === firstSloId,
+         'per-SLO Prometheus echoes X-Compile-Artifact');
+  const promSloText = await promSloRes.text();
+  const sloIdOnly = firstSloId.slice(4);
+  assert(promSloText.includes(sloIdOnly), `per-SLO Prometheus contains the SLO id (${sloIdOnly})`);
+  assert(!promSloText.includes('apiVersion: 1'),
+         'per-SLO Prometheus does NOT use the Grafana-managed apiVersion header');
+
+  // Per-artifact compile: Grafana-managed per-SLO
+  const grafSloRes = await fetch(`${base}/api/packs/payment-service/compile-artifact?group=rules&flavor=grafana-managed&artifact=${encodeURIComponent(firstSloId)}`);
+  assert(grafSloRes.status === 200, 'per-SLO Grafana-managed compile → 200');
+  const grafSloText = await grafSloRes.text();
+  assert(grafSloText.includes('apiVersion: 1'),
+         'per-SLO Grafana-managed uses Grafana provisioning apiVersion: 1');
+  assert(grafSloText.includes('folder: observability-pack'),
+         'per-SLO Grafana-managed declares the folder');
+  assert(grafSloText.includes('refId'),
+         'per-SLO Grafana-managed emits Grafana query data with refIds');
+
+  // Per-artifact compile: single dashboard
+  const dashRes2 = await fetch(`${base}/api/packs/payment-service/compile-artifact?group=dashboards&flavor=grafana&artifact=dash:payment-overview`);
+  assert(dashRes2.status === 200, 'per-artifact dashboard compile → 200');
+  assert((dashRes2.headers.get('content-type') || '').includes('application/json'),
+         'per-artifact dashboard content-type is json');
+
+  // Catalog reflects the env overlay
+  const compCatStaging = await getJson(base, '/api/packs/payment-service/compile-catalog?env=staging');
+  assert(compCatStaging.env === 'staging', 'catalog echoes env when provided');
+
+  // Bad group → 500-with-message (handled as JSON)
+  const badGroup = await fetch(`${base}/api/packs/payment-service/compile-artifact?group=does-not-exist`);
+  assert(badGroup.status === 500, 'unknown compile group → 500 (error JSON)');
+  const badGroupBody = await badGroup.json();
+  assert(/unknown compile group/.test(badGroupBody.error || ''),
+         'unknown group error message names the bad group kind');
+
   // /api/packs/<unknown>/compile/prometheus-rules → 404
   const badPack = await fetch(`${base}/api/packs/does-not-exist/compile/prometheus-rules`);
   assert(badPack.status === 404, 'unknown pack on compile → 404');

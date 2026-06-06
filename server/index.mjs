@@ -37,7 +37,7 @@ import { evaluateConformance, RUBRIC } from '../tools/lib/conformance.mjs';
 import { crawlFiles, crawlToYaml } from '../tools/lib/crawler.mjs';
 import { fetchMcp, buildCanonicalPack, createMcpClient } from '../tools/fetch-live-pack.mjs';
 import { diffPacks } from '../tools/lib/diff.mjs';
-import { compile, listTargets } from '../tools/lib/compile.mjs';
+import { compile, listTargets, compileCatalog, compileArtifact } from '../tools/lib/compile.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -225,6 +225,60 @@ app.get('/api/diff', (req, res) => {
 
 app.get('/api/compile/targets', (req, res) => {
   res.json({ targets: listTargets() });
+});
+
+// ----------------------------------------------------------------
+// /api/packs/:id/compile-catalog — enumerate every individually
+// compilable artifact in this pack. The studio renders this as a
+// left-nav tree; each leaf is then compiled via /api/packs/:id/
+// compile-artifact?group=&flavor=&artifact= below.
+// ----------------------------------------------------------------
+app.get('/api/packs/:id/compile-catalog', (req, res) => {
+  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
+  try {
+    const canonical = loadPackFile(meta.path);
+    const env = readEnv(req.query);
+    const { canonical: overlaid } = overlaidCanonical(canonical, env);
+    const catalog = compileCatalog(overlaid);
+    res.json({
+      pack: meta.id,
+      env: env || null,
+      ...catalog,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------
+// /api/packs/:id/compile-artifact?group=&flavor=&artifact=
+// Per-artifact compilation. Returns the same content-type/body
+// shape as /api/packs/:id/compile/:target so the client can reuse
+// the existing display path.
+// ----------------------------------------------------------------
+app.get('/api/packs/:id/compile-artifact', (req, res) => {
+  const meta = PACK_CATALOG.find(p => p.id === req.params.id);
+  if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
+  const group = String(req.query.group || '');
+  const flavor = req.query.flavor ? String(req.query.flavor) : undefined;
+  const artifact = req.query.artifact ? String(req.query.artifact) : 'all';
+  if (!group) return res.status(400).json({ ok: false, error: 'group query param required' });
+  try {
+    const canonical = loadPackFile(meta.path);
+    const env = readEnv(req.query);
+    const { canonical: overlaid } = overlaidCanonical(canonical, env);
+    const out = compileArtifact(overlaid, { group, flavor, artifact });
+    res.setHeader('Content-Type', out.contentType + '; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.setHeader('X-Pack-Source', `${meta.id}@${overlaid?.metadata?.version || '?'}`);
+    res.setHeader('X-Compile-Group', group);
+    if (flavor)   res.setHeader('X-Compile-Flavor', flavor);
+    if (artifact) res.setHeader('X-Compile-Artifact', artifact);
+    res.send(out.content);
+  } catch (e) {
+    res.status(500).type('application/json').send(JSON.stringify({ ok: false, error: e.message }));
+  }
 });
 
 // Deploy matrix — what's deployable, to which products, with what default
