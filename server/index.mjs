@@ -68,24 +68,26 @@ const PACK_CATALOG = [];
 // the home screen's "Browse examples" link. Each entry mirrors the
 // catalog shape so the existing /api/packs/:id paths keep working when
 // the user opens an example.
+// Labels intentionally omit the tier — it renders as a separate badge
+// in the picker, so duplicating it in the name reads as noise.
 const EXAMPLE_PACKS = [
   {
     id: 'kafka-reference',
-    label: 'Kafka (catalogue reference · tier-2)',
+    label: 'Kafka (catalogue reference)',
     path: 'examples/kafka.pack.yaml',
     description: 'State-of-the-art reference pack for Apache Kafka 3.x. Five operational vital signs, multi-window burn-rate alerts, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/kafka.md.',
     catalogue: true,
   },
   {
     id: 'prometheus-reference',
-    label: 'Prometheus (catalogue reference · tier-2)',
+    label: 'Prometheus (catalogue reference)',
     path: 'examples/prometheus.pack.yaml',
     description: 'State-of-the-art reference pack for Prometheus 2.45+ self-monitoring (via Meta-Prometheus pattern). Eight operational vital signs, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/prometheus.md.',
     catalogue: true,
   },
   {
     id: 'grafana-reference',
-    label: 'Grafana (catalogue reference · tier-2)',
+    label: 'Grafana (catalogue reference)',
     path: 'examples/grafana.pack.yaml',
     description: 'State-of-the-art reference pack for Grafana 11.x including unified alerting. Eight operational vital signs (HTTP, datasource proxy, database, alerting evaluation, plugins, login), 4 chaos experiments, 3-layer synthetic checks. Paired with the Prometheus reference pack. Every section evidence-cited in docs/catalogue-evidence/grafana.md.',
     catalogue: true,
@@ -98,15 +100,15 @@ const EXAMPLE_PACKS = [
   },
   {
     id: 'target-advanced',
-    label: 'Target advanced (tier-1 reference)',
+    label: 'Target advanced (aspirational reference)',
     path: 'examples/target-advanced.pack.yaml',
     description: 'Aspirational tier-1 — 100% MUST conformance, all 5 SHOULDs pass.',
   },
   {
     id: 'production-curated',
-    label: 'Production curated (tier-2 BAU)',
+    label: 'Production curated (hand-authored baseline)',
     path: 'examples/production-curated.pack.yaml',
-    description: 'Hand-curated tier-2 baseline with intentional gaps the conformance panel surfaces.',
+    description: 'Hand-curated baseline with intentional gaps the conformance panel surfaces.',
   },
   {
     id: 'production-live',
@@ -116,7 +118,7 @@ const EXAMPLE_PACKS = [
   },
   {
     id: 'demo-skeleton',
-    label: 'Demo skeleton (tier-3 minimum)',
+    label: 'Demo skeleton (smallest valid pack)',
     path: 'examples/demo-skeleton.pack.yaml',
     description: "Smallest valid canonical v1.2 pack — every schema-required section with the leanest content.",
   },
@@ -166,7 +168,7 @@ function contentHash(canonical) {
   return createHash('sha256').update(json).digest('hex').slice(0, 8);
 }
 
-function registerUploadedPack(canonical, source) {
+function registerUploadedPack(canonical, source, label) {
   const slug = slugify(canonical?.metadata?.name || source || 'pack');
   const id = `uploaded-${slug}-${contentHash(canonical)}`;
   // Idempotent: if the same canonical content was already registered,
@@ -174,7 +176,16 @@ function registerUploadedPack(canonical, source) {
   // id. That makes re-upload safe (no duplicate entries) AND keeps the
   // user's pick alive when they're actively working with that pack.
   if (UPLOADED_PACKS.has(id)) UPLOADED_PACKS.delete(id);
-  UPLOADED_PACKS.set(id, { canonical, source: source || 'upload', createdAt: Date.now() });
+  // ALSO drop any older entry whose friendly label collides with the
+  // new one. This is how the quick-start cases stay deduplicated:
+  // a second "KrystalineX (repo scan)" replaces the first instead of
+  // accumulating clones in the picker.
+  if (label) {
+    for (const [otherId, rec] of [...UPLOADED_PACKS.entries()]) {
+      if (rec.label === label && otherId !== id) UPLOADED_PACKS.delete(otherId);
+    }
+  }
+  UPLOADED_PACKS.set(id, { canonical, source: source || 'upload', label, createdAt: Date.now() });
   // Evict the oldest if we've blown the cap.
   while (UPLOADED_PACKS.size > MAX_UPLOADS) {
     const oldestKey = UPLOADED_PACKS.keys().next().value;
@@ -190,7 +201,9 @@ function uploadedMeta(id) {
     id,
     path: null,        // signal: not file-backed
     canonical: upl.canonical,
-    label: upl.canonical?.metadata?.name || id,
+    // Prefer the explicit friendly label when present, fall back to
+    // the canonical pack name. This is what the picker dropdown reads.
+    label: upl.label || upl.canonical?.metadata?.name || id,
     description: `Uploaded pack — ${upl.source}`,
     source: upl.source,
     uploaded: true,
@@ -946,8 +959,13 @@ app.post('/api/draft-from-mcp', async (req, res) => {
     const conformance = evaluateConformance(pack);
     const canonicalYaml = banner(pack) + emitYaml(pack);
     // Register only if validation passes; bad packs aren't addressable.
+    // Prefer the caller-supplied label (the quick-start cases pass
+    // something friendlier than the auto-generated metadata name).
+    const friendlyLabel = (typeof body.label === 'string' && body.label.trim())
+      ? body.label.trim()
+      : `${pack.metadata?.name || 'mcp-draft'} (live MCP draft)`;
     const registered = errors.length === 0
-      ? { id: registerUploadedPack(pack, `${pack.metadata?.name || 'mcp-draft'} (live draft)`) }
+      ? { id: registerUploadedPack(pack, friendlyLabel, friendlyLabel) }
       : null;
     process.stderr.write(`[draft-from-mcp]   ok in ${Date.now() - t0}ms; ` +
       `valid=${errors.length === 0}; ` +
@@ -1086,8 +1104,11 @@ app.post('/api/crawl', (req, res) => {
     const conformance = evaluateConformance(canonical);
     // Register the crawled canonical only if it validates. Bad packs
     // shouldn't pollute the catalog under an addressable id.
+    const friendlyLabel = (typeof body.label === 'string' && body.label.trim())
+      ? body.label.trim()
+      : `${opts.repoName || canonical.metadata?.name || 'crawl'} (scanned)`;
     const registered = validationErrors.length === 0
-      ? { id: registerUploadedPack(canonical, `${opts.repoName || canonical.metadata?.name || 'crawl'} (crawled)`) }
+      ? { id: registerUploadedPack(canonical, friendlyLabel, friendlyLabel) }
       : null;
     process.stderr.write(`[crawl] ${entries.length} files, ${summary.files.classified} classified, ${Object.keys(evidence).length} evidence, tier=${summary.inferred.tier}, valid=${validationErrors.length === 0}, registered=${registered?.id || '-'}, ${Date.now() - t0}ms\n`);
     res.json({
@@ -1282,8 +1303,11 @@ app.post('/api/crawl-github', async (req, res) => {
     const { canonical } = crawlFiles(files, opts);
     const validationErrors = validateCanonical(canonical, SCHEMA);
     const conformance = evaluateConformance(canonical);
+    const friendlyLabel = (typeof body.label === 'string' && body.label.trim())
+      ? body.label.trim()
+      : `${owner}/${repo} (repo scan)`;
     const registered = validationErrors.length === 0
-      ? { id: registerUploadedPack(canonical, `${opts.repoName} (github)`) }
+      ? { id: registerUploadedPack(canonical, friendlyLabel, friendlyLabel) }
       : null;
 
     summary.source = 'github';

@@ -318,10 +318,12 @@ function renderPackSelect() {
     const opt = document.createElement('option');
     opt.value = p.id;
     // Uploaded packs lead with a folder glyph so the user can tell
-    // them apart from file-backed catalog entries at a glance.
+    // them apart from file-backed catalog entries at a glance. Tier
+    // is omitted from the option text — it already renders as a
+    // separate badge on the picker chrome.
     const prefix = p.source === 'uploaded' ? '📂 ' : '';
     opt.textContent = p.ok
-      ? `${prefix}${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`
+      ? `${prefix}${p.label} · v${p.version || '?'}`
       : `${p.label} (error)`;
     if (!p.ok) opt.disabled = true;
     sel.appendChild(opt);
@@ -357,7 +359,7 @@ function renderPackBSelect() {
   // Sort by label so the list is stable across re-renders.
   options.sort((a, b) => (a.label || a.id).localeCompare(b.label || b.id));
   sel.innerHTML = '<option value="">— none —</option>'
-    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')} · ${escapeHtml(p.criticality || '?')}</option>`).join('');
+    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')}</option>`).join('');
   sel.value = state.compareBId || '';
   sel.onchange = () => {
     const newId = sel.value || null;
@@ -4048,7 +4050,7 @@ function renderComparePicker() {
     if (!p.ok) continue;
     const opt = document.createElement('option');
     opt.value = p.id;
-    opt.textContent = `${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`;
+    opt.textContent = `${p.label} · v${p.version || '?'}`;
     bSel.appendChild(opt);
   }
   bSel.value = state.compareBId;
@@ -4983,15 +4985,12 @@ function setupUpload() {
       if (action === 'quick-krystaline') {
         // Same flow as the home's MCP connect → adopt path, just driven
         // programmatically. We pre-fill the URL and trigger the same
-        // doHomeMcpConnect that the home button calls.
-        const urlInput = document.getElementById('home-mcp-url');
-        if (urlInput) urlInput.value = 'https://www.krystaline.io/mcp/public';
-        // Open the draft-mcp panel (or trigger the same fetch via the
-        // header's `new from live` button) so the user sees the same
-        // progress + adopt flow they'd see manually.
+        // doHomeMcpConnect that the home button calls. The friendly
+        // label is held on the panel via a data-attribute so the
+        // adopt handler can pass it through to the API.
+        window._tomographQuickLabel = 'Krystaline (live MCP draft)';
         const newFromLive = document.getElementById('draft-mcp-btn');
         if (newFromLive) newFromLive.click();
-        // Pre-fill the panel's URL field after it opens.
         setTimeout(() => {
           const panelUrl = document.getElementById('draft-mcp-url');
           if (panelUrl) panelUrl.value = 'https://www.krystaline.io/mcp/public';
@@ -5002,6 +5001,7 @@ function setupUpload() {
       }
       if (action === 'quick-krystalinex-repo') {
         // Open the scan-a-repo panel and pre-fill the GitHub URL field.
+        window._tomographQuickLabel = 'KrystalineX (repo scan)';
         const scanBtn = document.getElementById('crawl-btn');
         if (scanBtn) scanBtn.click();
         setTimeout(() => {
@@ -5475,8 +5475,17 @@ async function doHomeMcpConnect() {
     const r = await fetch('/api/draft-from-mcp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
+      body: JSON.stringify({
+        mcpUrl: url,
+        mcpAuth: auth || undefined,
+        // Forward the quick-start friendly label when the user came
+        // through the Upload popover. window._tomographQuickLabel is
+        // cleared after consumption so manual draft-from-mcp from the
+        // panel keeps the auto-generated label.
+        label: window._tomographQuickLabel || undefined,
+      }),
     });
+    if (window._tomographQuickLabel) window._tomographQuickLabel = null;
     const ct = r.headers.get('content-type') || '';
     if (!ct.includes('application/json')) {
       throw new Error(`server returned ${r.status} ${ct || 'no content-type'}`);
@@ -6218,7 +6227,11 @@ async function doCrawlFromGithub() {
     ref,
     repoName:   $('#crawl-name').value.trim() || undefined,  // server falls back to owner/repo
     environment:$('#crawl-env').value.trim() || 'prod',
+    // Quick-start cases pass a friendly label via the global so the
+    // picker doesn't read "moebiusx-krystalinex" but the human name.
+    label:      window._tomographQuickLabel || undefined,
   };
+  if (window._tomographQuickLabel) window._tomographQuickLabel = null;
   const crit = $('#crawl-criticality').value;
   if (crit) body.criticality = crit;
 
@@ -6456,7 +6469,7 @@ function populateDeploySourcePackSelect(activeId) {
     if (!p.ok) continue;
     const opt = document.createElement('option');
     opt.value = p.id;
-    opt.textContent = `${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`;
+    opt.textContent = `${p.label} · v${p.version || '?'}`;
     sel.appendChild(opt);
   }
   sel.value = activeId || state.selectedPackId;
