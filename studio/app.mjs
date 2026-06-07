@@ -2646,35 +2646,28 @@ function renderTraceRow(bucketKey, finding, resolvedSet) {
 //   └─────────────────────────────────────────────────────────────┘
 // ============================================================
 function renderBenchmarkView(view) {
-  if (!state.compareBId) state.compareBId = defaultCompareB();
-  if (!state.compareBEnv) state.compareBEnv = defaultEnvFor(state.compareBId);
-  if (!state.compareBId) {
-    view.innerHTML = '<div class="placeholder">Benchmark needs a reference pack as Pack B.</div>';
-    return;
-  }
-
   const scaffold = document.createElement('section');
   scaffold.className = 'section benchmark-view';
   scaffold.dataset.layer = 'BENCHMARK';
   view.appendChild(scaffold);
 
-  // Same loading gate as Compare — both packs + diff must be present.
-  const haveA = !!state.pack, haveB = !!state.packB, haveDiff = !!state.diff && !state.diff.error;
-  if (!haveA || !haveB || !haveDiff) {
-    if (state.diff?.error) {
-      const err = document.createElement('div');
-      err.className = 'error';
-      err.textContent = `Diff failed: ${state.diff.error}`;
-      scaffold.appendChild(err);
-      return;
-    }
+  // Pack A is guaranteed by the dispatcher. Pack B is OPTIONAL: with A
+  // alone we answer the killer question (diagnostic-grade YES/NO) from
+  // coverage + drift evidence carried in Pack A itself. Loading a Pack B
+  // (via the header picker — we never duplicate it here) unlocks the
+  // A-vs-B comparison for drift-vs-deployed or gap-vs-target analysis.
+  const haveB = !!state.packB;
+
+  // If the user picked a Pack B but it (or the diff) hasn't loaded yet,
+  // fetch them and re-render so the comparison enriches the verdict.
+  if (state.compareBId && (!haveB || (!state.diff && !state.diff?.error))) {
     const loading = document.createElement('div');
     loading.className = 'placeholder';
-    loading.textContent = 'Loading both packs…';
+    loading.textContent = 'Loading comparison pack…';
     scaffold.appendChild(loading);
     Promise.all([
-      haveB    ? Promise.resolve() : loadPackB(),
-      haveDiff ? Promise.resolve() : loadDiff(),
+      haveB ? Promise.resolve() : loadPackB(),
+      (state.diff && !state.diff.error) ? Promise.resolve() : loadDiff(),
     ]).then(() => { renderTabs(); renderMainView(); });
     return;
   }
@@ -2682,39 +2675,60 @@ function renderBenchmarkView(view) {
   // Auto-apply the lens when Pack B is a *-reference catalogue pack.
   // Picking grafana-reference IS choosing the Grafana benchmark; no
   // reason to make the user explicitly set the Lens dropdown afterward.
-  const bId = String(state.compareBId || state.packB?.id || '').toLowerCase();
-  const refMatch = /^([a-z][a-z0-9_-]*?)-reference$/.exec(bId);
-  if (refMatch && (state.compareLens === 'all' || !state.compareLens)) {
-    const inferredLens = refMatch[1];
-    if (LENS_PRODUCTS.some(lp => lp.slug === inferredLens)) {
-      state.compareLens = inferredLens;
+  if (haveB) {
+    const bId = String(state.compareBId || state.packB?.id || '').toLowerCase();
+    const refMatch = /^([a-z][a-z0-9_-]*?)-reference$/.exec(bId);
+    if (refMatch && (state.compareLens === 'all' || !state.compareLens)) {
+      const inferredLens = refMatch[1];
+      if (LENS_PRODUCTS.some(lp => lp.slug === inferredLens)) {
+        state.compareLens = inferredLens;
+      }
     }
   }
   const lens = state.compareLens || 'all';
 
-  // Posture matrix — THE headline. The outcome-based view answers the
-  // CTO question: "are we monitoring the right things at the right
-  // levels with the right mechanisms?" This leads the view; the
-  // identity-match scorecard moves to a collapsed sub-section below.
+  // Posture matrix — the coverage substrate (Pack-A-derived). Feeds both
+  // the verdict's "comprehensive" criterion and the drill-down below.
   const posture = computePostureMatrix(state.pack, state.packB);
 
-  // Diagnostic-grade verdict — THE question every executive asks:
-  // "is our observability diagnostic-grade?" Eight pass/fail criteria
-  // split into two equal-weighted halves:
-  //   2A — Coverage  ("are we observing the right signals?")
-  //                  evaluated against Pack B as the Observability
-  //                  Contract / aspirational reference.
-  //   2B — Trust     ("can we trust what the signals show?")
-  //                  evaluated against Pack A's live signal evidence
-  //                  (MCP probe outcomes + freshness window).
-  // Leads the view so the audience sees the verdict before any chart;
-  // the matrix + narrative + pies become drill-down.
+  // THE verdict — diagnostic-grade YES/NO from coverage (2A) + trust /
+  // drift (2B), Pack A alone. Always leads the view.
   const diagnostic = computeDiagnosticGrade(state.pack, state.packB, posture, state.compareBId);
   scaffold.appendChild(renderDiagnosticGradeVerdict(diagnostic, lens, state.packB));
+
+  // When no Pack B is loaded, invite one — the verdict above is the
+  // coverage-only read; the A-vs-B comparison is the optional deepening.
+  if (!haveB) {
+    scaffold.appendChild(renderComparePrompt());
+  }
+
+  // Drill-down — per-layer × per-mechanism coverage map. Pack-A-derived,
+  // so it's the "why" behind the verdict whether or not a Pack B exists.
   scaffold.appendChild(renderBenchmarkHeadline(posture, lens));
   scaffold.appendChild(renderPostureMatrix(posture));
   scaffold.appendChild(renderPostureNarrative(posture));
   scaffold.appendChild(renderPosturePieRow(posture));
+}
+
+// Affordance shown in Diagnose when only Pack A is loaded. Points the
+// user at the EXISTING header Pack B picker (no duplicate control) and
+// names the two comparison use cases. Selecting nothing here is fine —
+// the diagnostic verdict above already stands on Pack A alone.
+function renderComparePrompt() {
+  const el = document.createElement('div');
+  el.className = 'compare-prompt';
+  el.innerHTML = `
+    <div class="compare-prompt-body">
+      <span class="compare-prompt-key">COMPARE</span>
+      <span class="compare-prompt-text">
+        This verdict reads <strong>Pack A on its own</strong>. Load a
+        <strong>Pack B</strong> from the <em>PACK B</em> picker in the header to
+        compare side-by-side — detect <strong>drift</strong> (declared vs what's
+        deployed) or measure the <strong>gap to a target</strong> posture.
+      </span>
+    </div>
+  `;
+  return el;
 }
 
 // ============================================================
@@ -3376,6 +3390,10 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const passes = overall.passed >= PASS_THRESHOLD;
   const status = passes ? 'PASS' : 'FAIL';
 
+  // Coverage-only when no Pack B is loaded: the coverage criteria are
+  // still graded against the built-in Observability Contract, so the
+  // verdict stands on Pack A alone — we just frame the header honestly.
+  const coverageOnly = !packB;
   const contractName = packB?.meta?.name || packB?.metadata?.name || packB?.id || '—';
   const contractMode = cov.contractMode;
 
@@ -3497,8 +3515,11 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       <div class="diag-report-head-line">
         <span class="diag-report-eyebrow">DIAGNOSTIC GRADE</span>
         <span class="diag-report-vs">
-          vs ${contractMode ? '<strong>Observability Contract</strong>' : '<strong>' + escapeHtml(contractName) + '</strong>'}
-          ${contractMode ? ' (' + escapeHtml(contractName) + ')' : ''}
+          ${coverageOnly
+            ? 'vs <strong>Observability Contract</strong> <span class="diag-report-mode">· coverage only</span>'
+            : (contractMode
+                ? 'vs <strong>Observability Contract</strong>' + (contractName && contractName !== '—' ? ' (' + escapeHtml(contractName) + ')' : '')
+                : 'vs <strong>' + escapeHtml(contractName) + '</strong>')}
         </span>
         <span class="diag-report-status diag-${passes ? 'pass' : 'fail'}">${status}</span>
       </div>
