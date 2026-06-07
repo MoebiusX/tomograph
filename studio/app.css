@@ -5257,6 +5257,282 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
 .trace-suppressed > summary:hover { color: var(--ink); }
 .trace-list-suppressed { opacity: 0.7; }
 
+/* =============================================================
+   OBSERVA CHROME — three-tab top bar (the demo design)
+   ============================================================= */
+
+/* Dark palette used by the OBSERVA chrome, scoped to the new chrome
+   shell so the rest of the studio (drawers, modals) inherits its
+   own theme rules untouched. */
+body.chrome-observa {
+  --obs-bg:        #0b0e1a;
+  --obs-bg-2:      #0f1322;
+  --obs-bg-3:      #161a2e;
+  --obs-line:      rgba(255,255,255,0.06);
+  --obs-line-2:    rgba(255,255,255,0.10);
+  --obs-ink:       #e7ecf3;
+  --obs-ink-2:     #c7d0dd;
+  --obs-ink-3:     #8a93a6;
+  --obs-ink-4:     #5b6478;
+  --obs-blue:      #3b82f6;
+  --obs-cyan:      #06b6d4;
+  --obs-purple:    #a855f7;
+  --obs-pink:      #ec4899;
+  --obs-emerald:   #10b981;
+  --obs-teal:      #14b8a6;
+  --obs-amber:     #f59e0b;
+  background: var(--obs-bg);
+  color: var(--obs-ink);
+}
+body.chrome-observa .hdr,
+body.chrome-observa .meta,
+body.chrome-observa #layer-tabs {
+  display: none !important;
+}
+body.chrome-observa.observa-controls-open .hdr,
+body.chrome-observa.observa-controls-open .meta {
+  display: flex !important;
+  position: relative;
+  z-index: 50;
+  background: var(--obs-bg-2);
+  border-bottom: 1px solid var(--obs-line);
+}
+body.chrome-observa.observa-controls-open .meta { display: block !important; }
+
+/* The new chrome itself ------------------------------------------ */
+.observa-hdr {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: linear-gradient(to bottom, #0c1020 0%, #0b0e1a 100%);
+  border-bottom: 1px solid var(--obs-line);
+  backdrop-filter: blur(8px);
+}
+.observa-hdr-inner {
+  display: grid;
+  grid-template-columns: minmax(180px, auto) 1fr minmax(280px, auto);
+  align-items: stretch;
+  gap: 28px;
+  padding: 14px 28px;
+  max-width: 1680px;
+  margin: 0 auto;
+}
+
+.observa-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+  color: var(--obs-ink);
+}
+.observa-logo {
+  display: inline-flex;
+  width: 36px; height: 36px;
+}
+.observa-logo svg { width: 100%; height: 100%; }
+.observa-wordmark {
+  font: 600 18px/1 var(--mono);
+  letter-spacing: 0.12em;
+  color: var(--obs-ink);
+}
+.observa-wordmark strong {
+  font-weight: 800;
+  background: linear-gradient(90deg, var(--obs-blue), var(--obs-purple), var(--obs-emerald));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* The three numbered tab cards ----------------------------------- */
+.observa-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 0;
+  position: relative;
+}
+.observa-tab {
+  position: relative;
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 18px;
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+  text-align: left;
+  color: var(--obs-ink-3);
+  transition: color 0.18s ease, background 0.18s ease;
+}
+.observa-tab + .observa-tab {
+  border-left: 1px solid var(--obs-line);
+}
+.observa-tab:hover {
+  color: var(--obs-ink-2);
+  background: rgba(255,255,255,0.02);
+}
+.observa-tab.is-active { color: var(--obs-ink); }
+.observa-tab-num {
+  display: inline-grid;
+  place-items: center;
+  width: 36px; height: 36px;
+  border-radius: 999px;
+  border: 1.5px solid currentColor;
+  font: 600 15px/1 var(--mono);
+  color: currentColor;
+}
+.observa-tab.is-active .observa-tab-num {
+  color: #fff;
+  border-color: transparent;
+}
+.observa-tab.tab-blue.is-active .observa-tab-num {
+  background: linear-gradient(135deg, var(--obs-blue), var(--obs-cyan));
+}
+.observa-tab.tab-magenta.is-active .observa-tab-num {
+  background: linear-gradient(135deg, var(--obs-purple), var(--obs-pink));
+}
+.observa-tab.tab-emerald.is-active .observa-tab-num {
+  background: linear-gradient(135deg, var(--obs-emerald), var(--obs-teal));
+}
+.observa-tab-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.observa-tab-title {
+  font: 600 16px/1.2 var(--sans);
+  letter-spacing: -0.005em;
+}
+.observa-tab.is-active .observa-tab-title { color: var(--obs-ink); }
+.observa-tab-sub {
+  font: 12px/1.3 var(--sans);
+  color: var(--obs-ink-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.observa-tab.is-active .observa-tab-sub { color: var(--obs-ink-3); }
+
+/* Gradient underline accent on active tab. The bottom border is set
+   on the tab itself; we paint the gradient via a pseudo so it can
+   sit flush over the chrome's own bottom border. */
+.observa-tab.is-active::after {
+  content: '';
+  position: absolute;
+  left: 14px; right: 14px; bottom: -1px;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+}
+.observa-tab.tab-blue.is-active::after    { background: linear-gradient(90deg, var(--obs-blue), var(--obs-cyan)); }
+.observa-tab.tab-magenta.is-active::after { background: linear-gradient(90deg, var(--obs-purple), var(--obs-pink)); }
+.observa-tab.tab-emerald.is-active::after { background: linear-gradient(90deg, var(--obs-emerald), var(--obs-teal)); }
+
+/* Right-side action cluster (Projects · Alerts · Help · ⚙ · AD) ---- */
+.observa-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.observa-action {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: var(--obs-ink-3);
+  font: 12.5px/1.2 var(--sans);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.observa-action[disabled] { cursor: not-allowed; opacity: 0.65; }
+.observa-action:not([disabled]):hover {
+  background: rgba(255,255,255,0.04);
+  color: var(--obs-ink);
+}
+.observa-action-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 22px; height: 22px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.05);
+  font: 600 11px/1 var(--mono);
+  color: var(--obs-ink-2);
+}
+.observa-action-label {
+  font: 500 12.5px/1 var(--sans);
+}
+.observa-action-badge {
+  position: absolute;
+  top: 4px; right: 4px;
+  min-width: 16px; height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ef4444, #f97316);
+  color: #fff;
+  font: 700 10px/16px var(--mono);
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--obs-bg);
+}
+.observa-controls-toggle[aria-expanded="true"] {
+  background: rgba(255,255,255,0.06);
+  color: var(--obs-ink);
+}
+
+.observa-avatar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: auto;
+  height: 36px;
+  padding: 0 12px 0 14px;
+  margin-left: 4px;
+  background: linear-gradient(135deg, rgba(59,130,246,0.20), rgba(168,85,247,0.20));
+  border: 1px solid rgba(168,85,247,0.30);
+  border-radius: 999px;
+  color: var(--obs-ink);
+  font: 600 13px/1 var(--mono);
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+.observa-avatar:hover { filter: brightness(1.15); }
+.observa-avatar-caret {
+  font-size: 10px;
+  color: var(--obs-ink-3);
+}
+
+/* The main view sits beneath the chrome — extend it edge-to-edge
+   and override the legacy padding so the content can claim the
+   full width promised in the mockup. */
+body.chrome-observa #layer-view {
+  padding: 0;
+  background: var(--obs-bg);
+  color: var(--obs-ink);
+  min-height: calc(100vh - 84px);
+}
+
+/* When the controls drawer is open, leave breathing room above the
+   main view so the legacy controls don't crash into the content. */
+body.chrome-observa.observa-controls-open #layer-view { padding-top: 8px; }
+
+/* ============= responsive: stack the tabs below ~960px ============ */
+@media (max-width: 960px) {
+  .observa-hdr-inner {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .observa-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .observa-tab-sub { display: none; }
+  .observa-actions { justify-content: flex-start; flex-wrap: wrap; }
+}
+
 /* ===================== RESPONSIVE ===================== */
 @media (max-width: 700px) {
   .hdr, .meta, .tabs, #layer-view, .ftr { padding-left: 16px; padding-right: 16px; }

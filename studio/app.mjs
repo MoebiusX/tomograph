@@ -579,6 +579,8 @@ function layerArtefactCount(layerId) {
 // ============================================================
 
 function renderTabs() {
+  // Keep the OBSERVA chrome's active tab in sync on every re-render.
+  paintObservaActiveTab();
   const tabs = $('#layer-tabs');
   if (!tabs) return;
   tabs.innerHTML = '';
@@ -5486,7 +5488,157 @@ async function refresh() {
   }
 }
 
+// ============================================================
+// OBSERVA chrome — the three-tab top bar from the demo mockup.
+//
+// Replaces the legacy header (Tomograph logo + dense pack-picker row +
+// meta strip + view-nav + layer chips) with a single clean chrome:
+//
+//   ┌──────────────────────────────────────────────────────────────────┐
+//   │ [logo] TOMOGRAPH    ① Layers       ② Comparison    ③ ObsOps     │
+//   │                       What's in...   Is it good...   Compile &  │
+//   │                                                                  │
+//   │                                          Projects · Alerts · AD  │
+//   └──────────────────────────────────────────────────────────────────┘
+//
+// The legacy chrome stays in the DOM but hidden — every existing event
+// handler that references #pack-select, #upload-btn, etc. keeps working.
+// A small "⚙ controls" button reveals the legacy controls row on demand
+// for pack switching / upload / scan / theme until those move into the
+// tab content in later phases.
+// ============================================================
+const OBSERVA_TABS = [
+  {
+    id: 'layers',
+    n: '1',
+    label: 'Layers',
+    sub: "What's in my Observability?",
+    accent: 'tab-blue',
+  },
+  {
+    id: 'compare',
+    n: '2',
+    label: 'Comparison',
+    sub: 'Is our Observability diagnostic-grade?',
+    accent: 'tab-magenta',
+  },
+  {
+    id: 'compile',
+    n: '3',
+    label: 'ObsOps',
+    sub: 'Compile & Deploy',
+    accent: 'tab-emerald',
+  },
+];
+
+function installObservaChrome() {
+  if (document.querySelector('.observa-hdr')) return;
+  document.body.classList.add('chrome-observa');
+
+  const hdr = document.createElement('header');
+  hdr.className = 'observa-hdr';
+  hdr.innerHTML = `
+    <div class="observa-hdr-inner">
+      <a class="observa-brand" href="/" aria-label="Tomograph home">
+        <span class="observa-logo" aria-hidden="true">
+          <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="observaLogoG" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%"  stop-color="#3b82f6"/>
+                <stop offset="50%" stop-color="#a855f7"/>
+                <stop offset="100%" stop-color="#10b981"/>
+              </linearGradient>
+            </defs>
+            <path d="M18 3 L31 11 L31 25 L18 33 L5 25 L5 11 Z" stroke="url(#observaLogoG)" stroke-width="2" fill="none"/>
+            <path d="M18 11 L25 15 L25 22 L18 26 L11 22 L11 15 Z" stroke="url(#observaLogoG)" stroke-width="1.4" fill="rgba(168,85,247,0.12)"/>
+            <circle cx="18" cy="18" r="2.4" fill="url(#observaLogoG)"/>
+          </svg>
+        </span>
+        <span class="observa-wordmark">TOMO<strong>GRAPH</strong></span>
+      </a>
+
+      <nav class="observa-tabs" role="tablist" aria-label="Primary">
+        ${OBSERVA_TABS.map(t => `
+          <button type="button" role="tab" class="observa-tab ${t.accent}" data-view="${t.id}"
+                  aria-selected="false" title="${escapeHtml(t.sub)}">
+            <span class="observa-tab-num">${t.n}</span>
+            <span class="observa-tab-text">
+              <span class="observa-tab-title">${escapeHtml(t.label)}</span>
+              <span class="observa-tab-sub">${escapeHtml(t.sub)}</span>
+            </span>
+          </button>
+        `).join('')}
+      </nav>
+
+      <div class="observa-actions" aria-label="Secondary">
+        <button type="button" class="observa-action observa-action-icon" title="Projects" disabled>
+          <span class="observa-action-glyph">▣</span>
+          <span class="observa-action-label">Projects</span>
+        </button>
+        <button type="button" class="observa-action observa-action-icon observa-action-alerts" title="Alerts" disabled>
+          <span class="observa-action-glyph">⚠</span>
+          <span class="observa-action-label">Alerts</span>
+          <span class="observa-action-badge" aria-label="3 alerts">3</span>
+        </button>
+        <button type="button" class="observa-action observa-action-icon" title="Help" disabled>
+          <span class="observa-action-glyph">?</span>
+          <span class="observa-action-label">Help</span>
+        </button>
+        <button type="button" class="observa-action observa-controls-toggle" title="Pack controls"
+                aria-expanded="false" aria-controls="observa-controls-drawer">
+          <span class="observa-action-glyph">⚙</span>
+          <span class="observa-action-label">Controls</span>
+        </button>
+        <button type="button" class="observa-avatar" title="Account">AD<span class="observa-avatar-caret">▾</span></button>
+      </div>
+    </div>
+  `;
+  document.body.insertBefore(hdr, document.body.firstChild);
+
+  // Wire tab clicks → route to the existing view dispatcher.
+  for (const btn of hdr.querySelectorAll('.observa-tab')) {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.view;
+      if (!id) return;
+      state.view = id;
+      state.activeCardKey = null;
+      state.activeLayer = ({ compile: 'COMPILE', layers: state.layerFilter !== 'all' ? state.layerFilter : 'L1' })[id] || 'L1';
+      applyModeChrome();
+      paintObservaActiveTab();
+      renderTabs();
+      renderMainView();
+    });
+  }
+
+  // Wire the "Controls" toggle to reveal the legacy header as a drawer
+  // beneath the new chrome. Lets the user still upload / scan / pick
+  // packs / change theme until those features move into the new design.
+  const toggle = hdr.querySelector('.observa-controls-toggle');
+  toggle?.addEventListener('click', () => {
+    const open = document.body.classList.toggle('observa-controls-open');
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+
+  paintObservaActiveTab();
+}
+
+function paintObservaActiveTab() {
+  const active = (() => {
+    const v = state.view || 'layers';
+    if (v === 'benchmark' || v === 'compare-artefacts') return 'compare';
+    return v;
+  })();
+  for (const btn of document.querySelectorAll('.observa-tab')) {
+    const isActive = btn.dataset.view === active;
+    btn.classList.toggle('is-active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  }
+}
+
 async function boot() {
+  // Mount the new chrome FIRST so the user sees the demo shape even
+  // while the catalog loads.
+  installObservaChrome();
   try { await loadCatalog(); }
   catch (e) {
     document.body.innerHTML = `<pre class="json" style="margin:48px;max-width:800px">Failed to reach Tomograph's API.\n\n${escapeHtml(e.message)}\n\nMake sure the server is running: \`node server/index.mjs\` or \`npm run serve\`.</pre>`;
