@@ -377,6 +377,109 @@ a:hover { color: var(--ink); }
   width: 100%;
 }
 
+/* GitHub URL source — sits above the local dropzone with an "or"
+   divider between. Premium-fintech: same input aesthetic as the
+   crawl-controls fields, with a primary action button to its right. */
+.crawl-github-row {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px 16px;
+  background: var(--code-bg);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+}
+.crawl-github-label {
+  display: flex; flex-direction: column; gap: 2px;
+  cursor: default;
+}
+.crawl-github-key {
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.crawl-github-sub {
+  font: 12.5px/1.5 var(--serif);
+  color: var(--ink-4);
+}
+.crawl-github-sub code {
+  font: 11px/1 var(--mono);
+  background: var(--ink-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--ink-3);
+}
+.crawl-github-inputs {
+  display: grid;
+  grid-template-columns: 1fr 180px auto;
+  gap: 8px;
+  align-items: stretch;
+}
+.crawl-github-input,
+.crawl-github-ref {
+  padding: 8px 10px;
+  font: 12.5px/1.3 var(--mono);
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+}
+.crawl-github-input:focus,
+.crawl-github-ref:focus {
+  outline: 2px solid var(--BLD);
+  outline-offset: 1px;
+  border-color: var(--BLD);
+}
+.crawl-github-go-btn {
+  padding: 8px 14px;
+  font: 600 11.5px/1 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.crawl-github-go-btn:not(:disabled) {
+  background: var(--BLD);
+  color: var(--paper);
+  border-color: var(--BLD);
+}
+.crawl-github-go-btn:not(:disabled):hover {
+  filter: brightness(0.95);
+}
+.crawl-github-status {
+  font: 12.5px/1.4 var(--serif);
+  color: var(--ink-3);
+  min-height: 1.4em;
+}
+.crawl-github-status.is-ok    { color: rgb(46, 110, 50); }
+.crawl-github-status.is-warn  { color: rgb(217, 119, 6); }
+.crawl-github-status.is-error { color: rgb(178, 34, 34); }
+
+@media (max-width: 720px) {
+  .crawl-github-inputs { grid-template-columns: 1fr; }
+}
+
+.crawl-or-divider {
+  position: relative;
+  text-align: center;
+  margin: 6px 0;
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.crawl-or-divider span {
+  position: relative;
+  z-index: 1;
+  padding: 0 12px;
+  background: var(--paper);
+}
+.crawl-or-divider::before {
+  content: '';
+  position: absolute;
+  top: 50%; left: 0; right: 0;
+  height: 1px;
+  background: var(--line-2);
+  z-index: 0;
+}
+
 .crawl-dropzone {
   border: 2px dashed var(--line-2);
   border-radius: var(--r-md);

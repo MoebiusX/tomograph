@@ -4978,6 +4978,25 @@ function setupCrawlPanel() {
 
   goBtn.onclick = () => doCrawl();
   adoptBtn.onclick = () => adoptCrawlResult();
+
+  // GitHub URL crawl — same modal, different source. Enables the
+  // "crawl github" button as soon as the URL field has text matching
+  // the owner/repo or full-URL shape.
+  const githubUrl = $('#crawl-github-url');
+  const githubRef = $('#crawl-github-ref');
+  const githubGo  = $('#crawl-github-go-btn');
+  if (githubUrl && githubGo) {
+    const updateGhEnabled = () => {
+      const v = (githubUrl.value || '').trim();
+      githubGo.disabled = !/^([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+|https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)/.test(v);
+    };
+    githubUrl.addEventListener('input', updateGhEnabled);
+    githubUrl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !githubGo.disabled) { e.preventDefault(); doCrawlFromGithub(); }
+    });
+    githubGo.onclick = () => doCrawlFromGithub();
+    updateGhEnabled();
+  }
 }
 
 // Read a single FileSystemEntry recursively into the staged map.
@@ -5163,6 +5182,64 @@ async function doCrawl() {
     setStatus(`done in ${out.tookMs}ms · ${out.summary.files.classified}/${out.summary.files.scanned} files classified`, 'ok');
   } catch (e) {
     setStatus(`error: ${e.message}`, 'error');
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+// GitHub URL variant of doCrawl(). Posts to /api/crawl-github which
+// downloads the relevant files server-side and feeds them into the
+// same crawler pipeline.
+async function doCrawlFromGithub() {
+  const ghStatus = $('#crawl-github-status');
+  const setGhStatus = (msg, kind) => {
+    if (!ghStatus) return;
+    ghStatus.textContent = msg;
+    ghStatus.className = 'crawl-github-status' + (kind ? ' is-' + kind : '');
+  };
+  const url = $('#crawl-github-url')?.value?.trim();
+  if (!url) return setGhStatus('paste a github URL first', 'error');
+
+  const ref = $('#crawl-github-ref')?.value?.trim() || undefined;
+  const body = {
+    url,
+    ref,
+    repoName:   $('#crawl-name').value.trim() || undefined,  // server falls back to owner/repo
+    environment:$('#crawl-env').value.trim() || 'prod',
+  };
+  const crit = $('#crawl-criticality').value;
+  if (crit) body.criticality = crit;
+
+  const goBtn = $('#crawl-github-go-btn');
+  goBtn.disabled = true;
+  setGhStatus(`fetching ${url}…`);
+  try {
+    const r = await fetch('/api/crawl-github', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    if (!ct.includes('application/json')) {
+      setGhStatus(`server returned ${r.status} ${ct || 'no content-type'} — restart \`npm run dev\` if you just changed server code`, 'error');
+      return;
+    }
+    const out = JSON.parse(raw);
+    if (!out.ok) {
+      const hint = out.hint ? ` · ${out.hint}` : '';
+      setGhStatus(`error: ${out.error || 'unknown'}${hint}`, 'error');
+      return;
+    }
+    crawlState.lastResult = out;
+    renderCrawlResult(out);
+    if (out.canonical) {
+      setGhStatus(`done in ${out.tookMs}ms · ${out.summary?.files?.classified ?? 0} files classified from ${out.summary?.repo}@${out.summary?.ref}`, 'ok');
+    } else {
+      setGhStatus(`done in ${out.tookMs}ms · no observability artefacts found in this repo`, 'warn');
+    }
+  } catch (e) {
+    setGhStatus(`error: ${e.message}`, 'error');
   } finally {
     goBtn.disabled = false;
   }

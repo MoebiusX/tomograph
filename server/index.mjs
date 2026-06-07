@@ -1097,6 +1097,215 @@ app.post('/api/crawl', (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------
+// POST /api/crawl-github — Path A extension. Same crawler, different
+// source: a public GitHub repo URL instead of an uploaded folder.
+//
+// The server fetches the repo's file tree via the GitHub Tree API,
+// downloads just the files the crawler cares about (docker-compose,
+// Prometheus rules, OTel configs, dashboards), and feeds them into
+// the same crawlFiles() pipeline as /api/crawl. Returns the same
+// response shape.
+//
+// Body: {
+//   url:         'https://github.com/owner/repo' | 'owner/repo',
+//   ref?:        'main' | 'develop' | <sha>,   // default: repo default branch
+//   environment?, criticality?, binding?, owners?  // same as /api/crawl
+// }
+//
+// Auth: respects GITHUB_TOKEN env var for higher rate limits + private
+// repos. Without it: public-only, 60 req/hr per IP.
+//
+// Bandwidth guards: max 50 files, max 16 MB total, max 1 MB per file.
+// ----------------------------------------------------------------
+function parseGithubUrl(input) {
+  if (typeof input !== 'string' || !input.trim()) return null;
+  const cleaned = input.trim().replace(/\.git$/, '').replace(/\/$/, '');
+  // owner/repo bare form
+  const bare = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/.exec(cleaned);
+  if (bare) return { owner: bare[1], repo: bare[2] };
+  // Full URL form
+  const url = /github\.com[/:]([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)(?:\/tree\/([A-Za-z0-9._\/-]+))?/.exec(cleaned);
+  if (url) return { owner: url[1], repo: url[2], ref: url[3] };
+  return null;
+}
+
+// Files the crawler will actually look at — keep the network round
+// trips down by filtering BEFORE downloading.
+function isCrawlerFile(path) {
+  if (typeof path !== 'string') return false;
+  const p = path.toLowerCase();
+  if (p.includes('node_modules/') || p.includes('.git/') || p.startsWith('.git/')) return false;
+  return (
+    /(^|\/)docker[-_]compose[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)compose[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /\.rules\.(ya?ml)$/.test(p) ||
+    /(^|\/)prometheus[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)alertmanager[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)otel[a-z0-9._-]*config[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)otelcol[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)collector[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)dashboards?\/.*\.json$/.test(p) ||
+    /(^|\/)grafana\/.*\.json$/.test(p) ||
+    /\.dashboard\.json$/.test(p) ||
+    /(^|\/)kustomization\.(ya?ml)$/.test(p)
+  );
+}
+
+async function ghFetch(path, init = {}) {
+  const headers = {
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': 'tomograph-crawler/1.0',
+    ...(init.headers || {}),
+  };
+  if (process.env.GITHUB_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+  const res = await fetch(`https://api.github.com${path}`, { ...init, headers });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const err = new Error(`GitHub ${res.status} on ${path}: ${body.slice(0, 200)}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res;
+}
+
+app.post('/api/crawl-github', async (req, res) => {
+  const body = req.body || {};
+  const parsed = parseGithubUrl(body.url);
+  if (!parsed) {
+    return res.status(400).json({
+      ok: false,
+      error: 'expected `url` like https://github.com/owner/repo or owner/repo',
+    });
+  }
+  const { owner, repo } = parsed;
+  const explicitRef = (typeof body.ref === 'string' && body.ref.trim()) ? body.ref.trim() : parsed.ref || null;
+  const t0 = Date.now();
+
+  try {
+    // 1. Resolve default branch when no ref given.
+    let ref = explicitRef;
+    if (!ref) {
+      const repoMeta = await ghFetch(`/repos/${owner}/${repo}`).then(r => r.json());
+      ref = repoMeta.default_branch || 'main';
+    }
+
+    // 2. List the full tree at that ref.
+    const treeResp = await ghFetch(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`)
+      .then(r => r.json());
+    if (treeResp.truncated) {
+      process.stderr.write(`[crawl-github] tree truncated for ${owner}/${repo}@${ref}; some files may be missing\n`);
+    }
+
+    // 3. Filter to crawler-relevant blobs.
+    const FILE_CAP_BYTES = 1 * 1024 * 1024;        // 1 MB / file
+    const TOTAL_CAP_BYTES = 16 * 1024 * 1024;      // 16 MB total
+    const MAX_FILES = 50;
+    const candidates = (treeResp.tree || [])
+      .filter(node => node.type === 'blob' && isCrawlerFile(node.path))
+      .filter(node => !node.size || node.size <= FILE_CAP_BYTES)
+      .slice(0, MAX_FILES);
+
+    if (candidates.length === 0) {
+      return res.json({
+        ok: true,
+        canonical: null,
+        canonicalYaml: '',
+        summary: { source: 'github', repo: `${owner}/${repo}`, ref, files: { total: 0, classified: 0 } },
+        validation: { ok: false, errors: ['no crawler-relevant files found in repo'] },
+        registered: null,
+        tookMs: Date.now() - t0,
+        notes: ['Repo had no docker-compose, prometheus rules, otel collector configs, alertmanager configs, or Grafana dashboards.'],
+      });
+    }
+
+    // 4. Download contents in parallel (raw content endpoint).
+    let totalBytes = 0;
+    const files = {};
+    const skipped = [];
+    await Promise.all(candidates.map(async (node) => {
+      try {
+        const contentRes = await ghFetch(`/repos/${owner}/${repo}/contents/${encodeURIComponent(node.path).replace(/%2F/g, '/')}?ref=${encodeURIComponent(ref)}`, {
+          headers: { Accept: 'application/vnd.github.raw+json' },
+        });
+        const text = await contentRes.text();
+        if (text.length > FILE_CAP_BYTES) { skipped.push(`${node.path} (size ${text.length})`); return; }
+        if (totalBytes + text.length > TOTAL_CAP_BYTES) { skipped.push(`${node.path} (total cap)`); return; }
+        files[node.path] = text;
+        totalBytes += text.length;
+      } catch (e) {
+        skipped.push(`${node.path} (${e.message})`);
+      }
+    }));
+
+    if (Object.keys(files).length === 0) {
+      return res.json({
+        ok: true, canonical: null, canonicalYaml: '',
+        summary: { source: 'github', repo: `${owner}/${repo}`, ref, files: { total: candidates.length, classified: 0 } },
+        validation: { ok: false, errors: ['all candidate files were skipped (size caps or download errors)'] },
+        registered: null, tookMs: Date.now() - t0, notes: skipped,
+      });
+    }
+
+    // 5. Run the SAME crawler the upload path uses.
+    // Default the repoName to a Slug-pattern-compliant variant of the
+    // repo path (owner-repo, lowercase, slashes → hyphens, dots
+    // collapsed) so the canonical pack's metadata.name validates against
+    // the spec's `^[a-z][a-z0-9_-]*[a-z0-9]$` pattern.
+    const defaultRepoName = `${owner}-${repo}`
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64);
+    const opts = {
+      repoName: typeof body.repoName === 'string' && body.repoName.trim()
+        ? body.repoName.trim() : defaultRepoName,
+      environment: typeof body.environment === 'string' ? body.environment : undefined,
+      criticality: typeof body.criticality === 'string' ? body.criticality : undefined,
+      binding: typeof body.binding === 'string' ? body.binding : undefined,
+      owners: Array.isArray(body.owners) ? body.owners.map(String) : undefined,
+    };
+    const { yaml, summary, evidence } = crawlToYaml(files, opts);
+    const { canonical } = crawlFiles(files, opts);
+    const validationErrors = validateCanonical(canonical, SCHEMA);
+    const conformance = evaluateConformance(canonical);
+    const registered = validationErrors.length === 0
+      ? { id: registerUploadedPack(canonical, `${opts.repoName} (github)`) }
+      : null;
+
+    summary.source = 'github';
+    summary.repo   = `${owner}/${repo}`;
+    summary.ref    = ref;
+    if (skipped.length) summary.skipped = skipped;
+
+    process.stderr.write(`[crawl-github] ${owner}/${repo}@${ref} → ${Object.keys(files).length} files, ${summary.files.classified} classified, valid=${validationErrors.length === 0}, registered=${registered?.id || '-'}, ${Date.now() - t0}ms\n`);
+    res.json({
+      ok: true,
+      canonical,
+      canonicalYaml: yaml,
+      summary,
+      evidence,
+      validation: { ok: validationErrors.length === 0, errors: validationErrors },
+      conformance,
+      registered,
+      tookMs: Date.now() - t0,
+    });
+  } catch (e) {
+    process.stderr.write(`[crawl-github] error: ${e.message}\n`);
+    const status = e.status === 404 ? 404 : (e.status === 403 ? 403 : 500);
+    res.status(status).json({
+      ok: false,
+      error: e.message,
+      hint: e.status === 403
+        ? 'GitHub rate limit. Set GITHUB_TOKEN in the server env for higher quotas.'
+        : e.status === 404 ? 'Repo not found or private. Set GITHUB_TOKEN to access private repos.' : undefined,
+    });
+  }
+});
+
 app.post('/api/validate', (req, res) => {
   try {
     let canonical;

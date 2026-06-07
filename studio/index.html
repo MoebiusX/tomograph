@@ -318,6 +318,21 @@
       </label>
     </div>
 
+    <div class="crawl-github-row">
+      <label class="crawl-github-label" for="crawl-github-url">
+        <span class="crawl-github-key">From a GitHub repo</span>
+        <span class="crawl-github-sub">Public repos work out of the box. Set <code>GITHUB_TOKEN</code> in the server env for private repos / higher rate limits.</span>
+      </label>
+      <div class="crawl-github-inputs">
+        <input id="crawl-github-url" type="text" placeholder="github.com/owner/repo or owner/repo" autocomplete="off" class="crawl-github-input">
+        <input id="crawl-github-ref" type="text" placeholder="branch (default)" autocomplete="off" class="crawl-github-ref">
+        <button id="crawl-github-go-btn" type="button" class="ctrl-btn crawl-github-go-btn" disabled>crawl github</button>
+      </div>
+      <div id="crawl-github-status" class="crawl-github-status"></div>
+    </div>
+
+    <div class="crawl-or-divider"><span>or</span></div>
+
     <div class="crawl-dropzone" id="crawl-dropzone">
       <div class="crawl-dropzone-icon">⬇</div>
       <div class="crawl-dropzone-headline">Drop a folder here</div>
