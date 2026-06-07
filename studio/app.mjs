@@ -766,13 +766,14 @@ function renderMainView() {
 // Every panel is wired to real pack data — meta, conformance,
 // symbol table, catalog. No fabricated trends or activity logs.
 // ============================================================
-const DISCO_LAYER_SLABS = [
-  { id: 'L1', label: 'IDENTITY',   sub: 'who · what · where',                  accent: '#3b82f6' },
-  { id: 'L2', label: 'TELEMETRY',  sub: 'metrics · logs · traces',            accent: '#06b6d4' },
-  { id: 'L3', label: 'INTELLIGENCE', sub: 'sli · slo · insights',             accent: '#10b981' },
-  { id: 'L4', label: 'POLICY · ALERTING · HEALING', sub: 'detections · responses · remediations', accent: '#f59e0b' },
-  { id: 'L5', label: 'OPERATIONS', sub: 'runbooks · workflows · oncall',      accent: '#a855f7' },
-];
+// Slab accents only — the layer NAMES come from the canonical
+// LAYER_DEFS (L1 Contract · L2 Telemetry · L2X Extended · L3 Insight ·
+// L4 Action · L5 Validation · GOV Governance). Never invent layer
+// semantics; the spec is the source of truth.
+const DISCO_SLAB_ACCENT = {
+  L1: '#3b82f6', L2: '#06b6d4', L2X: '#0ea5e9', L3: '#10b981',
+  L4: '#f59e0b', L5: '#a855f7', GOV: '#64748b',
+};
 
 function discoGradeLetter(pct) {
   if (pct >= 97) return 'A+'; if (pct >= 93) return 'A'; if (pct >= 90) return 'A-';
@@ -811,7 +812,9 @@ function renderDiscoverDashboard(view) {
   const shouldP = conf?.should || { passed: 0, total: 0 };
 
   // ---- maturity by dimension (real) ----
-  const DIM_NAMES = { L1: 'Identity', L2: 'Telemetry', L3: 'Intelligence', L4: 'Policy & Alerting', L5: 'Operations', GOV: 'Governance' };
+  // Dimension names come straight from the canonical LAYER_DEFS — the
+  // spec layer model, never an invented one.
+  const DIM_NAMES = Object.fromEntries(LAYER_DEFS.map(d => [d.id, d.name]));
   const dims = [];
   for (const d of ['L1','L2','L3','L4','L5','GOV']) {
     const s = conf?.byDimension?.[d];
@@ -819,7 +822,7 @@ function renderDiscoverDashboard(view) {
     const weight = (s.mustTotal || 0) + 0.5 * (s.shouldTotal || 0);
     const got    = (s.mustPassed || 0) + 0.5 * (s.shouldPassed || 0);
     const pct = weight > 0 ? Math.round((got / weight) * 100) : null;
-    dims.push({ key: d, name: DIM_NAMES[d] || d, pct });
+    dims.push({ key: d, name: `${d} ${DIM_NAMES[d] || ''}`.trim(), pct });
   }
 
   // ---- top issues (real: failing conformance clauses + broken refs) ----
@@ -917,13 +920,12 @@ function renderDiscoverDashboard(view) {
             <img class="disco-scanner-img" src="/assets/tomogram-hero.png" alt="Observability tomogram scan"
                  onerror="this.classList.add('is-missing')">
             <div class="disco-scanner-fallback">
-              ${DISCO_LAYER_SLABS.map(s => {
-                const cnt = layerArtefactCount(s.id);
+              ${LAYER_DEFS.filter(d => d.id !== 'L2X' || layerArtefactCount('L2X') > 0).map(d => {
+                const cnt = layerArtefactCount(d.id);
                 return `
-                  <div class="disco-slab" style="--slab:${s.accent}">
-                    <span class="disco-slab-id">${s.id}</span>
-                    <span class="disco-slab-label">${escapeHtml(s.label)}</span>
-                    <span class="disco-slab-sub">${escapeHtml(s.sub)}</span>
+                  <div class="disco-slab" style="--slab:${DISCO_SLAB_ACCENT[d.id] || '#64748b'}">
+                    <span class="disco-slab-id">${escapeHtml(d.num)}</span>
+                    <span class="disco-slab-label">${escapeHtml(d.name)}</span>
                     <span class="disco-slab-count">${cnt}</span>
                   </div>`;
               }).join('')}
