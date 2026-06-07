@@ -1796,6 +1796,15 @@ a:hover { color: var(--ink); }
 }
 .diagnostic-grade-footnote strong { color: var(--ink-2); font-style: normal; }
 .diagnostic-grade-footnote em { color: var(--ink-2); }
+.diagnostic-grade-drill-hint {
+  display: block;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dotted var(--line-2);
+  font-style: normal;
+  color: var(--ink-3);
+}
+.diagnostic-grade-drill-hint strong { color: var(--CMP); font-weight: 600; }
 
 /* ===================== BENCHMARK HEADLINE =====================
    The whole-view question — leads the Benchmark page so the

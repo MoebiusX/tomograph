@@ -3003,10 +3003,6 @@ function renderDiagnosticGradeVerdict(diagnostic, lens) {
   const wrap = document.createElement('div');
   wrap.className = 'diagnostic-grade-block';
 
-  const lensLabel = lens === 'all'
-    ? null
-    : (LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens);
-
   const rows = diagnostic.criteria.map(c => `
     <li class="diagnostic-crit ${c.pass ? 'is-pass' : 'is-fail'}" data-key="${escapeHtml(c.key)}">
       <div class="diagnostic-crit-pip">${c.pass ? '✓' : '✗'}</div>
@@ -3020,10 +3016,18 @@ function renderDiagnosticGradeVerdict(diagnostic, lens) {
     </li>
   `).join('');
 
+  // The MAIN question is always pack-wide — "is this observability
+  // diagnostic-grade?" Lens-scoped product benchmarks ("is your
+  // Grafana up to snuff?") live below as drill-down; they only
+  // matter once the main question is answered well.
+  const drillHint = (lens && lens !== 'all')
+    ? `<span class="diagnostic-grade-drill-hint">Lens active: <strong>${escapeHtml((LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens))}</strong> — affects the matrix below, not this verdict.</span>`
+    : '';
+
   wrap.innerHTML = `
     <div class="diagnostic-grade-question">
-      <span class="diagnostic-grade-eyebrow">THE QUESTION</span>
-      Is ${lensLabel ? 'this ' + escapeHtml(lensLabel) + ' observability' : 'this observability'} <strong>diagnostic-grade</strong>?
+      <span class="diagnostic-grade-eyebrow">THE MAIN QUESTION</span>
+      Is this observability <strong>diagnostic-grade</strong>?
     </div>
     <div class="diagnostic-grade-verdict ${diagnostic.verdict.level}">
       <div class="diagnostic-grade-word">${escapeHtml(diagnostic.verdict.word)}</div>
@@ -3036,6 +3040,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens) {
       Six criteria — multi-modal coverage, signal correlation, calibrated baselines,
       comprehensive layer reach, actionable alerts, and chaos-validated recovery —
       score the practical readiness for that diagnostic act.
+      ${drillHint}
     </div>
   `;
   return wrap;
@@ -3045,10 +3050,10 @@ function renderBenchmarkHeadline(posture, lens) {
   const head = document.createElement('div');
   head.className = 'benchmark-head';
 
-  // Score the matrix: how many cells fire across the 4×10 grid?
-  // This is the actual number that means something — "you have 24
-  // of 40 observability checkpoints" — vs the misleading artefact
-  // identity match.
+  // Drill-down summary — sits BENEATH the main diagnostic-grade
+  // verdict. It frames the matrix below as "the why behind the
+  // verdict": coverage / observation breakdown that answers, at the
+  // mechanism level, where the diagnostic-grade gaps live.
   let present = 0, evidence = 0, absent = 0;
   for (const l of POSTURE_LAYERS) {
     for (const m of POSTURE_MECHANISMS_PER_LAYER) {
@@ -3059,23 +3064,20 @@ function renderBenchmarkHeadline(posture, lens) {
     }
   }
   const total = POSTURE_LAYERS.length * POSTURE_MECHANISMS_PER_LAYER.length;
-  const declaredPct = Math.round((present / total) * 100);
   const observedPct = Math.round(((present + evidence) / total) * 100);
-
-  const lensLabel = lens === 'all' ? 'all observability surfaces'
-    : (LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens).toLowerCase();
-
-  // The KILLER question, stated explicitly.
-  const question = lens === 'all'
-    ? 'Are we monitoring our infrastructure, platform, applications, and user experience — at every meaningful checkpoint?'
-    : `Are we monitoring ${escapeHtml(lensLabel)} across infrastructure, platform, applications, and user experience?`;
 
   const verdictWord = observedPct >= 70 ? 'Strong' : observedPct >= 40 ? 'Partial' : observedPct >= 20 ? 'Thin' : 'Critical gap';
   const verdictClass = observedPct >= 70 ? 'is-strong' : observedPct >= 40 ? 'is-partial' : observedPct >= 20 ? 'is-thin' : 'is-critical';
 
+  // When the user has a product lens selected, the drill becomes
+  // about that product specifically. Otherwise it's pack-wide.
+  const lensLabel = lens === 'all' ? null : (LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens);
+  const drillFraming = lensLabel
+    ? `<strong>Drill</strong> · ${escapeHtml(lensLabel)} surface — where the diagnostic-grade gaps live in ${escapeHtml(lensLabel)}'s area`
+    : `<strong>Drill</strong> · per-layer × per-mechanism — where the diagnostic-grade gaps live`;
+
   head.innerHTML = `
-    <div class="benchmark-headline-eyebrow">BENCHMARK · ${escapeHtml(state.pack?.name || state.pack?.id || 'live pack')} ${state.packB ? '· baseline: ' + escapeHtml(state.packB?.name || state.packB?.id || '') : ''}</div>
-    <div class="benchmark-headline-question">${question}</div>
+    <div class="benchmark-headline-eyebrow">${drillFraming}</div>
     <div class="benchmark-headline-meta">
       <div class="benchmark-headline-verdict ${verdictClass}">
         <div class="benchmark-headline-verdict-word">${verdictWord}</div>
