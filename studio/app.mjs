@@ -84,6 +84,12 @@ const state = {
   compareBEnv: null,
   compareSlice: 'all',         // 'all' | 'onlyA' | 'onlyB' | 'both' | 'a-b' | 'a+b'
   compareSearch: '',           // text filter applied to card id/title
+  compareLens: 'all',          // 'all' | <product-slug>. Filters Compare/Benchmark to
+                               // only artefacts in a product's surface (e.g. 'grafana'
+                               // keeps backends with product=grafana, dashboards whose
+                               // provider.kind=grafana, anything whose mcp.source.<id>
+                               // annotation came from a grafana_* tool, and any artefact
+                               // that refs a surface backend). 'all' disables the filter.
   diff: null,                  // last fetched /api/diff result
   packB: null,                 // B's full layered pack (for atlases)
   atlasVariant: 'strata',      // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit' | 'arbor'
@@ -182,7 +188,7 @@ const PERSIST_FIELDS = [
   'selectedPackId', 'selectedEnv',
   'compareBId', 'compareBEnv',
   'view', 'layerFilter',
-  'compareSlice', 'compareSearch',
+  'compareSlice', 'compareSearch', 'compareLens',
   'viewFocus',
   'atlasVariant', 'arborView',
   'compileGroup', 'compileFlavor', 'compileArtifact',
@@ -238,6 +244,7 @@ async function rehydrateFromPersistence() {
   if (typeof saved.layerFilter === 'string')   state.layerFilter = saved.layerFilter;
   if (typeof saved.compareSlice === 'string')  state.compareSlice = saved.compareSlice;
   if (typeof saved.compareSearch === 'string') state.compareSearch = saved.compareSearch;
+  if (typeof saved.compareLens === 'string')   state.compareLens = saved.compareLens;
   if (saved.viewFocus === 'a' || saved.viewFocus === 'b') state.viewFocus = saved.viewFocus;
   if (typeof saved.atlasVariant === 'string')  state.atlasVariant = saved.atlasVariant;
   if (typeof saved.arborView === 'string')     state.arborView = saved.arborView;
@@ -2339,6 +2346,39 @@ function renderCompareFilters() {
     b.onclick = () => { state.compareSlice = s.id; renderMainView(); };
     wrap.appendChild(b);
   }
+  // Lens — scopes the comparison to one product's surface. When the user
+  // picks "Grafana", both packs are filtered to just their Grafana-surface
+  // artefacts (backends, dashboards, refs, source-tool evidence). Lets a
+  // multi-backend live pack be benchmarked against a single-product
+  // reference without the noise of every other backend.
+  const lensWrap = document.createElement('div');
+  lensWrap.className = 'compare-lens-wrap';
+  const lensLabel = document.createElement('span');
+  lensLabel.className = 'compare-lens-label';
+  lensLabel.textContent = 'Lens';
+  lensWrap.appendChild(lensLabel);
+  const lensSel = document.createElement('select');
+  lensSel.className = 'compare-lens-select';
+  lensSel.title = "Scope to one product's surface — for benchmarking against a reference pack.";
+  const optAll = document.createElement('option');
+  optAll.value = 'all'; optAll.textContent = 'All artefacts';
+  lensSel.appendChild(optAll);
+  for (const lp of LENS_PRODUCTS) {
+    const o = document.createElement('option');
+    o.value = lp.slug;
+    o.textContent = lp.label;
+    lensSel.appendChild(o);
+  }
+  lensSel.value = state.compareLens || 'all';
+  lensSel.dataset.lens = lensSel.value;
+  lensSel.onchange = () => {
+    state.compareLens = lensSel.value;
+    lensSel.dataset.lens = lensSel.value;
+    renderMainView();
+  };
+  lensWrap.appendChild(lensSel);
+  wrap.appendChild(lensWrap);
+
   const search = document.createElement('input');
   search.type = 'search';
   search.className = 'compare-search-input';
@@ -2407,11 +2447,133 @@ function layerItemsFor(pack, L) {
   return pack.layers[L] || [];
 }
 
-// Apply slice + text search to a side's items.
+// Product-surface lens — answers "does this artefact belong to <product>'s
+// surface?" Used by the Compare view's lens dropdown and by the
+// Benchmark view to scope a comparison to one product (e.g. just Grafana).
+//
+// An artefact is in <product>'s surface if ANY of these hold:
+//
+//   1. STRUCTURAL — the artefact IS a backend whose `product` slug matches,
+//      or IS a dashboard whose `provider.kind` matches.
+//   2. REFERENTIAL — the artefact `refs` a backend that's in the surface
+//      (e.g. an SLI that queries metrics from `dashboards-grafana`).
+//   3. SOURCE — the pack carries an `mcp.source.<artefact-id>` annotation
+//      whose value starts with `<product>_` (Phase 2 fetcher stamp).
+//   4. REFERENCE-PACK SHORTCUT — when the pack's metadata.name matches
+//      `<product>-reference`, every artefact in it is in scope by design.
+//
+// Returns true/false. Falls through to true when the lens is 'all'
+// or when no product is specified.
+function productSurface(art, product, pack) {
+  if (!product || product === 'all') return true;
+  if (!art) return false;
+  const p = product.toLowerCase();
+  const idLower = typeof art.id === 'string' ? art.id.toLowerCase() : '';
+
+  // 0. Cross-cutting infrastructure (OTel SDK, pipelines, storage,
+  //    governance imports) is NEVER in a single product's surface unless
+  //    it explicitly refs a backend in the surface (handled in rule 4).
+  //    These artefacts have ids like OTEL-01, PIP-RCV-01, PIP-PRC-01,
+  //    PIP-EXP-MET, STO-MET-01, IMP-01.
+  const isInfra = /^(otel|pip|sto|imp)[-_]/i.test(art.id || '');
+
+  if (!isInfra) {
+    // 1. Structural — backend with matching product slug
+    if (art.spec?.product === p) return true;
+    if (art.product === p) return true;
+
+    // 1b. Structural — dashboard whose provider.kind matches
+    if (art.spec?.provider?.kind === p) return true;
+    if (art.provider?.kind === p) return true;
+
+    // 1c. Backend id pattern — `<signal>-<product>` (e.g. dashboards-grafana,
+    //     metrics-victoriametrics). The fetcher mints ids in this shape.
+    if (idLower.endsWith(`-${p}`) || idLower === p) return true;
+
+    // 2. Backend artefact for a DIFFERENT product — exclude.
+    //    Reference packs declare monitoring backends (e.g. grafana-reference
+    //    pulls in metrics-prom + metrics-mimir to monitor Grafana). Those
+    //    are instrumentation, not Grafana — the Grafana lens shouldn't
+    //    surface them. This rule lives BEFORE the reference-pack shortcut
+    //    so the shortcut can't override it.
+    const otherBackendProduct = (art.spec?.product || art.product || '').toLowerCase();
+    if (otherBackendProduct && otherBackendProduct !== p) return false;
+    // Same logic for dashboards: a non-matching provider.kind is excluded.
+    const otherDashKind = (art.spec?.provider?.kind || art.provider?.kind || '').toLowerCase();
+    if (otherDashKind && otherDashKind !== p) return false;
+
+    // 3. Reference-pack shortcut — when this pack IS the product reference,
+    //    the remaining artefacts (SLIs, SLOs, dashboards without a kind,
+    //    alerts, chaos, governance imports) are by construction about
+    //    that product. The backend exclusion above guards against
+    //    instrumentation backends leaking in. Excludes infra artefacts
+    //    via the isInfra branch wrapping this block.
+    const packName = (pack?.meta?.name || pack?.id || '').toLowerCase();
+    if (packName === `${p}-reference` || packName === `${p}`) return true;
+  }
+
+  // 4. Referential — refs a backend in the product surface.
+  //    Applies to BOTH infra and non-infra artefacts: a STO-MET-01 that
+  //    refs `backend: ref:metrics-victoriametrics` IS in the VM surface.
+  const refs = Array.isArray(art.refs) ? art.refs : [];
+  const surfaceBackendIds = collectSurfaceBackendIds(pack, p);
+  for (const r of refs) {
+    if (typeof r !== 'string') continue;
+    const last = r.split('.').pop().replace(/^ref:/, '').toLowerCase();
+    if (surfaceBackendIds.has(last)) return true;
+  }
+
+  // 5. Source — annotation says the artefact came from a <product>_* tool.
+  const ann = pack?.meta?.annotations || pack?.metadata?.annotations || {};
+  const idForAnn = art.id || art.title;
+  if (idForAnn) {
+    const src = ann[`mcp.source.${idForAnn}`];
+    if (typeof src === 'string' && src.toLowerCase().startsWith(`${p}_`)) return true;
+  }
+
+  return false;
+}
+
+// Build (and cache per-render) the set of backend ids whose `product`
+// matches the lens — used by productSurface() to follow `refs` back to
+// the originating backend.
+const _surfaceCache = new WeakMap();
+function collectSurfaceBackendIds(pack, product) {
+  if (!pack || !product) return new Set();
+  let perPack = _surfaceCache.get(pack);
+  if (!perPack) { perPack = new Map(); _surfaceCache.set(pack, perPack); }
+  if (perPack.has(product)) return perPack.get(product);
+  const ids = new Set();
+  const L2 = (pack.layers?.L2 || []);
+  for (const b of L2) {
+    const bProd = (b.spec?.product || b.product || '').toLowerCase();
+    if (bProd === product && typeof b.id === 'string') {
+      ids.add(b.id.toLowerCase());
+      ids.add(b.id.toLowerCase().split('-').pop());  // last segment (e.g. "grafana")
+    }
+  }
+  perPack.set(product, ids);
+  return ids;
+}
+
+// Catalogue of products that have a matching reference pack. Drives the
+// Lens dropdown and the per-backend "Benchmark vs <product>-reference"
+// CTA. Keep in sync with EXAMPLE_PACKS in server/index.mjs (anything with
+// catalogue: true that maps cleanly to a product slug).
+const LENS_PRODUCTS = [
+  { slug: 'grafana',    label: 'Grafana',    refPackId: 'grafana-reference' },
+  { slug: 'prometheus', label: 'Prometheus', refPackId: 'prometheus-reference' },
+  { slug: 'kafka',      label: 'Kafka',      refPackId: 'kafka-reference' },
+];
+
+// Apply slice + text search + lens to a side's items.
 function filterCompareItems(items, L, side, sets) {
   const slice = state.compareSlice || 'all';
   const search = (state.compareSearch || '').trim().toLowerCase();
+  const lens = state.compareLens || 'all';
+  const sidePack = side === 'a' ? state.pack : state.packB;
   return items.filter(art => {
+    if (lens !== 'all' && !productSurface(art, lens, sidePack)) return false;
     const k = compareKeyOf(art);
     const inBoth = sets.keysInBoth[L]?.has(k);
     const onlySide = side === 'a' ? sets.keysOnlyInA[L]?.has(k) : sets.keysOnlyInB[L]?.has(k);
