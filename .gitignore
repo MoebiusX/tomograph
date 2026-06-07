@@ -3,3 +3,9 @@ node_modules/
 *.log
 .env
 .env.*
+
+# Ad-hoc test/debug dumps created during fetcher + adapter probing.
+# These are scratch artefacts, not source of truth.
+.tmp-*
+*.tmp.yaml
+/diag.mjs
