@@ -2481,6 +2481,12 @@ const POSTURE_MECHANISMS_GLOBAL = [
 // not layer-attributable (e.g., OTel SDK config applies platform-wide).
 // Falls back through: explicit annotation override → pattern match
 // on id/title/folder/refs → unknown (counted but uncategorised).
+//
+// NB: `\b` word-boundaries do NOT match between two word-chars, and
+// `_` is a word-char in JS regex. So `\bavailability\b` would FAIL
+// against `kx_wallet_availability_99`. Patterns below avoid `\b` and
+// rely on substring presence, since these tokens are distinctive
+// enough that false positives are rare.
 function classifyArtefactLayer(art, pack) {
   if (!art) return null;
   const ann = pack?.meta?.annotations || pack?.metadata?.annotations || {};
@@ -2488,24 +2494,42 @@ function classifyArtefactLayer(art, pack) {
   const title = String(art.title || '').toLowerCase();
   const folder = String(art.spec?.folder || art.folder || '').toLowerCase();
   const refsStr = (Array.isArray(art.refs) ? art.refs : []).join(' ').toLowerCase();
+  // Source URL (dashboards): grafana:///grafana/d/adz2hpb/k8s-dashboard
+  // → adds "k8s-dashboard" to the haystack so dashboards whose title
+  // got dropped at adapter time can still classify.
+  const source = String(art.spec?.source || art.source || '').toLowerCase();
+  const sourceSlug = source.split(/[/\\]/).filter(Boolean).pop() || '';
+  // Spec-side hints we sometimes have on dashboards / backends.
+  const tags = (Array.isArray(art.spec?.tags) ? art.spec.tags : []).join(' ').toLowerCase();
+  const product = String(art.spec?.product || art.product || '').toLowerCase();
+  const signal = String(art.spec?.signal || art.signal || '').toLowerCase();
 
   // Explicit override: annotations.layer.<artefact-id>
   const override = ann[`layer.${art.id}`];
   if (override && ['infra','platform','app','ux'].includes(override)) return override;
 
-  const hay = `${id} ${title} ${folder} ${refsStr}`;
+  const hay = `${id} ${title} ${folder} ${refsStr} ${sourceSlug} ${tags}`;
 
-  // UX patterns first (most specific, less likely to overlap)
-  if (/\b(rum|page_load|page-load|conversion|journey|frontend|apdex|lcp|fid|cls|business_outcome|web_vitals|user_satisfaction|customer_)\b/.test(hay)) return 'ux';
+  // UX patterns first (most specific, least likely to overlap)
+  if (/(rum|page_load|page-load|conversion|journey|frontend|apdex|lcp|fid|cls|business_outcome|web_vitals|user_satisfaction|customer_)/.test(hay)) return 'ux';
 
   // INFRA patterns
-  if (/\b(host_|node_|disk_|cpu_|memory_|pod_|container_|kube_|k8s|cluster_|kubelet|cadvisor|node-exporter|kube-state|oom|networkinterface|tcp_|conn_track|cert_expiry)\b/.test(hay)) return 'infra';
+  if (/(host_|node_|disk_|cpu_|memory_|pod_|container_|kube_|k8s|cluster_|kubelet|cadvisor|node-exporter|kube-state|kubernetes|oom_|networkinterface|tcp_|conn_track|cert_expiry|containeroom|diskexhaustion)/.test(hay)) return 'infra';
 
   // PLATFORM patterns
-  if (/\b(db_|database_|postgres|mysql|mongo|redis|cache_|queue_|kafka|rabbit|consumer_lag|broker_|bucket_|mq_|elasticsearch_|opensearch_|alertmanager|kong|envoy|traefik|gateway_)\b/.test(hay)) return 'platform';
+  if (/(db_|database_|postgres|mysql|mongo|redis|cache_|queue_|kafka|rabbit|consumer_lag|broker_|bucket_|mq_|elasticsearch_|opensearch_|alertmanager|kong|envoy|traefik|gateway_|graylog)/.test(hay)) return 'platform';
 
   // APPLICATION (intentionally last — broad catch-all for service-level)
-  if (/\b(availability|success_ratio|error_ratio|latency|p95|p99|p99\.9|request_|http_|api_|service_|endpoint_|error_budget|latency_budget|burn_rate)\b/.test(hay)) return 'app';
+  if (/(availability|success_ratio|error_ratio|latency|p95|p99|p99\.9|request_|http_|api_|service_|endpoint_|error_budget|latency_budget|burn_rate|errorbudget|latencybudget|burnrate|finops|krystalinex)/.test(hay)) return 'app';
+
+  // Backends with a telemetry signal but no layer-specific tokens
+  // (e.g. dashboards-grafana, traces-jaeger) default to APP, since the
+  // OTel SDK they enable primarily instruments application services.
+  // The spec models telemetry backends as cross-cutting infrastructure;
+  // for the posture matrix we attribute them to App by convention so
+  // their mechanism shows up somewhere instead of "unknown".
+  if (/^BAK-/.test(art.id || '') && signal) return 'app';
+  if (id === 'otel-01' || /^OTEL-/.test(art.id || '')) return 'app';
 
   // SLI/SLO with a service-name pattern in id (e.g. kx_wallet_availability)
   if (/^sli-|^slo-/.test(id) && /^[a-z][a-z0-9_-]*_/.test(art.title || '')) return 'app';
@@ -2574,6 +2598,23 @@ function computePostureMatrix(packA, packB) {
       if (!cells[key]) cells[key] = [];
       cells[key].push(art);
     }
+  }
+
+  // Telemetry mechanism propagation: when the pack declares a backend
+  // with signal=metrics/logs/traces/profiles, that telemetry pipeline
+  // is enabled platform-wide. It primarily instruments the App layer
+  // (services emitting telemetry). Light up App's row for each signal
+  // we have a backend for. Other layers stay evidence-driven (scrape
+  // jobs, recording rules, firing alerts) so we don't overclaim.
+  const signalToMech = { metrics: 'metric', logs: 'log', traces: 'trace', profiles: 'profile' };
+  for (const a of L2) {
+    if (!/^BAK-/.test(a.id || '')) continue;
+    const sig = String(a.spec?.signal || a.signal || '').toLowerCase();
+    const mech = signalToMech[sig];
+    if (!mech) continue;
+    const key = `app:${mech}`;
+    if (!cells[key]) cells[key] = [];
+    cells[key].push(a);
   }
 
   // Also consider the firing-alerts evidence — these are layer-bearing
