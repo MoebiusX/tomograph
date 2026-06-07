@@ -246,10 +246,12 @@ async function rehydrateFromPersistence() {
   // routes to either Compare (if it implied a comparison view) or
   // Layers (everything else) so we never strand the user on a tab
   // that no longer has a nav entry.
-  const VISIBLE_VIEWS = new Set(['layers', 'compare', 'compile']);
-  const COMPARE_LIKE  = new Set(['benchmark', 'compare-artefacts', 'traceability']);
-  if (state.view && !VISIBLE_VIEWS.has(state.view)) {
-    state.view = COMPARE_LIKE.has(state.view) ? 'compare' : 'layers';
+  // Permitted views: the three workflow tabs + the Advanced deep tools.
+  // Anything else (legacy 'benchmark', the removed 'compare-artefacts')
+  // routes to the compliance report so we never strand the user.
+  const PERMITTED_VIEWS = new Set(['layers', 'compare', 'compile', 'conformance', 'schema', 'otlp', 'traceability', 'atlas']);
+  if (state.view && !PERMITTED_VIEWS.has(state.view)) {
+    state.view = 'compare';
   }
   if (typeof saved.layerFilter === 'string')   state.layerFilter = saved.layerFilter;
   if (typeof saved.compareSlice === 'string')  state.compareSlice = saved.compareSlice;
@@ -5896,6 +5898,20 @@ const OBSERVA_TABS = [
   },
 ];
 
+// "Advanced / Alien Observability" — the deep, specialised tools that
+// sit OFF the three-step workflow. A first-time user never needs these;
+// an expert reaches for them. They live behind a single right-side
+// chrome button (styled like the old action cluster) that opens a menu.
+// Each routes to a view that already exists in the dispatcher.
+const OBSERVA_ADV = [
+  { id: 'conformance',  label: 'Conformance',  sub: 'maturity rubric · MUST/SHOULD per tier' },
+  { id: 'schema',       label: 'Schema',       sub: 'canonical YAML + v1.2 validation' },
+  { id: 'otlp',         label: 'OTLP Coverage', sub: 'receiver protocols · per-signal exporters' },
+  { id: 'traceability', label: 'Traceability', sub: 'repo vs live · declared / verified / stale' },
+  { id: 'atlas',        label: 'Atlas',        sub: 'visual atlases · strata · periodic · skyline' },
+];
+const OBSERVA_ADV_VIEWS = new Set(OBSERVA_ADV.map(a => a.id));
+
 function installObservaChrome() {
   if (document.querySelector('.observa-hdr')) return;
   document.body.classList.add('chrome-observa');
@@ -5944,39 +5960,80 @@ function installObservaChrome() {
           </button>
         `).join('')}
       </nav>
+
+      <div class="observa-actions" aria-label="Advanced tools">
+        <div class="observa-adv-wrap">
+          <button type="button" class="observa-action observa-adv-toggle"
+                  aria-haspopup="true" aria-expanded="false"
+                  title="Advanced — deep observability tools">
+            <span class="observa-action-glyph">⬡</span>
+            <span class="observa-action-label">Advanced</span>
+            <span class="observa-adv-caret">▾</span>
+          </button>
+          <div class="observa-adv-menu" role="menu" hidden>
+            <div class="observa-adv-menu-head">Alien Observability · deep tools</div>
+            ${OBSERVA_ADV.map(a => `
+              <button type="button" class="observa-adv-item" role="menuitem" data-view="${a.id}">
+                <span class="observa-adv-item-label">${escapeHtml(a.label)}</span>
+                <span class="observa-adv-item-sub">${escapeHtml(a.sub)}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+      </div>
     </div>
   `;
   document.body.insertBefore(hdr, document.body.firstChild);
 
   // Wire tab clicks → route to the existing view dispatcher.
+  const routeTo = (id) => {
+    if (!id) return;
+    state.view = id;
+    state.activeCardKey = null;
+    state.activeLayer = ({ compile: 'COMPILE', conformance: 'CONF', schema: 'CONF', atlas: 'ATLAS', layers: state.layerFilter !== 'all' ? state.layerFilter : 'L1' })[id] || 'L1';
+    applyModeChrome();
+    paintObservaActiveTab();
+    renderTabs();
+    renderMainView();
+  };
   for (const btn of hdr.querySelectorAll('.observa-tab')) {
-    btn.addEventListener('click', () => {
-      const id = btn.dataset.view;
-      if (!id) return;
-      state.view = id;
-      state.activeCardKey = null;
-      state.activeLayer = ({ compile: 'COMPILE', layers: state.layerFilter !== 'all' ? state.layerFilter : 'L1' })[id] || 'L1';
-      applyModeChrome();
-      paintObservaActiveTab();
-      renderTabs();
-      renderMainView();
-    });
+    btn.addEventListener('click', () => routeTo(btn.dataset.view));
   }
+
+  // Wire the Advanced menu — deep tools off the main workflow.
+  const advToggle = hdr.querySelector('.observa-adv-toggle');
+  const advMenu   = hdr.querySelector('.observa-adv-menu');
+  const closeAdv = () => { if (advMenu) { advMenu.hidden = true; advToggle?.setAttribute('aria-expanded', 'false'); } };
+  advToggle?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const willOpen = advMenu.hidden;
+    advMenu.hidden = !willOpen;
+    advToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+  });
+  hdr.querySelectorAll('.observa-adv-item').forEach(item => {
+    item.addEventListener('click', () => { closeAdv(); routeTo(item.dataset.view); });
+  });
+  // Close the menu on any outside click / Escape.
+  document.addEventListener('click', (e) => {
+    if (advMenu && !advMenu.hidden && !e.target.closest('.observa-adv-wrap')) closeAdv();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAdv(); });
 
   paintObservaActiveTab();
 }
 
 function paintObservaActiveTab() {
-  const active = (() => {
-    const v = state.view || 'layers';
-    if (v === 'benchmark' || v === 'compare-artefacts') return 'compare';
-    return v;
-  })();
+  const v = state.view || 'layers';
+  const active = (v === 'benchmark' || v === 'compare-artefacts') ? 'compare' : v;
+  const advActive = OBSERVA_ADV_VIEWS.has(v);
   for (const btn of document.querySelectorAll('.observa-tab')) {
-    const isActive = btn.dataset.view === active;
+    // A workflow tab is active only when we're NOT in an advanced view.
+    const isActive = !advActive && btn.dataset.view === active;
     btn.classList.toggle('is-active', isActive);
     btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
   }
+  const advToggle = document.querySelector('.observa-adv-toggle');
+  if (advToggle) advToggle.classList.toggle('is-active', advActive);
 }
 
 async function boot() {
