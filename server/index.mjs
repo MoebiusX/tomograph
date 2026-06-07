@@ -1158,7 +1158,12 @@ export { app };
 export function start({ port = PORT, host = HOST, silent = false } = {}) {
   return new Promise((resolveListen, reject) => {
     const srv = app.listen(port, host, () => {
+      // When bind fails the listening callback can still fire with the
+      // address being null (race between EADDRINUSE and 'listening').
+      // Bail here so the error handler below resolves the promise; the
+      // call site will format a friendly message.
       const addr = srv.address();
+      if (!addr) return;
       if (!silent) process.stdout.write(`[studio] listening on http://${addr.address}:${addr.port}\n`);
       resolveListen(srv);
     });
@@ -1168,5 +1173,18 @@ export function start({ port = PORT, host = HOST, silent = false } = {}) {
 
 const invokedDirectly = resolve(process.argv[1] || '') === resolve(fileURLToPath(import.meta.url));
 if (invokedDirectly) {
-  start().catch(e => { process.stderr.write(`[studio] failed to start: ${e.message}\n`); process.exit(1); });
+  start().catch(e => {
+    // EADDRINUSE is the common case — give a clear, actionable hint
+    // instead of a generic stack trace.
+    if (e && e.code === 'EADDRINUSE') {
+      process.stderr.write(
+        `[studio] port ${PORT} is already in use.\n` +
+        `         Another Tomograph instance is probably running. Stop it, or:\n` +
+        `           PORT=8001 npm run dev\n`
+      );
+    } else {
+      process.stderr.write(`[studio] failed to start: ${e.message}\n`);
+    }
+    process.exit(1);
+  });
 }
