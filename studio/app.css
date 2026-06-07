@@ -3431,6 +3431,51 @@ a:hover { color: var(--ink); }
   margin-right: 8px;
 }
 
+/* One-line nudge at the very end of Benchmark: points users wanting
+   artefact-id-level diffs to the Compare view. Quiet by design — it's
+   navigation, not narrative. */
+.benchmark-handoff {
+  margin: 8px 28px 24px;
+  padding: 12px 16px;
+  background: var(--ink-bg);
+  border: 1px dashed var(--line-2);
+  border-radius: var(--r-sm);
+  font: 12.5px/1.5 var(--serif);
+  color: var(--ink-3);
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.benchmark-handoff-eyebrow {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+.benchmark-handoff-body em {
+  color: var(--ink-2);
+  font-style: italic;
+}
+.benchmark-handoff-link {
+  display: inline-flex;
+  align-items: baseline;
+  margin: 0 2px;
+  padding: 2px 8px;
+  border: 1px solid var(--CMP);
+  border-radius: 999px;
+  background: transparent;
+  font: 600 12px/1.2 var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--CMP);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.benchmark-handoff-link:hover {
+  background: rgba(178, 34, 34, 0.06);
+}
+
 @media (max-width: 1100px) {
   .benchmark-scorecard-grid {
     grid-template-columns: 1fr;

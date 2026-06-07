@@ -2438,31 +2438,36 @@ function renderBenchmarkView(view) {
   scaffold.appendChild(renderPostureNarrative(posture));
   scaffold.appendChild(renderPosturePieRow(posture));
 
-  // The old artefact-identity scorecard becomes a collapsed
-  // accordion — power users get the raw counts, the demo doesn't.
-  const scorecard = computeBenchmarkScorecard(state.pack, state.packB, lens);
-  scaffold.appendChild(renderFootprintAccordion(scorecard));
+  // The artefact-identity drill (footprint scorecard, missing/extras
+  // lists, side-by-side per-layer compare grid) intentionally NO
+  // LONGER lives in Benchmark. It re-asks "are the pack contents
+  // identical?" — a strictly lesser question than "is this observability
+  // diagnostic-grade?". The Compare view is where that drill belongs.
+  // Pointer to it instead so users who came here looking for it know
+  // where to go.
+  scaffold.appendChild(renderBenchmarkCompareHandoff());
+}
 
-  // The two callout lists — what's missing, what's extra. Each gives
-  // the demo audience an immediate "here's what to do next" feel.
-  scaffold.appendChild(renderBenchmarkMissing(scorecard));
-  scaffold.appendChild(renderBenchmarkExtras(scorecard));
-
-  // Beneath the scorecard, the same lens-scoped compare grid users
-  // get on the Compare view — for drill-down.
-  const detailHead = document.createElement('div');
-  detailHead.className = 'benchmark-detail-head';
-  detailHead.innerHTML = `<span class="benchmark-detail-eyebrow">SIDE-BY-SIDE</span> drill into each layer to see what matches and what differs.`;
-  scaffold.appendChild(detailHead);
-
-  // Reuse the existing compare filter bar so the user can tweak the
-  // lens / slice / search without leaving Benchmark.
-  scaffold.appendChild(renderCompareFilters());
-  const sets = buildCompareKeySets();
-  for (const L of LAYERS_FOR_DIFF) {
-    const row = renderCompareLayerRow(L, sets);
-    if (row) scaffold.appendChild(row);
-  }
+// One-line nudge that points users wanting artefact-id-level diffs to
+// the Compare view, where that drill now lives exclusively.
+function renderBenchmarkCompareHandoff() {
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-handoff';
+  wrap.innerHTML = `
+    <span class="benchmark-handoff-eyebrow">NEED ARTEFACT-LEVEL DIFF?</span>
+    <span class="benchmark-handoff-body">
+      The per-artefact "what's in A but missing in B" drill lives in
+      <button type="button" class="benchmark-handoff-link" data-go-view="compare">Compare</button>.
+      Benchmark answers <em>is this diagnostic-grade?</em> — Compare answers <em>which artefacts differ?</em>
+    </span>
+  `;
+  wrap.querySelector('[data-go-view="compare"]')?.addEventListener('click', () => {
+    state.view = 'compare';
+    state.activeCardKey = null;
+    if (typeof applyModeChrome === 'function') applyModeChrome();
+    renderTabs(); renderMainView();
+  });
+  return wrap;
 }
 
 // ============================================================
