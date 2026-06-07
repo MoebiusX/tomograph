@@ -4219,7 +4219,7 @@ function setupResetButton() {
   btn.onclick = async () => {
     const ok = confirm('Reset Tomograph?\n\n' +
       'This will:\n' +
-      '  • drop every uploaded / crawled / drafted pack from the server\n' +
+      '  • drop every uploaded / scanned / drafted pack from the server\n' +
       '  • clear saved view + filter + focus + trace preferences from localStorage\n' +
       '  • reload the page to the empty home screen\n\n' +
       'Catalog-shipped example packs are unaffected (they live on disk).');
@@ -4332,8 +4332,8 @@ function renderHomeView() {
           </button>
           <button id="home-shortcut-crawl" type="button" class="home-alt-btn">
             <span class="home-alt-key" aria-hidden="true">↻</span>
-            <span class="home-alt-label">Crawl a service repo</span>
-            <span class="home-alt-sub">walks Prom / OTel / Grafana / AM configs</span>
+            <span class="home-alt-label">Scan a service repo</span>
+            <span class="home-alt-sub">walks Prom / OTel / Grafana / AM configs · or a GitHub URL</span>
           </button>
         </div>
       </div>
@@ -5138,7 +5138,7 @@ async function doCrawl() {
     statusEl.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
   };
   if (crawlState.classified.size === 0) {
-    if (crawlState.files.size > 0) setStatus('no observability artefacts in the staged set; nothing to crawl', 'error');
+    if (crawlState.files.size > 0) setStatus('no observability artefacts in the staged set; nothing to scan', 'error');
     else setStatus('drop a folder or pick files first', 'error');
     return;
   }
@@ -5161,7 +5161,7 @@ async function doCrawl() {
 
   const goBtn = $('#crawl-go-btn');
   goBtn.disabled = true;
-  setStatus(`crawling ${crawlState.classified.size} artefact${crawlState.classified.size === 1 ? '' : 's'}…`);
+  setStatus(`scanning ${crawlState.classified.size} artefact${crawlState.classified.size === 1 ? '' : 's'}…`);
 
   try {
     const r = await fetch('/api/crawl', {
@@ -5316,7 +5316,7 @@ async function adoptCrawlResult() {
     state.pack = res.adapted;
     state.conformance = res.conformance;
     state.symbolTable = buildSymbolTable(res.adapted);
-    state.uploadedSource = `${out.canonical.metadata.name} (crawled draft)`;
+    state.uploadedSource = `${out.canonical.metadata.name} (scanned draft)`;
     state.activeLayer = 'L1';
     state.activeCardKey = null;
     state.mode = 'single';
@@ -5333,7 +5333,7 @@ async function adoptCrawlResult() {
     renderTabs();
     renderMainView();
     $('#crawl-panel').hidden = true;
-    toast(`Loaded crawled draft for ${out.canonical.metadata.name}`);
+    toast(`Loaded scanned draft for ${out.canonical.metadata.name}`);
   } catch (e) {
     toast(`Adopt failed: ${e.message}`, 'error');
   }
