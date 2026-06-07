@@ -400,7 +400,7 @@ try {
 
   // GET / returns the studio shell
   const html = await getText(base, '/');
-  assert(html.includes('<title>ObservabilityPack Studio</title>'), 'GET / returns studio shell');
+  assert(html.includes('<title>Tomograph</title>'), 'GET / returns studio shell');
   assert(html.includes('/app.mjs'), 'shell loads app.mjs');
   assert(html.includes('/app.css'), 'shell loads app.css');
 

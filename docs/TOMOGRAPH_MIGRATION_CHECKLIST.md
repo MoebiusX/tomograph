@@ -77,7 +77,7 @@ In the MCP repo (`otel-mcp-server`):
 
 In any internal references (Notion, Slack, decks):
 
-- [ ] Sweep for "studio" / "ObservabilityPack Studio" / the old repo
+- [ ] Sweep for "studio" / "Tomograph" / the old repo
       URL. Update to "Tomograph" / "the Observability Compiler" / the
       new URL.
 

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: observabilitypack-studio
+  labels:
+    app.kubernetes.io/name: observabilitypack-studio
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: observabilitypack-studio
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

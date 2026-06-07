@@ -2,7 +2,7 @@
 /**
  * server/index.mjs
  *
- * Express server for ObservabilityPack Studio v0.3+.
+ * Express server for Tomograph v0.3+.
  *
  * Responsibilities:
  *   - Serve the studio HTML/CSS/JS shell from studio/.
@@ -1152,7 +1152,7 @@ app.get(/^(?!\/api\/).*/, (req, res, next) => {
 // ---------- entrypoint ----------
 
 const PORT = Number(process.env.PORT || 8000);
-const HOST = process.env.HOST || '127.0.0.1';
+const HOST = process.env.HOST || '0.0.0.0';
 
 export { app };
 export function start({ port = PORT, host = HOST, silent = false } = {}) {

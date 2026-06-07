@@ -1,0 +1,892 @@
+apiVersion: observability.platform/v1
+kind: ObservabilityPack
+metadata:
+  name: production-live
+  version: 0.29679652.0
+  owners:
+    - mcp-fetcher
+  bindings:
+    service: production-live
+    environments:
+      - prod
+    criticality: tier-2
+  annotations:
+    mcp.refreshedAt: 2026-06-06T20:52:27.056Z
+    mcp.url: https://www.krystaline.io/mcp/public
+    mcp.toolsCalled: system_health,system_topology,anomalies_active,anomalies_baselines,metrics_alerts,metrics_alerts,grafana_dashboards_search
+    mcp.toolsFailed: ''
+    mcp.probesAttempted: scrape_configs,metric_names,recording_rules,alert_rules,dashboards
+    mcp.probesSucceeded: recording_rules,alert_rules,dashboards
+    mcp.servicesDiscovered: kx-exchange,kx-matcher,kx-wallet
+    mcp.baselinesComputed: "0"
+    mcp.activeAnomalies: "1"
+    mcp.toolsExposed: traces_search,trace_get,traces_services,traces_operations,traces_dependencies,metrics_query,metrics_query_range,metrics_targets,metrics_alerts,metrics_metadata,metrics_label_values,grafana_health,grafana_datasources,grafana_datasource_health,grafana_datasource_query,grafana_dashboards_search,grafana_dashboard_get,grafana_folders,grafana_alert_rules,grafana_alerts,grafana_contact_points,zk_proof_get,zk_proof_verify,zk_solvency,zk_stats,anomalies_active,anomalies_baselines,system_health,system_topology,backend_capabilities,exchange_status,total_volume,recent_trades,transparency_metrics,verify_trace
+    mcp.toolsExposedCount: "35"
+    mcp.toolsUnmatched: traces_search,trace_get,traces_services,traces_operations,traces_dependencies,metrics_query,metrics_query_range,metrics_targets,metrics_metadata,metrics_label_values,grafana_health,grafana_datasources,grafana_datasource_health,grafana_datasource_query,grafana_dashboard_get,grafana_folders,grafana_alert_rules,grafana_alerts,grafana_contact_points,zk_proof_get,zk_proof_verify,zk_solvency,zk_stats,backend_capabilities,exchange_status,total_volume,recent_trades,transparency_metrics,verify_trace
+    mcp.discovered.recording_rules: "0"
+    mcp.discovered.alert_rules: "0"
+    mcp.discovered.dashboards: "6"
+    mcp.verified.otel: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.alerting-alertmanager: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.network-cilium: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.logs-clickhouse: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.mesh-consul: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.logs-elasticsearch: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.logs-opensearch: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.mesh-envoy: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.dashboards-grafana: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.logs-graylog: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.metrics-influxdb: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.gateway-kong: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.logs-loki: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.metrics-prometheus: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.metrics-mimir: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.metrics-thanos: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.metrics-victoriametrics: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.metrics-cortex: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.policy-opa: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.metrics-opentsdb: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.collection-fluentbit: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.collection-beats: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.collection-vector: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.collection-alloy: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.profiles-pyroscope: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.traces-jaeger: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.traces-tempo: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.traces-zipkin: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.traces-skywalking: 2026-06-06T20:52:27.056Z
+    mcp.verified.telemetry.backends.gateway-traefik: 2026-06-06T20:52:27.056Z
+    mcp.capabilities.gatingMode: warn
+    mcp.capabilities.protocolModel: capability → product → protocol-adapter
+    mcp.capabilities.skillCount: "24"
+    mcp.capabilities.backendCount: "37"
+    mcp.capabilities.skills: agentrelay,alertmanager,cilium,clickhouse,consul,elasticsearch,envoy,grafana,graylog,influx,kong,kubernetes,logs,metrics,opa,opentsdb,pinpoint,pipeline,public-exchange,pyroscope,system,traces,traefik,zk-proofs
+    mcp.capabilities.inventory: agentrelay:AgentRelay:agentrelay:v1|alertmanager:Alertmanager:alertmanager:0.28;0.27|cilium:Cilium:cilium:1.17;1.16|clickhouse:ClickHouse:clickhouse:25.x;24.x|consul:Consul:consul:1.20;1.19|elasticsearch:Elasticsearch:elasticsearch:9.x|elasticsearch:OpenSearch:opensearch:2.x|envoy:Envoy:envoy:1.33;1.32|grafana:Grafana:grafana:12.x;13.x|graylog:Graylog:graylog:6.x|influx:InfluxDB 1.x:influxdb:1.11|influx:InfluxDB 2.x:influxdb:2.7|influx:InfluxDB 3.x:influxdb:3.x|kong:Kong:kong:3.8;3.7|kubernetes:Kubernetes:kubernetes:1.33;1.32|logs:Grafana Loki:loki:3.x|metrics:Prometheus:prometheus:3.x|metrics:Grafana Mimir:mimir:2.14;2.13|metrics:Thanos:thanos:0.37;0.36|metrics:VictoriaMetrics:victoriametrics:1.x|metrics:Cortex:cortex:1.x|opa:Open Policy Agent:opa:1.x|opentsdb:OpenTSDB:opentsdb:2.4.x|pinpoint:Pinpoint:pinpoint:3.x|pipeline:Fluent Bit:fluentbit:3.x|pipeline:Beats:beats:9.x;8.x|pipeline:Vector:vector:0.4x|pipeline:Grafana Alloy:alloy:1.x|public-exchange:App API:app-api:1.x|pyroscope:Grafana Pyroscope:pyroscope:1.x|system:Application API:application-api:1.x|traces:Jaeger:jaeger:2.x|traces:Tempo:tempo:2.7;2.6|traces:Zipkin:zipkin:3.x|traces:SkyWalking:skywalking:10.x|traefik:Traefik:traefik:3.x|zk-proofs:ZK Proofs:zk-proofs:1.x
+    mcp.verified.slis.kx_exchange_availability: 2026-06-06T20:52:27.056Z
+    mcp.verified.slis.kx_matcher_availability: 2026-06-06T20:52:27.056Z
+    mcp.verified.slis.kx_wallet_availability: 2026-06-06T20:52:27.056Z
+    mcp.verified.dashboards: 2026-06-06T20:52:27.056Z
+    mcp.verified.baselines: 2026-06-06T20:52:27.056Z
+spec:
+  otel:
+    semconv: 1.27.0
+    resource_attributes:
+      required:
+        - service.name
+    sdk:
+      languages:
+        - go
+      sampling:
+        policy: parentbased_traceidratio
+        ratio: 0.1
+      propagators:
+        - tracecontext
+  telemetry:
+    backends:
+      - id: alerting-alertmanager
+        signal: alerting
+        product: alertmanager
+        version:
+          declared: "0.28"
+          min: "0.27"
+          gating: warn
+          capabilities:
+            - alerts
+            - silences
+            - status
+            - receivers
+      - id: network-cilium
+        signal: network
+        product: cilium
+        version:
+          declared: "1.17"
+          min: "1.16"
+          gating: warn
+          capabilities:
+            - health
+            - endpoints
+            - policy
+            - status
+      - id: logs-clickhouse
+        signal: logs
+        product: clickhouse
+        version:
+          declared: 25.x
+          min: 24.x
+          gating: warn
+          capabilities:
+            - select
+            - where
+            - group_by
+            - order_by
+            - limit
+            - join
+            - cte
+            - array_join
+            - subqueries
+            - format_json
+            - system_tables
+            - count
+            - sum
+            - avg
+            - min
+            - max
+            - uniq
+            - quantile
+            - quantiles
+            - datetime_functions
+            - show_tables
+            - show_databases
+            - describe
+      - id: mesh-consul
+        signal: mesh
+        product: consul
+        version:
+          declared: "1.20"
+          min: "1.19"
+          gating: warn
+          capabilities:
+            - health
+            - services
+            - nodes
+            - kv
+            - catalog
+      - id: logs-elasticsearch
+        signal: logs
+        product: elasticsearch
+        version:
+          declared: 9.x
+          min: 9.x
+          gating: warn
+          capabilities:
+            - match
+            - match_phrase
+            - match_phrase_prefix
+            - multi_match
+            - term
+            - terms
+            - terms_set
+            - range
+            - exists
+            - prefix
+            - wildcard
+            - regexp
+            - fuzzy
+            - ids
+            - query_string
+            - simple_query_string
+            - bool
+            - dis_max
+            - boosting
+            - constant_score
+            - function_score
+            - nested
+            - avg
+            - sum
+            - min
+            - max
+            - stats
+            - extended_stats
+            - value_count
+            - cardinality
+            - percentiles
+            - percentile_ranks
+      - id: logs-opensearch
+        signal: logs
+        product: opensearch
+        version:
+          declared: 2.x
+          min: 2.x
+          gating: warn
+          capabilities:
+            - match
+            - match_phrase
+            - match_phrase_prefix
+            - multi_match
+            - term
+            - terms
+            - terms_set
+            - range
+            - exists
+            - prefix
+            - wildcard
+            - regexp
+            - fuzzy
+            - ids
+            - query_string
+            - simple_query_string
+            - bool
+            - dis_max
+            - boosting
+            - constant_score
+            - function_score
+            - nested
+            - avg
+            - sum
+            - min
+            - max
+            - stats
+            - extended_stats
+            - value_count
+            - cardinality
+            - percentiles
+            - percentile_ranks
+      - id: mesh-envoy
+        signal: mesh
+        product: envoy
+        version:
+          declared: "1.33"
+          min: "1.32"
+          gating: warn
+          capabilities:
+            - server_info
+            - stats
+            - clusters
+            - config_dump
+      - id: dashboards-grafana
+        signal: dashboards
+        product: grafana
+        version:
+          declared: 12.x
+          min: 13.x
+          gating: warn
+          capabilities:
+            - health
+            - search_dashboards
+            - get_dashboard
+            - list_datasources
+            - list_folders
+            - list_alert_rules
+            - list_users
+            - list_teams
+            - datasource_proxy
+      - id: logs-graylog
+        signal: logs
+        product: graylog
+        version:
+          declared: 6.x
+          min: 6.x
+          gating: warn
+          capabilities:
+            - full_text
+            - field_value
+            - boolean_ops
+            - range
+            - wildcards
+            - exists
+            - timerange
+            - sort
+            - paging
+            - streams_filter
+            - fields_projection
+            - message_by_id
+            - inputs_listing
+            - streams_listing
+      - id: metrics-influxdb
+        signal: metrics
+        product: influxdb
+        version:
+          declared: "1.11"
+          min: "1.11"
+          gating: warn
+          capabilities:
+            - select
+            - where
+            - group_by_time
+            - group_by_tag
+            - fill
+            - mean
+            - median
+            - mode
+            - sum
+            - count
+            - min
+            - max
+            - first
+            - last
+            - spread
+            - stddev
+            - percentile
+            - distinct
+            - top
+            - bottom
+            - sample
+            - derivative
+            - non_negative_derivative
+            - difference
+            - moving_average
+            - cumulative_sum
+            - elapsed
+            - into
+            - show_measurements
+            - show_tag_keys
+            - show_field_keys
+            - show_series
+      - id: gateway-kong
+        signal: gateway
+        product: kong
+        version:
+          declared: "3.8"
+          min: "3.7"
+          gating: warn
+          capabilities:
+            - status
+            - services
+            - routes
+            - plugins
+      - id: logs-loki
+        signal: logs
+        product: loki
+        version:
+          declared: 3.x
+          min: 3.x
+          gating: warn
+          capabilities:
+            - stream_selector
+            - line_filter_eq
+            - line_filter_neq
+            - line_filter_regex
+            - json
+            - logfmt
+            - regexp
+            - unpack
+            - line_format
+            - label_format
+            - label_filter
+            - rate
+            - count_over_time
+            - bytes_rate
+            - bytes_over_time
+            - sum
+            - avg
+            - min
+            - max
+            - stddev
+            - stdvar
+            - count
+            - topk
+            - bottomk
+            - quantile_over_time
+            - first_over_time
+            - last_over_time
+            - absent_over_time
+            - sum_over_time
+            - avg_over_time
+            - min_over_time
+            - max_over_time
+      - id: metrics-prometheus
+        signal: metrics
+        product: prometheus
+        version:
+          declared: 3.x
+          min: 3.x
+          gating: warn
+          capabilities:
+            - sum
+            - min
+            - max
+            - avg
+            - group
+            - stddev
+            - stdvar
+            - count
+            - count_values
+            - bottomk
+            - topk
+            - quantile
+            - by
+            - without
+            - "on"
+            - ignoring
+            - group_left
+            - group_right
+            - rate
+            - irate
+            - increase
+            - resets
+            - changes
+            - idelta
+            - delta
+            - deriv
+            - predict_linear
+            - holt_winters
+            - abs
+            - ceil
+            - floor
+            - round
+      - id: metrics-mimir
+        signal: metrics
+        product: mimir
+        version:
+          declared: "2.14"
+          min: "2.13"
+          gating: warn
+          capabilities:
+            - sum
+            - min
+            - max
+            - avg
+            - group
+            - stddev
+            - stdvar
+            - count
+            - count_values
+            - bottomk
+            - topk
+            - quantile
+            - by
+            - without
+            - "on"
+            - ignoring
+            - group_left
+            - group_right
+            - rate
+            - irate
+            - increase
+            - resets
+            - changes
+            - idelta
+            - delta
+            - deriv
+            - predict_linear
+            - holt_winters
+            - abs
+            - ceil
+            - floor
+            - round
+      - id: metrics-thanos
+        signal: metrics
+        product: thanos
+        version:
+          declared: "0.37"
+          min: "0.36"
+          gating: warn
+          capabilities:
+            - sum
+            - min
+            - max
+            - avg
+            - group
+            - stddev
+            - stdvar
+            - count
+            - count_values
+            - bottomk
+            - topk
+            - quantile
+            - by
+            - without
+            - "on"
+            - ignoring
+            - group_left
+            - group_right
+            - rate
+            - irate
+            - increase
+            - resets
+            - changes
+            - idelta
+            - delta
+            - deriv
+            - predict_linear
+            - holt_winters
+            - abs
+            - ceil
+            - floor
+            - round
+      - id: metrics-victoriametrics
+        signal: metrics
+        product: victoriametrics
+        version:
+          declared: 1.x
+          min: 1.x
+          gating: warn
+          capabilities:
+            - sum
+            - min
+            - max
+            - avg
+            - group
+            - stddev
+            - stdvar
+            - count
+            - count_values
+            - bottomk
+            - topk
+            - quantile
+            - by
+            - without
+            - "on"
+            - ignoring
+            - group_left
+            - group_right
+            - rate
+            - irate
+            - increase
+            - resets
+            - changes
+            - idelta
+            - delta
+            - deriv
+            - predict_linear
+            - holt_winters
+            - abs
+            - ceil
+            - floor
+            - round
+      - id: metrics-cortex
+        signal: metrics
+        product: cortex
+        version:
+          declared: 1.x
+          min: 1.x
+          gating: warn
+          capabilities:
+            - sum
+            - min
+            - max
+            - avg
+            - group
+            - stddev
+            - stdvar
+            - count
+            - count_values
+            - bottomk
+            - topk
+            - quantile
+            - by
+            - without
+            - "on"
+            - ignoring
+            - group_left
+            - group_right
+            - rate
+            - irate
+            - increase
+            - resets
+            - changes
+            - idelta
+            - delta
+            - deriv
+            - predict_linear
+            - holt_winters
+            - abs
+            - ceil
+            - floor
+            - round
+      - id: policy-opa
+        signal: policy
+        product: opa
+        version:
+          declared: 1.x
+          min: 1.x
+          gating: warn
+          capabilities:
+            - query_data
+            - post_data_input
+            - list_policies
+            - get_policy
+            - health
+            - metrics
+      - id: metrics-opentsdb
+        signal: metrics
+        product: opentsdb
+        version:
+          declared: 2.4.x
+          min: 2.4.x
+          gating: warn
+          capabilities:
+            - query
+            - sum
+            - avg
+            - min
+            - max
+            - count
+            - dev
+            - zimsum
+            - mimmin
+            - mimmax
+            - downsampling
+            - rate
+            - suggest
+            - search_lookup
+            - multi_metric
+            - time_range
+      - id: collection-fluentbit
+        signal: collection
+        product: fluentbit
+        version:
+          declared: 3.x
+          min: 3.x
+          gating: warn
+          capabilities:
+            - uptime
+            - metrics
+            - health
+      - id: collection-beats
+        signal: collection
+        product: beats
+        version:
+          declared: 9.x
+          min: 8.x
+          gating: warn
+          capabilities:
+            - stats
+            - state
+            - info
+      - id: collection-vector
+        signal: collection
+        product: vector
+        version:
+          declared: 0.4x
+          min: 0.4x
+          gating: warn
+          capabilities:
+            - health
+            - components
+            - metrics
+      - id: collection-alloy
+        signal: collection
+        product: alloy
+        version:
+          declared: 1.x
+          min: 1.x
+          gating: warn
+          capabilities:
+            - ready
+            - components
+            - metrics
+      - id: profiles-pyroscope
+        signal: profiles
+        product: pyroscope
+        version:
+          declared: 1.x
+          min: 1.x
+          gating: warn
+          capabilities:
+            - profile_by_app
+            - label_selector
+            - time_range
+            - flamegraph
+            - profile_types
+            - render_json
+            - flamebearer
+            - label_names
+            - label_values
+      - id: traces-jaeger
+        signal: traces
+        product: jaeger
+        version:
+          declared: 2.x
+          min: 2.x
+          gating: warn
+          capabilities:
+            - search_by_service
+            - search_by_operation
+            - search_by_tags
+            - get_trace_by_id
+            - lookback_window
+            - limit
+            - min_duration
+            - max_duration
+      - id: traces-tempo
+        signal: traces
+        product: tempo
+        version:
+          declared: "2.7"
+          min: "2.6"
+          gating: warn
+          capabilities:
+            - get_trace_by_id
+            - span_attribute_filter
+            - resource_attribute_filter
+            - duration_filter
+            - limit
+      - id: traces-zipkin
+        signal: traces
+        product: zipkin
+        version:
+          declared: 3.x
+          min: 3.x
+          gating: warn
+          capabilities:
+            - search
+            - get_trace_by_id
+            - services_list
+            - span_names
+            - dependencies
+            - lookback
+            - limit
+            - min_duration
+      - id: traces-skywalking
+        signal: traces
+        product: skywalking
+        version:
+          declared: 10.x
+          min: 10.x
+          gating: warn
+          capabilities:
+            - trace_query
+            - get_trace_by_id
+            - services_list
+            - endpoints_list
+            - topology
+            - dependencies
+            - duration_window
+      - id: gateway-traefik
+        signal: gateway
+        product: traefik
+        version:
+          declared: 3.x
+          min: 3.x
+          gating: warn
+          capabilities:
+            - overview
+            - routers
+            - services
+            - middlewares
+  slis:
+    - id: kx_exchange_availability
+      description: Availability SLI for kx-exchange (synthesised from MCP system_health).
+      type: ratio
+      semconv_metric: http.server.request.duration
+      good: sum(rate(http_server_request_duration_seconds_count{service_name="kx-exchange",http_response_status_code!~"5.."}[5m]))
+      total: sum(rate(http_server_request_duration_seconds_count{service_name="kx-exchange"}[5m]))
+    - id: kx_matcher_availability
+      description: Availability SLI for kx-matcher (synthesised from MCP system_health).
+      type: ratio
+      semconv_metric: http.server.request.duration
+      good: sum(rate(http_server_request_duration_seconds_count{service_name="kx-matcher",http_response_status_code!~"5.."}[5m]))
+      total: sum(rate(http_server_request_duration_seconds_count{service_name="kx-matcher"}[5m]))
+    - id: kx_wallet_availability
+      description: Availability SLI for kx-wallet (synthesised from MCP system_health).
+      type: ratio
+      semconv_metric: http.server.request.duration
+      good: sum(rate(http_server_request_duration_seconds_count{service_name="kx-wallet",http_response_status_code!~"5.."}[5m]))
+      total: sum(rate(http_server_request_duration_seconds_count{service_name="kx-wallet"}[5m]))
+  slos:
+    - id: kx_exchange_availability_99
+      sli: kx_exchange_availability
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: kx_matcher_availability_99
+      sli: kx_matcher_availability
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: kx_wallet_availability_99
+      sli: kx_wallet_availability
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+  pipelines:
+    receivers:
+      - name: otlp
+    processors:
+      - name: memory_limiter
+      - name: batch
+    exporters:
+      metrics:
+        kind: prometheusremotewrite
+      logs:
+        kind: elasticsearch
+      traces:
+        kind: jaeger
+  queries:
+    recording_rules:
+      - name: platform:kx_exchange_availability:ratio_5m
+        expr: ref:slis.kx_exchange_availability
+        interval: 30s
+      - name: platform:kx_matcher_availability:ratio_5m
+        expr: ref:slis.kx_matcher_availability
+        interval: 30s
+      - name: platform:kx_wallet_availability:ratio_5m
+        expr: ref:slis.kx_wallet_availability
+        interval: 30s
+  dashboards:
+    - id: adz2hpb
+      provider:
+        kind: grafana
+        version: "12.0"
+        schemaVersion: 41
+      folder: KrystalineX
+      source: grafana:///grafana/d/adz2hpb/k8s-dashboard
+    - id: adg5hzx
+      provider:
+        kind: grafana
+        version: "12.0"
+        schemaVersion: 41
+      folder: KrystalineX
+      source: grafana:///grafana/d/adg5hzx/k8s-dashboard-v2
+    - id: kx-predictive-finops
+      provider:
+        kind: grafana
+        version: "12.0"
+        schemaVersion: 41
+      folder: KrystalineX
+      source: grafana:///grafana/d/kx-predictive-finops/krystalinex-predictive-and-finops
+    - id: krystalinex-unified
+      provider:
+        kind: grafana
+        version: "12.0"
+        schemaVersion: 41
+      folder: KrystalineX
+      source: grafana:///grafana/d/krystalinex-unified/krystalinex-unified-observability-2026
+    - id: addfpjz
+      provider:
+        kind: grafana
+        version: "12.0"
+        schemaVersion: 41
+      folder: KrystalineX
+      source: grafana:///grafana/d/addfpjz/krystalinex-unified-observability-2026-copy-v3
+    - id: advnm6r
+      provider:
+        kind: grafana
+        version: "12.0"
+        schemaVersion: 41
+      folder: KrystalineX
+      source: grafana:///grafana/d/advnm6r/krystalinex-unified-observability-2026-v2
+  policy:
+    burn_rate_alerts:
+      - slo: kx_exchange_availability_99
+        windows:
+          - short: 5m
+            long: 1h
+            factor: 14
+            severity: SEV1
+          - short: 30m
+            long: 6h
+            factor: 6
+            severity: SEV2
+      - slo: kx_matcher_availability_99
+        windows:
+          - short: 5m
+            long: 1h
+            factor: 14
+            severity: SEV1
+          - short: 30m
+            long: 6h
+            factor: 6
+            severity: SEV2
+      - slo: kx_wallet_availability_99
+        windows:
+          - short: 5m
+            long: 1h
+            factor: 14
+            severity: SEV1
+          - short: 30m
+            long: 6h
+            factor: 6
+            severity: SEV2
+  alerting:
+    routes:
+      - severity: SEV1
+        channels:
+          - msteams: "#platform-oncall"
+  baselines:
+    mttd_target_p50: 5m
+    mttr_target_p50: 2h
+    measurement_source: mcp.anomalies_baselines
+    review_cadence: weekly
+  validation: {}

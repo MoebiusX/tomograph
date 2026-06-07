@@ -1,0 +1,30 @@
+# Path-based Ingress mounting the Studio at /obspack on the existing host.
+# Adjust `host`, `ingressClassName`, and TLS to match your cluster.
+#
+# The Studio's boot script fetches `../packs/production-live.json` relative to
+# /studio/observabilitypack-studio.html, which resolves to /packs/... — so the
+# Ingress MUST forward the entire path tree under the chosen prefix.  Using a
+# bare path prefix (`/`) is simplest if you have a dedicated host; otherwise
+# combine path-prefix with the nginx `sub_filter` in studio-nginx-conf to
+# rewrite asset paths.  The minimum-friction option is a dedicated subdomain.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: observabilitypack-studio
+  labels:
+    app.kubernetes.io/name: observabilitypack-studio
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: obspack.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: observabilitypack-studio
+                port:
+                  number: 80

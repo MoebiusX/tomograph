@@ -1,0 +1,13 @@
+# Non-secret runtime knobs for the fetcher sidecar.  Override MCP_URL when
+# pointing at a different cluster / namespace / endpoint.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: studio-fetcher-config
+  labels:
+    app.kubernetes.io/name: observabilitypack-studio
+data:
+  # In-cluster service DNS for the authenticated internal MCP.
+  # Public alternative: http://krystalinex-mcp-public:3001
+  MCP_URL: "http://krystalinex-otel-mcp-server:3001"
+  REFRESH_INTERVAL_SECONDS: "900"   # 15 min
