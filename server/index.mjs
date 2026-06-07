@@ -358,6 +358,14 @@ app.get('/api/packs/:id/canonical', (req, res) => {
     const canonical = loadPackCanonical(meta);
     const env = readEnv(req.query);
     const { canonical: overlaid, effective } = overlaidCanonical(canonical, env);
+    // Allow ?format=yaml to return the manifest as text/yaml for the
+    // Schema view's canonical-source pane (saves a round-trip + an
+    // ESM YAML emitter on the client).
+    if (req.query.format === 'yaml' || req.query.format === 'yml') {
+      res.set('Content-Type', 'application/x-yaml; charset=utf-8');
+      res.send(emitYaml(overlaid));
+      return;
+    }
     res.json({ ...overlaid, __effectiveEnvironment: env, __effective: effective });
   } catch (e) {
     res.status(500).json({ error: e.message });

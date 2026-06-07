@@ -1416,6 +1416,140 @@ a:hover { color: var(--ink); }
 .drawer[data-layer="GOV"] { --accent: var(--GOV); }
 .drawer[data-layer="CONF"] { --accent: var(--CONF); }
 
+/* ===================== SCHEMA VIEW =====================
+   Distinct from Conformance: this answers "is this manifest a
+   valid canonical v1.2 pack?" — identity + validation + raw YAML.
+   Conformance answers "how mature is it?" — the rubric. */
+.schema-view { --accent: var(--BLD); }
+.schema-view .section-head {
+  border-color: var(--BLD); background: var(--BLD-tint);
+}
+.schema-identity {
+  padding: 16px 22px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+.schema-identity-head,
+.schema-validation-head,
+.schema-yaml-title {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 10px;
+}
+.schema-identity-list {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 6px 18px;
+}
+.schema-identity-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 0;
+  border-bottom: 1px dotted var(--line-2);
+  font-size: 13px;
+}
+.schema-identity-row:last-child { border-bottom: 0; }
+.schema-identity-row dt {
+  font: 600 11px/1.4 var(--mono);
+  color: var(--ink-3);
+  margin: 0;
+}
+.schema-identity-row dd {
+  margin: 0;
+  font: 12.5px/1.4 var(--mono);
+  color: var(--ink-1);
+}
+.schema-identity-row code {
+  background: var(--ink-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.schema-identity-row em {
+  font-style: italic;
+  color: var(--ink-4);
+}
+
+.schema-validation {
+  padding: 14px 22px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+.schema-validation-status {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: var(--pass-bg, rgba(56,142,60,0.06));
+  border-left: 3px solid rgb(46, 110, 50);
+  border-radius: 4px;
+  font: 13.5px/1.5 var(--serif);
+  color: var(--ink-2);
+}
+.schema-validation-pip {
+  font: 600 18px/1 var(--mono);
+  color: rgb(46, 110, 50);
+}
+.schema-validation-status a {
+  color: rgb(46, 110, 50);
+  text-decoration: underline;
+}
+.schema-validation-meta {
+  margin-top: 8px;
+  font: 12px/1.5 var(--serif);
+  color: var(--ink-4);
+}
+.schema-validation-meta code {
+  font: 11px/1 var(--mono);
+  background: var(--ink-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--ink-3);
+}
+.schema-validation-meta a {
+  color: var(--ink-3);
+}
+
+.schema-yaml-box {
+  padding: 0 22px 22px;
+  background: var(--paper);
+}
+.schema-yaml-head {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 16px 0 8px;
+  border-bottom: 1px dotted var(--line-2);
+  margin-bottom: 8px;
+}
+.schema-yaml-title { margin-bottom: 0; }
+.schema-yaml-meta {
+  font: 11.5px/1 var(--mono);
+  color: var(--ink-4);
+}
+.schema-yaml-copy,
+.schema-yaml-download {
+  margin-left: auto;
+  font: 600 10.5px/1 var(--mono);
+  padding: 4px 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.schema-yaml-download { margin-left: 6px; }
+.schema-yaml-body {
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--code-bg);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  font: 12px/1.55 var(--mono);
+  color: var(--ink-2);
+  max-height: 65vh;
+  overflow: auto;
+  white-space: pre;
+  tab-size: 2;
+}
+
 /* ===================== CONFORMANCE VIEW ===================== */
 .conformance-view { --accent: var(--CONF); --accent-bg: var(--CONF-bg); --accent-tint: var(--CONF-tint); }
 .conformance-view .section-head {
