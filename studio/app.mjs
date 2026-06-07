@@ -6232,11 +6232,22 @@ function renderDraftMcpResult(out) {
     `<tr${dim ? ' class="is-dim"' : ''}><td>${escapeHtml(label)}</td><td>${typeof value === 'number' ? value : escapeHtml(String(value))}</td></tr>`;
   const probesA = new Set(d.probesAttempted || []);
   const probesS = new Set(d.probesSucceeded || []);
+  const probesE = new Set(d.probesEmpty || []);
+  const probesF = new Set(d.probesFailed || []);
+  // Three distinct outcomes when a probe was attempted:
+  //   data     — MCP responded with real content → show count
+  //   empty    — MCP responded with empty payload → "0 (none configured)"
+  //              honest zero, e.g. Krystaline has no Prometheus rules
+  //   failed   — every candidate errored / 503'd → "— probe failed"
+  //              transient or systemic, not the same as zero
   const probeRow = (label, key, value) => {
     if (!probesA.has(key)) return '';
-    const succeeded = probesS.has(key);
-    if (!succeeded) return row(label, '— probed, none found', true);
-    return row(label, value || 0);
+    if (probesS.has(key))  return row(label, value || 0);
+    if (probesE.has(key))  return row(label, `0 — none configured`, true);
+    if (probesF.has(key))  return row(label, '— probe failed', true);
+    // Older packs (pre-Phase 5) don't have probesEmpty/probesFailed
+    // annotations; fall back to the original behaviour.
+    return row(label, '— probed, none found', true);
   };
   $('#draft-mcp-result-summary').innerHTML = `
     <h4>what the MCP attested</h4>

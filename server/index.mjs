@@ -858,6 +858,8 @@ app.post('/api/draft-from-mcp', async (req, res) => {
     const ann = pack.metadata?.annotations || {};
     const probesAttempted = (ann['mcp.probesAttempted'] || '').split(',').filter(Boolean);
     const probesSucceeded = (ann['mcp.probesSucceeded'] || '').split(',').filter(Boolean);
+    const probesEmpty     = (ann['mcp.probesEmpty']     || '').split(',').filter(Boolean);
+    const probesFailed    = (ann['mcp.probesFailed']    || '').split(',').filter(Boolean);
 
     // Parse the capability inventory (skill → backend → product → versions)
     // out of the flat annotation set the fetcher stamped. The studio's
@@ -903,7 +905,7 @@ app.post('/api/draft-from-mcp', async (req, res) => {
         // tools/list inventory — what the MCP advertised vs what we matched
         toolsExposed:    (ann['mcp.toolsExposed']    || '').split(',').filter(Boolean),
         toolsUnmatched:  (ann['mcp.toolsUnmatched']  || '').split(',').filter(Boolean),
-        probesAttempted, probesSucceeded,
+        probesAttempted, probesSucceeded, probesEmpty, probesFailed,
       },
       // Full backend_capabilities inventory — the version-gating contract.
       // When null, the MCP didn't expose backend_capabilities (older

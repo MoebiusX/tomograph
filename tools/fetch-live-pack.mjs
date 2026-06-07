@@ -351,10 +351,30 @@ export function buildCanonicalPack({
   const coreCalled = ['system_health','system_topology','anomalies_active','anomalies_baselines'].filter(n => !errors[n]);
   // Probe tool that actually responded (per probe).
   const probeAnswered = Object.entries(probeResults).filter(([_, v]) => v?.tool).map(([k, v]) => v.tool);
-  // Probes attempted (regardless of whether any candidate answered).
+  // Classify each probe by outcome:
+  //   data    — MCP responded with non-empty content (a real answer)
+  //   empty   — MCP responded but the payload was empty (an honest zero)
+  //   failed  — every candidate errored / 503'd (no response at all)
+  // The probe loop now stamps `outcome` directly. For callers that
+  // pre-populate probeResults (the offline fetcher tests do), classify
+  // from the legacy fields: `tool` set means SOMETHING answered, and
+  // a non-empty `adapted` array means it answered with data.
   const probesAttempted = Object.keys(probeResults || {});
-  // Probes that responded successfully.
-  const probesSucceeded = Object.entries(probeResults || {}).filter(([_, v]) => v?.tool).map(([k]) => k);
+  const classify = (v) => {
+    if (!v) return 'failed';
+    if (v.outcome) return v.outcome;
+    if (v.tool && Array.isArray(v.adapted) && v.adapted.length > 0) return 'data';
+    if (v.tool && Array.isArray(v.adapted)) return 'empty';
+    if (v.tool) return 'data';  // non-array adapted shape; preserve legacy behaviour
+    return 'failed';
+  };
+  const probesByOutcome = (target) =>
+    Object.entries(probeResults || {})
+      .filter(([_, v]) => classify(v) === target)
+      .map(([k]) => k);
+  const probesSucceeded = probesByOutcome('data');
+  const probesEmpty     = probesByOutcome('empty');
+  const probesFailed    = probesByOutcome('failed');
 
   const annotations = {
     'mcp.refreshedAt':         refreshedAt,
@@ -363,6 +383,12 @@ export function buildCanonicalPack({
     'mcp.toolsFailed':         Object.keys(errors).join(',') || '',
     'mcp.probesAttempted':     probesAttempted.join(','),
     'mcp.probesSucceeded':     probesSucceeded.join(','),
+    // Honest accounting of probes that ran but came back empty vs probes
+    // that failed outright. The studio's summary reads these to render
+    // "0 found" (empty) distinctly from "probe failed" (failed) — both
+    // distinct from "— not attempted".
+    'mcp.probesEmpty':         probesEmpty.join(','),
+    'mcp.probesFailed':        probesFailed.join(','),
     'mcp.servicesDiscovered':  serviceNames.join(','),
     'mcp.baselinesComputed':   String((baselinesData.baselines || []).length),
     'mcp.activeAnomalies':     String(anomaliesActive?.traceAnomalies?.active?.length || 0),
@@ -374,10 +400,10 @@ export function buildCanonicalPack({
     // the user can name what to wire next.
     'mcp.toolsUnmatched':      unmatchedTools.map(t => t.name).join(','),
   };
-  // Per-probe count annotations, ONLY for probes that responded — so an
-  // engineer reading the pack can see what came back from live state.
+  // Per-probe count annotations — ANY probe with an array result, whether
+  // empty or populated, lands here so the studio can read "0" honestly.
   for (const [k, v] of Object.entries(probeResults || {})) {
-    if (v?.tool && Array.isArray(v.adapted)) {
+    if (Array.isArray(v?.adapted)) {
       annotations[`mcp.discovered.${k}`] = String(v.adapted.length);
     }
   }
@@ -1005,6 +1031,37 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   const candName = (c) => (typeof c === 'string' ? c : c.name);
   const candArgs = (c) => (typeof c === 'string' ? {} : (c.args || {}));
 
+  // Tool-call cache (per fetchMcp run). Keyed by name + JSON-stringified
+  // args. Several probes converge on the same MCP tool — recording_rules
+  // and alert_rules both call `metrics_alerts`; if we let them race in
+  // parallel, one call can 503 while the other gets through, leaving
+  // the studio with a confusing partial picture. Sharing the response
+  // (a) eliminates the race, (b) halves the wire traffic, (c) keeps
+  // the parallel speed-up because the second caller just awaits the
+  // first call's pending promise.
+  const toolCallCache = new Map();
+  const cachedCall = (name, args) => {
+    const key = `${name}::${JSON.stringify(args || {})}`;
+    if (toolCallCache.has(key)) return toolCallCache.get(key);
+    const p = quiet(name, () => callTool(name, args || {}));
+    toolCallCache.set(key, p);
+    return p;
+  };
+
+  // Treat the probe's adapt() output as empty when there's nothing
+  // actionable in it — an empty array, an empty object, or null. An
+  // empty response on the first candidate doesn't mean the whole probe
+  // is unanswerable; the cascade should fall through to the next source.
+  // (Krystaline metrics_alerts returns {groups: []} — genuinely zero
+  // Prometheus rules — but the rules might live in Grafana Unified
+  // Alerting at grafana_alert_rules, so we keep trying.)
+  const isEmptyAdapted = (v) => {
+    if (v == null) return true;
+    if (Array.isArray(v)) return v.length === 0;
+    if (typeof v === 'object') return Object.keys(v).length === 0;
+    return false;
+  };
+
   const probeResults = {};
   await Promise.all(PROBES.map(async (probe) => {
     let candidates;
@@ -1017,6 +1074,7 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
           attempted: probe.candidates.map(candName),
           adapted: null,
           skippedReason: 'no candidate matched tools/list inventory',
+          outcome: 'unsupported',
         };
         return;
       }
@@ -1024,24 +1082,52 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
       candidates = probe.candidates.slice();
     }
     const attempted = [];
+    // Remember the first candidate that responded with a non-null
+    // result, even if that result was empty. If all candidates either
+    // fail outright OR return empty, we fall back to reporting the
+    // FIRST empty-but-successful result so the studio can distinguish
+    // "MCP says: 0 rules" from "MCP didn't respond at all".
+    let firstEmpty = null;
     for (const candidate of candidates) {
       const name = candName(candidate);
+      const args = candArgs(candidate);
       attempted.push(name);
-      const response = await quiet(name, () => callTool(name, candArgs(candidate)));
-      if (response != null) {
-        let adapted;
-        try { adapted = probe.adapt(response); }
-        catch (_) { adapted = null; }
+      const response = await cachedCall(name, args);
+      if (response == null) continue;          // tool errored or returned nothing
+      let adapted;
+      try { adapted = probe.adapt(response); }
+      catch (_) { adapted = null; }
+      if (!isEmptyAdapted(adapted)) {
+        // Real data — cache this candidate as the winner and stop.
         probeResults[probe.name] = {
           tool: name,
           attempted: attempted.slice(),
           adapted,
           rawSize: JSON.stringify(response).length,
+          outcome: 'data',
         };
         return;
       }
+      // Empty result. Remember it but keep looking — another candidate
+      // might carry the data.
+      if (!firstEmpty) {
+        firstEmpty = { tool: name, adapted, rawSize: JSON.stringify(response).length };
+      }
     }
-    probeResults[probe.name] = { tool: null, attempted, adapted: null };
+    if (firstEmpty) {
+      probeResults[probe.name] = {
+        tool: firstEmpty.tool,
+        attempted,
+        adapted: firstEmpty.adapted,
+        rawSize: firstEmpty.rawSize,
+        outcome: 'empty',
+      };
+      return;
+    }
+    probeResults[probe.name] = {
+      tool: null, attempted, adapted: null,
+      outcome: 'failed',
+    };
   }));
 
   // ----------------------------------------------------------------
