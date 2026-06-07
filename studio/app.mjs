@@ -2407,6 +2407,15 @@ function renderBenchmarkView(view) {
 
   scaffold.appendChild(renderBenchmarkHeader(scorecard, lens));
   scaffold.appendChild(renderBenchmarkScorecard(scorecard));
+  // Posture matrix — the OUTCOME-based view: "are we monitoring the
+  // right things at the right levels with the right mechanisms?"
+  // This is the actual question a CTO asks. The scorecard above
+  // answers "are our artefacts identical to the reference's", which is
+  // useful but secondary.
+  const posture = computePostureMatrix(state.pack, state.packB);
+  scaffold.appendChild(renderPostureMatrix(posture));
+  scaffold.appendChild(renderPostureNarrative(posture));
+
   // The two callout lists — what's missing, what's extra. Each gives
   // the demo audience an immediate "here's what to do next" feel.
   scaffold.appendChild(renderBenchmarkMissing(scorecard));
@@ -2427,6 +2436,329 @@ function renderBenchmarkView(view) {
     const row = renderCompareLayerRow(L, sets);
     if (row) scaffold.appendChild(row);
   }
+}
+
+// ============================================================
+// Posture matrix — outcome-based observability assessment.
+//
+// The question this answers: "are we monitoring the right things at
+// the right levels with the right mechanisms?" Four layers (Infra /
+// Platform / Application / UX) × eleven mechanisms (instrumentation,
+// metrics, logs, traces, profiles, SLI, SLO, alert, dashboard,
+// runbook, chaos, synthetic). Heuristic classifier on artefact ids,
+// titles, dashboard folders, alert names — overridable via
+// `metadata.annotations.layer.<artefact-id>: infra|platform|app|ux`.
+// ============================================================
+const POSTURE_LAYERS = [
+  { key: 'infra',    label: 'Infrastructure', hint: 'nodes · pods · disk · network' },
+  { key: 'platform', label: 'Platform',       hint: 'db · cache · queue · gateway' },
+  { key: 'app',      label: 'Application',    hint: 'service · API · job · business logic' },
+  { key: 'ux',       label: 'User Experience',hint: 'frontend · journey · business outcome' },
+];
+
+// Layer-specific mechanisms — each has a present/absent verdict per
+// layer based on artefacts classified to that layer.
+const POSTURE_MECHANISMS_PER_LAYER = [
+  { key: 'sli',        label: 'SLI defined',       hint: 'what we measure' },
+  { key: 'slo',        label: 'SLO declared',      hint: 'target reliability' },
+  { key: 'alert',      label: 'Alert wired',       hint: 'fires on threshold or burn-rate' },
+  { key: 'dashboard',  label: 'Dashboard',         hint: 'human-readable view' },
+  { key: 'metric',     label: 'Metrics flowing',   hint: 'scrape job, recording rule, or evidence' },
+  { key: 'log',        label: 'Logs flowing',      hint: 'log scrape / shipper' },
+  { key: 'trace',      label: 'Traces flowing',    hint: 'span emission attested' },
+  { key: 'runbook',    label: 'Runbook linked',    hint: 'oncall response declared' },
+  { key: 'chaos',      label: 'Chaos validated',   hint: 'fault injection tested' },
+  { key: 'synthetic',  label: 'Synthetic check',   hint: 'active uptime probe' },
+];
+
+// Platform-wide mechanisms — single status, doesn't depend on layer.
+const POSTURE_MECHANISMS_GLOBAL = [
+  { key: 'instrumentation', label: 'OTel SDK',     hint: 'instrumentation contract' },
+  { key: 'baselines',       label: 'Baselines',    hint: 'MTTD/MTTR targets' },
+];
+
+// Classifier — returns the layer for an artefact, or null if it's
+// not layer-attributable (e.g., OTel SDK config applies platform-wide).
+// Falls back through: explicit annotation override → pattern match
+// on id/title/folder/refs → unknown (counted but uncategorised).
+function classifyArtefactLayer(art, pack) {
+  if (!art) return null;
+  const ann = pack?.meta?.annotations || pack?.metadata?.annotations || {};
+  const id = String(art.id || '').toLowerCase();
+  const title = String(art.title || '').toLowerCase();
+  const folder = String(art.spec?.folder || art.folder || '').toLowerCase();
+  const refsStr = (Array.isArray(art.refs) ? art.refs : []).join(' ').toLowerCase();
+
+  // Explicit override: annotations.layer.<artefact-id>
+  const override = ann[`layer.${art.id}`];
+  if (override && ['infra','platform','app','ux'].includes(override)) return override;
+
+  const hay = `${id} ${title} ${folder} ${refsStr}`;
+
+  // UX patterns first (most specific, less likely to overlap)
+  if (/\b(rum|page_load|page-load|conversion|journey|frontend|apdex|lcp|fid|cls|business_outcome|web_vitals|user_satisfaction|customer_)\b/.test(hay)) return 'ux';
+
+  // INFRA patterns
+  if (/\b(host_|node_|disk_|cpu_|memory_|pod_|container_|kube_|k8s|cluster_|kubelet|cadvisor|node-exporter|kube-state|oom|networkinterface|tcp_|conn_track|cert_expiry)\b/.test(hay)) return 'infra';
+
+  // PLATFORM patterns
+  if (/\b(db_|database_|postgres|mysql|mongo|redis|cache_|queue_|kafka|rabbit|consumer_lag|broker_|bucket_|mq_|elasticsearch_|opensearch_|alertmanager|kong|envoy|traefik|gateway_)\b/.test(hay)) return 'platform';
+
+  // APPLICATION (intentionally last — broad catch-all for service-level)
+  if (/\b(availability|success_ratio|error_ratio|latency|p95|p99|p99\.9|request_|http_|api_|service_|endpoint_|error_budget|latency_budget|burn_rate)\b/.test(hay)) return 'app';
+
+  // SLI/SLO with a service-name pattern in id (e.g. kx_wallet_availability)
+  if (/^sli-|^slo-/.test(id) && /^[a-z][a-z0-9_-]*_/.test(art.title || '')) return 'app';
+
+  return null;  // genuinely uncategorised
+}
+
+// Classifier — returns the mechanism for an artefact (only one most-
+// likely mechanism per artefact). Returns null when the artefact
+// isn't a mechanism-bearing artefact (e.g. OTel SDK config covers
+// 'instrumentation' platform-wide).
+function classifyArtefactMechanism(art) {
+  if (!art) return null;
+  const id = String(art.id || '');
+  if (/^SLI-/.test(id))    return 'sli';
+  if (/^SLO-/.test(id))    return 'slo';
+  if (/^DASH-/.test(id))   return 'dashboard';
+  if (/^POL-/.test(id))    return 'alert';
+  if (/^HEAL-/.test(id))   return 'runbook';
+  if (/^CHAOS-/.test(id))  return 'chaos';
+  if (/^SYN-/.test(id))    return 'synthetic';
+  if (/^QRY-/.test(id) || /^VIEW-/.test(id)) return 'metric';
+  // Backends carry a SIGNAL — telemetry mechanism, not layer-mechanism.
+  if (/^BAK-/.test(id)) {
+    const sig = String(art.spec?.signal || art.signal || '').toLowerCase();
+    if (sig === 'metrics') return 'metric';
+    if (sig === 'logs')    return 'log';
+    if (sig === 'traces')  return 'trace';
+  }
+  return null;
+}
+
+function computePostureMatrix(packA, packB) {
+  // Walk every layer (L1..L5 + GOV) and bucket each artefact into
+  // (layer × mechanism). Build per-cell artefact lists.
+  const cells = {};   // key: `${layer}:${mech}` → [artefacts]
+  const platformWide = { instrumentation: false, baselines: false };
+  const ann = packA?.meta?.annotations || packA?.metadata?.annotations || {};
+
+  // OTel SDK declared anywhere?
+  // Try several heuristics: (a) an OTEL- artefact in L2, (b) a backend
+  // with signal=traces (instrumented), (c) explicit annotation.
+  const L2 = packA?.layers?.L2 || [];
+  if (L2.some(a => /^OTEL-/.test(a.id || '')) ||
+      L2.some(a => /^BAK-/.test(a.id || '') && /traces/.test(String(a.spec?.signal||'').toLowerCase()))) {
+    platformWide.instrumentation = true;
+  }
+
+  // Baselines declared?
+  const L5 = packA?.layers?.L5 || [];
+  if (L5.some(a => /baseline/i.test(a.id || '') || /baseline/i.test(a.title || ''))) {
+    platformWide.baselines = true;
+  }
+
+  const allLayers = ['L1','L2','L2X','L3','L4','L5','GOV'];
+  for (const L of allLayers) {
+    const items = layerItemsFor(packA, L);
+    for (const art of items) {
+      const mech = classifyArtefactMechanism(art);
+      if (!mech) continue;
+      const layer = classifyArtefactLayer(art, packA);
+      // When layer is null, bucket under 'unknown' so the matrix can
+      // still surface the artefact's existence without claiming a
+      // layer. UI shows these in a tiny "unclassified" footer.
+      const key = `${layer || 'unknown'}:${mech}`;
+      if (!cells[key]) cells[key] = [];
+      cells[key].push(art);
+    }
+  }
+
+  // Also consider the firing-alerts evidence — these are layer-bearing
+  // even though they aren't artefacts in the layered shape. The fetcher
+  // stamps them as annotations; we re-derive layer from alertname.
+  const firingNames = (ann['mcp.discovered.alerts_firing.names'] || '').split(',').filter(Boolean);
+  for (const n of firingNames) {
+    const fakeArt = { id: `ALERT-${n}`, title: n };
+    const layer = classifyArtefactLayer(fakeArt, packA);
+    const key = `${layer || 'unknown'}:alert`;
+    if (!cells[key]) cells[key] = [];
+    cells[key].push({ id: `firing/${n}`, title: n, _evidence: true });
+  }
+
+  // Recording-rule outputs from the inventory grep are evidence of
+  // metric mechanism per layer.
+  const recRuleNames = (ann['mcp.discovered.recording_rules_via_inventory.names'] || '').split(',').filter(Boolean);
+  for (const n of recRuleNames) {
+    const fakeArt = { id: `REC-${n}`, title: n };
+    const layer = classifyArtefactLayer(fakeArt, packA);
+    const key = `${layer || 'unknown'}:metric`;
+    if (!cells[key]) cells[key] = [];
+    cells[key].push({ id: `recrule/${n}`, title: n, _evidence: true });
+  }
+
+  // Scrape jobs surfaced via annotations — strong evidence of log/metric
+  // flow at the inferred layer (node-exporter → infra, postgres → platform, etc.)
+  const scrapeJobs = (ann['mcp.discovered.scrape_jobs'] || '').split(',').filter(Boolean);
+  for (const job of scrapeJobs) {
+    const fakeArt = { id: `JOB-${job}`, title: job };
+    const layer = classifyArtefactLayer(fakeArt, packA);
+    // Most scrape jobs evidence metrics; some specifically evidence logs
+    // (promtail, fluentbit). Default to metric.
+    const mech = /promtail|fluent|loki|log/i.test(job) ? 'log' : 'metric';
+    const key = `${layer || 'unknown'}:${mech}`;
+    if (!cells[key]) cells[key] = [];
+    cells[key].push({ id: `scrape/${job}`, title: job, _evidence: true });
+  }
+
+  return { cells, platformWide };
+}
+
+function renderPostureMatrix(posture) {
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-block posture-matrix-block';
+  const cellVal = (layer, mech) => {
+    const arr = posture.cells[`${layer}:${mech}`];
+    return arr && arr.length ? arr : null;
+  };
+  const cellHtml = (layer, mech) => {
+    const arr = cellVal(layer, mech);
+    if (!arr) return `<td class="posture-cell is-absent" title="No ${mech} attested for ${layer}">✗</td>`;
+    const evidenceOnly = arr.every(a => a._evidence);
+    const cls = evidenceOnly ? 'is-evidence' : 'is-present';
+    const sample = arr.slice(0, 3).map(a => escapeHtml(a.title || a.id)).join(' · ');
+    const more = arr.length > 3 ? ` · +${arr.length - 3} more` : '';
+    return `<td class="posture-cell ${cls}" title="${escapeHtml(sample + more)}">
+      <span class="posture-pip">${evidenceOnly ? '○' : '✓'}</span>
+      <span class="posture-count">${arr.length}</span>
+    </td>`;
+  };
+
+  const headRow = `<tr>
+    <th class="posture-mech-col">Mechanism</th>
+    ${POSTURE_LAYERS.map(l => `<th class="posture-layer-col">
+      <div class="posture-layer-label">${escapeHtml(l.label)}</div>
+      <div class="posture-layer-hint">${escapeHtml(l.hint)}</div>
+    </th>`).join('')}
+  </tr>`;
+  const bodyRows = POSTURE_MECHANISMS_PER_LAYER.map(m => `<tr>
+    <th class="posture-mech-cell">
+      <span class="posture-mech-label">${escapeHtml(m.label)}</span>
+      <span class="posture-mech-hint">${escapeHtml(m.hint)}</span>
+    </th>
+    ${POSTURE_LAYERS.map(l => cellHtml(l.key, m.key)).join('')}
+  </tr>`).join('');
+  const platformRows = POSTURE_MECHANISMS_GLOBAL.map(m => {
+    const pass = !!posture.platformWide[m.key];
+    return `<tr class="is-platform-wide">
+      <th class="posture-mech-cell">
+        <span class="posture-mech-label">${escapeHtml(m.label)}</span>
+        <span class="posture-mech-hint">${escapeHtml(m.hint)}</span>
+      </th>
+      <td class="posture-cell-span" colspan="${POSTURE_LAYERS.length}">
+        <span class="posture-pip">${pass ? '✓' : '✗'}</span>
+        <span class="posture-platform-msg">${pass ? 'declared at the pack level (applies to all layers)' : 'not declared'}</span>
+      </td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="benchmark-block-head">
+      <span class="benchmark-block-eyebrow">POSTURE</span>
+      Are we monitoring the right things at the right levels?
+    </div>
+    <table class="posture-matrix">
+      <thead>${headRow}</thead>
+      <tbody>${bodyRows}${platformRows}</tbody>
+    </table>
+    <div class="posture-matrix-legend">
+      ✓ artefact declared in the pack · ○ evidence-only (firing alert, scrape job, recording rule output — declaration missing) · ✗ absent
+    </div>
+  `;
+  return wrap;
+}
+
+function renderPostureNarrative(posture) {
+  // Template-driven (no LLM). For each layer, count how many of the
+  // 10 layer-specific mechanisms are present (declared OR evidence),
+  // then map to a sentence.
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-block posture-narrative-block';
+
+  const layerScore = (layer) => {
+    let present = 0;
+    let evidenceOnly = 0;
+    let missing = [];
+    for (const m of POSTURE_MECHANISMS_PER_LAYER) {
+      const arr = posture.cells[`${layer}:${m.key}`];
+      if (arr && arr.length) {
+        present++;
+        if (arr.every(a => a._evidence)) evidenceOnly++;
+      } else {
+        missing.push(m.label);
+      }
+    }
+    return { present, evidenceOnly, missing, total: POSTURE_MECHANISMS_PER_LAYER.length };
+  };
+
+  const sentences = POSTURE_LAYERS.map(l => {
+    const s = layerScore(l.key);
+    let verdict, body;
+    const pct = Math.round((s.present / s.total) * 100);
+    if (s.present === 0) {
+      verdict = 'is-dark';
+      body = `<strong>${escapeHtml(l.label)}</strong> is dark — no coverage detected across any mechanism.`;
+    } else if (s.present <= 3) {
+      verdict = 'is-thin';
+      body = `<strong>${escapeHtml(l.label)}</strong> is thinly covered (${s.present}/${s.total} mechanisms) — missing ${s.missing.slice(0, 4).map(x => `<em>${escapeHtml(x.toLowerCase())}</em>`).join(', ')}${s.missing.length > 4 ? ', and more' : ''}.`;
+    } else if (s.present <= 6) {
+      verdict = 'is-partial';
+      body = `<strong>${escapeHtml(l.label)}</strong> is partially covered (${s.present}/${s.total}, ${pct}%) — gaps in ${s.missing.slice(0, 3).map(x => `<em>${escapeHtml(x.toLowerCase())}</em>`).join(', ')}.`;
+    } else if (s.present <= 8) {
+      verdict = 'is-strong';
+      body = `<strong>${escapeHtml(l.label)}</strong> is well-covered (${s.present}/${s.total}, ${pct}%)${s.missing.length ? ` — still missing ${s.missing.slice(0, 2).map(x => `<em>${escapeHtml(x.toLowerCase())}</em>`).join(', ')}` : ''}.`;
+    } else {
+      verdict = 'is-complete';
+      body = `<strong>${escapeHtml(l.label)}</strong> is comprehensively covered (${s.present}/${s.total}, ${pct}%)${s.missing.length ? `, only missing ${s.missing.map(x => `<em>${escapeHtml(x.toLowerCase())}</em>`).join(', ')}` : ''}.`;
+    }
+    if (s.evidenceOnly > 0 && s.evidenceOnly === s.present) {
+      body += ` <span class="posture-narr-caveat">All evidence is observational, not declared in the pack — consider authoring explicit SLI/SLO/alert/dashboard artefacts.</span>`;
+    } else if (s.evidenceOnly > 0) {
+      body += ` <span class="posture-narr-caveat">${s.evidenceOnly} of the ${s.present} mechanisms are evidence-only (firing alert, scrape job, recording-rule output) — declaration in the pack is still missing.</span>`;
+    }
+    return `<li class="${verdict}">${body}</li>`;
+  }).join('');
+
+  // Cross-layer findings — runbook coverage, chaos coverage, sli/slo balance.
+  const allRunbookCells = POSTURE_LAYERS.map(l => posture.cells[`${l.key}:runbook`]?.length || 0);
+  const totalRunbooks = allRunbookCells.reduce((a, b) => a + b, 0);
+  const allChaosCells = POSTURE_LAYERS.map(l => posture.cells[`${l.key}:chaos`]?.length || 0);
+  const totalChaos = allChaosCells.reduce((a, b) => a + b, 0);
+  const sliCount = POSTURE_LAYERS.map(l => posture.cells[`${l.key}:sli`]?.length || 0).reduce((a, b) => a + b, 0);
+  const sloCount = POSTURE_LAYERS.map(l => posture.cells[`${l.key}:slo`]?.length || 0).reduce((a, b) => a + b, 0);
+
+  const crossFindings = [];
+  if (totalRunbooks === 0) crossFindings.push(`<li>⚠ <strong>Zero runbooks linked</strong> across any layer — your biggest operational risk. When an alert fires, oncall has no scripted response path.</li>`);
+  if (totalChaos === 0) crossFindings.push(`<li>⚠ <strong>No chaos experiments declared</strong> — recovery procedures haven't been validated against actual fault injection.</li>`);
+  if (sliCount > 0 && sloCount === 0) crossFindings.push(`<li>⚠ ${sliCount} SLI${sliCount === 1 ? '' : 's'} defined but <strong>no matching SLO</strong> — measurement without a target.</li>`);
+  if (sliCount > sloCount && sloCount > 0) crossFindings.push(`<li>${sliCount} SLIs vs ${sloCount} SLOs — ${sliCount - sloCount} SLI${sliCount - sloCount === 1 ? '' : 's'} unbound to a target.</li>`);
+  if (!posture.platformWide.baselines) crossFindings.push(`<li>No <strong>MTTD/MTTR baselines</strong> declared — without targets, incident response can't be benchmarked.</li>`);
+
+  wrap.innerHTML = `
+    <div class="benchmark-block-head">
+      <span class="benchmark-block-eyebrow">BRIEFING</span>
+      Per-layer narrative — what's covered, what's missing
+    </div>
+    <ul class="posture-narrative">${sentences}</ul>
+    ${crossFindings.length ? `
+      <div class="posture-cross">
+        <div class="posture-cross-head">Cross-layer findings</div>
+        <ul class="posture-cross-list">${crossFindings.join('')}</ul>
+      </div>` : ''}
+  `;
+  return wrap;
 }
 
 function renderBenchmarkHeader(score, lens) {
