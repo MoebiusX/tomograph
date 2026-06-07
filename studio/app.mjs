@@ -2421,13 +2421,18 @@ function renderBenchmarkView(view) {
   const posture = computePostureMatrix(state.pack, state.packB);
 
   // Diagnostic-grade verdict — THE question every executive asks:
-  // "is our observability diagnostic-grade?" Six pass/fail criteria
-  // sourced from spec.otel, spec.baselines, spec.remediation,
-  // spec.validation, and the posture matrix. Leads the view so the
-  // audience sees the verdict before any chart. Existing matrix +
-  // narrative + pies become the drill-down.
-  const diagnostic = computeDiagnosticGrade(state.pack, posture);
-  scaffold.appendChild(renderDiagnosticGradeVerdict(diagnostic, lens));
+  // "is our observability diagnostic-grade?" Eight pass/fail criteria
+  // split into two equal-weighted halves:
+  //   2A — Coverage  ("are we observing the right signals?")
+  //                  evaluated against Pack B as the Observability
+  //                  Contract / aspirational reference.
+  //   2B — Trust     ("can we trust what the signals show?")
+  //                  evaluated against Pack A's live signal evidence
+  //                  (MCP probe outcomes + freshness window).
+  // Leads the view so the audience sees the verdict before any chart;
+  // the matrix + narrative + pies become drill-down.
+  const diagnostic = computeDiagnosticGrade(state.pack, state.packB, posture, state.compareBId);
+  scaffold.appendChild(renderDiagnosticGradeVerdict(diagnostic, lens, state.packB));
   scaffold.appendChild(renderBenchmarkHeadline(posture, lens));
   scaffold.appendChild(renderPostureMatrix(posture));
   scaffold.appendChild(renderPostureNarrative(posture));
@@ -2832,68 +2837,103 @@ function renderPostureNarrative(posture) {
 // ============================================================
 // Diagnostic-grade verdict — the CEO question, made answerable.
 //
-// "Is our observability diagnostic-grade?" answered as six pass/fail
-// criteria. Diagnostic-grade = when production breaks, you can
-// diagnose WHY at any layer — not just be told THAT it broke. That
-// requires:
+// "Is our observability diagnostic-grade?" answered as eight pass/fail
+// criteria split into two equally-weighted halves:
 //
-//   1. MULTI-MODAL    — Can you pivot between signals? (Metrics +
-//                       logs + traces + profiles all flowing.)
-//   2. CORRELATED     — Are signals linked at evidence-level?
-//                       (W3C tracecontext + log_correlation flag.)
-//   3. CALIBRATED     — Is "normal" defined with numbers?
-//                       (Baselines + SLOs with explicit objectives.)
-//   4. COMPREHENSIVE  — Does coverage span all layers?
-//                       (Posture matrix observed ≥ 50% per layer.)
-//   5. ACTIONABLE     — Do alerts lead to a response path?
-//                       (Remediation declared with runbook refs.)
-//   6. CHAOS-VALIDATED — Have we proven recovery works?
-//                       (spec.validation.chaos_experiments declared.)
+//   2A — COVERAGE (vs Observability Contract)
+//        "Are we observing the right signals?"
+//        Five criteria evaluated on Pack A against Pack B (the
+//        contract / "what good looks like"):
+//          1. Multi-modal    — metrics + logs + traces flowing
+//          2. Correlated     — tracecontext + log_correlation
+//          3. Calibrated     — baselines + SLOs w/ numeric objectives
+//          4. Comprehensive  — posture matrix ≥ 50% across layers
+//          5. Actionable     — remediation runbooks declared
 //
-// Score (out of 6) → verdict word:
-//   6/6 → Diagnostic-grade
-//   4-5 → Almost diagnostic-grade
-//   2-3 → Not yet diagnostic-grade
-//   0-1 → Far from diagnostic-grade
+//   2B — TRUST (signal integrity)
+//        "Can we trust what the signals show?"
+//        Three criteria evaluated on Pack A's live evidence:
+//          6. Chaos-validated — chaos experiments declared
+//          7. Drift-free      — declared artefacts match live state
+//                               (MCP probe success / total ratio)
+//          8. Fresh           — mcp.refreshedAt within staleness window
+//
+// Overall score (out of 8) → verdict word:
+//   7-8 → Diagnostic-grade
+//   5-6 → Almost diagnostic-grade
+//   3-4 → Not yet diagnostic-grade
+//   0-2 → Far from diagnostic-grade
 // ============================================================
-function computeDiagnosticGrade(pack, posture) {
-  const meta = pack?.meta || {};
-  const ann = meta?.annotations || pack?.metadata?.annotations || {};
-  const L1 = pack?.layers?.L1 || [];
-  const L2 = pack?.layers?.L2 || [];
-  const L4 = pack?.layers?.L4 || {};
-  const L5 = pack?.layers?.L5 || [];
+
+// "Observability Contract" mode is on when Pack B is the
+// hand-authored aspirational/contract reference. The internal label
+// is OLA; the user-facing label is "Observability Contract".
+//
+// Detection runs three ways (any one suffices):
+//   1. The pack itself carries `metadata.annotations.studio.role: contract`
+//      (canonical signal — the contract pack declares its role).
+//   2. The catalog id (the dropdown slot, not pack.metadata.name) is a
+//      known contract slot — covers target-advanced even before the
+//      annotation is added, and any future *-contract slot.
+//   3. The pack's id or metadata.name carries a `contract` or `ola` token.
+const CONTRACT_PACK_IDS = new Set(['target-advanced']);
+function isObservabilityContractPack(pack, catalogId) {
+  if (!pack) return false;
+  const role = pack.meta?.annotations?.['studio.role'] || pack.metadata?.annotations?.['studio.role'];
+  if (String(role || '').toLowerCase() === 'contract') return true;
+  const slot = String(catalogId || '').toLowerCase();
+  if (slot && CONTRACT_PACK_IDS.has(slot)) return true;
+  if (slot && /(^|-)contract($|-)/i.test(slot)) return true;
+  if (slot && /(^|-)ola($|-)/i.test(slot))      return true;
+  const id = String(pack.id || pack.meta?.id || pack.metadata?.name || '').toLowerCase();
+  if (CONTRACT_PACK_IDS.has(id)) return true;
+  if (/(^|-)contract($|-)/i.test(id)) return true;
+  if (/(^|-)ola($|-)/i.test(id))      return true;
+  return false;
+}
+function contractLabelFor(packB, catalogId) {
+  if (!packB) return null;
+  if (isObservabilityContractPack(packB, catalogId)) return 'Observability Contract';
+  return packB?.meta?.name || packB?.metadata?.name || packB?.id || 'reference pack';
+}
+
+// Staleness window for the freshness criterion. 24h is the demo
+// default — daily refresh is the lowest bar for a "live" pack.
+const FRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Drift tolerance: how many probes can come back empty/failed and
+// still pass. 0.3 = up to 30% of attempted probes can be empty/failed
+// without flunking. Empty AND failed both count as drift signal —
+// the live system didn't confirm what the pack declares.
+const DRIFT_FAIL_TOLERANCE = 0.30;
+
+function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
+  // ===== Coverage criteria (2A) =====
+  const meta = packA?.meta || {};
+  const ann = meta?.annotations || packA?.metadata?.annotations || {};
+  const L1 = packA?.layers?.L1 || [];
+  const L2 = packA?.layers?.L2 || [];
+  const L4 = packA?.layers?.L4 || {};
+  const L5 = packA?.layers?.L5 || [];
 
   // ---- 1. Multi-modal ----
-  // Signals available = backends declared per signal + L4_SUBGROUPS-style
-  // pipeline exporters. Scrape jobs and recording-rule outputs also
-  // contribute via the posture matrix.
   const signalsPresent = new Set();
   for (const b of L2) {
     const sig = String(b.spec?.signal || b.signal || '').toLowerCase();
     if (['metrics','logs','traces','profiles'].includes(sig)) signalsPresent.add(sig);
   }
-  // Read the OTel SDK's declared signals via annotation hints.
   const allSignals = ['metrics','logs','traces','profiles'];
   const signalsCount = signalsPresent.size;
-  const multiModal = signalsCount >= 3;   // 3 of 4 acceptable (profiles often missing)
+  const multiModal = signalsCount >= 3;
 
   // ---- 2. Correlated ----
-  // Propagators + log_correlation are stored on the OTEL-01 artefact's
-  // spec, which the adapter passes through. Look for them.
   const otel = L2.find(a => /^OTEL-/.test(a.id || ''));
   const propagators = otel?.spec?.sdk?.propagators || otel?.sdk?.propagators || [];
   const hasTraceContext = (Array.isArray(propagators) ? propagators : [])
     .some(p => /tracecontext/i.test(String(p)));
-  // log_correlation can be explicit on the OTel section. Default to
-  // true when traces backend is present AND tracecontext propagator
-  // is declared (the practical case at most deployments).
   const logCorrelationDeclared = !!(otel?.spec?.log_correlation === true || otel?.log_correlation === true);
   const correlated = hasTraceContext && (logCorrelationDeclared || signalsPresent.has('logs'));
 
   // ---- 3. Calibrated ----
-  // Baselines declared (MTTD/MTTR targets) AND at least one SLO has
-  // an explicit numeric objective.
   const hasBaselines = L5.some(a => /baseline/i.test(a.id || '') || /baseline/i.test(a.title || ''));
   const slos = L1.filter(a => /^SLO-/.test(a.id || ''));
   const slosWithObjective = slos.filter(a => {
@@ -2903,7 +2943,6 @@ function computeDiagnosticGrade(pack, posture) {
   const calibrated = hasBaselines && slosWithObjective.length > 0;
 
   // ---- 4. Comprehensive ----
-  // Average observed % across the 4 layers ≥ 50.
   let totalObserved = 0;
   for (const l of POSTURE_LAYERS) {
     let present = 0, evidence = 0;
@@ -2920,42 +2959,25 @@ function computeDiagnosticGrade(pack, posture) {
   const comprehensive = avgObservedPct >= 50;
 
   // ---- 5. Actionable ----
-  // spec.remediation entries are L4 HEAL artefacts. At least one must
-  // reference a runbook (via tool, automation, or trigger fields).
   const healings = (L4.healing || []).concat(
     Array.isArray(L4) ? L4.filter(a => /^HEAL-/.test(a.id || '')) : []
   );
   const actionableCount = healings.length;
   const actionable = actionableCount > 0;
 
-  // ---- 6. Chaos-validated ----
-  // spec.validation.chaos_experiments[] becomes CHAOS-NN L5 artefacts.
-  const chaosCount = L5.filter(a => /^CHAOS-/.test(a.id || '')).length;
-  const chaosValidated = chaosCount > 0;
-
-  // ---- Score + verdict ----
-  const criteria = [
-    {
-      key: 'multi-modal',
-      label: 'Multi-modal',
-      sub: 'metrics + logs + traces + profiles',
+  const coverageCriteria = [
+    { key: 'multi-modal',   label: 'Multi-modal',   sub: 'metrics + logs + traces + profiles',
       pass: multiModal,
       detail: `${signalsCount} of ${allSignals.length} signals declared as backends` +
               (signalsCount > 0 ? ' (' + [...signalsPresent].join(', ') + ')' : ''),
     },
-    {
-      key: 'correlated',
-      label: 'Correlated',
-      sub: 'signals linked at evidence-level',
+    { key: 'correlated',    label: 'Correlated',    sub: 'signals linked at evidence-level',
       pass: correlated,
       detail: hasTraceContext
         ? (logCorrelationDeclared ? 'tracecontext propagator + log_correlation: true' : 'tracecontext propagator declared')
         : 'tracecontext propagator missing — logs/traces can\'t be joined',
     },
-    {
-      key: 'calibrated',
-      label: 'Calibrated',
-      sub: 'normal defined with numbers',
+    { key: 'calibrated',    label: 'Calibrated',    sub: 'normal defined with numbers',
       pass: calibrated,
       detail: hasBaselines
         ? (slosWithObjective.length
@@ -2963,47 +2985,127 @@ function computeDiagnosticGrade(pack, posture) {
             : 'baselines declared but no SLOs have explicit objectives')
         : 'no MTTD/MTTR baselines declared',
     },
-    {
-      key: 'comprehensive',
-      label: 'Comprehensive',
-      sub: 'coverage spans all layers',
+    { key: 'comprehensive', label: 'Comprehensive', sub: 'coverage spans all layers',
       pass: comprehensive,
       detail: `${avgObservedPct}% average observed across infra · platform · app · ux`,
     },
-    {
-      key: 'actionable',
-      label: 'Actionable',
-      sub: 'alerts lead to a response path',
+    { key: 'actionable',    label: 'Actionable',    sub: 'alerts lead to a response path',
       pass: actionable,
       detail: actionableCount > 0
         ? `${actionableCount} remediation runbook${actionableCount === 1 ? '' : 's'} declared`
         : 'no runbooks linked — when an alert fires, oncall has no scripted response',
     },
-    {
-      key: 'chaos-validated',
-      label: 'Chaos-validated',
-      sub: 'recovery proven by fault injection',
+  ];
+
+  // ===== Trust criteria (2B) =====
+
+  // ---- 6. Chaos-validated ----
+  const chaosCount = L5.filter(a => /^CHAOS-/.test(a.id || '')).length;
+  const chaosValidated = chaosCount > 0;
+
+  // ---- 7. Drift-free ----
+  // Live signal integrity: did the declarations the pack makes about
+  // the world match what the MCP actually observed? Read directly off
+  // the probe-outcome annotations stamped by the fetcher.
+  const probesAttempted = (ann['mcp.probesAttempted']  || '').split(',').filter(Boolean);
+  const probesSucceeded = (ann['mcp.probesSucceeded']  || '').split(',').filter(Boolean);
+  const probesEmpty     = (ann['mcp.probesEmpty']      || '').split(',').filter(Boolean);
+  const probesFailed    = (ann['mcp.probesFailed']     || '').split(',').filter(Boolean);
+  const hasMcpSource = probesAttempted.length > 0 || !!ann['mcp.refreshedAt'];
+  let driftFree, driftDetail;
+  if (!hasMcpSource) {
+    driftFree = false;
+    driftDetail = 'declared-only — no live signal to verify against (connect MCP or scan live)';
+  } else if (probesAttempted.length === 0) {
+    // Pack has refreshedAt but no probe table — can't compute ratio.
+    driftFree = true;
+    driftDetail = 'live source connected — probe table not recorded';
+  } else {
+    const driftCount = probesEmpty.length + probesFailed.length;
+    const driftRatio = driftCount / probesAttempted.length;
+    driftFree = driftRatio <= DRIFT_FAIL_TOLERANCE;
+    const pct = Math.round(driftRatio * 100);
+    driftDetail = driftFree
+      ? `${probesSucceeded.length}/${probesAttempted.length} probes confirmed (${pct}% empty or failed, within ${Math.round(DRIFT_FAIL_TOLERANCE * 100)}% tolerance)`
+      : `${driftCount}/${probesAttempted.length} probes empty or failed (${pct}%) — declared surface exceeds what live attests`;
+  }
+
+  // ---- 8. Fresh ----
+  const refreshedAtStr = ann['mcp.refreshedAt'];
+  let fresh, freshDetail;
+  if (!refreshedAtStr) {
+    fresh = false;
+    freshDetail = 'no mcp.refreshedAt annotation — pack has never been verified against live state';
+  } else {
+    const refreshedAtMs = Date.parse(refreshedAtStr);
+    if (!Number.isFinite(refreshedAtMs)) {
+      fresh = false;
+      freshDetail = `mcp.refreshedAt is unparseable (${refreshedAtStr})`;
+    } else {
+      const ageMs = Date.now() - refreshedAtMs;
+      const ageHrs = Math.round(ageMs / 3600000);
+      fresh = ageMs <= FRESH_WINDOW_MS;
+      freshDetail = fresh
+        ? `last refreshed ${ageHrs}h ago — within 24h staleness window`
+        : `last refreshed ${ageHrs}h ago — exceeds 24h staleness window, signals may have drifted`;
+    }
+  }
+
+  const trustCriteria = [
+    { key: 'chaos-validated', label: 'Chaos-validated', sub: 'recovery proven by fault injection',
       pass: chaosValidated,
       detail: chaosCount > 0
         ? `${chaosCount} chaos experiment${chaosCount === 1 ? '' : 's'} declared`
         : 'no chaos experiments — recovery procedures are theoretical',
     },
+    { key: 'drift-free',      label: 'Drift-free',      sub: 'declarations match live state',
+      pass: driftFree,
+      detail: driftDetail,
+    },
+    { key: 'fresh',           label: 'Fresh',           sub: 'recently verified against live',
+      pass: fresh,
+      detail: freshDetail,
+    },
   ];
-  const passed = criteria.filter(c => c.pass).length;
-  const verdict =
-    passed === 6 ? { word: 'Diagnostic-grade',           level: 'is-grade' } :
-    passed >= 4  ? { word: 'Almost diagnostic-grade',    level: 'is-almost' } :
-    passed >= 2  ? { word: 'Not yet diagnostic-grade',   level: 'is-not-yet' } :
-                   { word: 'Far from diagnostic-grade',  level: 'is-far' };
 
-  return { criteria, passed, total: 6, verdict };
+  // ===== Overall verdict (equal-weighted) =====
+  const coveragePassed = coverageCriteria.filter(c => c.pass).length;
+  const trustPassed = trustCriteria.filter(c => c.pass).length;
+  const overallPassed = coveragePassed + trustPassed;
+  const overallTotal = coverageCriteria.length + trustCriteria.length;   // 5 + 3 = 8
+  const verdict =
+    overallPassed >= 7 ? { word: 'Diagnostic-grade',          level: 'is-grade' } :
+    overallPassed >= 5 ? { word: 'Almost diagnostic-grade',   level: 'is-almost' } :
+    overallPassed >= 3 ? { word: 'Not yet diagnostic-grade',  level: 'is-not-yet' } :
+                         { word: 'Far from diagnostic-grade', level: 'is-far' };
+
+  return {
+    coverage: {
+      criteria: coverageCriteria,
+      passed:   coveragePassed,
+      total:    coverageCriteria.length,
+      contractLabel: contractLabelFor(packB, catalogBId),
+      contractMode:  isObservabilityContractPack(packB, catalogBId),
+    },
+    trust: {
+      criteria: trustCriteria,
+      passed:   trustPassed,
+      total:    trustCriteria.length,
+      hasMcpSource,
+    },
+    overall: {
+      passed: overallPassed,
+      total:  overallTotal,
+      verdict,
+    },
+  };
 }
 
-function renderDiagnosticGradeVerdict(diagnostic, lens) {
+function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const wrap = document.createElement('div');
   wrap.className = 'diagnostic-grade-block';
 
-  const rows = diagnostic.criteria.map(c => `
+  const critRows = (criteria) => criteria.map(c => `
     <li class="diagnostic-crit ${c.pass ? 'is-pass' : 'is-fail'}" data-key="${escapeHtml(c.key)}">
       <div class="diagnostic-crit-pip">${c.pass ? '✓' : '✗'}</div>
       <div class="diagnostic-crit-body">
@@ -3024,22 +3126,93 @@ function renderDiagnosticGradeVerdict(diagnostic, lens) {
     ? `<span class="diagnostic-grade-drill-hint">Lens active: <strong>${escapeHtml((LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens))}</strong> — affects the matrix below, not this verdict.</span>`
     : '';
 
+  // Coverage sub-card framing depends on whether Pack B is THE
+  // Observability Contract or a generic reference pack.
+  const cov = diagnostic.coverage;
+  const trust = diagnostic.trust;
+  const overall = diagnostic.overall;
+  const coverageSubtitle = cov.contractMode
+    ? `vs the <strong>Observability Contract</strong>${packB ? ` (${escapeHtml(packB.meta?.name || packB.id || 'reference')})` : ''}`
+    : `vs <strong>${escapeHtml(cov.contractLabel || 'reference')}</strong>`;
+
+  // Verdict word per sub-card — small, used to communicate the
+  // sub-card's own grade without numbers fighting the overall tile.
+  const subVerdict = (passed, total) => {
+    const ratio = total === 0 ? 0 : passed / total;
+    if (ratio >= 0.85) return { word: 'Strong',  cls: 'is-strong'  };
+    if (ratio >= 0.50) return { word: 'Partial', cls: 'is-partial' };
+    if (ratio >  0)    return { word: 'Thin',    cls: 'is-thin'    };
+                       return { word: 'Critical', cls: 'is-critical' };
+  };
+  const covVerdict   = subVerdict(cov.passed, cov.total);
+  const trustVerdict = subVerdict(trust.passed, trust.total);
+
+  // When Pack A has no MCP source at all, both Trust sub-criteria that
+  // depend on live signals fail loudly — surface that as a banner on
+  // the Trust card so the audience reads it as "needs live", not "bad".
+  const trustBanner = trust.hasMcpSource
+    ? ''
+    : `<div class="diagnostic-sub-banner">
+         Pack A has no live signal — drift &amp; freshness require an MCP-drafted or
+         live-refreshed pack to verify.
+       </div>`;
+
   wrap.innerHTML = `
     <div class="diagnostic-grade-question">
       <span class="diagnostic-grade-eyebrow">THE MAIN QUESTION</span>
       Is this observability <strong>diagnostic-grade</strong>?
     </div>
-    <div class="diagnostic-grade-verdict ${diagnostic.verdict.level}">
-      <div class="diagnostic-grade-word">${escapeHtml(diagnostic.verdict.word)}</div>
-      <div class="diagnostic-grade-score">${diagnostic.passed} of ${diagnostic.total} criteria met</div>
+    <div class="diagnostic-grade-verdict ${overall.verdict.level}">
+      <div class="diagnostic-grade-word">${escapeHtml(overall.verdict.word)}</div>
+      <div class="diagnostic-grade-score">${overall.passed} of ${overall.total} criteria met</div>
+      <div class="diagnostic-grade-split">
+        <span class="diagnostic-grade-split-half">
+          <span class="diagnostic-grade-split-label">Coverage</span>
+          <span class="diagnostic-grade-split-score">${cov.passed}/${cov.total}</span>
+        </span>
+        <span class="diagnostic-grade-split-sep">·</span>
+        <span class="diagnostic-grade-split-half">
+          <span class="diagnostic-grade-split-label">Trust</span>
+          <span class="diagnostic-grade-split-score">${trust.passed}/${trust.total}</span>
+        </span>
+      </div>
     </div>
-    <ul class="diagnostic-crit-list">${rows}</ul>
+
+    <div class="diagnostic-grade-cards">
+      <section class="diagnostic-sub-card diagnostic-sub-coverage">
+        <header class="diagnostic-sub-head">
+          <div class="diagnostic-sub-eyebrow">2A · COVERAGE</div>
+          <h3 class="diagnostic-sub-title">Are we observing the right signals?</h3>
+          <div class="diagnostic-sub-context">${coverageSubtitle}</div>
+          <div class="diagnostic-sub-meta">
+            <span class="diagnostic-sub-tally ${covVerdict.cls}">${escapeHtml(covVerdict.word)}</span>
+            <span class="diagnostic-sub-tally-score">${cov.passed} of ${cov.total} met</span>
+          </div>
+        </header>
+        <ul class="diagnostic-crit-list">${critRows(cov.criteria)}</ul>
+      </section>
+
+      <section class="diagnostic-sub-card diagnostic-sub-trust">
+        <header class="diagnostic-sub-head">
+          <div class="diagnostic-sub-eyebrow">2B · TRUST</div>
+          <h3 class="diagnostic-sub-title">Can we trust what the signals show?</h3>
+          <div class="diagnostic-sub-context">live integrity of Pack A</div>
+          <div class="diagnostic-sub-meta">
+            <span class="diagnostic-sub-tally ${trustVerdict.cls}">${escapeHtml(trustVerdict.word)}</span>
+            <span class="diagnostic-sub-tally-score">${trust.passed} of ${trust.total} met</span>
+          </div>
+        </header>
+        ${trustBanner}
+        <ul class="diagnostic-crit-list">${critRows(trust.criteria)}</ul>
+      </section>
+    </div>
+
     <div class="diagnostic-grade-footnote">
       <strong>Diagnostic-grade</strong> means: when production breaks, an operator can
       diagnose <em>why</em> at any layer — not just be told <em>that</em> something broke.
-      Six criteria — multi-modal coverage, signal correlation, calibrated baselines,
-      comprehensive layer reach, actionable alerts, and chaos-validated recovery —
-      score the practical readiness for that diagnostic act.
+      The verdict is equal-weighted across <strong>Coverage</strong> (are we observing the
+      right signals, measured against the Observability Contract) and <strong>Trust</strong>
+      (can we trust what the signals show, measured against live evidence).
       ${drillHint}
     </div>
   `;
