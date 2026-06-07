@@ -1586,6 +1586,184 @@ a:hover { color: var(--ink); }
   tab-size: 2;
 }
 
+/* ===================== BENCHMARK HEADLINE =====================
+   The whole-view question — leads the Benchmark page so the
+   audience sees the framing before any numbers. */
+.benchmark-head {
+  padding: 22px 26px 18px;
+  background: linear-gradient(to bottom, var(--paper), transparent);
+  border-bottom: 1px solid var(--line-2);
+}
+.benchmark-headline-eyebrow {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--CMP);
+  margin-bottom: 10px;
+}
+.benchmark-headline-question {
+  font: 400 22px/1.3 var(--serif);
+  color: var(--ink-1);
+  letter-spacing: -0.01em;
+  margin-bottom: 16px;
+  max-width: 900px;
+}
+.benchmark-headline-meta {
+  display: flex; gap: 24px; align-items: center; flex-wrap: wrap;
+}
+.benchmark-headline-verdict {
+  padding: 10px 16px;
+  border-radius: var(--r-sm);
+  border-left: 4px solid;
+}
+.benchmark-headline-verdict.is-strong   { background: rgba(46,110,50,0.08);  border-left-color: rgb(46,110,50); }
+.benchmark-headline-verdict.is-partial  { background: rgba(217,119,6,0.08);  border-left-color: rgb(217,119,6); }
+.benchmark-headline-verdict.is-thin     { background: rgba(217,119,6,0.05);  border-left-color: rgb(217,119,6); opacity: 0.85; }
+.benchmark-headline-verdict.is-critical { background: rgba(178,34,34,0.08);  border-left-color: rgb(178,34,34); }
+.benchmark-headline-verdict-word {
+  font: 700 24px/1.1 var(--serif);
+  color: var(--ink-1);
+  letter-spacing: -0.01em;
+}
+.benchmark-headline-verdict-sub {
+  margin-top: 3px;
+  font: 12px/1.4 var(--mono);
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+.benchmark-headline-tally {
+  display: flex; gap: 16px;
+  font: 13px/1.4 var(--serif);
+  color: var(--ink-2);
+}
+.benchmark-headline-tally-row { display: flex; align-items: center; gap: 6px; }
+.benchmark-headline-tally-pip { font: 700 14px/1 var(--mono); }
+.benchmark-headline-tally-pip.is-present  { color: rgb(46,110,50); }
+.benchmark-headline-tally-pip.is-evidence { color: rgb(217,119,6); }
+.benchmark-headline-tally-pip.is-absent   { color: rgb(178,34,34); }
+
+/* ===================== POSTURE PIE ROW =====================
+   Four glanceable donuts, one per layer. Read in two seconds. */
+.posture-pie-row-block { padding-top: 20px; padding-bottom: 20px; }
+.posture-pie-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 18px;
+  margin: 12px 0 8px;
+}
+.posture-pie {
+  text-align: center;
+  padding: 14px 8px;
+  background: var(--paper);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  cursor: default;
+  transition: border-color 120ms;
+}
+.posture-pie:hover { border-color: var(--CMP); }
+.posture-pie[data-verdict="strong"]  { background: linear-gradient(to bottom, var(--paper), rgba(46,110,50,0.04)); }
+.posture-pie[data-verdict="partial"] { background: linear-gradient(to bottom, var(--paper), rgba(217,119,6,0.04)); }
+.posture-pie[data-verdict="thin"]    { background: linear-gradient(to bottom, var(--paper), rgba(217,119,6,0.02)); }
+.posture-pie[data-verdict="dark"]    { background: linear-gradient(to bottom, var(--paper), rgba(178,34,34,0.04)); }
+.posture-pie-svg { width: 110px; height: 110px; display: block; margin: 0 auto; }
+.posture-pie-pct {
+  font: 700 18px/1 var(--serif);
+  fill: var(--ink-1);
+  letter-spacing: -0.01em;
+}
+.posture-pie-sub {
+  font: 400 10px/1 var(--mono);
+  fill: var(--ink-4);
+  letter-spacing: 0.04em;
+}
+.posture-pie-label {
+  margin-top: 8px;
+  font: 600 11px/1.2 var(--mono);
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--ink-1);
+}
+.posture-pie-verdict {
+  margin-top: 3px;
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.posture-pie[data-verdict="strong"]  .posture-pie-verdict { color: rgb(46,110,50); }
+.posture-pie[data-verdict="partial"] .posture-pie-verdict { color: rgb(217,119,6); }
+.posture-pie[data-verdict="thin"]    .posture-pie-verdict { color: rgb(217,119,6); opacity: 0.7; }
+.posture-pie[data-verdict="dark"]    .posture-pie-verdict { color: rgb(178,34,34); }
+.posture-pie-legend {
+  display: flex; gap: 16px; flex-wrap: wrap;
+  margin-top: 14px;
+  font: 11.5px/1.4 var(--serif);
+  color: var(--ink-3);
+}
+.posture-pie-legend-pip {
+  display: inline-block;
+  width: 10px; height: 10px;
+  margin-right: 5px;
+  border-radius: 99px;
+  vertical-align: -1px;
+}
+@media (max-width: 900px) {
+  .posture-pie-row { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ===================== FOOTPRINT ACCORDION (demoted scorecard) ===================== */
+.benchmark-footprint-accordion {
+  padding: 0 24px;
+  border-bottom: 1px solid var(--line-2);
+}
+.benchmark-footprint-summary {
+  padding: 12px 0;
+  cursor: pointer;
+  font: 13px/1.5 var(--serif);
+  color: var(--ink-3);
+  display: flex; align-items: center; gap: 10px;
+  list-style: none;
+}
+.benchmark-footprint-summary::-webkit-details-marker { display: none; }
+.benchmark-footprint-eyebrow {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.benchmark-footprint-chevron {
+  margin-left: auto;
+  font: 600 16px/1 var(--mono);
+  color: var(--ink-4);
+  transition: transform 120ms;
+}
+.benchmark-footprint-accordion[open] .benchmark-footprint-chevron { transform: rotate(180deg); }
+.benchmark-footprint-body { padding: 4px 0 16px; }
+.benchmark-footprint-caveat {
+  font: italic 12px/1.5 var(--serif);
+  color: var(--ink-4);
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  background: var(--ink-bg);
+  border-radius: 4px;
+}
+.benchmark-footprint-layers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px;
+}
+.benchmark-footprint-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 6px 10px;
+  background: var(--paper);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  font: 11.5px/1.3 var(--mono);
+}
+.benchmark-footprint-layer { color: var(--ink-1); font-weight: 600; }
+.benchmark-footprint-counts { color: var(--ink-3); }
+.benchmark-footprint-pct { color: var(--CMP); font-weight: 600; }
+
 /* ===================== POSTURE MATRIX (Benchmark) =====================
    4 layers × 11 mechanisms grid that answers "are we monitoring the
    right things at the right levels?" Replaces the artefact-identity

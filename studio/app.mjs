@@ -2399,22 +2399,33 @@ function renderBenchmarkView(view) {
     return;
   }
 
-  // Compute the scorecard under the current lens. The lens scopes
-  // both the numerator (A items matched by B) and denominator (B
-  // items in scope).
+  // Auto-apply the lens when Pack B is a *-reference catalogue pack.
+  // Picking grafana-reference IS choosing the Grafana benchmark; no
+  // reason to make the user explicitly set the Lens dropdown afterward.
+  const bId = String(state.compareBId || state.packB?.id || '').toLowerCase();
+  const refMatch = /^([a-z][a-z0-9_-]*?)-reference$/.exec(bId);
+  if (refMatch && (state.compareLens === 'all' || !state.compareLens)) {
+    const inferredLens = refMatch[1];
+    if (LENS_PRODUCTS.some(lp => lp.slug === inferredLens)) {
+      state.compareLens = inferredLens;
+    }
+  }
   const lens = state.compareLens || 'all';
-  const scorecard = computeBenchmarkScorecard(state.pack, state.packB, lens);
 
-  scaffold.appendChild(renderBenchmarkHeader(scorecard, lens));
-  scaffold.appendChild(renderBenchmarkScorecard(scorecard));
-  // Posture matrix — the OUTCOME-based view: "are we monitoring the
-  // right things at the right levels with the right mechanisms?"
-  // This is the actual question a CTO asks. The scorecard above
-  // answers "are our artefacts identical to the reference's", which is
-  // useful but secondary.
+  // Posture matrix — THE headline. The outcome-based view answers the
+  // CTO question: "are we monitoring the right things at the right
+  // levels with the right mechanisms?" This leads the view; the
+  // identity-match scorecard moves to a collapsed sub-section below.
   const posture = computePostureMatrix(state.pack, state.packB);
+  scaffold.appendChild(renderBenchmarkHeadline(posture, lens));
   scaffold.appendChild(renderPostureMatrix(posture));
   scaffold.appendChild(renderPostureNarrative(posture));
+  scaffold.appendChild(renderPosturePieRow(posture));
+
+  // The old artefact-identity scorecard becomes a collapsed
+  // accordion — power users get the raw counts, the demo doesn't.
+  const scorecard = computeBenchmarkScorecard(state.pack, state.packB, lens);
+  scaffold.appendChild(renderFootprintAccordion(scorecard));
 
   // The two callout lists — what's missing, what's extra. Each gives
   // the demo audience an immediate "here's what to do next" feel.
@@ -2798,6 +2809,157 @@ function renderPostureNarrative(posture) {
         <div class="posture-cross-head">Cross-layer findings</div>
         <ul class="posture-cross-list">${crossFindings.join('')}</ul>
       </div>` : ''}
+  `;
+  return wrap;
+}
+
+// ============================================================
+// The Benchmark headline — frames the WHOLE view as a question
+// the audience can answer. Leads the view; everything beneath
+// answers it.
+// ============================================================
+function renderBenchmarkHeadline(posture, lens) {
+  const head = document.createElement('div');
+  head.className = 'benchmark-head';
+
+  // Score the matrix: how many cells fire across the 4×10 grid?
+  // This is the actual number that means something — "you have 24
+  // of 40 observability checkpoints" — vs the misleading artefact
+  // identity match.
+  let present = 0, evidence = 0, absent = 0;
+  for (const l of POSTURE_LAYERS) {
+    for (const m of POSTURE_MECHANISMS_PER_LAYER) {
+      const arr = posture.cells[`${l.key}:${m.key}`];
+      if (!arr || arr.length === 0) absent++;
+      else if (arr.every(a => a._evidence)) evidence++;
+      else present++;
+    }
+  }
+  const total = POSTURE_LAYERS.length * POSTURE_MECHANISMS_PER_LAYER.length;
+  const declaredPct = Math.round((present / total) * 100);
+  const observedPct = Math.round(((present + evidence) / total) * 100);
+
+  const lensLabel = lens === 'all' ? 'all observability surfaces'
+    : (LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens).toLowerCase();
+
+  // The KILLER question, stated explicitly.
+  const question = lens === 'all'
+    ? 'Are we monitoring our infrastructure, platform, applications, and user experience — at every meaningful checkpoint?'
+    : `Are we monitoring ${escapeHtml(lensLabel)} across infrastructure, platform, applications, and user experience?`;
+
+  const verdictWord = observedPct >= 70 ? 'Strong' : observedPct >= 40 ? 'Partial' : observedPct >= 20 ? 'Thin' : 'Critical gap';
+  const verdictClass = observedPct >= 70 ? 'is-strong' : observedPct >= 40 ? 'is-partial' : observedPct >= 20 ? 'is-thin' : 'is-critical';
+
+  head.innerHTML = `
+    <div class="benchmark-headline-eyebrow">BENCHMARK · ${escapeHtml(state.pack?.name || state.pack?.id || 'live pack')} ${state.packB ? '· baseline: ' + escapeHtml(state.packB?.name || state.packB?.id || '') : ''}</div>
+    <div class="benchmark-headline-question">${question}</div>
+    <div class="benchmark-headline-meta">
+      <div class="benchmark-headline-verdict ${verdictClass}">
+        <div class="benchmark-headline-verdict-word">${verdictWord}</div>
+        <div class="benchmark-headline-verdict-sub">${present}/${total} declared · ${present + evidence}/${total} observed</div>
+      </div>
+      <div class="benchmark-headline-tally">
+        <div class="benchmark-headline-tally-row"><span class="benchmark-headline-tally-pip is-present">✓</span> ${present} declared</div>
+        <div class="benchmark-headline-tally-row"><span class="benchmark-headline-tally-pip is-evidence">○</span> ${evidence} evidence-only</div>
+        <div class="benchmark-headline-tally-row"><span class="benchmark-headline-tally-pip is-absent">✗</span> ${absent} absent</div>
+      </div>
+    </div>
+  `;
+  return head;
+}
+
+// ============================================================
+// Pie chart row — one SVG donut per layer, sized by mechanism
+// coverage. Three concentric slices: declared / evidence / absent.
+// Glanceable summary the audience reads in 2 seconds.
+// ============================================================
+function renderPosturePieRow(posture) {
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-block posture-pie-row-block';
+
+  const pies = POSTURE_LAYERS.map(layer => {
+    let present = 0, evidence = 0, absent = 0;
+    const declaredMechs = [];
+    const evidenceMechs = [];
+    const missingMechs = [];
+    for (const m of POSTURE_MECHANISMS_PER_LAYER) {
+      const arr = posture.cells[`${layer.key}:${m.key}`];
+      if (!arr || arr.length === 0) { absent++; missingMechs.push(m.label); }
+      else if (arr.every(a => a._evidence)) { evidence++; evidenceMechs.push(m.label); }
+      else { present++; declaredMechs.push(m.label); }
+    }
+    const total = POSTURE_MECHANISMS_PER_LAYER.length;
+    const declaredPct = Math.round((present / total) * 100);
+    const obsPct = Math.round(((present + evidence) / total) * 100);
+    const verdict = obsPct >= 70 ? 'strong' : obsPct >= 40 ? 'partial' : obsPct >= 20 ? 'thin' : 'dark';
+
+    // Build a stacked donut: each slice's arc-length proportional to count.
+    // r=42 inside a 110×110 viewBox; circumference C = 2πr ≈ 263.9.
+    const R = 42, C = 2 * Math.PI * R;
+    const seg = (count) => (count / total) * C;
+    const sPres = seg(present), sEvi = seg(evidence), sAbs = seg(absent);
+    // Start at top (-90deg), stroke segments end-to-end.
+    return `
+      <div class="posture-pie" data-verdict="${verdict}" title="${escapeHtml(`Declared: ${declaredMechs.join(', ') || 'none'}\nEvidence-only: ${evidenceMechs.join(', ') || 'none'}\nMissing: ${missingMechs.join(', ') || 'none'}`)}">
+        <svg viewBox="0 0 110 110" class="posture-pie-svg" role="img" aria-label="${escapeHtml(layer.label + ' coverage ' + obsPct + '%')}">
+          <circle cx="55" cy="55" r="${R}" fill="none" stroke="rgba(178,34,34,0.2)" stroke-width="14"/>
+          ${present > 0 ? `<circle cx="55" cy="55" r="${R}" fill="none" stroke="rgb(46,110,50)"  stroke-width="14"
+            stroke-dasharray="${sPres} ${C - sPres}" stroke-dashoffset="${C / 4}" transform="rotate(-90 55 55)"/>` : ''}
+          ${evidence > 0 ? `<circle cx="55" cy="55" r="${R}" fill="none" stroke="rgb(217,119,6)" stroke-width="14"
+            stroke-dasharray="${sEvi} ${C - sEvi}" stroke-dashoffset="${C / 4 - sPres}" transform="rotate(-90 55 55)"/>` : ''}
+          <text x="55" y="58" text-anchor="middle" class="posture-pie-pct">${obsPct}%</text>
+          <text x="55" y="74" text-anchor="middle" class="posture-pie-sub">${present + evidence}/${total}</text>
+        </svg>
+        <div class="posture-pie-label">${escapeHtml(layer.label)}</div>
+        <div class="posture-pie-verdict">${verdict}</div>
+      </div>
+    `;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="benchmark-block-head">
+      <span class="benchmark-block-eyebrow">AT A GLANCE</span>
+      Coverage per layer — observed (declared + evidence) over total mechanisms
+    </div>
+    <div class="posture-pie-row">${pies}</div>
+    <div class="posture-pie-legend">
+      <span class="posture-pie-legend-pip" style="background:rgb(46,110,50)"></span> declared in pack
+      <span class="posture-pie-legend-pip" style="background:rgb(217,119,6)"></span> evidence-only
+      <span class="posture-pie-legend-pip" style="background:rgba(178,34,34,0.4)"></span> missing
+    </div>
+  `;
+  return wrap;
+}
+
+// ============================================================
+// Footprint accordion — collapses the artefact-identity scorecard
+// that used to lead the view. Default closed. For power users who
+// want the raw N/M counts vs the reference's artefact set.
+// ============================================================
+function renderFootprintAccordion(score) {
+  const wrap = document.createElement('details');
+  wrap.className = 'benchmark-footprint-accordion';
+  const overall = score.overall;
+  const pct = overall.bTotal === 0 ? 0 : Math.round((overall.matched / overall.bTotal) * 100);
+  const layerRows = score.byLayer.map(L => `
+    <div class="benchmark-footprint-row">
+      <span class="benchmark-footprint-layer">${escapeHtml(L.layer)}</span>
+      <span class="benchmark-footprint-counts">${L.aTotal} / ${L.bTotal}</span>
+      <span class="benchmark-footprint-pct">${L.bTotal === 0 ? '—' : Math.round((L.matched / L.bTotal) * 100) + '%'}</span>
+    </div>
+  `).join('');
+  wrap.innerHTML = `
+    <summary class="benchmark-footprint-summary">
+      <span class="benchmark-footprint-eyebrow">FOOTPRINT</span>
+      Raw artefact-identity comparison · ${overall.matched}/${overall.bTotal} reference IDs matched (${pct}%)
+      <span class="benchmark-footprint-chevron">▾</span>
+    </summary>
+    <div class="benchmark-footprint-body">
+      <div class="benchmark-footprint-caveat">
+        Identity-match comparison: counts artefacts whose IDs appear in BOTH packs. Useful for spotting drift against a curated baseline, NOT for assessing posture (see matrix above).
+      </div>
+      <div class="benchmark-footprint-layers">${layerRows}</div>
+    </div>
   `;
   return wrap;
 }
