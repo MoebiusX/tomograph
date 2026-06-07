@@ -1,11 +1,32 @@
 {
-  "name": "otel-observability-pack-studio",
-  "version": "0.3.0",
-  "private": true,
-  "description": "Engineering studio for ObservabilityPack spec v1.2 manifests. Express server + thin client.",
+  "name": "tomograph",
+  "version": "1.0.0",
+  "description": "Tomograph — the Observability Compiler. Compiles, scans, and scores ObservabilityPack spec v1.2 manifests. Express server + thin client.",
   "type": "module",
   "engines": {
     "node": ">=18"
+  },
+  "bin": {
+    "tomograph": "server/index.mjs"
+  },
+  "files": [
+    "server/",
+    "studio/",
+    "tools/",
+    "vendor/",
+    "examples/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MoebiusX/tomograph.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MoebiusX/tomograph/issues"
+  },
+  "homepage": "https://github.com/MoebiusX/tomograph#readme",
+  "author": "Carlos Montero (https://github.com/MoebiusX)",
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "start":           "node server/index.mjs",
@@ -35,12 +56,17 @@
   },
   "license": "MIT",
   "keywords": [
+    "tomograph",
+    "observability-compiler",
     "observability",
     "otel",
     "opentelemetry",
     "mcp",
     "sre",
     "slo",
+    "prometheus",
+    "grafana",
+    "alertmanager",
     "spec",
     "v1.2"
   ]

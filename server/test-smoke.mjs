@@ -46,10 +46,10 @@ try {
   assert(Array.isArray(catalog.packs), 'GET /api/packs returns packs[]');
   assert(catalog.packs.length === 0, 'GET /api/packs returns empty catalog (Phase 7q)', catalog.packs.length, 0);
 
-  // /api/examples — the 5 archived reference packs
+  // /api/examples — the archived reference packs
   const examples = await getJson(base, '/api/examples');
   assert(Array.isArray(examples.examples), 'GET /api/examples returns examples[]');
-  assert(examples.examples.length === 5, 'examples lists all 5 archived packs', examples.examples.length, 5);
+  assert(examples.examples.length === 8, 'examples lists all 8 archived packs', examples.examples.length, 8);
   for (const id of ['payment-service', 'target-advanced', 'production-curated', 'demo-skeleton']) {
     const entry = examples.examples.find(p => p.id === id);
     assert(!!entry && entry.ok === true, `example '${id}' loads ok from examples/`, entry?.error, 'ok');
@@ -400,7 +400,7 @@ try {
 
   // GET / returns the studio shell
   const html = await getText(base, '/');
-  assert(html.includes('<title>ObservabilityPack Studio</title>'), 'GET / returns studio shell');
+  assert(html.includes('<title>Tomograph'), 'GET / returns studio shell');
   assert(html.includes('/app.mjs'), 'shell loads app.mjs');
   assert(html.includes('/app.css'), 'shell loads app.css');
 

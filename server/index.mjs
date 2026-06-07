@@ -2,7 +2,7 @@
 /**
  * server/index.mjs
  *
- * Express server for ObservabilityPack Studio v0.3+.
+ * Express server for Tomograph v0.3+.
  *
  * Responsibilities:
  *   - Serve the studio HTML/CSS/JS shell from studio/.
@@ -69,6 +69,27 @@ const PACK_CATALOG = [];
 // catalog shape so the existing /api/packs/:id paths keep working when
 // the user opens an example.
 const EXAMPLE_PACKS = [
+  {
+    id: 'kafka-reference',
+    label: 'Kafka (catalogue reference · tier-2)',
+    path: 'examples/kafka.pack.yaml',
+    description: 'State-of-the-art reference pack for Apache Kafka 3.x. Five operational vital signs, multi-window burn-rate alerts, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/kafka.md.',
+    catalogue: true,
+  },
+  {
+    id: 'prometheus-reference',
+    label: 'Prometheus (catalogue reference · tier-2)',
+    path: 'examples/prometheus.pack.yaml',
+    description: 'State-of-the-art reference pack for Prometheus 2.45+ self-monitoring (via Meta-Prometheus pattern). Eight operational vital signs, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/prometheus.md.',
+    catalogue: true,
+  },
+  {
+    id: 'grafana-reference',
+    label: 'Grafana (catalogue reference · tier-2)',
+    path: 'examples/grafana.pack.yaml',
+    description: 'State-of-the-art reference pack for Grafana 11.x including unified alerting. Eight operational vital signs (HTTP, datasource proxy, database, alerting evaluation, plugins, login), 4 chaos experiments, 3-layer synthetic checks. Paired with the Prometheus reference pack. Every section evidence-cited in docs/catalogue-evidence/grafana.md.',
+    catalogue: true,
+  },
   {
     id: 'payment-service',
     label: 'Payment service (canonical example)',
@@ -829,6 +850,31 @@ app.post('/api/draft-from-mcp', async (req, res) => {
     const ann = pack.metadata?.annotations || {};
     const probesAttempted = (ann['mcp.probesAttempted'] || '').split(',').filter(Boolean);
     const probesSucceeded = (ann['mcp.probesSucceeded'] || '').split(',').filter(Boolean);
+
+    // Parse the capability inventory (skill → backend → product → versions)
+    // out of the flat annotation set the fetcher stamped. The studio's
+    // connect screen reads this directly to render the version-gating
+    // story up-front, before the user even commits to drafting a pack.
+    const inventoryRaw = ann['mcp.capabilities.inventory'] || '';
+    const inventory = inventoryRaw.split('|').filter(Boolean).map(row => {
+      const [skill, backend, product, mustCsv] = row.split(':');
+      return {
+        skill, backend,
+        product: product === '-' ? null : product,
+        versions: { must: (mustCsv || '').split(';').filter(Boolean) },
+      };
+    });
+    const capabilities = ann['mcp.capabilities.skillCount']
+      ? {
+          gatingMode:    ann['mcp.capabilities.gatingMode'] || 'warn',
+          protocolModel: ann['mcp.capabilities.protocolModel'] || null,
+          skillCount:    Number(ann['mcp.capabilities.skillCount'] || 0),
+          backendCount:  Number(ann['mcp.capabilities.backendCount'] || 0),
+          skills:        (ann['mcp.capabilities.skills'] || '').split(',').filter(Boolean),
+          inventory,
+        }
+      : null;
+
     const summary = {
       source: 'mcp',
       mcpUrl,
@@ -846,8 +892,16 @@ app.post('/api/draft-from-mcp', async (req, res) => {
         dashboards:      Number(ann['mcp.discovered.dashboards'] || (pack.spec?.dashboards || []).length),
         scrapeJobs:     (ann['mcp.discovered.scrape_jobs'] || '').split(',').filter(Boolean),
         metricNamesCount: Number(ann['mcp.discovered.metric_names_count'] || 0),
+        // tools/list inventory — what the MCP advertised vs what we matched
+        toolsExposed:    (ann['mcp.toolsExposed']    || '').split(',').filter(Boolean),
+        toolsUnmatched:  (ann['mcp.toolsUnmatched']  || '').split(',').filter(Boolean),
         probesAttempted, probesSucceeded,
       },
+      // Full backend_capabilities inventory — the version-gating contract.
+      // When null, the MCP didn't expose backend_capabilities (older
+      // server). When set, the studio renders the full skill → backend →
+      // product → version matrix on connect.
+      capabilities,
       warnings: [],
       tier: pack.metadata?.bindings?.criticality || 'tier-3',
     };
@@ -1098,7 +1152,7 @@ app.get(/^(?!\/api\/).*/, (req, res, next) => {
 // ---------- entrypoint ----------
 
 const PORT = Number(process.env.PORT || 8000);
-const HOST = process.env.HOST || '127.0.0.1';
+const HOST = process.env.HOST || '0.0.0.0';
 
 export { app };
 export function start({ port = PORT, host = HOST, silent = false } = {}) {

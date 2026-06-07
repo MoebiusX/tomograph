@@ -1,5 +1,5 @@
 /* ============================================================
-   ObservabilityPack Studio v0.3 — engineering bench refresh
+   Tomograph v0.3 — the Observability Compiler
    Visual identity: hairline grid · monospaced data · layer-numbered
    sections · slide-in drawer.
 
@@ -962,6 +962,49 @@ a:hover { color: var(--ink); }
   font-family: var(--mono);
   font-size: 11px;
   color: var(--ink-4);
+}
+/* L2/L3 Expand toggle — flips between high-level artefacts (backends,
+   pipelines, dashboards) and the full inventory (metric_inventory in
+   L2, dashboard panels in L3). The +N badge shows how many expand-level
+   items are currently hidden. */
+.section-expand-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: 12px;
+  padding: 4px 10px;
+  font: 600 11px/1.2 var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.section-expand-toggle:hover {
+  color: var(--ink);
+  border-color: var(--ink-4);
+}
+.section-expand-toggle.is-on {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.section-expand-glyph {
+  font-size: 13px;
+  line-height: 1;
+}
+.section-expand-count {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 4px;
+  font-size: 10px;
+  background: var(--line-2);
+  border-radius: 4px;
+  color: var(--ink-4);
+}
+.section-expand-toggle.is-on .section-expand-count {
+  background: var(--accent);
+  color: var(--paper);
 }
 
 .section-grid {
@@ -2242,6 +2285,121 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
   color: var(--ink-4);
 }
 
+/* backend_capabilities inventory — the canonical version-gating story.
+   Rendered as a striped, scannable list of skill rows with chip pills
+   showing each backend's product + must-version. Sits between the
+   4-card capability grid and the gaps banner. */
+.home-mcp-skills {
+  margin-top: 22px;
+  padding: 16px 18px 18px;
+  background: var(--paper);
+  border: 1px solid var(--ink-line);
+  border-radius: 6px;
+}
+.home-mcp-skills-head { margin-bottom: 12px; }
+.home-mcp-skills-title {
+  font: 600 12px/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-1);
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+}
+.home-mcp-skills-meta {
+  font: 400 11px/1 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--ink-4);
+}
+.home-mcp-skills-meta code {
+  font: inherit;
+  background: var(--ink-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.home-mcp-skills-sub {
+  margin-top: 6px;
+  font: 13px/1.5 var(--serif);
+  color: var(--ink-3);
+}
+.home-mcp-skills-sub code {
+  font: 12px/1 var(--mono);
+  background: var(--ink-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.home-mcp-skills-body {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  background: var(--ink-line);
+  border: 1px solid var(--ink-line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.home-mcp-skill-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--paper);
+}
+.home-mcp-skill-row:hover { background: var(--ink-bg); }
+.home-mcp-skill-name {
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.home-mcp-skill-chips {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.home-mcp-skill-chip {
+  display: inline-flex; align-items: baseline; gap: 4px;
+  padding: 3px 8px;
+  background: var(--ink-bg);
+  border: 1px solid var(--ink-line);
+  border-radius: 3px;
+  font: 11.5px/1.3 var(--mono);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.home-mcp-skill-chip strong { font-weight: 600; color: var(--ink-1); }
+.home-mcp-skill-chip em {
+  font-style: normal;
+  color: var(--ink-4);
+  font-size: 10.5px;
+}
+/* Live-version chips: authoritative version pulled from the backend
+   itself (grafana_health, metrics_query vm_app_version, …). The
+   "● LIVE" pip + tinted accent border tells the demo audience this
+   number is ground truth, not capability policy. */
+.home-mcp-skill-chip.is-live {
+  background: rgba(56, 142, 60, 0.06);
+  border-color: rgba(56, 142, 60, 0.45);
+}
+.home-mcp-skill-chip.is-live em { color: rgb(46, 110, 50); font-weight: 500; }
+.home-mcp-skill-chip-live {
+  margin-left: 4px;
+  padding: 1px 5px;
+  background: rgb(46, 110, 50);
+  color: var(--paper, #fff);
+  border-radius: 2px;
+  font: 600 9px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.home-mcp-skills-meta-live {
+  color: rgb(46, 110, 50);
+  font-weight: 600;
+}
+@media (max-width: 720px) {
+  .home-mcp-skill-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
+
 .home-mcp-gaps {
   margin-top: 18px;
   padding: 14px 18px;
@@ -2346,6 +2504,26 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
 .home-alt-sub {
   font: italic 11.5px/1.4 var(--serif);
   color: var(--ink-4);
+}
+
+/* The Möbius Loop — inline SVG cycle diagram. The SVG is fully
+   self-contained: dark panel, header rule, intro prose, gradient
+   ribbon, four colored nodes, and the dashed "begin again" return
+   arc. Themed independently of the light/dark theme toggle — it's a
+   brand illustration, not a UI surface, so it reads identically
+   regardless of the surrounding theme. Wrapper just centers + adds
+   subtle elevation. */
+.home-cycle {
+  margin-top: 48px;
+}
+.home-cycle-svg {
+  display: block;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  height: auto;
+  border-radius: 18px;
+  box-shadow: 0 8px 24px -8px rgba(15,27,45,0.22);
 }
 
 .hdr-brand h1 { transition: color 150ms ease; }

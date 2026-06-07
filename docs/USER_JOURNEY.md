@@ -1,6 +1,6 @@
 # User Journey
 
-The studio has one canonical flow. Keep design changes faithful to it.
+Tomograph has one canonical flow. Keep design changes faithful to it.
 When in doubt, read this doc and the journey will tell you whether
 your change makes the path shorter or longer.
 

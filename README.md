@@ -1,28 +1,51 @@
-# otel-observability-pack-studio
+# Tomograph — the Observability Compiler
 
-> Engineering studio for **ObservabilityPack spec v1.2** manifests. Express
-> server + thin vanilla-JS client. Validates canonical packs, projects them
-> into a layered display, scores them against the maturity rubric, and
-> surfaces broken references — all from a single npm install.
+> Write one **ObservabilityPack**. Tomograph compiles it into the native
+> artefacts your platform runs on, x-rays existing repos to draft packs from
+> what's already there, and scans any service's observability posture to score
+> it against the spec.
+>
+> **Trust what your eyes see.** Observability that has drifted out of date
+> delivers zero value — a clean scan of a body that has changed. Tomograph
+> keeps the image calibrated against the source of truth.
+
+Tomograph is an engineering toolchain for **ObservabilityPack spec v1.2**
+manifests: an Express server + thin vanilla-JS client that validates canonical
+packs, projects them into a layered display, scores them against the maturity
+rubric, surfaces broken references, and renders the result as a readable
+tomogram — all from a single `npm install`.
 
 The canonical spec lives at [MoebiusX/otel-observability-pack](https://github.com/MoebiusX/otel-observability-pack);
 a checksumed copy is vendored under [`vendor/observability-pack-spec/v1.2/`](vendor/observability-pack-spec/v1.2/).
 
+## Vocabulary
+
+A small, deliberately medical vocabulary — the whole mental model in one read:
+
+| Term | Meaning |
+|---|---|
+| **pack** | The ObservabilityPack manifest — one service's observability, declared. The source of truth. |
+| **`packc`** | The pack compiler. Emits native backend artefacts (Prometheus rules, Grafana dashboards, OTel Collector pipelines, Alertmanager routes) from a pack. |
+| **x-ray** | Read an existing repo and draft a pack from what's discovered. The inverse of compiling. |
+| **scan / tomogram** | The rendered, conformance-scored picture of a pack's posture. |
+| **miscalibration** | Drift — when the image no longer matches the live system. |
+
 ## Quickstart
 
 ```bash
-git clone <this repo>
-cd otel-observability-pack-studio
+git clone https://github.com/MoebiusX/tomograph.git
+cd tomograph
 npm install            # single runtime dep: express
 npm run dev            # http://127.0.0.1:8000
 ```
 
-Open the URL. The studio loads the five bundled packs (one canonical
-example, one tier-1 reference, one tier-2 partial baseline, one tier-3
-minimum, plus the cron-managed live snapshot) and renders the first one
-across the layered tabs L1 → L2 / L2X → L3 → L4 (policy · alerting ·
-healing) → L5 → GOV, plus a **CONF** tab scoring it against the maturity
-rubric.
+Open the URL. Tomograph boots empty — connect to a live MCP server, x-ray a
+service repo, or drop a YAML manifest to open a pack. Once a pack is loaded,
+the layered tabs L1 → L2 / L2X → L3 → L4 (policy · alerting · healing) → L5 →
+GOV render the artefacts, and a **CONF** tab scores the pack against the
+maturity rubric. Five reference packs ship under [`examples/`](examples/) for
+benchmarking — a canonical example, a tier-1 reference, a tier-2 partial
+baseline, a tier-3 minimum, and the cron-managed live snapshot.
 
 ## Architecture
 
@@ -37,7 +60,7 @@ server/
   index.mjs                                    Express server (validator + adapter + conformance API)
   test-smoke.mjs                               boots on ephemeral port, hits each route, asserts
 
-studio/                                        thin vanilla-JS client
+studio/                                        thin vanilla-JS client (the Tomograph UI)
   index.html
   app.css                                      engineering-bench aesthetic, layer palette
   app.mjs                                      fetches /api/packs, renders, drawer + upload + ref checker
@@ -47,15 +70,18 @@ tools/lib/                                     shared ESM modules — browser-fr
   validator.mjs                                  JSON Schema 2020-12 walker + v1.2 gatekeeper
   adapter.mjs                                    canonical → layered display projection + env overlay
   conformance.mjs                                29 rubric clauses from spec §5 + §7
+  compile.mjs                                    packc — pack → Prometheus/Grafana/OTel/Alertmanager
 
 tools/                                         CLIs
   validate-pack.mjs                              `npm run validate`
   adapt-spec-pack.mjs                            `npm run adapt -- <pack.yaml>`
+  crawl-repo.mjs                                 `npm run crawl` (x-ray a service repo)
   fetch-live-pack.mjs                            `npm run fetch-live` (cron-driven)
   sync-spec.mjs                                  `npm run sync-spec[:check]`
-  test-{adapt,fetch,packs}.mjs                   regression suites
+  test-{adapt,crawl,fetch,packs,compile}.mjs     regression suites
 
-packs/                                         bundled canonical v1.2 manifests
+examples/                                      bundled canonical v1.2 manifests
+  payment-service.pack.yaml                      the spec's canonical tier-1 example
   demo-skeleton.pack.yaml                        tier-3 minimum (100% MUST)
   production-curated.pack.yaml                   tier-2 partial BAU (86% MUST, honest gaps)
   target-advanced.pack.yaml                      tier-1 reference (100% MUST + 100% SHOULD)
@@ -67,12 +93,19 @@ packs/                                         bundled canonical v1.2 manifests
 | Method | Path | Returns |
 |---|---|---|
 | `GET`  | `/healthz` | `{ ok, specVersion, schemaPath }` |
-| `GET`  | `/api/packs` | Catalog (`id`, `name`, `version`, `criticality`, `environments`) |
+| `GET`  | `/api/packs` | Catalog of registered packs (uploaded + crawled + drafted + catalog) |
+| `GET`  | `/api/examples` | The 5 bundled reference packs under `examples/` |
 | `GET`  | `/api/packs/:id?env=<name>` | Adapted layered display pack |
 | `GET`  | `/api/packs/:id/canonical?env=<name>` | Canonical manifest + env overlay applied |
-| `GET`  | `/api/packs/:id/conformance?env=<name>` | Maturity-rubric scoring |
+| `GET`  | `/api/packs/:id/conformance?env=<name>` | Maturity-rubric scoring (the scan) |
+| `GET`  | `/api/packs/:id/compile-catalog?env=<name>` | Per-artefact `packc` compile tree |
+| `GET`  | `/api/packs/:id/compile-artifact?group=&flavor=&artifact=` | Compile a single artefact |
 | `GET`  | `/api/maturity-rubric` | All 29 clause definitions (with `evaluate` stripped) |
-| `POST` | `/api/validate` | Body = JSON or `text/yaml`; returns `{ok, errors[], adapted?, conformance?}` |
+| `GET`  | `/api/diff?a=&b=&aEnv=&bEnv=` | Diff two packs across every layer |
+| `POST` | `/api/validate` | Body = JSON or `text/yaml`; returns `{ok, errors[], adapted?, conformance?, registered:{id}}` |
+| `POST` | `/api/crawl` | Body = `{ files: {<path>: <content>} }`; x-rays a repo, returns a draft pack |
+| `POST` | `/api/draft-from-mcp` | Body = `{ mcpUrl, mcpAuth? }`; interrogates a live MCP, returns a draft pack |
+| `DELETE` | `/api/uploads` | Drops every uploaded / crawled / drafted pack from the in-memory registry |
 
 ## Source tag taxonomy
 
@@ -82,11 +115,11 @@ Each layered artefact carries one of three source tags:
 |---|---|
 | `Declared` | Section is present in the manifest. Default for everything the validator accepts. |
 | `Verified` | A `metadata.annotations.mcp.verified.<symbol>` key is set on the canonical pack — i.e. an MCP run attested this artefact within the refresh timestamp. |
-| `Missing` | Required for the declared `criticality` per the maturity rubric, but absent. Computed by the conformance pass (Phase 3b). |
+| `Missing` | Required for the declared `criticality` per the maturity rubric, but absent. Computed by the conformance pass. |
 
-`Verified` shows up automatically when the [refresh-live-pack workflow](.github/workflows/refresh-live-pack.yml) runs and writes attested-artefact annotations into `production-live.pack.yaml`.
+`Verified` shows up automatically when the [refresh-live-pack workflow](.github/workflows/refresh-live-pack.yml) runs and writes attested-artefact annotations into `production-live.pack.yaml`. A stale timestamp is a **miscalibration** signal — the image is older than the system it claims to show.
 
-## What the studio shows
+## What the scan shows
 
 - **Header strip** — `apiVersion · kind · binding · version · criticality · target · owners · environments`.
 - **Pack & env selectors** — switching environment re-runs the adapter against the env-overlaid spec (dotted-path `overrides`, `target`, `criticality`).
@@ -95,13 +128,13 @@ Each layered artefact carries one of three source tags:
 - **Drawer** — per-artefact-type structured panels (SLI query / SLO objective+window / backend endpoints + auth + version policy / dashboard panel_bindings with click-through / chaos fault + expected_alerts + MTTD / remediation guardrails / …) plus raw canonical YAML.
 - **Cross-reference checker** — internal refs (`slis.X`, `slos.Y`, `telemetry.backends.Z`) must resolve. Broken refs render the source card with a red outline and surface in the drawer's *Broken references* section.
 - **Conformance tab** — overall MUST% + SHOULD%; per-dimension pass/fail; full clause list with severity + applies-tier + spec section reference.
-- **Upload** — drag-and-drop a `.yaml` / `.yml` / `.json` pack onto the studio, or click the **upload** button. Goes to `POST /api/validate`; pass → swap in the adapted result; fail → error panel with the validator findings.
+- **Upload** — drag-and-drop a `.yaml` / `.yml` / `.json` pack onto Tomograph, or click the **upload** button. Goes to `POST /api/validate`; pass → swap in the adapted result; fail → error panel with the validator findings.
 
-## Creating + loading your own packs
+## Getting a pack in front of Tomograph
 
-There are three paths an SRE can take to get a pack in front of the studio:
+Three paths an SRE can take:
 
-### Path A — crawl a service repository
+### Path A — x-ray a service repository
 
 Drafts a canonical v1.2 pack from `docker-compose.yml`, Prometheus rules files,
 `alertmanager.yml`, OTel Collector configs, and Grafana dashboard JSONs found
@@ -112,7 +145,7 @@ in the repo. Both forms run the same library:
 npm run crawl -- path/to/service-repo --name payments --env prod > draft.pack.yaml
 node tools/crawl-repo.mjs path/to/repo --criticality tier-2 --owners team-payments
 
-# Studio form — header → "new from repo" button → drop a folder
+# UI form — header → "new from repo" button → drop a folder
 # (the browser pre-classifies files locally so only matched artefacts are sent)
 ```
 
@@ -136,8 +169,8 @@ See **MCP integration** below.
 
 ### Path C — load a hand-authored pack
 
-1. **Drop a file.** Drag a canonical `.yaml` / `.yml` / `.json` pack anywhere on the studio window (uses `POST /api/validate`).
-2. **Catalog file.** Add to `packs/`, then add an entry to `PACK_CATALOG` in [`server/index.mjs`](server/index.mjs).
+1. **Drop a file.** Drag a canonical `.yaml` / `.yml` / `.json` pack anywhere on the window (uses `POST /api/validate`).
+2. **Catalog file.** Add to `examples/`, then add an entry to `EXAMPLE_PACKS` in [`server/index.mjs`](server/index.mjs).
 3. **API.** Hit `POST /api/validate` directly with the pack body for headless validation + adaptation.
 
 The CLI variants of the validate / adapt flow:
@@ -146,6 +179,16 @@ The CLI variants of the validate / adapt flow:
 npm run validate -- path/to/pack.yaml
 npm run adapt    -- path/to/pack.yaml --env staging --pretty
 ```
+
+## Compile — `packc`
+
+The point of a source of truth is that you can regenerate everything downstream
+from it. `packc` compiles a pack into the native artefacts your platform runs
+on — Prometheus recording/alerting rules, Grafana dashboards, OTel Collector
+pipelines, and Alertmanager routes — so changing observability means changing
+the pack and recompiling, and re-targeting between vendors means recompiling
+against a different binding. Compiler regression coverage runs under
+`npm run test:compile`.
 
 ## MCP integration
 
@@ -161,9 +204,11 @@ npm run dev                            # serve on 127.0.0.1:8000
 npm run lint:fetcher  lint:adapter  lint:server  lint:studio
 npm run sync-spec:check
 npm run validate                       # canonical example
-npm run test:adapt                     # 41 adapter assertions
-npm run test:fetch                     # 36 fetcher assertions (offline)
-npm run test:packs                     # round-trip for every packs/*.pack.yaml
+npm run test:adapt                     # adapter assertions
+npm run test:crawl                     # x-ray / crawler assertions
+npm run test:fetch                     # fetcher assertions (offline)
+npm run test:packs                     # round-trip for every examples/*.pack.yaml
+npm run test:compile                   # packc compiler assertions
 npm run test:server                    # boots server on ephemeral port
 
 # refresh the vendored spec from upstream main
@@ -171,7 +216,7 @@ npm run sync-spec                      # rewrites VERSIONS.json
 npm run sync-spec:check                # CI-friendly drift check
 ```
 
-Browser support: any modern browser (ES2020, CSS variables, SVG). Google Fonts (IBM Plex + Newsreader) load over the network; the studio is usable with system fonts if offline.
+Browser support: any modern browser (ES2020, CSS variables, SVG). Google Fonts (IBM Plex + Newsreader) load over the network; Tomograph is usable with system fonts if offline.
 
 ## License
 

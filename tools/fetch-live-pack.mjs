@@ -228,6 +228,104 @@ function durationFromMs(ms, fallback) {
   return `${Math.max(1, Math.round(ms / 60_000))}m`;
 }
 
+// ============================================================
+// Capability inventory — otel-mcp-server's `backend_capabilities`
+// tool exposes the full skill → backend → product → version
+// matrix the server can speak to. Spec v1.2 §VersionSpec was
+// designed around this. We parse it into a normalised structure
+// the pack builder can drive telemetry.backends[] from.
+// ============================================================
+
+// Map MCP-reported backend display names to the spec's Product slug
+// registry. Anything not on this list still passes the lint as an
+// "unknown product" — but the registered names get clean signals.
+const BACKEND_TO_PRODUCT = {
+  'Prometheus':                 'prometheus',
+  'Grafana Mimir':              'mimir',
+  'Thanos':                     'thanos',
+  'VictoriaMetrics':            'victoriametrics',
+  'Cortex':                     'cortex',
+  'Grafana Loki':               'loki',
+  'Grafana Tempo':              'tempo',
+  'Tempo':                      'tempo',
+  'Grafana Pyroscope':          'pyroscope',
+  'Grafana':                    'grafana',
+  'Grafana Alloy':              'alloy',
+  'Alertmanager':               'alertmanager',
+  'Elasticsearch':              'elasticsearch',
+  'OpenSearch':                 'opensearch',
+  'ClickHouse':                 'clickhouse',
+  'Graylog':                    'graylog',
+  'InfluxDB 1.x':               'influxdb',
+  'InfluxDB 2.x':               'influxdb',
+  'InfluxDB 3.x':               'influxdb',
+  'OpenTSDB':                   'opentsdb',
+  'Jaeger':                     'jaeger',
+  'Zipkin':                     'zipkin',
+  'SkyWalking':                 'skywalking',
+  'Pinpoint':                   'pinpoint',
+  'Open Policy Agent':          'opa',
+  'Cilium':                     'cilium',
+  'Kubernetes':                 'kubernetes',
+  'Envoy':                      'envoy',
+  'Consul':                     'consul',
+  'Kong':                       'kong',
+  'Traefik':                    'traefik',
+  'Fluent Bit':                 'fluentbit',
+  'Beats':                      'beats',
+  'Vector':                     'vector',
+};
+
+// Map skill id to the spec's Signal enum
+// (metrics|logs|traces|profiles|network|policy|mesh|gateway|collection|alerting|dashboards).
+// Skills the spec doesn't model as a telemetry signal (zk-proofs,
+// agentrelay, public-exchange, system, kubernetes) get null and
+// flow into annotations only.
+const SKILL_TO_SIGNAL = {
+  metrics:      'metrics',
+  logs:         'logs',
+  traces:       'traces',
+  pyroscope:    'profiles',
+  grafana:      'dashboards',
+  alertmanager: 'alerting',
+  cilium:       'network',
+  consul:       'mesh',
+  envoy:        'mesh',
+  kong:         'gateway',
+  traefik:      'gateway',
+  opa:          'policy',
+  pipeline:     'collection',
+  elasticsearch: 'logs',
+  clickhouse:   'logs',
+  graylog:      'logs',
+  influx:       'metrics',
+  opentsdb:     'metrics',
+  // Skills below have no direct Signal mapping; they remain in the
+  // annotation inventory but do not become telemetry.backends[].
+  kubernetes:    null,
+  pinpoint:      null,
+  agentrelay:    null,
+  'public-exchange': null,
+  system:        null,
+  'zk-proofs':   null,
+};
+
+function parseBackendCapabilities(response) {
+  // backend_capabilities returns its body as a JSON-stringified
+  // text content; both the raw object and the wrapped form are
+  // supported here so this stays robust to wire changes.
+  let inner = response;
+  if (response?.content?.[0]?.text) {
+    try { inner = JSON.parse(response.content[0].text); } catch { inner = null; }
+  }
+  if (!inner || !Array.isArray(inner.skills)) return null;
+  return {
+    gatingMode:    inner.gatingMode || 'warn',
+    protocolModel: inner.protocolModel || null,
+    skills:        inner.skills,
+  };
+}
+
 export function buildCanonicalPack({
   refreshedAt,
   mcpUrl,
@@ -237,6 +335,10 @@ export function buildCanonicalPack({
   baselinesData = {},
   probeResults = {},
   errors = {},
+  discoveredTools = [],
+  unmatchedTools = [],
+  capabilities = null,
+  liveVersions = {},
   packName = PACK_NAME,
 } = {}) {
   const services = Array.isArray(health.services) ? health.services : [];
@@ -264,6 +366,13 @@ export function buildCanonicalPack({
     'mcp.servicesDiscovered':  serviceNames.join(','),
     'mcp.baselinesComputed':   String((baselinesData.baselines || []).length),
     'mcp.activeAnomalies':     String(anomaliesActive?.traceAnomalies?.active?.length || 0),
+    // tools/list inventory — the honest record of what the MCP advertised.
+    'mcp.toolsExposed':        discoveredTools.map(t => t.name).join(','),
+    'mcp.toolsExposedCount':   String(discoveredTools.length),
+    // Tools the MCP advertises that we DON'T currently have a probe pattern
+    // for. Every entry here is a candidate enhancement — surface them so
+    // the user can name what to wire next.
+    'mcp.toolsUnmatched':      unmatchedTools.map(t => t.name).join(','),
   };
   // Per-probe count annotations, ONLY for probes that responded — so an
   // engineer reading the pack can see what came back from live state.
@@ -290,17 +399,138 @@ export function buildCanonicalPack({
   if (!errors.system_health) markVerified('otel');
 
   // ---- spec.telemetry.backends ----
-  // Always declare the headline platform backends; tag with `mcp` evidence
-  // when the topology/health response confirms them.
+  // When the MCP exposes backend_capabilities, drive backends from the
+  // canonical skill→backend→product→version inventory. Each entry gets
+  // a real version block (declared from must[0], gating from the
+  // server's own gatingMode, capabilities from baselineFeatures). When
+  // capabilities are absent, fall back to the legacy hardcoded set so
+  // older MCPs still produce a valid pack.
   const backends = [];
+  const seenIds = new Set();
   const pushBackend = (b, verifiedBy) => {
+    if (seenIds.has(b.id)) return;
+    seenIds.add(b.id);
     backends.push(b);
     if (verifiedBy && !errors[verifiedBy]) markVerified(`telemetry.backends.${b.id}`);
   };
-  pushBackend({ id: 'metrics-prom', signal: 'metrics', product: 'prometheus' }, 'system_health');
-  pushBackend({ id: 'logs-elastic', signal: 'logs',    product: 'elasticsearch' }, null);
-  pushBackend({ id: 'traces-jaeger', signal: 'traces', product: 'jaeger' },
-              (topology?.dependencies || []).some(d => (d.child || '').includes('jaeger')) ? 'system_topology' : null);
+
+  // Capability-derived inventory annotations (one row per skill+backend)
+  // get stamped regardless of whether the entry becomes a telemetry
+  // backend — the studio's connect screen reads these to render the
+  // full version-gating story.
+  const capabilityRows = [];
+  if (capabilities && Array.isArray(capabilities.skills)) {
+    for (const s of capabilities.skills) {
+      const signal = SKILL_TO_SIGNAL[s.skill] ?? null;
+      for (const b of s.backends || []) {
+        const fallbackSlug = (slug(b.backend, '') || '').replace(/_/g, '-');
+        const productSlug = BACKEND_TO_PRODUCT[b.backend] ?? (fallbackSlug || null);
+        const pv = b.productVersions || {};
+        const must = pv.must || [];
+        const should = pv.should || [];
+        const optional = pv.optional || [];
+        const row = {
+          skill: s.skill,
+          backend: b.backend,
+          product: productSlug,
+          protocol: b.protocol || null,
+          queryLanguage: b.queryLanguage || null,
+          products: b.products || [],
+          versions: { must, should, optional },
+          baselineFeatures: b.baselineFeatures || [],
+          versionedFeatures: (b.versionedFeatures || []).map(v => v.feature),
+          signal,
+        };
+        capabilityRows.push(row);
+
+        // Only mint a telemetry.backends[] entry when the skill maps
+        // to one of the spec's Signal values AND the product slug
+        // matches the Product pattern (`^[a-z][a-z0-9_-]*$`).
+        if (!signal || !productSlug || !/^[a-z][a-z0-9_-]*$/.test(productSlug)) continue;
+        const id = slug(`${signal}-${productSlug}`);
+        if (!/^[a-z][a-z0-9_-]*[a-z0-9]$/.test(id)) continue;
+
+        // Build the version block. `declared` is the LIVE, authoritative
+        // version from a version-revealing probe when available (e.g.
+        // grafana_health returns "12.4.0"; metrics_query vm_app_version
+        // returns "v1.113.0"). When the live version is missing, fall
+        // back to the backend_capabilities policy must[0]. `min` always
+        // carries the policy floor so the user can see both the live
+        // version AND the supported range.
+        const live = liveVersions[productSlug]?.declared || null;
+        const declared = live || must[0] || should[0] || optional[0] || null;
+        const version = {};
+        if (declared) version.declared = declared;
+        if (must.length) version.min = must[must.length - 1];
+        const gating = capabilities.gatingMode;
+        if (gating === 'off' || gating === 'warn' || gating === 'enforce') {
+          version.gating = gating;
+        }
+        // baselineFeatures already match the Product capability pattern
+        // (lowercase, underscore-separated). Cap to 32 so a pack with
+        // a chatty skill (e.g. elasticsearch with 60 features) stays
+        // readable.
+        const caps = (b.baselineFeatures || [])
+          .filter(c => /^[a-z][a-z0-9_-]*$/.test(c))
+          .slice(0, 32);
+        if (caps.length) version.capabilities = caps;
+
+        pushBackend({
+          id,
+          signal,
+          product: productSlug,
+          ...(Object.keys(version).length ? { version } : {}),
+        }, 'backend_capabilities');
+      }
+    }
+  }
+
+  // Fallback / floor: ensure the headline platform backends are
+  // always present even when backend_capabilities was unavailable.
+  // (Schema requires at least one telemetry backend.)
+  if (backends.length === 0) {
+    pushBackend({ id: 'metrics-prom', signal: 'metrics', product: 'prometheus' }, 'system_health');
+    pushBackend({ id: 'logs-elastic', signal: 'logs',    product: 'elasticsearch' }, null);
+    pushBackend({ id: 'traces-jaeger', signal: 'traces', product: 'jaeger' },
+                (topology?.dependencies || []).some(d => (d.child || '').includes('jaeger')) ? 'system_topology' : null);
+  }
+
+  // Capability inventory annotations — the studio renders these on
+  // connect so users can see exactly what the MCP can speak to.
+  if (capabilities) {
+    annotations['mcp.capabilities.gatingMode'] = capabilities.gatingMode;
+    annotations['mcp.capabilities.protocolModel'] = capabilities.protocolModel || '';
+    annotations['mcp.capabilities.skillCount'] = String(capabilities.skills.length);
+    annotations['mcp.capabilities.backendCount'] = String(capabilityRows.length);
+    annotations['mcp.capabilities.skills'] =
+      [...new Set(capabilityRows.map(r => r.skill))].join(',');
+    // Per-skill enumeration so the studio can render the inventory
+    // without re-parsing. Format: `<skill>:<backend>:<product>:<must-csv>`
+    // joined by '|'. Compact enough to keep total annotation size sane.
+    annotations['mcp.capabilities.inventory'] = capabilityRows
+      .map(r => `${r.skill}:${r.backend}:${r.product || '-'}:${(r.versions.must || []).join(';')}`)
+      .join('|');
+  }
+
+  // Live-version annotations — the authoritative truth we pulled from
+  // grafana_health, metrics_query vm_app_version, etc. Surfaced both
+  // per-product (mcp.versions.grafana) AND with provenance
+  // (mcp.versions.grafana.source) so an SRE can see exactly which
+  // endpoint attested each number.
+  for (const [product, info] of Object.entries(liveVersions || {})) {
+    if (!info?.declared) continue;
+    annotations[`mcp.versions.${product}`] = info.declared;
+    if (info.source) annotations[`mcp.versions.${product}.source`] = info.source;
+    if (info.commit) annotations[`mcp.versions.${product}.commit`] = info.commit;
+    if (info.fullTag && info.fullTag !== info.declared) {
+      annotations[`mcp.versions.${product}.fullTag`] = info.fullTag;
+    }
+    if (info.revision) annotations[`mcp.versions.${product}.revision`] = info.revision;
+    // Per-artefact verification marker pointing at the backend whose
+    // version we just attested. The id pattern matches the convention
+    // used in pushBackend below (e.g. metrics-victoriametrics).
+    markVerified(`telemetry.backends.versions.${product}`);
+  }
 
   // Probes drive multiple downstream sections — hoist their results.
   const discoveredRules = probeResults?.recording_rules?.adapted || [];
@@ -524,7 +754,11 @@ export function buildCanonicalPack({
 const PROBES = [
   {
     name: 'recording_rules',
-    candidates: ['list_recording_rules', 'prometheus_recording_rules', 'metrics_recording_rules', 'mimir_recording_rules', 'rules_list_recording', 'prometheus_rules', 'rules_list'],
+    // Prometheus /api/v1/rules returns BOTH recording rules and alert rules
+    // in one payload. The otel-mcp-server's metrics_alerts tool exposes it
+    // directly (the name is historical; it returns ALL rule types). Our adapt
+    // function filters to record-only rules.
+    candidates: ['metrics_alerts', 'list_recording_rules', 'prometheus_recording_rules', 'metrics_recording_rules', 'mimir_recording_rules', 'rules_list_recording', 'prometheus_rules', 'rules_list'],
     target: 'spec.queries.recording_rules',
     adapt: (response) => {
       // Common shapes:
@@ -546,7 +780,11 @@ const PROBES = [
   },
   {
     name: 'alert_rules',
-    candidates: ['list_alert_rules', 'prometheus_alert_rules', 'metrics_alert_rules', 'mimir_alert_rules', 'rules_list_alerting', 'prometheus_alerts'],
+    // metrics_alerts (Prometheus alert rules via /api/v1/rules) and
+    // grafana_alert_rules (Grafana unified alerting) are the canonical
+    // otel-mcp-server names. alertmanager_alerts surfaces FIRING alerts
+    // (not declarations) but counts as evidence the alerting stack works.
+    candidates: ['metrics_alerts', 'grafana_alert_rules', 'alertmanager_alerts', 'list_alert_rules', 'prometheus_alert_rules', 'metrics_alert_rules', 'mimir_alert_rules', 'rules_list_alerting', 'prometheus_alerts'],
     target: 'spec.policy.burn_rate_alerts',
     adapt: (response) => {
       const groups = response?.groups || response?.data?.groups || [];
@@ -567,16 +805,20 @@ const PROBES = [
   },
   {
     name: 'dashboards',
-    candidates: ['list_dashboards', 'grafana_dashboards', 'grafana_list_dashboards', 'grafana_search_dashboards', 'dashboards_list', 'grafana_search'],
+    // grafana_dashboards_search is the canonical otel-mcp-server tool
+    // (Grafana skill). The others are legacy / community-MCP names.
+    candidates: ['grafana_dashboards_search', 'grafana_dashboard_get', 'list_dashboards', 'grafana_dashboards', 'grafana_list_dashboards', 'grafana_search_dashboards', 'dashboards_list', 'grafana_search'],
     target: 'spec.dashboards',
     adapt: (response) => {
-      // Grafana /api/search shape: [{ id, uid, title, type:'dash-db', folderTitle, tags }]
-      // Generic shape: { dashboards: [{ id/uid, title, folder/folderTitle }] }
-      const list = Array.isArray(response) ? response : (response?.dashboards || response?.items || []);
+      // otel-mcp-server's grafana_dashboards_search returns:
+      //   { count: <n>, results: [{ id, uid, title, type:'dash-db'|'dash-folder', url, uri, tags, folderUid?, folderTitle? }] }
+      // Generic shapes also supported: bare array, {dashboards}, {items}.
+      const list = Array.isArray(response) ? response
+        : (response?.results || response?.dashboards || response?.items || []);
       return list
         .filter(d => (d.type ? d.type === 'dash-db' : true))
         .map(d => ({
-          id: String(d.uid || d.id || d.title || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || `dash-${Math.random().toString(36).slice(2, 8)}`,
+          id: String(d.uid || d.id || d.title || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || `dash-${(d.uid || d.id || 'x').toString().slice(0, 6)}`,
           provider: { kind: 'grafana', version: '12.0', schemaVersion: 41 },
           folder: d.folderTitle || d.folder || 'mcp-discovered',
           source: d.url ? `grafana://${d.url}` : `grafana://uid/${d.uid || d.id}`,
@@ -585,11 +827,23 @@ const PROBES = [
   },
   {
     name: 'scrape_configs',
-    candidates: ['list_scrape_configs', 'prometheus_scrape_configs', 'prometheus_targets', 'metrics_scrape_jobs', 'list_metric_jobs'],
+    // metrics_targets is the canonical otel-mcp-server tool (metrics skill);
+    // returns the Prometheus /api/v1/targets shape. The rest are legacy.
+    candidates: ['metrics_targets', 'list_scrape_configs', 'prometheus_scrape_configs', 'prometheus_targets', 'metrics_scrape_jobs', 'list_metric_jobs'],
     target: 'spec.telemetry.scrape_evidence',   // annotation-only; no schema field
     adapt: (response) => {
-      // Prometheus /api/v1/targets shape: { activeTargets: [{ labels: { job, instance } }] }
-      const targets = response?.activeTargets || response?.data?.activeTargets || response?.targets || [];
+      // otel-mcp-server's metrics_targets returns:
+      //   { activeTargets: <number>, targets: [{ job, instance, health, lastScrape, lastError }] }
+      // Prometheus /api/v1/targets returns:
+      //   { data: { activeTargets: [{ labels: { job, instance } }] } }
+      // Generic: bare array of targets, or { targets: [...] }.
+      const candidateArrays = [
+        Array.isArray(response?.targets) && response.targets,
+        Array.isArray(response?.activeTargets) && response.activeTargets,
+        Array.isArray(response?.data?.activeTargets) && response.data.activeTargets,
+        Array.isArray(response) && response,
+      ];
+      const targets = candidateArrays.find(Boolean) || [];
       const jobs = new Set();
       for (const t of targets) {
         const j = t.labels?.job || t.job;
@@ -600,11 +854,41 @@ const PROBES = [
   },
   {
     name: 'metric_names',
-    candidates: ['list_metrics', 'prometheus_metric_names', 'metrics_inventory', 'mimir_metric_names'],
-    target: 'spec.otel.metric_inventory',   // annotation-only
+    // Candidates ordered by likelihood. Candidates can be either a bare
+    // tool name (no args needed) or `{ name, args }` when the tool
+    // requires arguments to enumerate metric names:
+    //   metrics_label_values  — canonical otel-mcp-server name; needs
+    //     { label: '__name__' } to enumerate metric names
+    //   metrics_metadata      — requires { metric: '<name>' } per metric,
+    //     so it's the FALLBACK only (chicken-and-egg)
+    //   the rest are legacy / community-MCP names
+    candidates: [
+      { name: 'metrics_label_values', args: { label: '__name__' } },
+      'list_metrics',
+      'prometheus_metric_names',
+      'metrics_inventory',
+      'mimir_metric_names',
+      'metrics_metadata',
+    ],
+    target: 'spec.otel.metric_inventory',
     adapt: (response) => {
+      // otel-mcp-server metrics_label_values shape:
+      //   { label: "__name__", values: [<name>, ...] }
+      if (Array.isArray(response?.values)) {
+        return response.values.filter(s => typeof s === 'string');
+      }
+      // Prometheus /api/v1/label/<name>/values raw shape:
+      //   { status: "success", data: [<name>, ...] }
+      if (Array.isArray(response?.data)) {
+        return response.data.filter(s => typeof s === 'string');
+      }
+      // metrics_metadata shape: { data: { <metric>: [{ type, help, unit }] } }
+      if (response?.data && typeof response.data === 'object' && !Array.isArray(response.data)) {
+        return Object.keys(response.data);
+      }
+      // Bare array
       const names = Array.isArray(response) ? response
-        : (response?.data || response?.metrics || response?.names || []);
+        : (response?.metrics || response?.names || []);
       return Array.isArray(names) ? names.filter(s => typeof s === 'string') : [];
     },
   },
@@ -617,18 +901,69 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   const safe = async (name, fn) => {
     try { return await fn(); } catch (e) { errors[name] = e.message; return null; }
   };
+  // Per-probe failures recorded so the user can see WHY a probe didn't
+  // succeed (input validation, network, etc.) — distinct from the
+  // top-level `errors` map which is for the core tools.
+  const probeFailures = {};
+
+  // Single retry on transient 5xx — upstream observability backends
+  // (VictoriaMetrics, Grafana, Jaeger, …) occasionally drop a request
+  // when they're under load. The first retry usually succeeds.
+  const isTransient = (msg) =>
+    typeof msg === 'string' && /HTTP 50[0-9]|temporarily unavailable|timeout|ETIMEDOUT|ECONN/i.test(msg);
+
   const quiet = async (name, fn) => {
     // Like `safe`, but doesn't pollute `errors` — used for probes
     // because trying a candidate tool that doesn't exist isn't a
-    // failure, it's an expected miss.
-    try { return await fn(); } catch (_) { return null; }
+    // failure, it's an expected miss. Captures into probeFailures
+    // for diagnostics, and retries once on transient 5xx.
+    try { return await fn(); }
+    catch (e) {
+      if (isTransient(e.message)) {
+        try { return await fn(); }
+        catch (e2) {
+          if (!probeFailures[name]) probeFailures[name] = e2.message;
+          if (process.env.TOMOGRAPH_DEBUG) {
+            process.stderr.write(`[fetch-live-pack] probe ${name} failed twice: ${e2.message}\n`);
+          }
+          return null;
+        }
+      }
+      if (!probeFailures[name]) probeFailures[name] = e.message;
+      if (process.env.TOMOGRAPH_DEBUG) {
+        process.stderr.write(`[fetch-live-pack] probe ${name} failed: ${e.message}\n`);
+      }
+      return null;
+    }
   };
 
   await rpc('initialize', {
     protocolVersion: '2025-06-18',
     capabilities: {},
-    clientInfo: { name: 'observabilitypack-studio-fetcher', version: '0.3.0' },
+    clientInfo: { name: 'tomograph-fetcher', version: '0.3.0' },
   }).catch(() => {});
+
+  // Discover what the MCP actually exposes via tools/list. This is the
+  // foundation for honest probing — instead of guessing candidate tool
+  // names blindly, we intersect with what the server actually
+  // advertises. tools/list is part of the MCP spec since 2025-03-26;
+  // we tolerate its absence (older servers) by falling back to the
+  // candidate-guessing behaviour for compatibility.
+  const toolsList = await safe('tools/list', () => rpc('tools/list'));
+  const discoveredTools = Array.isArray(toolsList?.tools)
+    ? toolsList.tools.map(t => ({ name: t.name, description: t.description || '' }))
+    : [];
+  const discoveredToolNames = new Set(discoveredTools.map(t => t.name));
+
+  // otel-mcp-server 1.6+ exposes `backend_capabilities` — the canonical
+  // skill → backend → product → version inventory the spec's
+  // VersionSpec was designed around. Call it up-front; downstream
+  // builders use it to (a) declare telemetry.backends[] with real
+  // version blocks and (b) surface the full inventory to the studio.
+  const capabilitiesRaw = discoveredToolNames.has('backend_capabilities')
+    ? await safe('backend_capabilities', () => callTool('backend_capabilities'))
+    : null;
+  const capabilities = capabilitiesRaw ? parseBackendCapabilities(capabilitiesRaw) : null;
 
   const [health, topology, anomaliesActive, baselinesData] = await Promise.all([
     safe('system_health',       () => callTool('system_health')),
@@ -641,30 +976,141 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     throw new Error(`core MCP tools unavailable. errors: ${JSON.stringify(errors)}`);
   }
 
-  // Run discovery probes in parallel. Each probe tries multiple
-  // candidate tool names and stops at the first response.
+  // Run discovery probes in parallel. If we got a tools/list response,
+  // reorder candidates so the ACTUALLY EXPOSED names get tried first,
+  // and skip the rest — no point hammering the server with names it
+  // can't recognise. If tools/list returned nothing (old server), fall
+  // back to the original candidate-cascade behaviour.
+  // Probe candidates may be either a bare tool name OR a `{name, args}`
+  // object when the tool requires arguments to do anything useful (e.g.
+  // metrics_label_values needs {label: '__name__'} to enumerate metric
+  // names). Normalise into a [{name, args}] list here.
+  const candName = (c) => (typeof c === 'string' ? c : c.name);
+  const candArgs = (c) => (typeof c === 'string' ? {} : (c.args || {}));
+
   const probeResults = {};
   await Promise.all(PROBES.map(async (probe) => {
-    for (const candidate of probe.candidates) {
-      const response = await quiet(candidate, () => callTool(candidate));
+    let candidates;
+    if (discoveredToolNames.size > 0) {
+      // Trust the server's advertisement: only try names it actually exposes.
+      candidates = probe.candidates.filter(c => discoveredToolNames.has(candName(c)));
+      if (candidates.length === 0) {
+        probeResults[probe.name] = {
+          tool: null,
+          attempted: probe.candidates.map(candName),
+          adapted: null,
+          skippedReason: 'no candidate matched tools/list inventory',
+        };
+        return;
+      }
+    } else {
+      candidates = probe.candidates.slice();
+    }
+    const attempted = [];
+    for (const candidate of candidates) {
+      const name = candName(candidate);
+      attempted.push(name);
+      const response = await quiet(name, () => callTool(name, candArgs(candidate)));
       if (response != null) {
         let adapted;
         try { adapted = probe.adapt(response); }
         catch (_) { adapted = null; }
         probeResults[probe.name] = {
-          tool: candidate,
-          attempted: probe.candidates.slice(0, probe.candidates.indexOf(candidate) + 1),
+          tool: name,
+          attempted: attempted.slice(),
           adapted,
           rawSize: JSON.stringify(response).length,
         };
         return;
       }
     }
-    // None of the candidates responded — record that we tried.
-    probeResults[probe.name] = { tool: null, attempted: probe.candidates.slice(), adapted: null };
+    probeResults[probe.name] = { tool: null, attempted, adapted: null };
   }));
 
-  return { health, topology, anomaliesActive, baselinesData, probeResults, errors };
+  // ----------------------------------------------------------------
+  // Version probes — authoritative live version capture.
+  //
+  // backend_capabilities tells us what the MCP SUPPORTS (e.g. "metrics
+  // skill, VictoriaMetrics, must=1.x"). That's a policy range, not a
+  // live truth. These probes call canonical version-revealing endpoints
+  // on the actual backends so the resulting telemetry.backends[] entry
+  // carries `version.declared = <live>` — the real string the cluster
+  // is running.
+  //
+  // Each probe maps to (product, value-extractor). Spec v1.2 §VersionSpec
+  // pinned `declared` as the live value with `min` carrying the policy
+  // floor — so we slot the live version into `declared` and let the
+  // backend_capabilities policy live alongside.
+  // ----------------------------------------------------------------
+  const liveVersions = {};
+
+  // Grafana — grafana_health returns {version, commit, database, orgId}.
+  if (discoveredToolNames.has('grafana_health')) {
+    const r = await quiet('grafana_health', () => callTool('grafana_health'));
+    if (r && typeof r.version === 'string') {
+      liveVersions.grafana = { declared: r.version, commit: r.commit || null, source: 'grafana_health' };
+    }
+  }
+
+  // VictoriaMetrics — query the `vm_app_version` metric; its `short_version`
+  // label is the canonical live version (e.g. "v1.113.0"). For Prometheus
+  // installs the same approach works via `prometheus_build_info` whose
+  // `version` label carries the build version.
+  if (discoveredToolNames.has('metrics_query')) {
+    const vm = await quiet('metrics_query.vm_app_version',
+      () => callTool('metrics_query', { query: 'vm_app_version' }));
+    const vmSeries = vm?.result?.[0]?.metric;
+    if (vmSeries) {
+      const declared = vmSeries.short_version || vmSeries.version || null;
+      if (declared) {
+        liveVersions.victoriametrics = {
+          declared,
+          fullTag:    vmSeries.version || null,
+          source:     'metrics_query/vm_app_version',
+        };
+      }
+    } else {
+      // Fall back to Prometheus build info on installs that AREN'T
+      // VictoriaMetrics. The metric has labels `{version, revision,
+      // branch, goversion}` per Prometheus convention.
+      const prom = await quiet('metrics_query.prometheus_build_info',
+        () => callTool('metrics_query', { query: 'prometheus_build_info' }));
+      const promSeries = prom?.result?.[0]?.metric;
+      if (promSeries && typeof promSeries.version === 'string') {
+        liveVersions.prometheus = {
+          declared: promSeries.version,
+          revision: promSeries.revision || null,
+          source:   'metrics_query/prometheus_build_info',
+        };
+      }
+    }
+  }
+
+  // Compute unmatched tool names — tools the MCP advertises that we
+  // DON'T have a probe pattern for. These are the leading edge: every
+  // unmatched name is a potential probe candidate to add. Surface them
+  // so engineers can see what's reachable but not yet wired into the
+  // canonical pack.
+  const allMatchedNames = new Set(
+    Object.values(probeResults)
+      .map(r => r.tool)
+      .filter(Boolean)
+      .concat(['system_health', 'system_topology', 'anomalies_active', 'anomalies_baselines'])
+  );
+  // Version probes count as "wired" too — surface them so they don't
+  // show up as "not yet probed" in the unmatched panel.
+  if (liveVersions.grafana) allMatchedNames.add('grafana_health');
+  if (liveVersions.victoriametrics || liveVersions.prometheus) allMatchedNames.add('metrics_query');
+  const unmatchedTools = discoveredTools.filter(t => !allMatchedNames.has(t.name));
+
+  return {
+    health, topology, anomaliesActive, baselinesData,
+    probeResults, errors,
+    discoveredTools,            // full list from tools/list (or empty if unsupported)
+    unmatchedTools,             // tools the MCP exposes that we don't probe yet
+    capabilities,               // parsed backend_capabilities inventory (or null)
+    liveVersions,               // { <product>: { declared, ...meta } } from authoritative endpoints
+  };
 }
 
 // Convenience entrypoint used by the CLI + the server: end-to-end build,

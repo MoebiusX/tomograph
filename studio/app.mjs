@@ -64,6 +64,12 @@ const state = {
   // are hidden from their bucket; resolved findings render as resolved.
   tracePrefs: { suppressed: [], resolved: [] },
   traceOpen: { aligned: false, declaredNotVerified: true, verifiedNotDeclared: true, stale: true },
+  // Per-layer Expand toggle — flips between high-level artefacts (default)
+  // and full inventory. L2 expand reveals metric_inventory entries (METRIC-NN)
+  // discovered from the live MCP; L3 expand reveals per-dashboard PANEL-NN
+  // bindings. Persisted so the user's choice survives refresh.
+  expandL2: false,
+  expandL3: false,
   // Secondary layer filter chips (only visible on view='layers').
   // 'all' stacks every layer; the layer ids narrow to one.
   layerFilter: 'all',
@@ -182,6 +188,7 @@ const PERSIST_FIELDS = [
   'compileGroup', 'compileFlavor', 'compileArtifact',
   'compileGroupB', 'compileFlavorB', 'compileArtifactB',
   'tracePrefs',
+  'expandL2', 'expandL3',
 ];
 const persistence = {
   _suspended: true,  // boot-phase guard — flipped to false once rehydrate finishes
@@ -246,6 +253,8 @@ async function rehydrateFromPersistence() {
       resolved:   Array.isArray(saved.tracePrefs.resolved)   ? saved.tracePrefs.resolved   : [],
     };
   }
+  if (typeof saved.expandL2 === 'boolean') state.expandL2 = saved.expandL2;
+  if (typeof saved.expandL3 === 'boolean') state.expandL3 = saved.expandL3;
 
   // Make sure the picker can label an archived example by pushing the
   // catalog-entry shape into state.catalog (same trick renderPackBSelect uses).
@@ -356,8 +365,14 @@ function renderPackBSelect() {
     if (!newId) {
       // User cleared Pack B — back to single-pack focus.
       state.viewFocus = 'a';
-      if (state.view === 'compare' || state.view === 'atlas' || state.view === 'traceability') {
+      // Atlas works in single-pack mode (Strata / Periodic / Skyline /
+      // Arbor), so it stays. Compare + Traceability are cross-pack only —
+      // fall back to Layers.
+      if (state.view === 'compare' || state.view === 'traceability') {
         state.view = 'layers';
+      }
+      if (state.view === 'atlas' && CROSS_PACK_VARIANTS.has(state.atlasVariant)) {
+        state.atlasVariant = 'strata';
       }
       applyModeChrome();
       renderTabs();
@@ -599,8 +614,13 @@ function renderPrimaryViewNav() {
     ...(hasB ? [
       { id: 'compare',     label: 'Compare',     hint: 'Side-by-side per-layer comparison of PACK A vs PACK B.' },
       { id: 'traceability',label: 'Traceability',hint: 'Repo vs live: aligned / declared-not-verified / verified-not-declared / stale.' },
-      { id: 'atlas',       label: 'Atlas',       hint: 'Cross-pack atlas variants — Stratigraphy, Periodic, Constellation, Skyline, Transit, Arbor.' },
     ] : []),
+    // Atlas is available in single-pack mode too — Stratigraphy, Periodic,
+    // Skyline, and Arbor all work on a single pack (Arbor especially is a
+    // dependency-discovery tool that doesn't need a second pack). The
+    // cross-pack variants (Constellation morph, Transit interchanges)
+    // surface in the variant picker only when Pack B is loaded.
+    { id: 'atlas',       label: 'Atlas',       hint: 'Visual atlases — Stratigraphy, Periodic, Skyline, Arbor (single-pack) · Constellation, Transit (cross-pack).' },
     { id: 'schema',     label: 'Schema',     hint: 'Maturity score + canonical schema view.' },
   ];
   const active = state.view || 'layers';
@@ -727,26 +747,56 @@ function renderSection(def, items, opts = {}) {
   section.className = 'section';
   section.dataset.layer = def.id;
 
+  // Expand toggle: L2 and L3 layers carry "expand-level" artefacts
+  // (metric inventory, dashboard panels) which the user prior prototype
+  // surfaced behind a checkbox. Default-collapsed so the high-level
+  // surface stays readable; flip to see everything.
+  const expandableLayer = (def.id === 'L2' || def.id === 'L3');
+  const expandKey = def.id === 'L2' ? 'expandL2' : (def.id === 'L3' ? 'expandL3' : null);
+  const expandOn = expandKey ? !!state[expandKey] : false;
+  const expandItems = items.filter(a => a.expand);
+  const baseItems   = items.filter(a => !a.expand);
+  const visible = (expandableLayer && !expandOn) ? baseItems : items;
+
   const head = document.createElement('div');
   head.className = 'section-head';
+  const countLabel = expandableLayer && expandItems.length
+    ? `${visible.length} of ${items.length} artefact${items.length === 1 ? '' : 's'}`
+    : `${items.length} artefact${items.length === 1 ? '' : 's'}`;
   head.innerHTML = `
     <span class="section-num">${def.num}</span>
     <span class="section-name">${escapeHtml(opts.subtitle || def.name)}</span>
-    <span class="section-count">${items.length} artefact${items.length === 1 ? '' : 's'}</span>
+    <span class="section-count">${countLabel}</span>
   `;
+  if (expandableLayer && expandItems.length) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'section-expand-toggle' + (expandOn ? ' is-on' : '');
+    toggle.title = def.id === 'L2'
+      ? `Toggle the metric inventory — ${expandItems.length} discovered metric${expandItems.length === 1 ? '' : 's'} from live MCP`
+      : `Toggle dashboard panels — ${expandItems.length} panel binding${expandItems.length === 1 ? '' : 's'}`;
+    toggle.innerHTML = `<span class="section-expand-glyph" aria-hidden="true">${expandOn ? '⊟' : '⊞'}</span> ${expandOn ? 'Collapse' : 'Expand'} <span class="section-expand-count">+${expandItems.length}</span>`;
+    toggle.onclick = () => {
+      state[expandKey] = !state[expandKey];
+      renderMainView();
+    };
+    head.appendChild(toggle);
+  }
   section.appendChild(head);
 
-  if (!items.length) {
+  if (!visible.length) {
     const empty = document.createElement('div');
     empty.className = 'empty';
-    empty.textContent = 'no artefacts declared in this section';
+    empty.textContent = expandableLayer && expandItems.length
+      ? 'collapsed — click Expand to reveal'
+      : 'no artefacts declared in this section';
     section.appendChild(empty);
     return section;
   }
 
   const grid = document.createElement('div');
   grid.className = 'section-grid';
-  for (const a of items) grid.appendChild(renderCard(a, def, opts.sublayerKey));
+  for (const a of visible) grid.appendChild(renderCard(a, def, opts.sublayerKey));
   section.appendChild(grid);
   return section;
 }
@@ -2696,13 +2746,17 @@ async function loadPackB() {
   state.compileContentB = null;
 }
 
-function renderAtlasView(view) {
-  if (!state.compareBId) state.compareBId = defaultCompareB();
-  if (!state.compareBEnv) state.compareBEnv = defaultEnvFor(state.compareBId);
+// Variants that need both packs (animate / interchange between them).
+// Everything else works on a single pack — Arbor especially is a
+// dependency-discovery tool you don't need to compare to use.
+const CROSS_PACK_VARIANTS = new Set(['constellation', 'transit']);
 
-  if (!state.compareBId) {
-    view.innerHTML = '<div class="placeholder">Need at least two packs in the catalog to render an atlas.</div>';
-    return;
+function renderAtlasView(view) {
+  const hasB = !!state.packB;
+  // If the user is on a cross-pack variant but Pack B isn't loaded,
+  // fall back to a single-pack variant so the view stays usable.
+  if (!hasB && CROSS_PACK_VARIANTS.has(state.atlasVariant)) {
+    state.atlasVariant = 'strata';
   }
 
   const section = document.createElement('section');
@@ -2714,7 +2768,7 @@ function renderAtlasView(view) {
   head.className = 'section-head';
   head.innerHTML = `
     <span class="section-num">ATL</span>
-    <span class="section-name">${escapeHtml(meta.title)}</span>
+    <span class="section-name">${escapeHtml(meta.title)}${hasB ? '' : ' · single pack'}</span>
     <span class="section-count">${escapeHtml(state.atlasVariant)}</span>
   `;
   section.appendChild(head);
@@ -2724,10 +2778,14 @@ function renderAtlasView(view) {
   sub.textContent = meta.lede;
   section.appendChild(sub);
 
-  // Variant selector pills
+  // Variant selector pills. Cross-pack variants are filtered out when
+  // Pack B isn't loaded — the picker only shows what'll actually work.
   const pills = document.createElement('div');
   pills.className = 'atlas-variants';
-  for (const v of ATLAS_VARIANTS) {
+  const availableVariants = hasB
+    ? ATLAS_VARIANTS
+    : ATLAS_VARIANTS.filter(v => !CROSS_PACK_VARIANTS.has(v));
+  for (const v of availableVariants) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'atlas-variant' + (v === state.atlasVariant ? ' is-active' : '');
@@ -2741,8 +2799,8 @@ function renderAtlasView(view) {
   }
   section.appendChild(pills);
 
-  // Pack-B + env-B + swap (same controls as compare view)
-  section.appendChild(renderComparePicker());
+  // Pack-B + env-B + swap. Only useful in compare mode — skip in single.
+  if (hasB) section.appendChild(renderComparePicker());
 
   // Stage for SVG
   const stage = document.createElement('div');
@@ -3495,7 +3553,7 @@ async function refresh() {
 async function boot() {
   try { await loadCatalog(); }
   catch (e) {
-    document.body.innerHTML = `<pre class="json" style="margin:48px;max-width:800px">Failed to reach the studio API.\n\n${escapeHtml(e.message)}\n\nMake sure the server is running: \`node server/index.mjs\` or \`npm run serve\`.</pre>`;
+    document.body.innerHTML = `<pre class="json" style="margin:48px;max-width:800px">Failed to reach Tomograph's API.\n\n${escapeHtml(e.message)}\n\nMake sure the server is running: \`node server/index.mjs\` or \`npm run serve\`.</pre>`;
     return;
   }
 
@@ -3517,7 +3575,12 @@ async function boot() {
     state.compileCatalogB = null;
     state.compileContentB = null;
     state.viewFocus = 'a';
-    if (state.view === 'compare' || state.view === 'atlas') state.view = 'layers';
+    // Compare + Traceability are cross-pack only; Atlas stays available
+    // in single mode (Strata / Periodic / Skyline / Arbor work on one pack).
+    if (state.view === 'compare' || state.view === 'traceability') state.view = 'layers';
+    if (state.view === 'atlas' && CROSS_PACK_VARIANTS.has(state.atlasVariant)) {
+      state.atlasVariant = 'strata';
+    }
     applyModeChrome();
     renderPackBSelect();
     renderTabs();
@@ -3650,7 +3713,7 @@ function setupResetButton() {
   const btn = $('#reset-btn');
   if (!btn) return;
   btn.onclick = async () => {
-    const ok = confirm('Reset the studio?\n\n' +
+    const ok = confirm('Reset Tomograph?\n\n' +
       'This will:\n' +
       '  • drop every uploaded / crawled / drafted pack from the server\n' +
       '  • clear saved view + filter + focus + trace preferences from localStorage\n' +
@@ -3713,13 +3776,13 @@ function renderHomeView() {
 
   view.innerHTML = `
     <section class="home-hero">
-      <div class="home-hero-eyebrow">canonical observability · spec v1.2</div>
+      <div class="home-hero-eyebrow">tomograph · the observability compiler</div>
       <h2 class="home-hero-title">Map your observability platform in seconds.</h2>
       <p class="home-hero-lede">
-        Connect to any OpenTelemetry MCP server. The studio interrogates it
+        Connect to any OpenTelemetry MCP server. Tomograph interrogates it
         for backends, topology, baselines, and anomalies — and renders a
-        complete, conformant canonical v1.2 manifest you can compile and
-        deploy.
+        complete, conformant ObservabilityPack v1.2 manifest you can compile
+        and deploy. Trust what your eyes see.
       </p>
 
       <div class="home-mcp-card">
@@ -3769,6 +3832,87 @@ function renderHomeView() {
             <span class="home-alt-sub">walks Prom / OTel / Grafana / AM configs</span>
           </button>
         </div>
+      </div>
+
+      <div class="home-cycle">
+        <svg class="home-cycle-svg" viewBox="0 0 960 640" xmlns="http://www.w3.org/2000/svg" role="img" font-family="'IBM Plex Sans', system-ui, sans-serif">
+          <title>The Möbius Loop — Tomograph's continuous assurance cycle</title>
+          <desc>Four stages — Declare, Compile, Observe, Verify — arranged as a closed loop around a single twisted Möbius ribbon, signifying one continuous surface with no first or last step.</desc>
+
+          <defs>
+            <pattern id="cyc-dots" width="24" height="24" patternUnits="userSpaceOnUse">
+              <circle cx="2" cy="2" r="1" fill="#1e2a3b" opacity="0.55"/>
+            </pattern>
+            <linearGradient id="cyc-mobius-grad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#5dcaa5"/>
+              <stop offset="0.34" stop-color="#54b3d4"/>
+              <stop offset="0.67" stop-color="#8f86e8"/>
+              <stop offset="1" stop-color="#e0703f"/>
+            </linearGradient>
+            <marker id="cyc-ah" markerWidth="9" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+              <path d="M0,0 L8,3 L0,6 Z" fill="#5a6b82"/>
+            </marker>
+          </defs>
+
+          <!-- panel -->
+          <rect x="12" y="12" width="936" height="616" rx="18" fill="#0e1622" stroke="#21314a" stroke-width="1.5"/>
+          <rect x="12" y="12" width="936" height="616" rx="18" fill="url(#cyc-dots)"/>
+
+          <!-- header -->
+          <line x1="330" y1="50" x2="392" y2="50" stroke="#33485f" stroke-width="1"/>
+          <text x="480" y="55" text-anchor="middle" font-size="13" letter-spacing="4" font-weight="600" fill="#7fa9a0">THE MÖBIUS LOOP</text>
+          <line x1="568" y1="50" x2="630" y2="50" stroke="#33485f" stroke-width="1"/>
+
+          <!-- intro -->
+          <g font-family="'Newsreader', Georgia, serif" fill="#aab4c2" font-size="15.5" text-anchor="middle">
+            <text x="480" y="94">Declare once. Compile the platform. Observe it live. Verify the image still matches the system —</text>
+            <text x="480" y="118">then begin again. Like the strip it's named for, the loop is one continuous surface:</text>
+            <text x="480" y="142">no first step, no last, and nowhere for drift to hide.</text>
+          </g>
+
+          <!-- central Möbius ribbon (lemniscate) -->
+          <path d="M 480 399 C 540 329 630 329 630 399 C 630 469 540 469 480 399 C 420 329 330 329 330 399 C 330 469 420 469 480 399 Z"
+                fill="none" stroke="url(#cyc-mobius-grad)" stroke-width="16" stroke-linecap="round" opacity="0.85"/>
+          <path d="M 480 399 C 540 329 630 329 630 399 C 630 469 540 469 480 399 C 420 329 330 329 330 399 C 330 469 420 469 480 399 Z"
+                fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.10"/>
+
+          <!-- connectors (clockwise) — mirror-symmetric about x=480.
+               All four arrows attach to nodes at the same 51px inset
+               from the corner: x=706 on COMPILE (left side), x=254 on
+               VERIFY (right side), and the matching offsets on
+               DECLARE + OBSERVE for the corner-exit arrows. -->
+          <path d="M 588 276 Q 690 300 706 358" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
+          <path d="M 706 442 Q 690 502 590 522" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
+          <path d="M 370 522 Q 270 502 254 442" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
+          <!-- closing arc: dashed return = "and again" -->
+          <path d="M 254 358 Q 270 300 372 276" fill="none" stroke="#4a5b72" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#cyc-ah)"/>
+          <text x="207" y="312" font-size="15" fill="#7fa9a0">↺</text>
+          <text x="192" y="300" font-family="'Newsreader', Georgia, serif" font-size="11" font-style="italic" fill="#6f7d90">begin again</text>
+
+          <!-- node: DECLARE (green) -->
+          <rect x="375" y="212" width="210" height="76" rx="12" fill="#141d2c" stroke="#5dcaa5" stroke-width="2"/>
+          <text x="480" y="242" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">DECLARE</text>
+          <text x="480" y="261" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">generate the pack</text>
+          <text x="480" y="277" text-anchor="middle" font-size="10.5" fill="#6f7d90">one service · one contract</text>
+
+          <!-- node: COMPILE (purple) -->
+          <rect x="655" y="362" width="210" height="76" rx="12" fill="#141d2c" stroke="#8f86e8" stroke-width="2"/>
+          <text x="760" y="392" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">COMPILE</text>
+          <text x="760" y="411" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">packc → every backend</text>
+          <text x="760" y="427" text-anchor="middle" font-size="10.5" fill="#6f7d90">Prom · Grafana · OTel · AM</text>
+
+          <!-- node: OBSERVE (cyan) -->
+          <rect x="375" y="510" width="210" height="76" rx="12" fill="#141d2c" stroke="#54b3d4" stroke-width="2"/>
+          <text x="480" y="540" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">OBSERVE</text>
+          <text x="480" y="559" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">live signal via MCP</text>
+          <text x="480" y="575" text-anchor="middle" font-size="10.5" fill="#6f7d90">"declared" becomes "verified"</text>
+
+          <!-- node: VERIFY (amber) -->
+          <rect x="95" y="362" width="210" height="76" rx="12" fill="#141d2c" stroke="#e0703f" stroke-width="2"/>
+          <text x="200" y="392" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">VERIFY</text>
+          <text x="200" y="411" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">scan · score · attest</text>
+          <text x="200" y="427" text-anchor="middle" font-size="10.5" fill="#6f7d90">does the image still hold?</text>
+        </svg>
       </div>
     </section>
   `;
@@ -3855,12 +3999,51 @@ function renderHomeMcpCapabilities(out, host) {
   const anomalies = parseInt(ann['mcp.activeAnomalies'] || '0', 10);
   const backends = s.backends ?? 0;
 
-  // Recognised vs unrecognised tools. Surfacing this honestly is part
-  // of the studio's integrity story.
+  // tools/list inventory: the full set of tools the MCP advertised, and the
+  // subset Tomograph doesn't yet have a probe pattern for. These come from
+  // the post-rename fetcher that calls `tools/list` instead of guessing.
+  const toolsExposed   = (ann['mcp.toolsExposed']   || '').split(',').filter(Boolean);
+  const toolsUnmatched = (ann['mcp.toolsUnmatched'] || '').split(',').filter(Boolean);
+
+  // backend_capabilities inventory: the canonical skill → backend →
+  // product → version matrix the MCP exposes. When present, render the
+  // full version-gating story below the 4-card grid so the user sees
+  // EVERYTHING their MCP can speak to before drafting a pack.
+  const capabilities = out.summary?.capabilities || null;
+
+  // Live version captures — authoritative version strings pulled from
+  // grafana_health / metrics_query vm_app_version etc. Threaded into
+  // the capability chips so the demo audience sees ground truth, not
+  // just the policy band.
+  const liveVersions = {};
+  for (const [k, v] of Object.entries(ann)) {
+    const m = /^mcp\.versions\.([a-z0-9_-]+)$/.exec(k);
+    if (m) liveVersions[m[1]] = v;
+  }
+
+  // Recognised vs unrecognised tools (over what we CALLED, not what was
+  // advertised). Tracks the canonical otel-mcp-server tool catalog
+  // (metrics_*, grafana_*, alertmanager_*, pipeline_*) plus the generic
+  // system + zk-proof tools.
   const knownTools = new Set([
+    // generic / system
     'system_health', 'system_topology',
     'anomalies_active', 'anomalies_baselines',
-    'zk_stats', 'zk_solvency',
+    // zk-proofs skill
+    'zk_proof_get', 'zk_proof_verify', 'zk_solvency', 'zk_stats',
+    // metrics skill (Prometheus)
+    'metrics_query', 'metrics_query_range', 'metrics_targets',
+    'metrics_alerts', 'metrics_metadata', 'metrics_label_values',
+    // grafana skill
+    'grafana_health', 'grafana_datasources', 'grafana_datasource_health',
+    'grafana_datasource_query', 'grafana_dashboards_search',
+    'grafana_dashboard_get', 'grafana_folders', 'grafana_alert_rules',
+    'grafana_alerts', 'grafana_contact_points',
+    // alertmanager skill
+    'alertmanager_alerts', 'alertmanager_groups', 'alertmanager_silences',
+    'alertmanager_status',
+    // pipeline skill
+    'pipeline_alloy', 'pipeline_beats', 'pipeline_fluentbit', 'pipeline_vector',
   ]);
   const recognised   = tools.filter(t => knownTools.has(t));
   const unrecognised = tools.filter(t => !knownTools.has(t));
@@ -3882,10 +4065,11 @@ function renderHomeMcpCapabilities(out, host) {
       </div>
       <div class="home-mcp-cap-grid">
         <div class="home-mcp-cap" data-cap="tools">
-          <div class="home-mcp-cap-num">${tools.length}</div>
-          <div class="home-mcp-cap-key">tools called</div>
-          <div class="home-mcp-cap-detail">${recognised.length ? recognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ') : '<em>unrecognised set</em>'}</div>
-          ${unrecognised.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-unknown">+${unrecognised.length} unrecognised: ${unrecognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
+          <div class="home-mcp-cap-num">${toolsExposed.length || tools.length}</div>
+          <div class="home-mcp-cap-key">${toolsExposed.length ? 'tools exposed' : 'tools called'}</div>
+          <div class="home-mcp-cap-detail">${recognised.length ? recognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ') : '<em>none recognised</em>'}</div>
+          ${toolsUnmatched.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-unknown">+${toolsUnmatched.length} not yet probed: ${toolsUnmatched.slice(0, 8).map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}${toolsUnmatched.length > 8 ? ` <em>+${toolsUnmatched.length - 8} more</em>` : ''}</div>` : ''}
+          ${unrecognised.length && !toolsUnmatched.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-unknown">+${unrecognised.length} unrecognised: ${unrecognised.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
           ${failed.length ? `<div class="home-mcp-cap-detail home-mcp-cap-detail-fail">⚠ failed: ${failed.map(t => `<code>${escapeHtml(t)}</code>`).join(' ')}</div>` : ''}
         </div>
         <div class="home-mcp-cap" data-cap="services">
@@ -3904,11 +4088,85 @@ function renderHomeMcpCapabilities(out, host) {
           <div class="home-mcp-cap-detail">${baselines} baseline${baselines === 1 ? '' : 's'} computed<div class="home-mcp-cap-meta">from recent telemetry</div></div>
         </div>
       </div>
+      ${renderCapabilitiesPanel(capabilities, liveVersions)}
       ${out.summary?.warnings?.length ? `
         <div class="home-mcp-gaps">
           <div class="home-mcp-gaps-head">⚠ Honest gaps</div>
           <ul>${out.summary.warnings.slice(0, 5).map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul>
         </div>` : ''}
+    </div>
+  `;
+}
+
+// Render the skill → backend → product → version matrix the MCP
+// exposes via `backend_capabilities`. The signal-class skills
+// (metrics/logs/traces/profiles + alerting/dashboards) lead because
+// they're what drive Tomograph's L1–L4 projection; the rest follow
+// in a compact tail.
+//
+// When `liveVersions` carries an authoritative live version for a
+// product (e.g. {grafana: "12.4.0", victoriametrics: "v1.113.0"} from
+// grafana_health + metrics_query), the chip flips to "live mode": the
+// live version is shown in bold instead of the policy must[0], and a
+// "● LIVE" indicator hangs off the chip so the audience can see at a
+// glance which versions are attested vs which are inferred from
+// capabilities.
+function renderCapabilitiesPanel(capabilities, liveVersions = {}) {
+  if (!capabilities || !Array.isArray(capabilities.inventory) || !capabilities.inventory.length) return '';
+
+  // The spec's Signal enum order — used to group + sort entries.
+  const SIGNAL_SKILLS = ['metrics', 'logs', 'traces', 'pyroscope', 'alertmanager', 'grafana'];
+  const grouped = new Map();
+  for (const row of capabilities.inventory) {
+    if (!grouped.has(row.skill)) grouped.set(row.skill, []);
+    grouped.get(row.skill).push(row);
+  }
+  const orderedSkills = [
+    ...SIGNAL_SKILLS.filter(s => grouped.has(s)),
+    ...[...grouped.keys()].filter(s => !SIGNAL_SKILLS.includes(s)).sort(),
+  ];
+
+  const liveCount = Object.keys(liveVersions).length;
+
+  const rows = orderedSkills.map(skill => {
+    const backends = grouped.get(skill);
+    const chips = backends.map(b => {
+      const product = b.product || b.backend;
+      const live = liveVersions[product];
+      const policyVer = (b.versions?.must || [])[0] || '';
+      const isLive = !!live;
+      const ver = isLive ? live : policyVer;
+      const liveTooltip = isLive ? ` · live=${live}` : '';
+      return `<span class="home-mcp-skill-chip${isLive ? ' is-live' : ''}" title="${escapeHtml(b.backend)} · must=${escapeHtml((b.versions?.must||[]).join(','))}${liveTooltip}">
+        <strong>${escapeHtml(product)}</strong>${ver ? ` <em>${escapeHtml(ver)}</em>` : ''}${isLive ? `<span class="home-mcp-skill-chip-live" aria-label="live version">●&nbsp;LIVE</span>` : ''}
+      </span>`;
+    }).join('');
+    return `
+      <div class="home-mcp-skill-row" data-skill="${escapeHtml(skill)}">
+        <div class="home-mcp-skill-name">${escapeHtml(skill)}</div>
+        <div class="home-mcp-skill-chips">${chips}</div>
+      </div>
+    `;
+  }).join('');
+
+  const liveSummary = liveCount
+    ? ` · <span class="home-mcp-skills-meta-live">${liveCount} live version${liveCount === 1 ? '' : 's'}</span>`
+    : '';
+
+  return `
+    <div class="home-mcp-skills">
+      <div class="home-mcp-skills-head">
+        <div class="home-mcp-skills-title">
+          Backend capabilities
+          <span class="home-mcp-skills-meta">
+            ${capabilities.skillCount} skill${capabilities.skillCount === 1 ? '' : 's'}
+            · ${capabilities.backendCount} backend${capabilities.backendCount === 1 ? '' : 's'}
+            · gating <code>${escapeHtml(capabilities.gatingMode)}</code>${liveSummary}
+          </span>
+        </div>
+        <div class="home-mcp-skills-sub">From <code>backend_capabilities</code> — every skill the MCP can speak to, the products it implements, and the version policy it enforces. <strong>LIVE</strong> chips carry an authoritative version captured from the backend itself.</div>
+      </div>
+      <div class="home-mcp-skills-body">${rows}</div>
     </div>
   `;
 }
