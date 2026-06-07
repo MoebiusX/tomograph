@@ -3127,120 +3127,200 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
   };
 }
 
+// Diagnose view — rendered as a compliance report, not a pitch deck.
+// Density and evidence are the design language; every row encodes
+// observed vs expected. No giant typography, no decorative tiles.
+// Reads like an audit findings document because that's what it IS.
 function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const wrap = document.createElement('div');
-  wrap.className = 'diagnostic-grade-block';
+  wrap.className = 'diag-report';
 
-  const critRows = (criteria) => criteria.map(c => `
-    <li class="diagnostic-crit ${c.pass ? 'is-pass' : 'is-fail'}" data-key="${escapeHtml(c.key)}">
-      <div class="diagnostic-crit-pip">${c.pass ? '✓' : '✗'}</div>
-      <div class="diagnostic-crit-body">
-        <div class="diagnostic-crit-head">
-          <span class="diagnostic-crit-label">${escapeHtml(c.label)}</span>
-          <span class="diagnostic-crit-sub">${escapeHtml(c.sub)}</span>
-        </div>
-        <div class="diagnostic-crit-detail">${escapeHtml(c.detail)}</div>
-      </div>
-    </li>
-  `).join('');
-
-  // The MAIN question is always pack-wide — "is this observability
-  // diagnostic-grade?" Lens-scoped product benchmarks ("is your
-  // Grafana up to snuff?") live below as drill-down; they only
-  // matter once the main question is answered well.
-  const drillHint = (lens && lens !== 'all')
-    ? `<span class="diagnostic-grade-drill-hint">Lens active: <strong>${escapeHtml((LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens))}</strong> — affects the matrix below, not this verdict.</span>`
-    : '';
-
-  // Coverage sub-card framing depends on whether Pack B is THE
-  // Observability Contract or a generic reference pack.
   const cov = diagnostic.coverage;
   const trust = diagnostic.trust;
   const overall = diagnostic.overall;
-  const coverageSubtitle = cov.contractMode
-    ? `vs the <strong>Observability Contract</strong>${packB ? ` (${escapeHtml(packB.meta?.name || packB.id || 'reference')})` : ''}`
-    : `vs <strong>${escapeHtml(cov.contractLabel || 'reference')}</strong>`;
 
-  // Verdict word per sub-card — small, used to communicate the
-  // sub-card's own grade without numbers fighting the overall tile.
-  const subVerdict = (passed, total) => {
-    const ratio = total === 0 ? 0 : passed / total;
-    if (ratio >= 0.85) return { word: 'Strong',  cls: 'is-strong'  };
-    if (ratio >= 0.50) return { word: 'Partial', cls: 'is-partial' };
-    if (ratio >  0)    return { word: 'Thin',    cls: 'is-thin'    };
-                       return { word: 'Critical', cls: 'is-critical' };
-  };
-  const covVerdict   = subVerdict(cov.passed, cov.total);
-  const trustVerdict = subVerdict(trust.passed, trust.total);
+  const pct = (passed, total) => total === 0 ? 0 : Math.round((passed / total) * 100);
+  const overallPct = pct(overall.passed, overall.total);
+  const covPct   = pct(cov.passed, cov.total);
+  const trustPct = pct(trust.passed, trust.total);
 
-  // When Pack A has no MCP source at all, both Trust sub-criteria that
-  // depend on live signals fail loudly — surface that as a banner on
-  // the Trust card so the audience reads it as "needs live", not "bad".
-  const trustBanner = trust.hasMcpSource
-    ? ''
-    : `<div class="diagnostic-sub-banner">
-         Pack A has no live signal — drift &amp; freshness require an MCP-drafted or
-         live-refreshed pack to verify.
-       </div>`;
+  // Single binary verdict in audit terms. No "Almost diagnostic-grade",
+  // no "Critical" — just PASS or FAIL with the threshold stated.
+  const PASS_THRESHOLD = 7; // 7 of 8 to pass — graded against contract
+  const passes = overall.passed >= PASS_THRESHOLD;
+  const status = passes ? 'PASS' : 'FAIL';
+
+  const contractName = packB?.meta?.name || packB?.metadata?.name || packB?.id || '—';
+  const contractMode = cov.contractMode;
+
+  // Compact mono row builder for the summary block.
+  const summaryRow = (label, value, hint, state) => `
+    <tr class="diag-summary-row ${state || ''}">
+      <td class="diag-summary-key">${escapeHtml(label)}</td>
+      <td class="diag-summary-val">${value}</td>
+      <td class="diag-summary-hint">${hint || ''}</td>
+    </tr>
+  `;
+
+  // Bar chip for percentage fields.
+  const bar = (p) => `
+    <span class="diag-bar"><span class="diag-bar-fill" style="width:${Math.max(0,Math.min(100,p))}%"></span></span>
+  `;
+
+  // ---------- Criterion table (2A or 2B) ----------
+  // One row per criterion. Tight. Pip · name · observed · expected.
+  const critTable = (criteria) => `
+    <table class="diag-crit-table">
+      <thead>
+        <tr>
+          <th class="c-pip"></th>
+          <th class="c-name">Criterion</th>
+          <th class="c-obs">Observed</th>
+          <th class="c-exp">Expected</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${criteria.map(c => `
+          <tr class="diag-crit ${c.pass ? 'is-pass' : 'is-fail'}" data-key="${escapeHtml(c.key)}">
+            <td class="c-pip">${c.pass ? '✓' : '✗'}</td>
+            <td class="c-name">${escapeHtml(c.label)}</td>
+            <td class="c-obs">${escapeHtml(c.detail)}</td>
+            <td class="c-exp">${escapeHtml(c.sub)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+
+  // ---------- Evidence ledger — the "where the data came from" audit trail ----------
+  // Every claim above is backed by a specific pack field; this table
+  // names the field, what we expected, what we observed, and the verdict.
+  // For an audit tool this is the most important section, not the least.
+  const evidenceRows = [];
+  // Collect from criteria themselves — each criterion encodes an evidence assertion.
+  const C = (key, label) => cov.criteria.find(c => c.key === key) || trust.criteria.find(c => c.key === key);
+  const rowFor = (field, exp, obs, pass) => ({
+    field, exp, obs, pass,
+  });
+  evidenceRows.push(rowFor(
+    'spec.telemetry.backends[].signal',
+    'metrics + logs + traces (≥ 3 of 4)',
+    C('multi-modal')?.detail || '—',
+    C('multi-modal')?.pass));
+  evidenceRows.push(rowFor(
+    'spec.otel.sdk.propagators',
+    'includes tracecontext',
+    C('correlated')?.detail || '—',
+    C('correlated')?.pass));
+  evidenceRows.push(rowFor(
+    'spec.slos[].objective + spec.baselines',
+    '≥ 1 SLO with numeric objective · MTTD/MTTR baselines declared',
+    C('calibrated')?.detail || '—',
+    C('calibrated')?.pass));
+  evidenceRows.push(rowFor(
+    'posture matrix · 4 layers × 10 mechanisms',
+    'average ≥ 50% observed',
+    C('comprehensive')?.detail || '—',
+    C('comprehensive')?.pass));
+  evidenceRows.push(rowFor(
+    'spec.remediation[]',
+    '≥ 1 remediation runbook declared',
+    C('actionable')?.detail || '—',
+    C('actionable')?.pass));
+  evidenceRows.push(rowFor(
+    'spec.validation.chaos_experiments[]',
+    '≥ 1 chaos experiment declared',
+    C('chaos-validated')?.detail || '—',
+    C('chaos-validated')?.pass));
+  evidenceRows.push(rowFor(
+    'metadata.annotations.mcp.probesSucceeded',
+    '≥ 70% of attempted probes return data',
+    C('drift-free')?.detail || '—',
+    C('drift-free')?.pass));
+  evidenceRows.push(rowFor(
+    'metadata.annotations.mcp.refreshedAt',
+    'within last 24h',
+    C('fresh')?.detail || '—',
+    C('fresh')?.pass));
+
+  const evidenceTable = `
+    <table class="diag-evidence-table">
+      <thead>
+        <tr>
+          <th class="e-field">Field</th>
+          <th class="e-exp">Expected</th>
+          <th class="e-obs">Observed</th>
+          <th class="e-status">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${evidenceRows.map(r => `
+          <tr class="${r.pass ? 'is-pass' : 'is-fail'}">
+            <td class="e-field">${escapeHtml(r.field)}</td>
+            <td class="e-exp">${escapeHtml(r.exp)}</td>
+            <td class="e-obs">${escapeHtml(r.obs)}</td>
+            <td class="e-status">${r.pass ? 'PASS' : 'FAIL'}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
 
   wrap.innerHTML = `
-    <div class="diagnostic-grade-question">
-      <span class="diagnostic-grade-eyebrow">THE MAIN QUESTION</span>
-      Is this observability <strong>diagnostic-grade</strong>?
-    </div>
-    <div class="diagnostic-grade-verdict ${overall.verdict.level}">
-      <div class="diagnostic-grade-word">${escapeHtml(overall.verdict.word)}</div>
-      <div class="diagnostic-grade-score">${overall.passed} of ${overall.total} criteria met</div>
-      <div class="diagnostic-grade-split">
-        <span class="diagnostic-grade-split-half">
-          <span class="diagnostic-grade-split-label">Coverage</span>
-          <span class="diagnostic-grade-split-score">${cov.passed}/${cov.total}</span>
+    <header class="diag-report-head">
+      <div class="diag-report-head-line">
+        <span class="diag-report-eyebrow">DIAGNOSTIC GRADE</span>
+        <span class="diag-report-vs">
+          vs ${contractMode ? '<strong>Observability Contract</strong>' : '<strong>' + escapeHtml(contractName) + '</strong>'}
+          ${contractMode ? ' (' + escapeHtml(contractName) + ')' : ''}
         </span>
-        <span class="diagnostic-grade-split-sep">·</span>
-        <span class="diagnostic-grade-split-half">
-          <span class="diagnostic-grade-split-label">Trust</span>
-          <span class="diagnostic-grade-split-score">${trust.passed}/${trust.total}</span>
-        </span>
+        <span class="diag-report-status diag-${passes ? 'pass' : 'fail'}">${status}</span>
       </div>
-    </div>
+      <table class="diag-summary">
+        <colgroup><col><col><col></colgroup>
+        <tbody>
+          ${summaryRow('Score',    `<span class="diag-pct">${overallPct}%</span> <span class="diag-frac">${overall.passed}/${overall.total}</span>`, bar(overallPct))}
+          ${summaryRow('Coverage', `<span class="diag-pct">${covPct}%</span> <span class="diag-frac">${cov.passed}/${cov.total}</span>`,       bar(covPct))}
+          ${summaryRow('Trust',    `<span class="diag-pct">${trustPct}%</span> <span class="diag-frac">${trust.passed}/${trust.total}</span>`, bar(trustPct))}
+          ${summaryRow('Verified', trust.hasMcpSource ? '<span class="diag-yes">YES</span>' : '<span class="diag-no">NO</span>',
+                       trust.hasMcpSource ? 'live signal present' : 'connect MCP or scan live to verify',
+                       trust.hasMcpSource ? '' : 'is-warn')}
+        </tbody>
+      </table>
+    </header>
 
-    <div class="diagnostic-grade-cards">
-      <section class="diagnostic-sub-card diagnostic-sub-coverage">
-        <header class="diagnostic-sub-head">
-          <div class="diagnostic-sub-eyebrow">2A · COVERAGE</div>
-          <h3 class="diagnostic-sub-title">Are we observing the right signals?</h3>
-          <div class="diagnostic-sub-context">${coverageSubtitle}</div>
-          <div class="diagnostic-sub-meta">
-            <span class="diagnostic-sub-tally ${covVerdict.cls}">${escapeHtml(covVerdict.word)}</span>
-            <span class="diagnostic-sub-tally-score">${cov.passed} of ${cov.total} met</span>
-          </div>
-        </header>
-        <ul class="diagnostic-crit-list">${critRows(cov.criteria)}</ul>
-      </section>
+    <section class="diag-section">
+      <header class="diag-section-head">
+        <span class="diag-section-num">2A</span>
+        <span class="diag-section-title">Coverage — are we observing the right signals?</span>
+        <span class="diag-section-meta">${cov.passed}/${cov.total} met · ${covPct}%</span>
+      </header>
+      ${critTable(cov.criteria)}
+    </section>
 
-      <section class="diagnostic-sub-card diagnostic-sub-trust">
-        <header class="diagnostic-sub-head">
-          <div class="diagnostic-sub-eyebrow">2B · TRUST</div>
-          <h3 class="diagnostic-sub-title">Can we trust what the signals show?</h3>
-          <div class="diagnostic-sub-context">live integrity of Pack A</div>
-          <div class="diagnostic-sub-meta">
-            <span class="diagnostic-sub-tally ${trustVerdict.cls}">${escapeHtml(trustVerdict.word)}</span>
-            <span class="diagnostic-sub-tally-score">${trust.passed} of ${trust.total} met</span>
-          </div>
-        </header>
-        ${trustBanner}
-        <ul class="diagnostic-crit-list">${critRows(trust.criteria)}</ul>
-      </section>
-    </div>
+    <section class="diag-section">
+      <header class="diag-section-head">
+        <span class="diag-section-num">2B</span>
+        <span class="diag-section-title">Trust — can we trust what the signals show?</span>
+        <span class="diag-section-meta">${trust.passed}/${trust.total} met · ${trustPct}%</span>
+      </header>
+      ${!trust.hasMcpSource ? `
+        <div class="diag-banner">
+          <span class="diag-banner-key">WARN</span>
+          Pack A carries no live signal. Drift &amp; freshness require an MCP-drafted or live-refreshed pack to verify.
+        </div>
+      ` : ''}
+      ${critTable(trust.criteria)}
+    </section>
 
-    <div class="diagnostic-grade-footnote">
-      <strong>Diagnostic-grade</strong> means: when production breaks, an operator can
-      diagnose <em>why</em> at any layer — not just be told <em>that</em> something broke.
-      The verdict is equal-weighted across <strong>Coverage</strong> (are we observing the
-      right signals, measured against the Observability Contract) and <strong>Trust</strong>
-      (can we trust what the signals show, measured against live evidence).
-      ${drillHint}
-    </div>
+    <section class="diag-section">
+      <header class="diag-section-head">
+        <span class="diag-section-num">⊜</span>
+        <span class="diag-section-title">Evidence — expected vs observed</span>
+        <span class="diag-section-meta">${evidenceRows.filter(r => r.pass).length}/${evidenceRows.length} confirmed</span>
+      </header>
+      ${evidenceTable}
+    </section>
   `;
   return wrap;
 }

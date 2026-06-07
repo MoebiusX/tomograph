@@ -1669,6 +1669,260 @@ a:hover { color: var(--ink); }
 /* ===================== DIAGNOSTIC-GRADE VERDICT =====================
    The CEO question, made answerable. Leads the Benchmark view.
    Six pass/fail criteria with a single-word verdict. */
+/* =============================================================
+   DIAGNOSE — compliance report aesthetic
+   -------------------------------------------------------------
+   Density first, evidence first. No decorative typography, no
+   giant card tiles. The audience is an observability auditor:
+   they want score, coverage, trust, status, and per-row evidence
+   in a single screen they can scan top-to-bottom like a finding
+   sheet. Mono for numbers, serif for prose, tight padding, one
+   accent (red for fail, green for pass) — nothing else.
+   ============================================================= */
+.diag-report {
+  padding: 18px 24px 28px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+  font: 13px/1.5 var(--sans);
+  color: var(--ink-2);
+}
+
+/* ---------- Report header ---------- */
+.diag-report-head {
+  margin-bottom: 22px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.diag-report-head-line {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.diag-report-eyebrow {
+  font: 700 11px/1 var(--mono);
+  letter-spacing: 0.20em;
+  text-transform: uppercase;
+  color: var(--ink-1);
+}
+.diag-report-vs {
+  font: 12.5px/1.4 var(--mono);
+  color: var(--ink-3);
+}
+.diag-report-vs strong {
+  color: var(--ink-1);
+  font-weight: 600;
+}
+.diag-report-status {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  font: 800 12px/1 var(--mono);
+  letter-spacing: 0.14em;
+  border-radius: 3px;
+  border: 1.5px solid;
+}
+.diag-report-status.diag-pass {
+  color: rgb(46, 110, 50);
+  border-color: rgb(46, 110, 50);
+  background: rgba(46, 110, 50, 0.08);
+}
+.diag-report-status.diag-fail {
+  color: rgb(178, 34, 34);
+  border-color: rgb(178, 34, 34);
+  background: rgba(178, 34, 34, 0.08);
+}
+
+/* Summary table — Score / Coverage / Trust / Verified rows ------ */
+.diag-summary {
+  width: 100%;
+  max-width: 720px;
+  border-collapse: collapse;
+  font: 13px/1.4 var(--mono);
+}
+.diag-summary-row td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line-2);
+  vertical-align: middle;
+}
+.diag-summary-row:last-child td { border-bottom: 0; }
+.diag-summary-key {
+  width: 110px;
+  color: var(--ink-3);
+  font: 600 11px/1.4 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.diag-summary-val {
+  width: 180px;
+  color: var(--ink-1);
+}
+.diag-summary-hint {
+  color: var(--ink-3);
+  font: 12px/1.4 var(--mono);
+}
+.diag-summary-row.is-warn .diag-summary-val { color: rgb(180, 90, 0); }
+.diag-pct {
+  font: 700 14px/1 var(--serif);
+  color: var(--ink-1);
+  margin-right: 6px;
+}
+.diag-frac { color: var(--ink-3); }
+.diag-yes { color: rgb(46, 110, 50);  font-weight: 700; }
+.diag-no  { color: rgb(178, 34, 34);  font-weight: 700; }
+.diag-bar {
+  display: inline-block;
+  width: 100%;
+  max-width: 220px;
+  height: 6px;
+  background: var(--line-2);
+  border-radius: 2px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.diag-bar-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--CMP), var(--CMP));
+  transition: width 0.3s ease;
+}
+
+/* ---------- Sections (2A / 2B / Evidence) ---------- */
+.diag-section {
+  margin-bottom: 22px;
+}
+.diag-section:last-child { margin-bottom: 0; }
+.diag-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--line);
+}
+.diag-section-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--ink-bg);
+  font: 700 11px/1.2 var(--mono);
+  letter-spacing: 0.06em;
+  color: var(--ink-1);
+}
+.diag-section-title {
+  font: 600 13px/1.3 var(--serif);
+  color: var(--ink-1);
+  flex: 1;
+}
+.diag-section-meta {
+  font: 12px/1.2 var(--mono);
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+}
+
+/* Banner for "Pack A has no live signal" warning --------------- */
+.diag-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-left: 3px solid rgb(180, 90, 0);
+  background: rgba(217, 119, 6, 0.06);
+  font: 12.5px/1.5 var(--sans);
+  color: var(--ink-2);
+}
+.diag-banner-key {
+  font: 700 10.5px/1 var(--mono);
+  letter-spacing: 0.16em;
+  color: rgb(180, 90, 0);
+}
+
+/* ---------- Criterion table (one row per criterion) ---------- */
+.diag-crit-table, .diag-evidence-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 2px;
+  font: 12.5px/1.5 var(--sans);
+}
+.diag-crit-table thead th,
+.diag-evidence-table thead th {
+  text-align: left;
+  padding: 6px 10px 6px 0;
+  font: 600 10.5px/1.2 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  border-bottom: 1px solid var(--line-2);
+}
+.diag-crit-table tbody td,
+.diag-evidence-table tbody td {
+  padding: 7px 10px 7px 0;
+  border-bottom: 1px solid var(--line-2);
+  vertical-align: top;
+}
+.diag-crit-table tbody tr:last-child td,
+.diag-evidence-table tbody tr:last-child td { border-bottom: 0; }
+
+.diag-crit-table .c-pip,  .diag-crit-table .c-pip + th  { width: 24px; }
+.diag-crit-table .c-pip {
+  text-align: center;
+  font: 700 14px/1 var(--mono);
+  padding-right: 8px;
+}
+.diag-crit-table tr.is-pass .c-pip { color: rgb(46, 110, 50); }
+.diag-crit-table tr.is-fail .c-pip { color: rgb(178, 34, 34); }
+.diag-crit-table .c-name {
+  width: 160px;
+  font: 600 13px/1.4 var(--sans);
+  color: var(--ink-1);
+}
+.diag-crit-table .c-obs {
+  color: var(--ink-2);
+  font: 12.5px/1.45 var(--sans);
+}
+.diag-crit-table .c-exp {
+  width: 260px;
+  color: var(--ink-3);
+  font: 12px/1.4 var(--mono);
+}
+.diag-crit-table tr.is-fail .c-obs { color: var(--ink-2); }
+.diag-crit-table tr:hover { background: var(--ink-bg); }
+
+/* Evidence ledger — most data-dense table, mono throughout ------ */
+.diag-evidence-table {
+  font: 12px/1.5 var(--mono);
+}
+.diag-evidence-table .e-field {
+  width: 30%;
+  color: var(--ink-1);
+  font-weight: 600;
+}
+.diag-evidence-table .e-exp {
+  width: 28%;
+  color: var(--ink-3);
+}
+.diag-evidence-table .e-obs {
+  color: var(--ink-2);
+}
+.diag-evidence-table .e-status {
+  width: 70px;
+  text-align: right;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.diag-evidence-table tr.is-pass .e-status { color: rgb(46, 110, 50); }
+.diag-evidence-table tr.is-fail .e-status { color: rgb(178, 34, 34); }
+.diag-evidence-table tr:hover { background: var(--ink-bg); }
+
+
+/* Legacy diagnostic-grade-* rules retained below for safety while
+   any other view (or persisted-state migration) references them.
+   The compliance report above is the canonical Diagnose UI. */
 .diagnostic-grade-block {
   padding: 24px 28px 22px;
   background: linear-gradient(to bottom, var(--paper), transparent);
@@ -5550,13 +5804,14 @@ body.chrome-observa.observa-controls-open .meta { display: block !important; }
 }
 
 /* The main view sits beneath the chrome — extend it edge-to-edge
-   and override the legacy padding so the content can claim the
-   full width promised in the mockup. */
+   so the content can claim the full width promised in the mockup.
+   The content area KEEPS its existing light/cream engineering-tool
+   aesthetic — the dark navy stays in the chrome only. Tomograph is
+   an audit tool; the content is the audit, and audits are read on
+   paper, not on a marketing site. */
 body.chrome-observa #layer-view {
   padding: 0;
-  background: var(--obs-bg);
-  color: var(--obs-ink);
-  min-height: calc(100vh - 84px);
+  min-height: calc(100vh - 96px);
 }
 
 /* When the controls drawer is open, leave breathing room above the
