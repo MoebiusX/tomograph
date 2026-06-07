@@ -586,7 +586,12 @@ function renderTabs() {
   const tabs = $('#layer-tabs');
   if (!tabs) return;
   tabs.innerHTML = '';
-  tabs.appendChild(renderPrimaryViewNav());
+  // The three H2 journey tabs in the OBSERVA chrome (Discover · Diagnose ·
+  // Remediate) are the SOLE primary nav. The old in-content view-nav row
+  // (Layers · Compare · Compile) duplicated them and was the "mixing" that
+  // broke the journey — it's gone. We keep only the A|B focus toggle (for
+  // the single-pack Advanced views) and the layer filter chips.
+  tabs.appendChild(renderFocusToggle());
   tabs.appendChild(renderLayerFilterChips());
 }
 
@@ -618,62 +623,6 @@ function renderFocusToggle() {
   wrap.appendChild(mkBtn('a', state.pack));
   wrap.appendChild(mkBtn('b', state.packB));
   return wrap;
-}
-
-function renderPrimaryViewNav() {
-  const nav = document.createElement('div');
-  nav.className = 'view-nav';
-
-  // The user journey is three steps — and only three things to click.
-  // Everything else (Conformance, OTLP, Traceability, Atlas, Schema, the
-  // raw artefact-id Compare) is dispatchable internally but stays out
-  // of the top nav for now; the killer flow is what shows.
-  //
-  //   1. Layers  — "what's in there?"               (tomogram)
-  //   2. Compare — "is it good enough?"             (diagnostic-grade verdict)
-  //   3. Compile — "steer / correct the posture"    (ObsOps)
-  //
-  // 'Compare' routes to renderBenchmarkView (the diagnostic-grade verdict +
-  // 2A/2B + matrix + narrative + pies). The old artefact-id-level diff
-  // lives under the internal view id 'compare-artefacts' and is reached
-  // only via the handoff strip inside the Compare view.
-  const hasB = !!state.packB;
-  const views = [
-    { id: 'layers',  label: 'Layers',  hint: 'What\'s in this pack — browse artefacts by layer (L1..GOV).' },
-    ...(hasB ? [
-      { id: 'compare', label: 'Compare', hint: 'Is it good enough? Diagnostic-grade verdict, scored against the Observability Contract (Pack B) and against live evidence.' },
-    ] : []),
-    { id: 'compile', label: 'Compile', hint: 'Steer or correct the posture — per-artefact compilation to native platform format, then deploy.' },
-  ];
-  // Honour state.view even if it points to a now-hidden view — these are
-  // still reachable internally (handoff strip, direct state, future
-  // deep-link). When user clicks the Compare tab while sitting on
-  // 'compare-artefacts' or the legacy 'benchmark', they go to the
-  // verdict view; we map those to 'compare' for the active marker.
-  const viewAlias = { benchmark: 'compare', 'compare-artefacts': 'compare' };
-  const active = viewAlias[state.view] || state.view || 'layers';
-
-  for (const v of views) {
-    const b = document.createElement('button');
-    b.className = 'view-nav-btn' + (v.id === active ? ' is-active' : '');
-    b.type = 'button';
-    b.title = v.hint;
-    b.textContent = v.label;
-    b.onclick = () => {
-      state.view = v.id;
-      // Mirror to activeLayer for legacy code paths.
-      state.activeLayer = ({ conformance: 'CONF', compile: 'COMPILE', atlas: 'ATLAS', schema: 'CONF', layers: state.layerFilter !== 'all' ? state.layerFilter : 'L1' })[v.id] || 'L1';
-      state.activeCardKey = null;
-      // Header chrome depends on the current view (Compare hides its
-      // pickers because the compare pack-cards have their own).
-      applyModeChrome();
-      renderTabs();
-      renderMainView();
-    };
-    nav.appendChild(b);
-  }
-  nav.appendChild(renderFocusToggle());
-  return nav;
 }
 
 function renderLayerFilterChips() {
