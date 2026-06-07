@@ -1550,6 +1550,228 @@ a:hover { color: var(--ink); }
   tab-size: 2;
 }
 
+/* ===================== OTLP VIEW =====================
+   Wire-protocol coverage panel — receiver, per-signal matrix, SDK
+   contract, and a coverage summary. Uses BLD accent like the
+   Schema view since both speak to structural validity. */
+.otlp-view { --accent: var(--BLD); }
+.otlp-view .section-head {
+  border-color: var(--BLD); background: var(--BLD-tint);
+}
+.otlp-body { display: flex; flex-direction: column; }
+.otlp-block {
+  padding: 16px 22px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line-2);
+}
+.otlp-block:last-child { border-bottom: 0; }
+.otlp-block-head {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 12px;
+}
+
+/* Receiver block */
+.otlp-receiver-status {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: var(--pass-bg, rgba(56,142,60,0.06));
+  border-left: 3px solid rgb(46, 110, 50);
+  border-radius: 4px;
+  font: 13.5px/1.5 var(--serif);
+  color: var(--ink-2);
+  margin-bottom: 12px;
+}
+.otlp-receiver-status.is-fail {
+  background: var(--warn-bg);
+  border-left-color: rgb(178, 34, 34);
+  color: var(--ink-1);
+}
+.otlp-receiver-status.is-fail .otlp-pip { color: rgb(178, 34, 34); }
+.otlp-pip {
+  font: 600 18px/1 var(--mono);
+  color: rgb(46, 110, 50);
+}
+.otlp-receiver-msg strong { font-weight: 600; }
+.otlp-receiver-msg em { font-style: italic; color: var(--ink-4); }
+
+.otlp-receiver-grid { display: grid; gap: 6px; }
+.otlp-receiver-row {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 13px;
+}
+.otlp-receiver-key {
+  font: 600 11px/1.4 var(--mono);
+  color: var(--ink-3);
+}
+.otlp-receiver-val code {
+  font: 11.5px/1 var(--mono);
+  background: var(--ink-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.otlp-proto-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  margin-right: 6px;
+  font: 600 11px/1.3 var(--mono);
+  background: var(--ink-bg);
+  color: var(--ink-4);
+  border: 1px solid var(--line-2);
+  border-radius: 99px;
+}
+.otlp-proto-chip.is-on {
+  background: rgba(56, 142, 60, 0.08);
+  color: rgb(46, 110, 50);
+  border-color: rgba(56, 142, 60, 0.4);
+}
+
+/* Matrix */
+.otlp-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  background: var(--paper);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.otlp-matrix thead th {
+  text-align: left;
+  padding: 10px 14px;
+  background: var(--ink-bg);
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--line);
+}
+.otlp-matrix tbody td {
+  padding: 10px 14px;
+  border-bottom: 1px dotted var(--line-2);
+  vertical-align: middle;
+}
+.otlp-matrix tbody tr:last-child td { border-bottom: 0; }
+.otlp-matrix tbody tr:hover td { background: var(--ink-bg); }
+.otlp-sig-name {
+  font: 600 12px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-1);
+}
+.otlp-cell {
+  font: 12.5px/1.3 var(--mono);
+  color: var(--ink-3);
+}
+.otlp-cell.is-otlp {
+  color: rgb(46, 110, 50);
+  font-weight: 600;
+}
+.otlp-cell.is-native {
+  color: var(--ink-2);
+}
+.otlp-cell.is-off {
+  color: var(--ink-4);
+  font-style: italic;
+}
+.otlp-endpoint {
+  margin-left: 6px;
+  font: 11px/1 var(--mono);
+  color: var(--ink-4);
+  background: var(--ink-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.otlp-e2e.is-pass { color: rgb(46, 110, 50); font-weight: 700; }
+.otlp-e2e.is-warn { color: var(--ink-4); }
+.otlp-matrix-legend {
+  margin-top: 8px;
+  font: 11.5px/1.5 var(--serif);
+  color: var(--ink-4);
+  font-style: italic;
+}
+
+/* SDK contract */
+.otlp-sdk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 6px 18px;
+  margin: 0;
+}
+.otlp-sdk-grid > div {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px dotted var(--line-2);
+  font-size: 13px;
+  align-items: baseline;
+}
+.otlp-sdk-grid dt {
+  margin: 0;
+  font: 600 11px/1.4 var(--mono);
+  color: var(--ink-3);
+}
+.otlp-sdk-grid dd {
+  margin: 0;
+  font: 12.5px/1.4 var(--mono);
+  color: var(--ink-1);
+}
+.otlp-sdk-grid code {
+  background: var(--ink-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+/* Summary */
+.otlp-block-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.otlp-summary-row {
+  padding: 12px 16px;
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+}
+.otlp-summary-key {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 6px;
+}
+.otlp-summary-val {
+  font: 600 24px/1 var(--serif);
+  color: var(--ink-1);
+}
+.otlp-summary-note {
+  grid-column: 1 / -1;
+  font: 13px/1.5 var(--serif);
+  color: var(--ink-3);
+  padding: 4px 4px 0;
+}
+.otlp-summary-note code {
+  font: 11.5px/1 var(--mono);
+  background: var(--ink-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.otlp-summary-note strong { color: var(--ink-1); font-weight: 600; }
+
+@media (max-width: 900px) {
+  .otlp-block-summary { grid-template-columns: 1fr; }
+  .otlp-sdk-grid > div { grid-template-columns: 1fr; gap: 2px; }
+  .otlp-receiver-row { grid-template-columns: 1fr; gap: 2px; }
+}
+
 /* ===================== CONFORMANCE VIEW ===================== */
 .conformance-view { --accent: var(--CONF); --accent-bg: var(--CONF-bg); --accent-tint: var(--CONF-tint); }
 .conformance-view .section-head {
