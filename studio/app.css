@@ -269,6 +269,86 @@ a:hover { color: var(--ink); }
   padding: 8px 10px; cursor: pointer;
 }
 .ctrl-btn:hover { color: var(--ink); border-color: var(--ink-3); background: var(--hover); }
+
+/* Upload button now opens a popover with the local-file path AND two
+   quick-start cases (Krystaline live MCP / KrystalineX repo). The
+   wrap keeps the popover positioned beneath the button. */
+.upload-popover-wrap { position: relative; display: inline-block; }
+.upload-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  min-width: 320px;
+  padding: 6px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: 0 10px 32px rgba(0,0,0,0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.upload-popover[hidden] { display: none; }
+.upload-popover-item {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  text-align: left;
+  cursor: pointer;
+  color: var(--ink-2);
+  transition: background 100ms;
+}
+.upload-popover-item:hover { background: var(--hover); color: var(--ink); }
+.upload-popover-item:focus-visible { outline: 2px solid var(--CMP); outline-offset: 1px; }
+.upload-popover-key {
+  font: 16px/1 var(--mono);
+  color: var(--ink-4);
+}
+.upload-popover-item:hover .upload-popover-key { color: var(--CMP); }
+.upload-popover-body { display: flex; flex-direction: column; gap: 2px; }
+.upload-popover-label {
+  font: 600 13px/1.3 var(--serif);
+  color: var(--ink-1);
+}
+.upload-popover-sub {
+  font: 11.5px/1.4 var(--mono);
+  color: var(--ink-4);
+}
+.upload-popover-sub code {
+  background: var(--ink-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--ink-3);
+}
+.upload-popover-divider {
+  position: relative;
+  margin: 4px 12px;
+  text-align: center;
+  font: 600 9.5px/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.upload-popover-divider span {
+  position: relative;
+  z-index: 1;
+  padding: 0 10px;
+  background: var(--paper);
+}
+.upload-popover-divider::before {
+  content: '';
+  position: absolute;
+  top: 50%; left: 0; right: 0;
+  height: 1px;
+  background: var(--line-2);
+  z-index: 0;
+}
 /* RESET — visually quieter than the primary actions but unmistakably
    destructive on hover, so a misclick gives a visible warning before
    the confirm dialog. */

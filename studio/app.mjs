@@ -4938,7 +4938,85 @@ async function handleFile(file) {
 function setupUpload() {
   const fileInput = $('#file-input');
   const btn = $('#upload-btn');
-  btn.onclick = () => fileInput.click();
+  const popover = $('#upload-popover');
+
+  // Upload button now opens a small popover offering three paths:
+  // (a) pick a local file (the original behaviour), (b) load Krystaline
+  // from the live MCP, (c) scan the KrystalineX OSS repo. Click-outside
+  // and Esc close it. The popover lets the demo feel organic — the
+  // presenter clicks Upload like any user, sees one of the quick-start
+  // cases listed, and loads it in one click. Same flows the rest of
+  // the studio already uses (no demo-mode codepath).
+  const closePopover = () => {
+    if (!popover) return;
+    popover.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+  };
+  const openPopover = () => {
+    if (!popover) return;
+    popover.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+  };
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    if (!popover) { fileInput.click(); return; }
+    popover.hidden ? openPopover() : closePopover();
+  };
+  document.addEventListener('click', (ev) => {
+    if (!popover || popover.hidden) return;
+    if (ev.target.closest('.upload-popover-wrap')) return;
+    closePopover();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && popover && !popover.hidden) closePopover();
+  });
+  if (popover) {
+    popover.addEventListener('click', async (ev) => {
+      const item = ev.target.closest('.upload-popover-item');
+      if (!item) return;
+      const action = item.dataset.action;
+      closePopover();
+      if (action === 'pick-file') {
+        fileInput.click();
+        return;
+      }
+      if (action === 'quick-krystaline') {
+        // Same flow as the home's MCP connect → adopt path, just driven
+        // programmatically. We pre-fill the URL and trigger the same
+        // doHomeMcpConnect that the home button calls.
+        const urlInput = document.getElementById('home-mcp-url');
+        if (urlInput) urlInput.value = 'https://www.krystaline.io/mcp/public';
+        // Open the draft-mcp panel (or trigger the same fetch via the
+        // header's `new from live` button) so the user sees the same
+        // progress + adopt flow they'd see manually.
+        const newFromLive = document.getElementById('draft-mcp-btn');
+        if (newFromLive) newFromLive.click();
+        // Pre-fill the panel's URL field after it opens.
+        setTimeout(() => {
+          const panelUrl = document.getElementById('draft-mcp-url');
+          if (panelUrl) panelUrl.value = 'https://www.krystaline.io/mcp/public';
+          const goBtn = document.getElementById('draft-mcp-go-btn');
+          if (goBtn) goBtn.click();
+        }, 60);
+        return;
+      }
+      if (action === 'quick-krystalinex-repo') {
+        // Open the scan-a-repo panel and pre-fill the GitHub URL field.
+        const scanBtn = document.getElementById('crawl-btn');
+        if (scanBtn) scanBtn.click();
+        setTimeout(() => {
+          const ghUrl = document.getElementById('crawl-github-url');
+          if (ghUrl) {
+            ghUrl.value = 'MoebiusX/KrystalineX';
+            ghUrl.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          const ghGo = document.getElementById('crawl-github-go-btn');
+          if (ghGo && !ghGo.disabled) ghGo.click();
+        }, 60);
+        return;
+      }
+    });
+  }
   fileInput.onchange = () => { if (fileInput.files?.[0]) handleFile(fileInput.files[0]); fileInput.value = ''; };
 
   let dragDepth = 0;
