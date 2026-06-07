@@ -5507,26 +5507,44 @@ async function refresh() {
 // for pack switching / upload / scan / theme until those move into the
 // tab content in later phases.
 // ============================================================
+// Question-oriented chrome: the tab title IS the user's mental
+// question, the small workflow word beneath identifies the act the
+// product takes to answer it. This is the load-bearing framing —
+// most observability tools organize around data types or products;
+// Tomograph organizes around three questions that map onto a workflow
+// people already understand from medicine:
+//
+//     Discover  →  Diagnose  →  Remediate
+//      (CT scan)    (Diagnosis)   (Treatment)
+//
+// The technical names (Layers / Comparison / ObsOps) move into the
+// tooltip — discoverable but not load-bearing on the chrome.
 const OBSERVA_TABS = [
   {
     id: 'layers',
     n: '1',
-    label: 'Layers',
-    sub: "What's in my Observability?",
+    label: 'What Do We Have?',
+    sub: 'Discover',
+    techName: 'Layers',
+    tagline: 'the Observability Tomogram',
     accent: 'tab-blue',
   },
   {
     id: 'compare',
     n: '2',
-    label: 'Comparison',
-    sub: 'Is our Observability diagnostic-grade?',
+    label: 'Can We Trust It?',
+    sub: 'Diagnose',
+    techName: 'Comparison',
+    tagline: 'Coverage & Fidelity',
     accent: 'tab-magenta',
   },
   {
     id: 'compile',
     n: '3',
-    label: 'ObsOps',
-    sub: 'Compile & Deploy',
+    label: 'Fix The Gaps',
+    sub: 'Remediate',
+    techName: 'ObsOps',
+    tagline: 'Compile & Deploy',
     accent: 'tab-emerald',
   },
 ];
@@ -5554,17 +5572,27 @@ function installObservaChrome() {
             <circle cx="18" cy="18" r="2.4" fill="url(#observaLogoG)"/>
           </svg>
         </span>
-        <span class="observa-wordmark">TOMO<strong>GRAPH</strong></span>
+        <span class="observa-brand-text">
+          <span class="observa-wordmark">TOMO<strong>GRAPH</strong></span>
+          <span class="observa-tagline">
+            <span class="observa-tagline-step">Discover</span>
+            <span class="observa-tagline-dot">·</span>
+            <span class="observa-tagline-step">Diagnose</span>
+            <span class="observa-tagline-dot">·</span>
+            <span class="observa-tagline-step">Remediate</span>
+          </span>
+        </span>
       </a>
 
       <nav class="observa-tabs" role="tablist" aria-label="Primary">
         ${OBSERVA_TABS.map(t => `
           <button type="button" role="tab" class="observa-tab ${t.accent}" data-view="${t.id}"
-                  aria-selected="false" title="${escapeHtml(t.sub)}">
+                  aria-selected="false" title="${escapeHtml(t.techName + ' — ' + t.tagline)}">
             <span class="observa-tab-num">${t.n}</span>
             <span class="observa-tab-text">
+              <span class="observa-tab-eyebrow">${escapeHtml(t.sub)}</span>
               <span class="observa-tab-title">${escapeHtml(t.label)}</span>
-              <span class="observa-tab-sub">${escapeHtml(t.sub)}</span>
+              <span class="observa-tab-tagline">${escapeHtml(t.tagline)}</span>
             </span>
           </button>
         `).join('')}

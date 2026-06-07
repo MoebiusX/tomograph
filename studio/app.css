@@ -5330,8 +5330,14 @@ body.chrome-observa.observa-controls-open .meta { display: block !important; }
   width: 36px; height: 36px;
 }
 .observa-logo svg { width: 100%; height: 100%; }
+.observa-brand-text {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  line-height: 1;
+}
 .observa-wordmark {
-  font: 600 18px/1 var(--mono);
+  font: 600 17px/1 var(--mono);
   letter-spacing: 0.12em;
   color: var(--obs-ink);
 }
@@ -5342,6 +5348,23 @@ body.chrome-observa.observa-controls-open .meta { display: block !important; }
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
+.observa-tagline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 600 9.5px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--obs-ink-3);
+}
+.observa-tagline-step {
+  background: linear-gradient(90deg, var(--obs-blue), var(--obs-purple), var(--obs-emerald));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  opacity: 0.85;
+}
+.observa-tagline-dot { color: var(--obs-ink-4); }
 
 /* The three numbered tab cards ----------------------------------- */
 .observa-tabs {
@@ -5402,19 +5425,37 @@ body.chrome-observa.observa-controls-open .meta { display: block !important; }
   gap: 2px;
   min-width: 0;
 }
+/* The question is the title (the user's mental question); the
+   workflow word above it is a small all-caps eyebrow that names the
+   act; the tagline below carries the technical/output hint.        */
+.observa-tab-eyebrow {
+  font: 600 9.5px/1 var(--mono);
+  letter-spacing: 0.20em;
+  text-transform: uppercase;
+  color: var(--obs-ink-4);
+  margin-bottom: 1px;
+}
 .observa-tab-title {
   font: 600 16px/1.2 var(--sans);
   letter-spacing: -0.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .observa-tab.is-active .observa-tab-title { color: var(--obs-ink); }
-.observa-tab-sub {
-  font: 12px/1.3 var(--sans);
+.observa-tab-tagline {
+  font: 11.5px/1.3 var(--sans);
   color: var(--obs-ink-4);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.observa-tab.is-active .observa-tab-sub { color: var(--obs-ink-3); }
+.observa-tab.is-active .observa-tab-tagline { color: var(--obs-ink-3); }
+
+/* Accent colours for each tab's workflow-word eyebrow when active. */
+.observa-tab.tab-blue.is-active    .observa-tab-eyebrow { color: var(--obs-cyan); }
+.observa-tab.tab-magenta.is-active .observa-tab-eyebrow { color: var(--obs-pink); }
+.observa-tab.tab-emerald.is-active .observa-tab-eyebrow { color: var(--obs-teal); }
 
 /* Gradient underline accent on active tab. The bottom border is set
    on the tab itself; we paint the gradient via a pseudo so it can
@@ -5529,8 +5570,13 @@ body.chrome-observa.observa-controls-open #layer-view { padding-top: 8px; }
     gap: 12px;
   }
   .observa-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .observa-tab-sub { display: none; }
+  .observa-tab-tagline { display: none; }
+  .observa-tagline { display: none; }
   .observa-actions { justify-content: flex-start; flex-wrap: wrap; }
+}
+@media (max-width: 720px) {
+  .observa-brand-text { display: none; }
+  .observa-tab-eyebrow { display: none; }
 }
 
 /* ===================== RESPONSIVE ===================== */
