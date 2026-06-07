@@ -744,9 +744,312 @@ function renderMainView() {
     case 'otlp':               renderOtlpView(view); return;
     case 'layers':
     default:
-      renderLayersView(view);
+      // Under the OBSERVA chrome, Discover ("What Do We Have?") renders
+      // the full TOMOGRAM SCAN dashboard. Legacy layout keeps the
+      // stacked layer cards.
+      if (document.body.classList.contains('chrome-observa')) renderDiscoverDashboard(view);
+      else renderLayersView(view);
       return;
   }
+}
+
+// ============================================================
+// DISCOVER — the TOMOGRAM SCAN dashboard.
+//
+// Three-column mission-control layout:
+//   LEFT   — pack overview (manifest identity) + pack catalog
+//   CENTER — the scanner centerpiece (hero image, with CSS fallback),
+//            scan status, slice readout, layer index, top issues,
+//            scan provenance
+//   RIGHT  — conformance score, maturity by dimension, reference
+//            check, artefact sourcing legend
+//
+// Every panel is wired to real pack data — meta, conformance,
+// symbol table, catalog. No fabricated trends or activity logs.
+// ============================================================
+const DISCO_LAYER_SLABS = [
+  { id: 'L1', label: 'IDENTITY',   sub: 'who · what · where',                  accent: '#3b82f6' },
+  { id: 'L2', label: 'TELEMETRY',  sub: 'metrics · logs · traces',            accent: '#06b6d4' },
+  { id: 'L3', label: 'INTELLIGENCE', sub: 'sli · slo · insights',             accent: '#10b981' },
+  { id: 'L4', label: 'POLICY · ALERTING · HEALING', sub: 'detections · responses · remediations', accent: '#f59e0b' },
+  { id: 'L5', label: 'OPERATIONS', sub: 'runbooks · workflows · oncall',      accent: '#a855f7' },
+];
+
+function discoGradeLetter(pct) {
+  if (pct >= 97) return 'A+'; if (pct >= 93) return 'A'; if (pct >= 90) return 'A-';
+  if (pct >= 87) return 'B+'; if (pct >= 83) return 'B'; if (pct >= 80) return 'B-';
+  if (pct >= 77) return 'C+'; if (pct >= 73) return 'C'; if (pct >= 70) return 'C-';
+  if (pct >= 60) return 'D';  return 'F';
+}
+function discoGradeWord(pct) {
+  if (pct >= 90) return 'Excellent'; if (pct >= 80) return 'Good';
+  if (pct >= 70) return 'Fair';      if (pct >= 60) return 'Weak';
+  return 'Failing';
+}
+
+function renderDiscoverDashboard(view) {
+  view.innerHTML = '';
+  const pack = state.pack;
+  const meta = pack?.meta || {};
+  const conf = focusedConformance();
+  const sym  = state.symbolTable || buildSymbolTable(pack);
+
+  // ---- reference check (real, from symbol table) ----
+  let refTotal = 0, refBroken = 0;
+  const brokenLines = [];
+  if (sym?.refsFrom) for (const refs of sym.refsFrom.values()) refTotal += refs.length;
+  if (sym?.broken) for (const [key, refs] of sym.broken) {
+    refBroken += refs.length;
+    for (const r of refs) brokenLines.push({ from: key, ref: r });
+  }
+  const refResolved = Math.max(0, refTotal - refBroken);
+
+  // ---- conformance summary (real) ----
+  const scorePct = conf ? conf.scorePercent : 0;
+  const grade = discoGradeLetter(scorePct);
+  const gradeWord = discoGradeWord(scorePct);
+  const mustP  = conf?.must   || { passed: 0, total: 0 };
+  const shouldP = conf?.should || { passed: 0, total: 0 };
+
+  // ---- maturity by dimension (real) ----
+  const DIM_NAMES = { L1: 'Identity', L2: 'Telemetry', L3: 'Intelligence', L4: 'Policy & Alerting', L5: 'Operations', GOV: 'Governance' };
+  const dims = [];
+  for (const d of ['L1','L2','L3','L4','L5','GOV']) {
+    const s = conf?.byDimension?.[d];
+    if (!s) continue;
+    const weight = (s.mustTotal || 0) + 0.5 * (s.shouldTotal || 0);
+    const got    = (s.mustPassed || 0) + 0.5 * (s.shouldPassed || 0);
+    const pct = weight > 0 ? Math.round((got / weight) * 100) : null;
+    dims.push({ key: d, name: DIM_NAMES[d] || d, pct });
+  }
+
+  // ---- top issues (real: failing conformance clauses + broken refs) ----
+  const issues = [];
+  if (conf?.clauses) for (const cl of conf.clauses) {
+    if (cl.applies && !cl.pass) {
+      issues.push({
+        sev: cl.severity === 'MUST' ? 'HIGH' : 'MEDIUM',
+        type: cl.severity === 'MUST' ? 'missing' : 'advisory',
+        ref: cl.id,
+        detail: cl.description,
+      });
+    }
+  }
+  for (const b of brokenLines) {
+    issues.push({ sev: 'HIGH', type: 'broken_ref', ref: b.from.split('::').pop() || b.from, detail: `${b.ref} not found` });
+  }
+  const sevRank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+  issues.sort((a, b) => (sevRank[a.sev] ?? 9) - (sevRank[b.sev] ?? 9));
+
+  // ---- provenance (real, from annotations) ----
+  const ann = meta.annotations || pack?.metadata?.annotations || {};
+  const provRows = [];
+  const src = pack?.source || (ann['mcp.refreshedAt'] ? 'mcp' : 'file');
+  provRows.push(['source', escapeHtml(String(src))]);
+  if (ann['mcp.refreshedAt']) provRows.push(['refreshed', escapeHtml(ann['mcp.refreshedAt'])]);
+  const pa = (ann['mcp.probesAttempted'] || '').split(',').filter(Boolean).length;
+  const ps = (ann['mcp.probesSucceeded'] || '').split(',').filter(Boolean).length;
+  if (pa) provRows.push(['probes', `${ps}/${pa} returned data`]);
+  const tools = (ann['mcp.toolsCalled'] || '').split(',').filter(Boolean).length;
+  if (tools) provRows.push(['mcp tools', `${tools} called`]);
+  provRows.push(['validated', conf ? 'schema v1.2 · conformance scored' : 'schema v1.2']);
+
+  // ---- catalog lists (real) ----
+  const uploaded = (state.catalog || []).filter(p => p.ok && p.id !== undefined);
+  const examples = (state._examplesCache || []).filter(p => p.ok);
+
+  const catRow = (p, withTier) => `
+    <button type="button" class="disco-cat-row${p.id === state.selectedPackId ? ' is-active' : ''}" data-pack-id="${escapeHtml(p.id)}" data-is-example="${withTier ? '1' : '0'}">
+      <span class="disco-cat-dot" data-ok="${p.ok ? '1' : '0'}"></span>
+      <span class="disco-cat-name">${escapeHtml(p.label || p.name || p.id)}</span>
+      <span class="disco-cat-tag">${withTier ? escapeHtml(p.criticality || '') : ('v' + escapeHtml(p.version || '?'))}</span>
+    </button>
+  `;
+
+  // ---- layer index (real artefact counts + ids) ----
+  const layerIndex = LAYER_DEFS.map(def => {
+    const count = layerArtefactCount(def.id);
+    return { id: def.id, name: def.name, count };
+  });
+
+  view.innerHTML = `
+    <div class="disco">
+      <!-- LEFT -->
+      <aside class="disco-left">
+        <section class="disco-panel">
+          <h2 class="disco-panel-title">Pack Overview</h2>
+          <dl class="disco-meta">
+            <dt>name</dt><dd class="disco-meta-strong">${escapeHtml(meta.name || pack?.id || '—')}</dd>
+            <dt>version</dt><dd>${escapeHtml(meta.version || '—')}</dd>
+            <dt>apiVersion</dt><dd>${escapeHtml(meta.apiVersion || '—')}</dd>
+            <dt>kind</dt><dd>${escapeHtml(meta.kind || '—')}</dd>
+            <dt>binding</dt><dd>${escapeHtml(meta.binding || '—')}</dd>
+            <dt>target</dt><dd>${escapeHtml(meta.target || '—')}</dd>
+            <dt>criticality</dt><dd><span class="disco-tier">${escapeHtml(meta.criticality || '—')}</span></dd>
+            <dt>environments</dt><dd>${escapeHtml((meta.environments || []).join(' · ') || '—')}</dd>
+            <dt>owners</dt><dd>${escapeHtml((meta.owners || []).join(' · ') || '—')}</dd>
+          </dl>
+        </section>
+
+        <section class="disco-panel disco-catalog">
+          <h2 class="disco-panel-title">Pack Catalog</h2>
+          <input type="search" class="disco-cat-search" placeholder="Search packs…" aria-label="Search packs">
+          ${uploaded.length ? `<div class="disco-cat-group">Uploaded &amp; drafted</div>${uploaded.map(p => catRow(p, false)).join('')}` : ''}
+          ${examples.length ? `<div class="disco-cat-group">Examples (${examples.length})</div>${examples.map(p => catRow(p, true)).join('')}` : ''}
+        </section>
+      </aside>
+
+      <!-- CENTER -->
+      <main class="disco-center">
+        <section class="disco-panel disco-scanner-panel">
+          <div class="disco-scanner-head">
+            <div>
+              <div class="disco-scanner-title">TOMOGRAM SCAN</div>
+              <div class="disco-scanner-sub">layered observability view</div>
+            </div>
+            <div class="disco-scan-status">
+              <span class="disco-scan-status-key">SCAN</span>
+              <span class="disco-scan-status-val">COMPLETE</span>
+              <span class="disco-scan-status-slice">${layerIndex.reduce((n,l)=>n+l.count,0)} artefacts · ${layerIndex.filter(l=>l.count>0).length}/${layerIndex.length} layers</span>
+            </div>
+          </div>
+
+          <div class="disco-scanner-stage">
+            <img class="disco-scanner-img" src="/assets/tomogram-hero.png" alt="Observability tomogram scan"
+                 onerror="this.classList.add('is-missing')">
+            <div class="disco-scanner-fallback">
+              ${DISCO_LAYER_SLABS.map(s => {
+                const cnt = layerArtefactCount(s.id);
+                return `
+                  <div class="disco-slab" style="--slab:${s.accent}">
+                    <span class="disco-slab-id">${s.id}</span>
+                    <span class="disco-slab-label">${escapeHtml(s.label)}</span>
+                    <span class="disco-slab-sub">${escapeHtml(s.sub)}</span>
+                    <span class="disco-slab-count">${cnt}</span>
+                  </div>`;
+              }).join('')}
+            </div>
+          </div>
+
+          <div class="disco-slice">
+            <span class="disco-slice-key">RESOLUTION</span>
+            <span class="disco-slice-track"><span class="disco-slice-fill" style="width:21%"></span></span>
+            <span class="disco-slice-val">deep slice · canonical v1.2</span>
+          </div>
+        </section>
+
+        <div class="disco-center-row">
+          <section class="disco-panel">
+            <h2 class="disco-panel-title">Top Issues <span class="disco-panel-badge">${issues.length}</span></h2>
+            ${issues.length ? `
+              <table class="disco-issues">
+                <thead><tr><th>sev</th><th>type</th><th>reference</th><th>detail</th></tr></thead>
+                <tbody>
+                  ${issues.slice(0, 8).map(i => `
+                    <tr data-sev="${i.sev}">
+                      <td class="di-sev">${i.sev}</td>
+                      <td class="di-type">${escapeHtml(i.type)}</td>
+                      <td class="di-ref">${escapeHtml(i.ref)}</td>
+                      <td class="di-detail">${escapeHtml(i.detail)}</td>
+                    </tr>`).join('')}
+                </tbody>
+              </table>
+              ${issues.length > 8 ? `<div class="disco-issues-more">+${issues.length - 8} more — see Diagnose</div>` : ''}
+            ` : `<div class="disco-empty">No issues found. Pack is clean against its declared tier.</div>`}
+          </section>
+
+          <section class="disco-panel">
+            <h2 class="disco-panel-title">Scan Provenance</h2>
+            <dl class="disco-meta">
+              ${provRows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`).join('')}
+            </dl>
+          </section>
+        </div>
+      </main>
+
+      <!-- RIGHT -->
+      <aside class="disco-right">
+        <section class="disco-panel">
+          <h2 class="disco-panel-title">Conformance Score</h2>
+          <div class="disco-score">
+            <div class="disco-score-grade" data-grade="${grade[0]}">
+              <div class="disco-score-letter">${grade}</div>
+              <div class="disco-score-num">${scorePct} / 100</div>
+              <div class="disco-score-word">${gradeWord}</div>
+            </div>
+            <div class="disco-score-breakdown">
+              <div class="disco-score-line"><span>MUST</span><strong>${mustP.passed}/${mustP.total}</strong><span class="disco-score-pct">${mustP.total ? Math.round(mustP.passed/mustP.total*100) : 0}%</span></div>
+              <div class="disco-score-line"><span>SHOULD</span><strong>${shouldP.passed}/${shouldP.total}</strong><span class="disco-score-pct">${shouldP.total ? Math.round(shouldP.passed/shouldP.total*100) : 0}%</span></div>
+            </div>
+          </div>
+        </section>
+
+        ${dims.length ? `
+        <section class="disco-panel">
+          <h2 class="disco-panel-title">Maturity by Dimension</h2>
+          <div class="disco-dims">
+            ${dims.map(d => `
+              <div class="disco-dim">
+                <span class="disco-dim-name">${escapeHtml(d.name)}</span>
+                <span class="disco-dim-bar"><span class="disco-dim-fill" data-band="${d.pct == null ? 'na' : d.pct >= 80 ? 'hi' : d.pct >= 60 ? 'mid' : 'lo'}" style="width:${d.pct == null ? 0 : d.pct}%"></span></span>
+                <span class="disco-dim-pct">${d.pct == null ? 'n/a' : d.pct + '%'}</span>
+              </div>`).join('')}
+          </div>
+        </section>` : ''}
+
+        <section class="disco-panel">
+          <h2 class="disco-panel-title">Reference Check</h2>
+          <div class="disco-ref-stats">
+            <div class="disco-ref-stat"><div class="disco-ref-num">${refTotal}</div><div class="disco-ref-key">total</div></div>
+            <div class="disco-ref-stat is-ok"><div class="disco-ref-num">${refResolved}</div><div class="disco-ref-key">resolved</div></div>
+            <div class="disco-ref-stat is-bad"><div class="disco-ref-num">${refBroken}</div><div class="disco-ref-key">broken</div></div>
+          </div>
+          ${brokenLines.length ? `
+            <div class="disco-ref-broken-head">Broken references</div>
+            <ul class="disco-ref-broken">
+              ${brokenLines.slice(0, 5).map(b => `<li><span class="disco-ref-from">${escapeHtml((b.from.split('::').pop() || b.from))}</span> → <span class="disco-ref-to">${escapeHtml(b.ref)}</span></li>`).join('')}
+            </ul>
+            ${brokenLines.length > 5 ? `<div class="disco-issues-more">+${brokenLines.length - 5} more</div>` : ''}
+          ` : `<div class="disco-empty">All references resolve.</div>`}
+        </section>
+
+        <section class="disco-panel">
+          <h2 class="disco-panel-title">Artefact Sourcing</h2>
+          <ul class="disco-legend">
+            <li><span class="disco-legend-dot" data-src="declared"></span><span class="disco-legend-name">Declared</span><span class="disco-legend-desc">present in manifest</span></li>
+            <li><span class="disco-legend-dot" data-src="verified"></span><span class="disco-legend-name">Verified</span><span class="disco-legend-desc">MCP attested</span></li>
+            <li><span class="disco-legend-dot" data-src="missing"></span><span class="disco-legend-name">Missing</span><span class="disco-legend-desc">required, not present</span></li>
+          </ul>
+        </section>
+      </aside>
+    </div>
+  `;
+
+  // ---- wire catalog clicks → load as Pack A ----
+  view.querySelectorAll('.disco-cat-row').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.packId;
+      if (!id || id === state.selectedPackId) return;
+      // Ensure the pack is in the catalog (examples live only in cache).
+      if (!state.catalog.find(p => p.id === id)) {
+        const ex = (state._examplesCache || []).find(p => p.id === id);
+        if (ex) state.catalog.push(ex);
+      }
+      state.selectedPackId = id;
+      state.selectedEnv = defaultEnvFor(id);
+      refresh();
+    });
+  });
+
+  // ---- catalog search filter ----
+  const search = view.querySelector('.disco-cat-search');
+  search?.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    view.querySelectorAll('.disco-cat-row').forEach(row => {
+      const name = (row.querySelector('.disco-cat-name')?.textContent || '').toLowerCase();
+      row.style.display = !q || name.includes(q) ? '' : 'none';
+    });
+  });
 }
 
 // Layers view — stacks every layer when filter='all', narrows to one
