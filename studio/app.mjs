@@ -241,6 +241,16 @@ async function rehydrateFromPersistence() {
 
   // Restore non-pack UI fields up-front so the first render shows them.
   if (typeof saved.view === 'string')          state.view = saved.view;
+  // Migrate persisted state from prior nav layouts to the three-tab
+  // model (Layers · Compare · Compile). Anything outside those three
+  // routes to either Compare (if it implied a comparison view) or
+  // Layers (everything else) so we never strand the user on a tab
+  // that no longer has a nav entry.
+  const VISIBLE_VIEWS = new Set(['layers', 'compare', 'compile']);
+  const COMPARE_LIKE  = new Set(['benchmark', 'compare-artefacts', 'traceability']);
+  if (state.view && !VISIBLE_VIEWS.has(state.view)) {
+    state.view = COMPARE_LIKE.has(state.view) ? 'compare' : 'layers';
+  }
   if (typeof saved.layerFilter === 'string')   state.layerFilter = saved.layerFilter;
   if (typeof saved.compareSlice === 'string')  state.compareSlice = saved.compareSlice;
   if (typeof saved.compareSearch === 'string') state.compareSearch = saved.compareSearch;
@@ -610,31 +620,34 @@ function renderPrimaryViewNav() {
   const nav = document.createElement('div');
   nav.className = 'view-nav';
 
-  // Decide which views are available for the current mode.
-  // View nav adapts to what's loaded — no rigid mode locking.
-  //   Pack A only  → Layers · Conformance · Compile · Schema
-  //   Pack B added → adds Compare + Atlas (cross-pack views)
-  // User toggles Pack B from the header picker; the view nav refreshes.
+  // The user journey is three steps — and only three things to click.
+  // Everything else (Conformance, OTLP, Traceability, Atlas, Schema, the
+  // raw artefact-id Compare) is dispatchable internally but stays out
+  // of the top nav for now; the killer flow is what shows.
+  //
+  //   1. Layers  — "what's in there?"               (tomogram)
+  //   2. Compare — "is it good enough?"             (diagnostic-grade verdict)
+  //   3. Compile — "steer / correct the posture"    (ObsOps)
+  //
+  // 'Compare' routes to renderBenchmarkView (the diagnostic-grade verdict +
+  // 2A/2B + matrix + narrative + pies). The old artefact-id-level diff
+  // lives under the internal view id 'compare-artefacts' and is reached
+  // only via the handoff strip inside the Compare view.
   const hasB = !!state.packB;
   const views = [
-    { id: 'layers',     label: 'Layers',     hint: 'Browse artefacts by layer (L1..GOV).' },
-    { id: 'conformance',label: 'Conformance',hint: 'Maturity rubric per tier with pass/fail.' },
-    { id: 'compile',    label: 'Compile',    hint: 'Per-artefact compilation to native platform format.' },
-    { id: 'otlp',       label: 'OTLP',       hint: 'OTLP wire coverage — receiver protocols, per-signal exporters, SDK contract.' },
+    { id: 'layers',  label: 'Layers',  hint: 'What\'s in this pack — browse artefacts by layer (L1..GOV).' },
     ...(hasB ? [
-      { id: 'benchmark',   label: 'Benchmark',   hint: 'Score PACK A\'s posture against PACK B as a reference. Use the lens to scope to one product (Grafana, Prometheus, …) for an apples-to-apples comparison.' },
-      { id: 'compare',     label: 'Compare',     hint: 'Side-by-side per-layer comparison of PACK A vs PACK B.' },
-      { id: 'traceability',label: 'Traceability',hint: 'Repo vs live: aligned / declared-not-verified / verified-not-declared / stale.' },
+      { id: 'compare', label: 'Compare', hint: 'Is it good enough? Diagnostic-grade verdict, scored against the Observability Contract (Pack B) and against live evidence.' },
     ] : []),
-    // Atlas is available in single-pack mode too — Stratigraphy, Periodic,
-    // Skyline, and Arbor all work on a single pack (Arbor especially is a
-    // dependency-discovery tool that doesn't need a second pack). The
-    // cross-pack variants (Constellation morph, Transit interchanges)
-    // surface in the variant picker only when Pack B is loaded.
-    { id: 'atlas',       label: 'Atlas',       hint: 'Visual atlases — Stratigraphy, Periodic, Skyline, Arbor (single-pack) · Constellation, Transit (cross-pack).' },
-    { id: 'schema',     label: 'Schema',     hint: 'Canonical YAML + spec v1.2 validation (separate from the maturity rubric in Conformance).' },
+    { id: 'compile', label: 'Compile', hint: 'Steer or correct the posture — per-artefact compilation to native platform format, then deploy.' },
   ];
-  const active = state.view || 'layers';
+  // Honour state.view even if it points to a now-hidden view — these are
+  // still reachable internally (handoff strip, direct state, future
+  // deep-link). When user clicks the Compare tab while sitting on
+  // 'compare-artefacts' or the legacy 'benchmark', they go to the
+  // verdict view; we map those to 'compare' for the active marker.
+  const viewAlias = { benchmark: 'compare', 'compare-artefacts': 'compare' };
+  const active = viewAlias[state.view] || state.view || 'layers';
 
   for (const v of views) {
     const b = document.createElement('button');
@@ -710,19 +723,23 @@ function renderMainView() {
   if (state.mode === 'home') { renderHomeView(); return; }
   if (!state.pack) { view.innerHTML = '<div class="placeholder">Loading pack…</div>'; return; }
 
-  // Mode-free dispatch (Phase 7r): the view nav decides what to render
-  // based on what's loaded. 'compare' and 'atlas' only appear in the
-  // nav when state.packB is truthy, so we can reach them here without
-  // needing a separate 'compare' mode.
+  // Mode-free dispatch. 'compare' IS the diagnostic-grade verdict view
+  // (was 'benchmark') — that's the user's "is it good enough?" question.
+  // The old artefact-id-level diff lives under 'compare-artefacts' and
+  // is reached via the handoff strip inside the Compare view.
+  //
+  // The legacy 'benchmark' id is aliased to 'compare' so persisted state
+  // from before this rename still lands somewhere sane.
   switch (state.view) {
-    case 'benchmark':    renderBenchmarkView(view); return;
-    case 'compare':      renderCompareView(view); return;
-    case 'traceability': renderTraceabilityView(view); return;
-    case 'atlas':        renderAtlasView(view); return;
-    case 'conformance':  view.appendChild(renderConformanceView()); return;
-    case 'compile':      renderCompileView(view); return;
-    case 'schema':       renderSchemaView(view); return;
-    case 'otlp':         renderOtlpView(view); return;
+    case 'benchmark':                                         // legacy alias
+    case 'compare':            renderBenchmarkView(view); return;
+    case 'compare-artefacts':  renderCompareView(view); return;
+    case 'traceability':       renderTraceabilityView(view); return;
+    case 'atlas':              renderAtlasView(view); return;
+    case 'conformance':        view.appendChild(renderConformanceView()); return;
+    case 'compile':            renderCompileView(view); return;
+    case 'schema':             renderSchemaView(view); return;
+    case 'otlp':               renderOtlpView(view); return;
     case 'layers':
     default:
       renderLayersView(view);
@@ -943,14 +960,14 @@ async function runBenchmark(product, refPackId) {
     } else {
       // Fallback: drive state directly if the picker isn't mounted yet.
       state.compareBId = refPackId;
-      state.view = 'benchmark';
+      state.view = 'compare';
       renderTabs(); renderMainView();
     }
     // Belt-and-suspenders: the picker's auto-switch lands on Compare,
     // but a Benchmark CTA should land on the Benchmark view. Override
     // explicitly here a tick later.
     setTimeout(() => {
-      state.view = 'benchmark';
+      state.view = 'compare';
       renderTabs(); renderMainView();
     }, 700);
   } catch (e) {
@@ -2448,21 +2465,23 @@ function renderBenchmarkView(view) {
   scaffold.appendChild(renderBenchmarkCompareHandoff());
 }
 
-// One-line nudge that points users wanting artefact-id-level diffs to
-// the Compare view, where that drill now lives exclusively.
+// One-line nudge that points users wanting the artefact-id-level diff
+// to the secondary internal view. Quiet by design — the verdict above
+// is the answer; this is just an escape hatch for the rare power user
+// who wants raw per-artefact comparison.
 function renderBenchmarkCompareHandoff() {
   const wrap = document.createElement('div');
   wrap.className = 'benchmark-handoff';
   wrap.innerHTML = `
     <span class="benchmark-handoff-eyebrow">NEED ARTEFACT-LEVEL DIFF?</span>
     <span class="benchmark-handoff-body">
-      The per-artefact "what's in A but missing in B" drill lives in
-      <button type="button" class="benchmark-handoff-link" data-go-view="compare">Compare</button>.
-      Benchmark answers <em>is this diagnostic-grade?</em> — Compare answers <em>which artefacts differ?</em>
+      For the raw "what's in A but missing in B" per-artefact view, open the
+      <button type="button" class="benchmark-handoff-link" data-go-view="compare-artefacts">side-by-side diff</button>.
+      This page answers <em>is it diagnostic-grade?</em> — the side-by-side answers <em>which artefacts differ?</em>
     </span>
   `;
-  wrap.querySelector('[data-go-view="compare"]')?.addEventListener('click', () => {
-    state.view = 'compare';
+  wrap.querySelector('[data-go-view="compare-artefacts"]')?.addEventListener('click', () => {
+    state.view = 'compare-artefacts';
     state.activeCardKey = null;
     if (typeof applyModeChrome === 'function') applyModeChrome();
     renderTabs(); renderMainView();
@@ -5593,13 +5612,13 @@ function enterCompareMode(aId, aEnv, bId, bEnv) {
 // new pack.
 function applyModeChrome() {
   const isHome = state.mode === 'home';
-  // On Compare view the pack-A / pack-B cards inside the comparison
-  // already carry their own pickers, env selectors, swap button, and
-  // metadata chips. Showing the header pickers above is pure
-  // duplication — the same two controls fifty pixels higher. Hide them.
-  // Every other view needs the header pickers as the only way to swap
-  // packs.
-  const onCompare = state.view === 'compare';
+  // The artefact-id side-by-side view ('compare-artefacts') has its own
+  // pack-A / pack-B cards with inline pickers, env selectors, swap button,
+  // and metadata chips. Showing the header pickers above it is pure
+  // duplication. Hide them only on that view.
+  // The new 'compare' view (diagnostic-grade verdict) uses the header
+  // pickers as its only pack-selection control — keep them visible.
+  const onCompare = state.view === 'compare-artefacts';
   document.body.dataset.mode = state.mode;
   document.body.dataset.view = state.view || '';
   const packSel = $('#pack-select')?.parentElement;
