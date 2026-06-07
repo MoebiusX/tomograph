@@ -4311,6 +4311,76 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
   color: var(--ink-4);
 }
 
+/* Pack picker — the "or pick a pack to inspect" list under the manual
+   import affordances. Each row loads a pack as Pack A and draws its
+   per-layer inventory. Mirrors the hairline-divider treatment of the
+   manual-import section so the home reads as one calm column. */
+.home-picker {
+  margin-top: 28px;
+}
+.home-picker-head {
+  display: flex; align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.home-picker-head::before,
+.home-picker-head::after {
+  content: ''; flex: 1;
+  height: 1px; background: var(--line);
+}
+.home-picker-list {
+  display: flex; flex-direction: column;
+  gap: 6px;
+}
+.home-pick-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.home-pick-row:hover {
+  border-color: var(--ink-4);
+  background: var(--hover);
+}
+.home-pick-name {
+  flex: 1;
+  font: 600 13px/1.3 var(--sans);
+  color: var(--ink);
+}
+.home-pick-meta {
+  display: flex; align-items: center; gap: 8px;
+}
+.home-pick-tier {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.home-pick-ver {
+  font: 500 11px/1 var(--mono);
+  color: var(--ink-4);
+}
+.home-pick-go {
+  font: 600 14px/1 var(--mono);
+  color: var(--ink-4);
+  transition: transform 150ms ease, color 150ms ease;
+}
+.home-pick-row:hover .home-pick-go {
+  color: var(--ink);
+  transform: translateX(2px);
+}
+
 /* The Möbius Loop — inline SVG cycle diagram. The SVG is fully
    self-contained: dark panel, header rule, intro prose, gradient
    ribbon, four colored nodes, and the dashed "begin again" return

@@ -6213,6 +6213,26 @@ function renderHomeView() {
     catch (_) { return DEFAULT_MCP_URL; }
   })();
 
+  // Pack picker — the direct answer to "what do we have?". Lists the
+  // reference packs already on hand (the archived /api/examples set,
+  // cached at boot) plus anything the user uploaded or drafted this
+  // session. Selecting a row loads it as Pack A and draws the per-layer
+  // inventory — no popover, no extra click.
+  const pickerPacks = [
+    ...((state.catalog || []).filter(p => p.ok && p.id)),
+    ...((state._examplesCache || []).filter(p => p.ok)),
+  ].filter((p, i, arr) => arr.findIndex(q => q.id === p.id) === i);
+  const pickerRows = pickerPacks.map(p => `
+    <button type="button" class="home-pick-row" data-pack-id="${escapeHtml(p.id)}">
+      <span class="home-pick-name">${escapeHtml(p.label || p.name || p.id)}</span>
+      <span class="home-pick-meta">
+        ${p.criticality ? `<span class="home-pick-tier">${escapeHtml(p.criticality)}</span>` : ''}
+        <span class="home-pick-ver">v${escapeHtml(p.version || '1.2')}</span>
+      </span>
+      <span class="home-pick-go" aria-hidden="true">→</span>
+    </button>
+  `).join('');
+
   view.innerHTML = `
     <section class="home-hero">
       <div class="home-hero-eyebrow">tomograph · the observability compiler</div>
@@ -6272,6 +6292,12 @@ function renderHomeView() {
           </button>
         </div>
       </div>
+
+      ${pickerRows ? `
+      <div class="home-picker">
+        <div class="home-picker-head"><span>or pick a pack to inspect</span></div>
+        <div class="home-picker-list">${pickerRows}</div>
+      </div>` : ''}
 
       <div class="home-cycle">
         <svg class="home-cycle-svg" viewBox="0 0 960 640" xmlns="http://www.w3.org/2000/svg" role="img" font-family="'IBM Plex Sans', system-ui, sans-serif">
@@ -6368,6 +6394,21 @@ function renderHomeView() {
   };
   $('#home-shortcut-upload').onclick = () => $('#upload-btn')?.click();
   $('#home-shortcut-crawl').onclick  = () => $('#crawl-btn')?.click();
+
+  // Pack picker → load the chosen pack as Pack A and draw it. Examples
+  // live only in the cache, so promote the selected one into the catalog
+  // before entering analyze mode (mirrors the Discover dashboard wiring).
+  view.querySelectorAll('.home-pick-row').forEach(row => {
+    row.onclick = () => {
+      const id = row.dataset.packId;
+      if (!id) return;
+      if (!(state.catalog || []).find(p => p.id === id)) {
+        const ex = (state._examplesCache || []).find(p => p.id === id);
+        if (ex) (state.catalog = state.catalog || []).push(ex);
+      }
+      enterAnalyzeMode(id, defaultEnvFor(id));
+    };
+  });
 }
 
 async function doHomeMcpConnect() {
