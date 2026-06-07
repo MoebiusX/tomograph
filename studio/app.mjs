@@ -725,17 +725,14 @@ function renderMainView() {
   if (state.mode === 'home') { renderHomeView(); return; }
   if (!state.pack) { view.innerHTML = '<div class="placeholder">Loading pack…</div>'; return; }
 
-  // Mode-free dispatch. 'compare' IS the diagnostic-grade verdict view
-  // (was 'benchmark') — that's the user's "is it good enough?" question.
-  // The old artefact-id-level diff lives under 'compare-artefacts' and
-  // is reached via the handoff strip inside the Compare view.
-  //
-  // The legacy 'benchmark' id is aliased to 'compare' so persisted state
-  // from before this rename still lands somewhere sane.
+  // Mode-free dispatch. 'compare' IS the Diagnose view — the
+  // diagnostic-grade compliance report ("Can We Trust It?"). The old
+  // artefact-id side-by-side diff is GONE; any stale 'compare-artefacts'
+  // or 'benchmark' state routes to the compliance report.
   switch (state.view) {
     case 'benchmark':                                         // legacy alias
+    case 'compare-artefacts':                                 // removed view → report
     case 'compare':            renderBenchmarkView(view); return;
-    case 'compare-artefacts':  renderCompareView(view); return;
     case 'traceability':       renderTraceabilityView(view); return;
     case 'atlas':              renderAtlasView(view); return;
     case 'conformance':        view.appendChild(renderConformanceView()); return;
@@ -2759,39 +2756,6 @@ function renderBenchmarkView(view) {
   scaffold.appendChild(renderPostureMatrix(posture));
   scaffold.appendChild(renderPostureNarrative(posture));
   scaffold.appendChild(renderPosturePieRow(posture));
-
-  // The artefact-identity drill (footprint scorecard, missing/extras
-  // lists, side-by-side per-layer compare grid) intentionally NO
-  // LONGER lives in Benchmark. It re-asks "are the pack contents
-  // identical?" — a strictly lesser question than "is this observability
-  // diagnostic-grade?". The Compare view is where that drill belongs.
-  // Pointer to it instead so users who came here looking for it know
-  // where to go.
-  scaffold.appendChild(renderBenchmarkCompareHandoff());
-}
-
-// One-line nudge that points users wanting the artefact-id-level diff
-// to the secondary internal view. Quiet by design — the verdict above
-// is the answer; this is just an escape hatch for the rare power user
-// who wants raw per-artefact comparison.
-function renderBenchmarkCompareHandoff() {
-  const wrap = document.createElement('div');
-  wrap.className = 'benchmark-handoff';
-  wrap.innerHTML = `
-    <span class="benchmark-handoff-eyebrow">NEED ARTEFACT-LEVEL DIFF?</span>
-    <span class="benchmark-handoff-body">
-      For the raw "what's in A but missing in B" per-artefact view, open the
-      <button type="button" class="benchmark-handoff-link" data-go-view="compare-artefacts">side-by-side diff</button>.
-      This page answers <em>is it diagnostic-grade?</em> — the side-by-side answers <em>which artefacts differ?</em>
-    </span>
-  `;
-  wrap.querySelector('[data-go-view="compare-artefacts"]')?.addEventListener('click', () => {
-    state.view = 'compare-artefacts';
-    state.activeCardKey = null;
-    if (typeof applyModeChrome === 'function') applyModeChrome();
-    renderTabs(); renderMainView();
-  });
-  return wrap;
 }
 
 // ============================================================

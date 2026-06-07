@@ -5515,9 +5515,10 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
    OBSERVA CHROME — three-tab top bar (the demo design)
    ============================================================= */
 
-/* Dark palette used by the OBSERVA chrome, scoped to the new chrome
-   shell so the rest of the studio (drawers, modals) inherits its
-   own theme rules untouched. */
+/* OBSERVA palette. Dark by default; the --obs-* variables are
+   redefined under html[data-theme="light"] below so the existing
+   light/dark toggle flips the WHOLE chrome + dashboards, not just
+   the legacy content. Accents stay constant across themes. */
 body.chrome-observa {
   --obs-bg:        #0b0e1a;
   --obs-bg-2:      #0f1322;
@@ -5535,9 +5536,31 @@ body.chrome-observa {
   --obs-emerald:   #10b981;
   --obs-teal:      #14b8a6;
   --obs-amber:     #f59e0b;
+  --obs-hdr-bg:    linear-gradient(to bottom, #0c1020 0%, #0b0e1a 100%);
   background: var(--obs-bg);
   color: var(--obs-ink);
   --observa-chrome-h: 96px;
+}
+/* LIGHT theme — the toggle flips here. Warm engineering-tool light
+   palette (matches the legacy cream content), accents preserved. */
+html[data-theme="light"] body.chrome-observa {
+  --obs-bg:        #ece9e2;
+  --obs-bg-2:      #ffffff;
+  --obs-bg-3:      #f3f0e9;
+  --obs-line:      rgba(20,20,30,0.10);
+  --obs-line-2:    rgba(20,20,30,0.16);
+  --obs-ink:       #1b1d24;
+  --obs-ink-2:     #33363f;
+  --obs-ink-3:     #5c606b;
+  --obs-ink-4:     #8b8f99;
+  --obs-blue:      #2563eb;
+  --obs-cyan:      #0891b2;
+  --obs-purple:    #9333ea;
+  --obs-pink:      #db2777;
+  --obs-emerald:   #059669;
+  --obs-teal:      #0d9488;
+  --obs-amber:     #d97706;
+  --obs-hdr-bg:    linear-gradient(to bottom, #ffffff 0%, #f4f1ea 100%);
 }
 /* The old per-layer tab strip and the old brand block are gone —
    the OBSERVA chrome owns navigation + brand now. */
@@ -5620,7 +5643,7 @@ body.chrome-observa .upload-popover-divider {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: linear-gradient(to bottom, #0c1020 0%, #0b0e1a 100%);
+  background: var(--obs-hdr-bg);
   border-bottom: 1px solid var(--obs-line);
   backdrop-filter: blur(8px);
 }
