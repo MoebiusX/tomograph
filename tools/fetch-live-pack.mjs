@@ -517,15 +517,32 @@ export function buildCanonicalPack({
   // per-product (mcp.versions.grafana) AND with provenance
   // (mcp.versions.grafana.source) so an SRE can see exactly which
   // endpoint attested each number.
+  //
+  // A capture can come in two shapes:
+  //   1. {declared, source, ...}  — a real version string was extracted
+  //      (Grafana 12.4.0, VM v1.113.0, Loki 3.2.1, etc.)
+  //   2. {alive: true, source, ...} — the backend responded to a probe
+  //      (e.g. Jaeger via traces_services) but doesn't expose a
+  //      version-readable endpoint we know about. The studio still
+  //      gets to mark it ● LIVE; just without a number.
   for (const [product, info] of Object.entries(liveVersions || {})) {
-    if (!info?.declared) continue;
-    annotations[`mcp.versions.${product}`] = info.declared;
+    if (!info) continue;
+    if (info.declared) {
+      annotations[`mcp.versions.${product}`] = info.declared;
+    } else if (info.alive) {
+      annotations[`mcp.versions.${product}`] = 'live';
+    } else {
+      continue;
+    }
     if (info.source) annotations[`mcp.versions.${product}.source`] = info.source;
     if (info.commit) annotations[`mcp.versions.${product}.commit`] = info.commit;
     if (info.fullTag && info.fullTag !== info.declared) {
       annotations[`mcp.versions.${product}.fullTag`] = info.fullTag;
     }
     if (info.revision) annotations[`mcp.versions.${product}.revision`] = info.revision;
+    if (info.branch) annotations[`mcp.versions.${product}.branch`] = info.branch;
+    if (info.edition) annotations[`mcp.versions.${product}.edition`] = info.edition;
+    if (info.serviceCount != null) annotations[`mcp.versions.${product}.serviceCount`] = String(info.serviceCount);
     // Per-artefact verification marker pointing at the backend whose
     // version we just attested. The id pattern matches the convention
     // used in pushBackend below (e.g. metrics-victoriametrics).
@@ -1052,35 +1069,107 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     }
   }
 
-  // VictoriaMetrics — query the `vm_app_version` metric; its `short_version`
-  // label is the canonical live version (e.g. "v1.113.0"). For Prometheus
-  // installs the same approach works via `prometheus_build_info` whose
-  // `version` label carries the build version.
+  // Metrics-query-based version probes — each backend that publishes a
+  // `*_build_info` metric (Prometheus convention) gets a probe here. We
+  // run them in parallel since each is independent. The label that
+  // carries the version differs by product:
+  //
+  //   vm_app_version       → labels { short_version, version }
+  //   prometheus_build_info → labels { version, revision, branch }
+  //   loki_build_info       → labels { version, revision }
+  //   alertmanager_build_info → labels { version, revision }
+  //   tempo_build_info      → labels { version, revision }
+  //   cortex_build_info     → labels { version, revision } (Mimir uses the
+  //                              cortex_ prefix from its Cortex heritage)
+  //   grafana_build_info    → labels { version, edition, branch }
+  //                              (we also have grafana_health above; this
+  //                              is the metric fallback for installs that
+  //                              don't expose the health tool)
+  //
+  // For each, the same shape: query the metric, take the first result's
+  // labels, capture { declared, source } plus any provenance labels
+  // (revision, edition, branch). When the result is empty, the backend
+  // either isn't scraped or doesn't publish that metric — both are
+  // legitimate negatives that the studio chip should NOT mark as live.
   if (discoveredToolNames.has('metrics_query')) {
-    const vm = await quiet('metrics_query.vm_app_version',
-      () => callTool('metrics_query', { query: 'vm_app_version' }));
-    const vmSeries = vm?.result?.[0]?.metric;
-    if (vmSeries) {
-      const declared = vmSeries.short_version || vmSeries.version || null;
-      if (declared) {
-        liveVersions.victoriametrics = {
-          declared,
-          fullTag:    vmSeries.version || null,
-          source:     'metrics_query/vm_app_version',
-        };
+    const buildInfoProbes = [
+      // product slug, metric name, version-label (in priority order)
+      { product: 'victoriametrics', metric: 'vm_app_version',           versionLabels: ['short_version', 'version'], extra: ['version'] },
+      { product: 'prometheus',      metric: 'prometheus_build_info',    versionLabels: ['version'],                  extra: ['revision', 'branch'] },
+      { product: 'loki',            metric: 'loki_build_info',          versionLabels: ['version'],                  extra: ['revision', 'branch'] },
+      { product: 'alertmanager',    metric: 'alertmanager_build_info',  versionLabels: ['version'],                  extra: ['revision', 'branch'] },
+      { product: 'tempo',           metric: 'tempo_build_info',         versionLabels: ['version'],                  extra: ['revision', 'branch'] },
+      { product: 'mimir',           metric: 'cortex_build_info',        versionLabels: ['version'],                  extra: ['revision', 'branch'] },
+      // grafana_build_info is a metric fallback for the rare case where
+      // grafana_health isn't exposed; harmless if it duplicates because
+      // grafana_health stamps first and we don't overwrite below.
+      { product: 'grafana',         metric: 'grafana_build_info',       versionLabels: ['version'],                  extra: ['edition', 'branch'] },
+    ];
+
+    await Promise.all(buildInfoProbes.map(async (probe) => {
+      // Skip if a richer source (e.g. grafana_health) already populated this product.
+      if (liveVersions[probe.product]) return;
+      const resp = await quiet(`metrics_query.${probe.metric}`,
+        () => callTool('metrics_query', { query: probe.metric }));
+      const series = resp?.result?.[0]?.metric;
+      if (!series) return;
+      let declared = null;
+      for (const labelKey of probe.versionLabels) {
+        if (typeof series[labelKey] === 'string' && series[labelKey].length) {
+          declared = series[labelKey];
+          break;
+        }
       }
-    } else {
-      // Fall back to Prometheus build info on installs that AREN'T
-      // VictoriaMetrics. The metric has labels `{version, revision,
-      // branch, goversion}` per Prometheus convention.
-      const prom = await quiet('metrics_query.prometheus_build_info',
-        () => callTool('metrics_query', { query: 'prometheus_build_info' }));
-      const promSeries = prom?.result?.[0]?.metric;
-      if (promSeries && typeof promSeries.version === 'string') {
-        liveVersions.prometheus = {
-          declared: promSeries.version,
-          revision: promSeries.revision || null,
-          source:   'metrics_query/prometheus_build_info',
+      if (!declared) return;
+      const info = { declared, source: `metrics_query/${probe.metric}` };
+      for (const x of (probe.extra || [])) {
+        if (typeof series[x] === 'string' && series[x] !== declared) info[x] = series[x];
+      }
+      // For VM, also keep the full goversion-style tag separately so the
+      // chip can still show the clean "v1.113.0" while annotations carry
+      // the long "victoria-metrics-20250307-…-v1.113.0-…" form.
+      if (probe.product === 'victoriametrics' && series.version && series.version !== declared) {
+        info.fullTag = series.version;
+      }
+      liveVersions[probe.product] = info;
+    }));
+  }
+
+  // Traces-availability probe — Jaeger (and others) don't always expose
+  // a server build_info metric. But calling traces_services returns the
+  // service list, which is positive proof the trace backend is
+  // responding live. Mark the corresponding product as alive: true
+  // without a specific version; the studio chip shows ● LIVE without
+  // a number.
+  //
+  // Disambiguation: the capabilities inventory lists every TRACE backend
+  // the MCP CAN speak to (Jaeger, Tempo, Zipkin, SkyWalking) — but the
+  // deployment uses ONE. The services list usually contains the trace
+  // backend's own service name ("jaeger" → it's Jaeger). When the
+  // service list doesn't disambiguate, fall back to the FIRST trace
+  // backend in the capability inventory (typically Jaeger) — never
+  // light up all of them, which would falsely claim Tempo/Zipkin/etc.
+  // are running.
+  if (discoveredToolNames.has('traces_services')) {
+    const tr = await quiet('traces_services', () => callTool('traces_services'));
+    if (tr && Array.isArray(tr.services) && tr.services.length) {
+      const services = tr.services.map(s => String(s).toLowerCase());
+      const tracesBackends = (capabilities?.skills || [])
+        .find(s => s.skill === 'traces')?.backends || [];
+      const productsInScope = tracesBackends
+        .map(b => BACKEND_TO_PRODUCT[b.backend])
+        .filter(Boolean);
+      // Look for a match in the services list — the trace backend
+      // typically reports its own service name as a self-instrumented
+      // span emitter.
+      const matched = productsInScope.find(p => services.includes(p));
+      const winner = matched || productsInScope[0] || null;
+      if (winner && !liveVersions[winner]) {
+        liveVersions[winner] = {
+          alive: true,
+          source: 'traces_services',
+          serviceCount: tr.services.length,
+          disambiguatedBy: matched ? 'service-name-match' : 'capability-inventory-first',
         };
       }
     }
@@ -1099,8 +1188,17 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   );
   // Version probes count as "wired" too — surface them so they don't
   // show up as "not yet probed" in the unmatched panel.
-  if (liveVersions.grafana) allMatchedNames.add('grafana_health');
-  if (liveVersions.victoriametrics || liveVersions.prometheus) allMatchedNames.add('metrics_query');
+  if (liveVersions.grafana?.source === 'grafana_health') allMatchedNames.add('grafana_health');
+  // metrics_query gets used for build_info probes across many products
+  // (vm_app_version, loki_build_info, alertmanager_build_info, …).
+  // If ANY of them landed, the tool is "wired."
+  const metricBuiltSourced = Object.values(liveVersions).some(v =>
+    typeof v?.source === 'string' && v.source.startsWith('metrics_query/'));
+  if (metricBuiltSourced) allMatchedNames.add('metrics_query');
+  // traces_services availability probe — wired when any trace product
+  // captured an `alive: true` entry via it.
+  const tracesAlive = Object.values(liveVersions).some(v => v?.source === 'traces_services');
+  if (tracesAlive) allMatchedNames.add('traces_services');
   const unmatchedTools = discoveredTools.filter(t => !allMatchedNames.has(t.name));
 
   return {

@@ -4636,11 +4636,23 @@ function renderCapabilitiesPanel(capabilities, liveVersions = {}) {
     const backends = grouped.get(skill);
     const chips = backends.map(b => {
       const product = b.product || b.backend;
+      // `liveVersions[product]` carries either a real version string
+      // (e.g. "12.4.0") OR the sentinel "live" when the backend
+      // responded to a probe but doesn't expose a readable version
+      // (Jaeger via traces_services). Both flip the chip to live mode.
       const live = liveVersions[product];
       const policyVer = (b.versions?.must || [])[0] || '';
       const isLive = !!live;
-      const ver = isLive ? live : policyVer;
-      const liveTooltip = isLive ? ` · live=${live}` : '';
+      // When the capture has a real version, show it. When it's the
+      // "live" sentinel, keep showing the policy version (jaeger 2.x)
+      // because that's the only number we have — but still mark it
+      // ● LIVE so the user knows the backend itself is responding.
+      const isAliveSentinel = isLive && live === 'live';
+      const ver = isAliveSentinel ? policyVer : (isLive ? live : policyVer);
+      const liveTooltip = !isLive ? '' :
+        (isAliveSentinel
+          ? ` · live=responding (version not exposed)`
+          : ` · live=${live}`);
       return `<span class="home-mcp-skill-chip${isLive ? ' is-live' : ''}" title="${escapeHtml(b.backend)} · must=${escapeHtml((b.versions?.must||[]).join(','))}${liveTooltip}">
         <strong>${escapeHtml(product)}</strong>${ver ? ` <em>${escapeHtml(ver)}</em>` : ''}${isLive ? `<span class="home-mcp-skill-chip-live" aria-label="live version">●&nbsp;LIVE</span>` : ''}
       </span>`;
