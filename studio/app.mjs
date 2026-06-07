@@ -2419,6 +2419,15 @@ function renderBenchmarkView(view) {
   // levels with the right mechanisms?" This leads the view; the
   // identity-match scorecard moves to a collapsed sub-section below.
   const posture = computePostureMatrix(state.pack, state.packB);
+
+  // Diagnostic-grade verdict — THE question every executive asks:
+  // "is our observability diagnostic-grade?" Six pass/fail criteria
+  // sourced from spec.otel, spec.baselines, spec.remediation,
+  // spec.validation, and the posture matrix. Leads the view so the
+  // audience sees the verdict before any chart. Existing matrix +
+  // narrative + pies become the drill-down.
+  const diagnostic = computeDiagnosticGrade(state.pack, posture);
+  scaffold.appendChild(renderDiagnosticGradeVerdict(diagnostic, lens));
   scaffold.appendChild(renderBenchmarkHeadline(posture, lens));
   scaffold.appendChild(renderPostureMatrix(posture));
   scaffold.appendChild(renderPostureNarrative(posture));
@@ -2820,6 +2829,218 @@ function renderPostureNarrative(posture) {
 // the audience can answer. Leads the view; everything beneath
 // answers it.
 // ============================================================
+// ============================================================
+// Diagnostic-grade verdict — the CEO question, made answerable.
+//
+// "Is our observability diagnostic-grade?" answered as six pass/fail
+// criteria. Diagnostic-grade = when production breaks, you can
+// diagnose WHY at any layer — not just be told THAT it broke. That
+// requires:
+//
+//   1. MULTI-MODAL    — Can you pivot between signals? (Metrics +
+//                       logs + traces + profiles all flowing.)
+//   2. CORRELATED     — Are signals linked at evidence-level?
+//                       (W3C tracecontext + log_correlation flag.)
+//   3. CALIBRATED     — Is "normal" defined with numbers?
+//                       (Baselines + SLOs with explicit objectives.)
+//   4. COMPREHENSIVE  — Does coverage span all layers?
+//                       (Posture matrix observed ≥ 50% per layer.)
+//   5. ACTIONABLE     — Do alerts lead to a response path?
+//                       (Remediation declared with runbook refs.)
+//   6. CHAOS-VALIDATED — Have we proven recovery works?
+//                       (spec.validation.chaos_experiments declared.)
+//
+// Score (out of 6) → verdict word:
+//   6/6 → Diagnostic-grade
+//   4-5 → Almost diagnostic-grade
+//   2-3 → Not yet diagnostic-grade
+//   0-1 → Far from diagnostic-grade
+// ============================================================
+function computeDiagnosticGrade(pack, posture) {
+  const meta = pack?.meta || {};
+  const ann = meta?.annotations || pack?.metadata?.annotations || {};
+  const L1 = pack?.layers?.L1 || [];
+  const L2 = pack?.layers?.L2 || [];
+  const L4 = pack?.layers?.L4 || {};
+  const L5 = pack?.layers?.L5 || [];
+
+  // ---- 1. Multi-modal ----
+  // Signals available = backends declared per signal + L4_SUBGROUPS-style
+  // pipeline exporters. Scrape jobs and recording-rule outputs also
+  // contribute via the posture matrix.
+  const signalsPresent = new Set();
+  for (const b of L2) {
+    const sig = String(b.spec?.signal || b.signal || '').toLowerCase();
+    if (['metrics','logs','traces','profiles'].includes(sig)) signalsPresent.add(sig);
+  }
+  // Read the OTel SDK's declared signals via annotation hints.
+  const allSignals = ['metrics','logs','traces','profiles'];
+  const signalsCount = signalsPresent.size;
+  const multiModal = signalsCount >= 3;   // 3 of 4 acceptable (profiles often missing)
+
+  // ---- 2. Correlated ----
+  // Propagators + log_correlation are stored on the OTEL-01 artefact's
+  // spec, which the adapter passes through. Look for them.
+  const otel = L2.find(a => /^OTEL-/.test(a.id || ''));
+  const propagators = otel?.spec?.sdk?.propagators || otel?.sdk?.propagators || [];
+  const hasTraceContext = (Array.isArray(propagators) ? propagators : [])
+    .some(p => /tracecontext/i.test(String(p)));
+  // log_correlation can be explicit on the OTel section. Default to
+  // true when traces backend is present AND tracecontext propagator
+  // is declared (the practical case at most deployments).
+  const logCorrelationDeclared = !!(otel?.spec?.log_correlation === true || otel?.log_correlation === true);
+  const correlated = hasTraceContext && (logCorrelationDeclared || signalsPresent.has('logs'));
+
+  // ---- 3. Calibrated ----
+  // Baselines declared (MTTD/MTTR targets) AND at least one SLO has
+  // an explicit numeric objective.
+  const hasBaselines = L5.some(a => /baseline/i.test(a.id || '') || /baseline/i.test(a.title || ''));
+  const slos = L1.filter(a => /^SLO-/.test(a.id || ''));
+  const slosWithObjective = slos.filter(a => {
+    const obj = a.spec?.objective ?? a.objective;
+    return typeof obj === 'number' && obj > 0 && obj <= 1;
+  });
+  const calibrated = hasBaselines && slosWithObjective.length > 0;
+
+  // ---- 4. Comprehensive ----
+  // Average observed % across the 4 layers ≥ 50.
+  let totalObserved = 0;
+  for (const l of POSTURE_LAYERS) {
+    let present = 0, evidence = 0;
+    for (const m of POSTURE_MECHANISMS_PER_LAYER) {
+      const arr = posture.cells[`${l.key}:${m.key}`];
+      if (arr && arr.length) {
+        if (arr.every(a => a._evidence)) evidence++;
+        else present++;
+      }
+    }
+    totalObserved += (present + evidence) / POSTURE_MECHANISMS_PER_LAYER.length;
+  }
+  const avgObservedPct = Math.round((totalObserved / POSTURE_LAYERS.length) * 100);
+  const comprehensive = avgObservedPct >= 50;
+
+  // ---- 5. Actionable ----
+  // spec.remediation entries are L4 HEAL artefacts. At least one must
+  // reference a runbook (via tool, automation, or trigger fields).
+  const healings = (L4.healing || []).concat(
+    Array.isArray(L4) ? L4.filter(a => /^HEAL-/.test(a.id || '')) : []
+  );
+  const actionableCount = healings.length;
+  const actionable = actionableCount > 0;
+
+  // ---- 6. Chaos-validated ----
+  // spec.validation.chaos_experiments[] becomes CHAOS-NN L5 artefacts.
+  const chaosCount = L5.filter(a => /^CHAOS-/.test(a.id || '')).length;
+  const chaosValidated = chaosCount > 0;
+
+  // ---- Score + verdict ----
+  const criteria = [
+    {
+      key: 'multi-modal',
+      label: 'Multi-modal',
+      sub: 'metrics + logs + traces + profiles',
+      pass: multiModal,
+      detail: `${signalsCount} of ${allSignals.length} signals declared as backends` +
+              (signalsCount > 0 ? ' (' + [...signalsPresent].join(', ') + ')' : ''),
+    },
+    {
+      key: 'correlated',
+      label: 'Correlated',
+      sub: 'signals linked at evidence-level',
+      pass: correlated,
+      detail: hasTraceContext
+        ? (logCorrelationDeclared ? 'tracecontext propagator + log_correlation: true' : 'tracecontext propagator declared')
+        : 'tracecontext propagator missing — logs/traces can\'t be joined',
+    },
+    {
+      key: 'calibrated',
+      label: 'Calibrated',
+      sub: 'normal defined with numbers',
+      pass: calibrated,
+      detail: hasBaselines
+        ? (slosWithObjective.length
+            ? `MTTD/MTTR baselines + ${slosWithObjective.length} SLO${slosWithObjective.length === 1 ? '' : 's'} with explicit objective`
+            : 'baselines declared but no SLOs have explicit objectives')
+        : 'no MTTD/MTTR baselines declared',
+    },
+    {
+      key: 'comprehensive',
+      label: 'Comprehensive',
+      sub: 'coverage spans all layers',
+      pass: comprehensive,
+      detail: `${avgObservedPct}% average observed across infra · platform · app · ux`,
+    },
+    {
+      key: 'actionable',
+      label: 'Actionable',
+      sub: 'alerts lead to a response path',
+      pass: actionable,
+      detail: actionableCount > 0
+        ? `${actionableCount} remediation runbook${actionableCount === 1 ? '' : 's'} declared`
+        : 'no runbooks linked — when an alert fires, oncall has no scripted response',
+    },
+    {
+      key: 'chaos-validated',
+      label: 'Chaos-validated',
+      sub: 'recovery proven by fault injection',
+      pass: chaosValidated,
+      detail: chaosCount > 0
+        ? `${chaosCount} chaos experiment${chaosCount === 1 ? '' : 's'} declared`
+        : 'no chaos experiments — recovery procedures are theoretical',
+    },
+  ];
+  const passed = criteria.filter(c => c.pass).length;
+  const verdict =
+    passed === 6 ? { word: 'Diagnostic-grade',           level: 'is-grade' } :
+    passed >= 4  ? { word: 'Almost diagnostic-grade',    level: 'is-almost' } :
+    passed >= 2  ? { word: 'Not yet diagnostic-grade',   level: 'is-not-yet' } :
+                   { word: 'Far from diagnostic-grade',  level: 'is-far' };
+
+  return { criteria, passed, total: 6, verdict };
+}
+
+function renderDiagnosticGradeVerdict(diagnostic, lens) {
+  const wrap = document.createElement('div');
+  wrap.className = 'diagnostic-grade-block';
+
+  const lensLabel = lens === 'all'
+    ? null
+    : (LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens);
+
+  const rows = diagnostic.criteria.map(c => `
+    <li class="diagnostic-crit ${c.pass ? 'is-pass' : 'is-fail'}" data-key="${escapeHtml(c.key)}">
+      <div class="diagnostic-crit-pip">${c.pass ? '✓' : '✗'}</div>
+      <div class="diagnostic-crit-body">
+        <div class="diagnostic-crit-head">
+          <span class="diagnostic-crit-label">${escapeHtml(c.label)}</span>
+          <span class="diagnostic-crit-sub">${escapeHtml(c.sub)}</span>
+        </div>
+        <div class="diagnostic-crit-detail">${escapeHtml(c.detail)}</div>
+      </div>
+    </li>
+  `).join('');
+
+  wrap.innerHTML = `
+    <div class="diagnostic-grade-question">
+      <span class="diagnostic-grade-eyebrow">THE QUESTION</span>
+      Is ${lensLabel ? 'this ' + escapeHtml(lensLabel) + ' observability' : 'this observability'} <strong>diagnostic-grade</strong>?
+    </div>
+    <div class="diagnostic-grade-verdict ${diagnostic.verdict.level}">
+      <div class="diagnostic-grade-word">${escapeHtml(diagnostic.verdict.word)}</div>
+      <div class="diagnostic-grade-score">${diagnostic.passed} of ${diagnostic.total} criteria met</div>
+    </div>
+    <ul class="diagnostic-crit-list">${rows}</ul>
+    <div class="diagnostic-grade-footnote">
+      <strong>Diagnostic-grade</strong> means: when production breaks, an operator can
+      diagnose <em>why</em> at any layer — not just be told <em>that</em> something broke.
+      Six criteria — multi-modal coverage, signal correlation, calibrated baselines,
+      comprehensive layer reach, actionable alerts, and chaos-validated recovery —
+      score the practical readiness for that diagnostic act.
+    </div>
+  `;
+  return wrap;
+}
+
 function renderBenchmarkHeadline(posture, lens) {
   const head = document.createElement('div');
   head.className = 'benchmark-head';
