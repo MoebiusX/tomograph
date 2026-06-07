@@ -667,6 +667,42 @@ a:hover { color: var(--ink); }
 .crawl-summary-table td:first-child { color: var(--ink-4); }
 .crawl-summary-table td:last-child  { text-align: right; color: var(--ink); font-weight: 600; }
 .crawl-summary-table tr.is-dim td { color: var(--ink-5); font-weight: 400; font-style: italic; }
+/* Evidence rows — fallback discovery (firing alerts via ALERTS metric,
+   recording rules via metric-inventory grep). Sit beneath the row they
+   amend, slightly indented + tinted so it's clear they're additional
+   evidence, not the primary count. */
+.crawl-summary-table tr.is-evidence td {
+  font-style: italic;
+  color: var(--ink-3);
+  font-weight: 500;
+  background: rgba(123, 58, 178, 0.04);
+}
+.crawl-summary-table tr.is-evidence td:first-child {
+  padding-left: 18px;
+  color: var(--CMP);
+}
+.row-evidence-hint {
+  display: block;
+  font: 10.5px/1.4 var(--mono);
+  color: var(--ink-4);
+  font-style: normal;
+  margin-top: 1px;
+}
+.crawl-evidence-note {
+  margin-top: 8px;
+  padding: 8px 12px;
+  font: 11.5px/1.55 var(--serif);
+  color: var(--ink-3);
+  background: rgba(123, 58, 178, 0.05);
+  border-left: 2px solid var(--CMP);
+  border-radius: 3px;
+}
+.crawl-evidence-note code {
+  font: 11px/1 var(--mono);
+  background: var(--ink-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
 .crawl-inferred {
   margin-top: 6px;
   font: italic 11px/1.5 var(--serif);

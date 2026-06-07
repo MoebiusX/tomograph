@@ -339,6 +339,7 @@ export function buildCanonicalPack({
   unmatchedTools = [],
   capabilities = null,
   liveVersions = {},
+  ruleEvidence = { firingAlerts: [], recordingRuleNames: [] },
   packName = PACK_NAME,
 } = {}) {
   const services = Array.isArray(health.services) ? health.services : [];
@@ -696,6 +697,30 @@ export function buildCanonicalPack({
   if (discoveredAlertNames.length) {
     annotations['mcp.discovered.alert_rule_names'] = discoveredAlertNames.slice(0, 64).join(',');
     markVerified('policy.burn_rate_alerts');
+  }
+
+  // Rule-evidence fallback annotations — what we found when the standard
+  // rule-discovery endpoints came back empty but evidence existed
+  // elsewhere. Kept under separate annotation keys so the studio can
+  // surface "0 rule definitions visible · N firing alerts via ALERTS
+  // metric" honestly, without conflating the two sources.
+  if (Array.isArray(ruleEvidence?.firingAlerts) && ruleEvidence.firingAlerts.length) {
+    const names = ruleEvidence.firingAlerts.map(a => a.name).filter(Boolean);
+    const totalFirings = ruleEvidence.firingAlerts.reduce((acc, a) => acc + (a.count || 0), 0);
+    annotations['mcp.discovered.alerts_firing.count'] = String(names.length);
+    annotations['mcp.discovered.alerts_firing.total_firings'] = String(totalFirings);
+    annotations['mcp.discovered.alerts_firing.names'] = names.slice(0, 64).join(',');
+    annotations['mcp.discovered.alerts_firing.source'] = 'metrics_query/ALERTS';
+    markVerified('policy.alerts_firing');
+  }
+  if (Array.isArray(ruleEvidence?.recordingRuleNames) && ruleEvidence.recordingRuleNames.length) {
+    annotations['mcp.discovered.recording_rules_via_inventory.count'] =
+      String(ruleEvidence.recordingRuleNames.length);
+    annotations['mcp.discovered.recording_rules_via_inventory.names'] =
+      ruleEvidence.recordingRuleNames.slice(0, 64).join(',');
+    annotations['mcp.discovered.recording_rules_via_inventory.source'] =
+      'metrics_label_values/__name__ (colon-pattern grep)';
+    markVerified('queries.recording_rules_via_inventory');
   }
 
   // ---- scrape evidence + metric inventory ----
@@ -1261,6 +1286,76 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     }
   }
 
+  // ----------------------------------------------------------------
+  // Rule-evidence fallback (Phase 6) — capture rule existence even when
+  // the standard rule-discovery endpoints come back empty.
+  //
+  // The contract gap: a platform can have alerts actively firing AND
+  // recording rules running, yet have ZERO rule definitions visible
+  // via metrics_alerts (VM /api/v1/rules), grafana_alert_rules, or
+  // alertmanager_alerts. Reasons:
+  //   1. Rules evaluated by VMAlert/Mimir-ruler/custom evaluator that
+  //      doesn't surface a discoverable /api/v1/rules endpoint
+  //   2. Custom services writing ALERTS series directly (Krystaline's
+  //      bayesian-service emits ErrorBudgetExhaustionForecast etc.)
+  //   3. Recording rules running in a different deployment, with only
+  //      their outputs landing in the central VM
+  //
+  // We can still attest the EVIDENCE of rules from data we already have:
+  //   • alerts:    query ALERTS{alertstate="firing"} → firing alertnames
+  //   • recording: grep the metric inventory for the colon convention
+  //                <namespace>:<metric>:<op_window> — Prometheus's
+  //                canonical recording-rule output naming
+  //
+  // We can't capture the rule's expression (it lives wherever it's
+  // evaluated), but we capture identity + observed state, which is
+  // honest evidence. Studio summary distinguishes "0 rule definitions
+  // visible" from "0 — none configured" using these annotations.
+  // ----------------------------------------------------------------
+  const ruleEvidence = { firingAlerts: [], recordingRuleNames: [] };
+
+  // Fallback for alert_rules: only run when the primary probe returned
+  // an empty array AND the MCP exposes metrics_query.
+  const alertProbe = probeResults?.alert_rules;
+  const alertPrimaryEmpty = alertProbe &&
+    (alertProbe.outcome === 'empty' || (Array.isArray(alertProbe.adapted) && alertProbe.adapted.length === 0));
+  if (alertPrimaryEmpty && discoveredToolNames.has('metrics_query')) {
+    const r = await quiet('metrics_query.ALERTS',
+      () => callTool('metrics_query', { query: 'count by (alertname, severity, team, alertgroup) (ALERTS{alertstate="firing"})' }));
+    const series = Array.isArray(r?.result) ? r.result : [];
+    for (const s of series) {
+      const m = s?.metric || {};
+      if (!m.alertname) continue;
+      const count = Number(s.value?.[1] ?? 0);
+      ruleEvidence.firingAlerts.push({
+        name: m.alertname,
+        severity: m.severity || null,
+        team: m.team || null,
+        group: m.alertgroup || null,
+        count: Number.isFinite(count) ? count : null,
+      });
+    }
+  }
+
+  // Fallback for recording_rules: grep the metric inventory captured by
+  // the metric_names probe. Recording rules in Prometheus follow the
+  // <ns>:<metric>:<op>[_<window>] convention — namespace:metric:op,
+  // typically three colon-segments. We accept 2-or-more so platform
+  // shorthand (e.g. `up:rate1m`) is captured too.
+  const recordingProbe = probeResults?.recording_rules;
+  const recordingPrimaryEmpty = recordingProbe &&
+    (recordingProbe.outcome === 'empty' || (Array.isArray(recordingProbe.adapted) && recordingProbe.adapted.length === 0));
+  const metricNames = probeResults?.metric_names?.adapted;
+  if (recordingPrimaryEmpty && Array.isArray(metricNames) && metricNames.length) {
+    const RECORDING_PATTERN = /^[a-z][a-z0-9_-]*(:[a-z][a-z0-9_-]*){1,}$/i;
+    const NOISE_PREFIXES = /^(ALERTS|UP|process_|go_|http_|prometheus_|alertmanager_|grafana_|loki_|vmalert_|jvm_)/i;
+    ruleEvidence.recordingRuleNames = metricNames
+      .filter(n => typeof n === 'string')
+      .filter(n => RECORDING_PATTERN.test(n))
+      .filter(n => !NOISE_PREFIXES.test(n))
+      .slice(0, 200);
+  }
+
   // Compute unmatched tool names — tools the MCP advertises that we
   // DON'T have a probe pattern for. These are the leading edge: every
   // unmatched name is a potential probe candidate to add. Surface them
@@ -1294,6 +1389,7 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     unmatchedTools,             // tools the MCP exposes that we don't probe yet
     capabilities,               // parsed backend_capabilities inventory (or null)
     liveVersions,               // { <product>: { declared, ...meta } } from authoritative endpoints
+    ruleEvidence,               // { firingAlerts, recordingRuleNames } — fallback evidence
   };
 }
 

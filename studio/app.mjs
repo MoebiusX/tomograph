@@ -6249,6 +6249,30 @@ function renderDraftMcpResult(out) {
     // annotations; fall back to the original behaviour.
     return row(label, '— probed, none found', true);
   };
+  // Rule-evidence fallback rows — only shown when the primary probe
+  // came back empty (or failed) but the fallback found evidence. Reads
+  // directly from the annotations the fetcher stamped.
+  const ann = out.annotations || {};
+  const alertsFiringNames = (ann['mcp.discovered.alerts_firing.names'] || '').split(',').filter(Boolean);
+  const alertsFiringCount = Number(ann['mcp.discovered.alerts_firing.count'] || 0);
+  const alertsTotalFirings = Number(ann['mcp.discovered.alerts_firing.total_firings'] || 0);
+  const recordingFallbackCount = Number(ann['mcp.discovered.recording_rules_via_inventory.count'] || 0);
+  const evidenceRow = (label, value, hint) =>
+    `<tr class="is-evidence"><td>${escapeHtml(label)}<span class="row-evidence-hint">${escapeHtml(hint)}</span></td><td>${escapeHtml(String(value))}</td></tr>`;
+  const alertEvidenceRow = alertsFiringCount > 0
+    ? evidenceRow(
+        'alerts firing',
+        `${alertsFiringCount} alertname${alertsFiringCount === 1 ? '' : 's'} · ${alertsTotalFirings} total`,
+        `via ALERTS metric — rule definitions hidden, firing state visible`,
+      )
+    : '';
+  const recordingEvidenceRow = recordingFallbackCount > 0
+    ? evidenceRow(
+        'recording rule outputs',
+        `${recordingFallbackCount}`,
+        `via colon-pattern grep over metric inventory`,
+      )
+    : '';
   $('#draft-mcp-result-summary').innerHTML = `
     <h4>what the MCP attested</h4>
     <table class="crawl-summary-table">
@@ -6256,11 +6280,21 @@ function renderDraftMcpResult(out) {
       ${row('backends', d.backends)}
       ${row('active anomalies', d.activeAnomalies)}
       ${probeRow('recording rules', 'recording_rules', d.recordingRules)}
+      ${recordingEvidenceRow}
       ${probeRow('alert rules',     'alert_rules',     d.alertRules)}
+      ${alertEvidenceRow}
       ${probeRow('dashboards',      'dashboards',      d.dashboards)}
       ${probeRow('scrape jobs',     'scrape_configs',  (d.scrapeJobs || []).length)}
       ${probeRow('metric names',    'metric_names',    d.metricNamesCount)}
     </table>
+    ${alertsFiringCount > 0 || recordingFallbackCount > 0 ? `
+      <div class="crawl-evidence-note">
+        Rows in italic = fallback evidence. The standard rule endpoints came back empty,
+        but Tomograph found evidence in metric data: firing alerts via the
+        <code>ALERTS</code> series, recording rules via metric names following the
+        <code>&lt;ns&gt;:&lt;metric&gt;:&lt;op&gt;</code> convention.
+      </div>
+    ` : ''}
     <div class="crawl-inferred">
       <em>refreshed</em>: ${escapeHtml(out.summary.refreshedAt)}
     </div>
