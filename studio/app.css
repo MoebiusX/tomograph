@@ -5649,7 +5649,7 @@ body.chrome-observa .upload-popover-divider {
 }
 .observa-hdr-inner {
   display: grid;
-  grid-template-columns: minmax(180px, auto) 1fr minmax(280px, auto);
+  grid-template-columns: minmax(180px, auto) 1fr;
   align-items: stretch;
   gap: 28px;
   padding: 14px 28px;

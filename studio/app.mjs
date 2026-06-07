@@ -5944,23 +5944,6 @@ function installObservaChrome() {
           </button>
         `).join('')}
       </nav>
-
-      <div class="observa-actions" aria-label="Secondary">
-        <button type="button" class="observa-action observa-action-icon" title="Projects" disabled>
-          <span class="observa-action-glyph">▣</span>
-          <span class="observa-action-label">Projects</span>
-        </button>
-        <button type="button" class="observa-action observa-action-icon observa-action-alerts" title="Alerts" disabled>
-          <span class="observa-action-glyph">⚠</span>
-          <span class="observa-action-label">Alerts</span>
-          <span class="observa-action-badge" aria-label="3 alerts">3</span>
-        </button>
-        <button type="button" class="observa-action observa-action-icon" title="Help" disabled>
-          <span class="observa-action-glyph">?</span>
-          <span class="observa-action-label">Help</span>
-        </button>
-        <button type="button" class="observa-avatar" title="Account">AD<span class="observa-avatar-caret">▾</span></button>
-      </div>
     </div>
   `;
   document.body.insertBefore(hdr, document.body.firstChild);
