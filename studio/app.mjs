@@ -674,7 +674,14 @@ function renderMainView() {
   // hook for the debounced write. Cheap when suspended (boot phase).
   persistence.schedule();
   if (state.mode === 'home') { renderHomeView(); return; }
-  if (!state.pack) { view.innerHTML = '<div class="placeholder">Loading pack…</div>'; return; }
+  if (!state.pack) {
+    // In the workspace but no pack yet. Discover ("what do we have?") is
+    // where you LOAD or GENERATE a pack — so its empty state IS the three
+    // load options, never the marketing hero. Diagnose/Remediate need a
+    // pack first, so they point the user back to Discover.
+    if (state.view === 'layers') { renderDiscoverEmpty(view); return; }
+    renderNeedPackPrompt(view); return;
+  }
 
   // Mode-free dispatch. 'compare' IS the Diagnose view — the
   // diagnostic-grade compliance report ("Can We Trust It?"). The old
@@ -5938,6 +5945,12 @@ function installObservaChrome() {
   // Wire tab clicks → route to the existing view dispatcher.
   const routeTo = (id) => {
     if (!id) return;
+    // Clicking any tab leaves the landing/reset hero and enters the
+    // workspace. Without this the no-pack state stays mode='home' and
+    // every tab would keep rendering the landing hero (the bug behind
+    // "why is Discover like the landing hero page?"). The pack is still
+    // null until the user loads one — Discover's empty state handles that.
+    if (state.mode === 'home') state.mode = 'single';
     state.view = id;
     state.activeCardKey = null;
     state.activeLayer = ({ compile: 'COMPILE', conformance: 'CONF', schema: 'CONF', atlas: 'ATLAS', layers: state.layerFilter !== 'all' ? state.layerFilter : 'L1' })[id] || 'L1';
@@ -5976,9 +5989,14 @@ function paintObservaActiveTab() {
   const v = state.view || 'layers';
   const active = (v === 'benchmark' || v === 'compare-artefacts') ? 'compare' : v;
   const advActive = OBSERVA_ADV_VIEWS.has(v);
+  // The landing/reset hero is NOT a tab — it's the pre-workspace start
+  // screen. Clearing the active marker there is what keeps Discover from
+  // "being" the landing hero: you only light a tab once you're working.
+  const onLanding = state.mode === 'home';
   for (const btn of document.querySelectorAll('.observa-tab')) {
-    // A workflow tab is active only when we're NOT in an advanced view.
-    const isActive = !advActive && btn.dataset.view === active;
+    // A workflow tab is active only when we're NOT in an advanced view
+    // and NOT on the landing screen.
+    const isActive = !onLanding && !advActive && btn.dataset.view === active;
     btn.classList.toggle('is-active', isActive);
     btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
   }
@@ -6198,6 +6216,126 @@ function setupHomeAffordance() {
 // change this constant — the rest of the home is data-driven.
 const DEFAULT_MCP_URL = 'https://www.krystaline.io/mcp/public';
 
+// Packs available to inspect right now: anything uploaded/drafted this
+// session plus the archived /api/examples set (cached at boot), de-duped.
+function availablePickerPacks() {
+  return [
+    ...((state.catalog || []).filter(p => p.ok && p.id)),
+    ...((state._examplesCache || []).filter(p => p.ok)),
+  ].filter((p, i, arr) => arr.findIndex(q => q.id === p.id) === i);
+}
+
+// Wire a list of .home-pick-row buttons → load the chosen pack as Pack A
+// and draw it. Examples live only in the cache, so promote the selected
+// one into the catalog before entering analyze mode.
+function wirePackPickerRows(scope) {
+  scope.querySelectorAll('.home-pick-row').forEach(row => {
+    row.onclick = () => {
+      const id = row.dataset.packId;
+      if (!id) return;
+      if (!(state.catalog || []).find(p => p.id === id)) {
+        const ex = (state._examplesCache || []).find(p => p.id === id);
+        if (ex) (state.catalog = state.catalog || []).push(ex);
+      }
+      enterAnalyzeMode(id, defaultEnvFor(id));
+    };
+  });
+}
+
+function packPickerRowsHtml() {
+  return availablePickerPacks().map(p => `
+    <button type="button" class="home-pick-row" data-pack-id="${escapeHtml(p.id)}">
+      <span class="home-pick-name">${escapeHtml(p.label || p.name || p.id)}</span>
+      <span class="home-pick-meta">
+        ${p.criticality ? `<span class="home-pick-tier">${escapeHtml(p.criticality)}</span>` : ''}
+        <span class="home-pick-ver">v${escapeHtml(p.version || '1.2')}</span>
+      </span>
+      <span class="home-pick-go" aria-hidden="true">→</span>
+    </button>
+  `).join('');
+}
+
+// ============================================================
+// DISCOVER — empty state. The Discover tab answers "what do we have?",
+// and the FLOW is: load-or-generate a pack first, THEN see its inventory.
+// So with no pack this renders the three ways to GET a pack — crawl a
+// repo, generate live from an MCP server, or upload a manifest — plus a
+// quick picker of packs already on hand. This is deliberately NOT the
+// marketing hero (no giant headline, no Möbius loop); that hero is the
+// separate landing/reset screen.
+// ============================================================
+function renderDiscoverEmpty(view) {
+  const pickerRows = packPickerRowsHtml();
+  view.innerHTML = `
+    <section class="discover-empty">
+      <header class="discover-empty-head">
+        <h2 class="discover-empty-title">What do we have?</h2>
+        <p class="discover-empty-lede">
+          Load or generate an ObservabilityPack to draw its tomogram — the
+          per-layer inventory of every contract, signal, dashboard, alert
+          and check that makes up this service's observability posture.
+        </p>
+      </header>
+
+      <div class="discover-load">
+        <button type="button" class="discover-load-card" data-load="crawl">
+          <span class="discover-load-glyph" aria-hidden="true">↻</span>
+          <span class="discover-load-label">Crawl a repository</span>
+          <span class="discover-load-sub">walk Prom / OTel / Grafana / Alertmanager configs — local folder or a GitHub URL</span>
+        </button>
+        <button type="button" class="discover-load-card" data-load="mcp">
+          <span class="discover-load-glyph" aria-hidden="true">⟳</span>
+          <span class="discover-load-label">Generate live from MCP</span>
+          <span class="discover-load-sub">interrogate a live OpenTelemetry MCP server for backends, baselines and anomalies</span>
+        </button>
+        <button type="button" class="discover-load-card" data-load="upload">
+          <span class="discover-load-glyph" aria-hidden="true">▤</span>
+          <span class="discover-load-label">Upload a pack</span>
+          <span class="discover-load-sub">an existing canonical v1.2 YAML or JSON manifest</span>
+        </button>
+      </div>
+
+      ${pickerRows ? `
+      <div class="home-picker discover-empty-picker">
+        <div class="home-picker-head"><span>or inspect a pack already on hand</span></div>
+        <div class="home-picker-list">${pickerRows}</div>
+      </div>` : ''}
+    </section>
+  `;
+
+  // The three load cards proxy the proven header entry points so there's
+  // a single implementation of crawl / draft-from-mcp / upload.
+  const proxy = { crawl: '#crawl-btn', mcp: '#draft-mcp-btn', upload: '#upload-btn' };
+  view.querySelectorAll('.discover-load-card').forEach(card => {
+    card.onclick = () => $(proxy[card.dataset.load])?.click();
+  });
+  wirePackPickerRows(view);
+}
+
+// Diagnose / Remediate with no pack loaded — both need a pack from
+// Discover first. Point the user there rather than showing an empty grid.
+function renderNeedPackPrompt(view) {
+  const what = state.view === 'compile' ? 'compile and deploy' : 'diagnose';
+  view.innerHTML = `
+    <section class="need-pack">
+      <h2 class="need-pack-title">Load a pack first</h2>
+      <p class="need-pack-lede">There's nothing to ${escapeHtml(what)} yet. Head to
+        <strong>Discover</strong> to crawl a repo, generate from a live MCP server, or
+        upload a manifest — then come back here.</p>
+      <button type="button" class="need-pack-btn" id="need-pack-goto-discover">
+        <span>Go to Discover</span><span aria-hidden="true">→</span>
+      </button>
+    </section>
+  `;
+  $('#need-pack-goto-discover').onclick = () => {
+    state.view = 'layers';
+    applyModeChrome();
+    paintObservaActiveTab();
+    renderTabs();
+    renderMainView();
+  };
+}
+
 function renderHomeView() {
   const view = $('#layer-view');
   if (!view) return;
@@ -6212,26 +6350,6 @@ function renderHomeView() {
     try { return localStorage.getItem('mcpUrl') || DEFAULT_MCP_URL; }
     catch (_) { return DEFAULT_MCP_URL; }
   })();
-
-  // Pack picker — the direct answer to "what do we have?". Lists the
-  // reference packs already on hand (the archived /api/examples set,
-  // cached at boot) plus anything the user uploaded or drafted this
-  // session. Selecting a row loads it as Pack A and draws the per-layer
-  // inventory — no popover, no extra click.
-  const pickerPacks = [
-    ...((state.catalog || []).filter(p => p.ok && p.id)),
-    ...((state._examplesCache || []).filter(p => p.ok)),
-  ].filter((p, i, arr) => arr.findIndex(q => q.id === p.id) === i);
-  const pickerRows = pickerPacks.map(p => `
-    <button type="button" class="home-pick-row" data-pack-id="${escapeHtml(p.id)}">
-      <span class="home-pick-name">${escapeHtml(p.label || p.name || p.id)}</span>
-      <span class="home-pick-meta">
-        ${p.criticality ? `<span class="home-pick-tier">${escapeHtml(p.criticality)}</span>` : ''}
-        <span class="home-pick-ver">v${escapeHtml(p.version || '1.2')}</span>
-      </span>
-      <span class="home-pick-go" aria-hidden="true">→</span>
-    </button>
-  `).join('');
 
   view.innerHTML = `
     <section class="home-hero">
@@ -6292,12 +6410,6 @@ function renderHomeView() {
           </button>
         </div>
       </div>
-
-      ${pickerRows ? `
-      <div class="home-picker">
-        <div class="home-picker-head"><span>or pick a pack to inspect</span></div>
-        <div class="home-picker-list">${pickerRows}</div>
-      </div>` : ''}
 
       <div class="home-cycle">
         <svg class="home-cycle-svg" viewBox="0 0 960 640" xmlns="http://www.w3.org/2000/svg" role="img" font-family="'IBM Plex Sans', system-ui, sans-serif">
@@ -6394,21 +6506,6 @@ function renderHomeView() {
   };
   $('#home-shortcut-upload').onclick = () => $('#upload-btn')?.click();
   $('#home-shortcut-crawl').onclick  = () => $('#crawl-btn')?.click();
-
-  // Pack picker → load the chosen pack as Pack A and draw it. Examples
-  // live only in the cache, so promote the selected one into the catalog
-  // before entering analyze mode (mirrors the Discover dashboard wiring).
-  view.querySelectorAll('.home-pick-row').forEach(row => {
-    row.onclick = () => {
-      const id = row.dataset.packId;
-      if (!id) return;
-      if (!(state.catalog || []).find(p => p.id === id)) {
-        const ex = (state._examplesCache || []).find(p => p.id === id);
-        if (ex) (state.catalog = state.catalog || []).push(ex);
-      }
-      enterAnalyzeMode(id, defaultEnvFor(id));
-    };
-  });
 }
 
 async function doHomeMcpConnect() {
