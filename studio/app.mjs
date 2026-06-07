@@ -743,11 +743,10 @@ function renderMainView() {
     case 'otlp':               renderOtlpView(view); return;
     case 'layers':
     default:
-      // Under the OBSERVA chrome, Discover ("What Do We Have?") renders
-      // the full TOMOGRAM SCAN dashboard. Legacy layout keeps the
-      // stacked layer cards.
-      if (document.body.classList.contains('chrome-observa')) renderDiscoverDashboard(view);
-      else renderLayersView(view);
+      // Discover ("What Do We Have?") IS the real layer inventory —
+      // the actual artefact cards grouped by canonical layer. The
+      // CT-scanner is the LANDING-PAGE hero, not the in-app view.
+      renderLayersView(view);
       return;
   }
 }
