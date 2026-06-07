@@ -1102,6 +1102,37 @@ a:hover { color: var(--ink); }
   color: var(--ink-4);
 }
 
+/* Benchmark CTA — one-click discovery from a backend card to the
+   matching catalogue reference pack. Quiet by default (just the text
+   in the compare-purple ink), brightens on hover, and snaps into a
+   filled pill when active. The card itself stays click-through to
+   the drawer; only the CTA captures clicks for the benchmark action. */
+.benchmark-cta {
+  margin-left: auto;
+  padding: 2px 8px 2px 4px;
+  font: 600 10px/1.3 var(--mono);
+  letter-spacing: 0.04em;
+  background: transparent;
+  color: var(--CMP);
+  border: 1px dashed var(--CMP);
+  border-radius: 99px;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0.72;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.card:hover .benchmark-cta { opacity: 1; }
+.benchmark-cta:hover {
+  background: var(--CMP);
+  color: var(--paper);
+  border-style: solid;
+  opacity: 1;
+}
+.benchmark-cta:focus-visible {
+  outline: 2px solid var(--CMP);
+  outline-offset: 1px;
+}
+
 .subgroup { margin-top: 18px; }
 .subgroup-head {
   font-family: var(--mono); font-size: 11px;

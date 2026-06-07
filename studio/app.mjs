@@ -872,6 +872,24 @@ function renderCard(artefact, def, sublayerKey) {
     ? `<span class="ref-indicator" title="${state.symbolTable.broken.get(key).length} unresolved reference(s)">⚠</span>`
     : '';
 
+  // Benchmark CTA — when this backend's `product` matches a catalogue
+  // reference pack (grafana, prometheus, kafka), surface a small action
+  // that loads the reference as Pack B and applies the product lens.
+  // This is the discovery affordance for the user journey: from any
+  // backend card, one click → "how does my X compare to best practice?"
+  let benchmarkCta = '';
+  const backendProduct = artefact.spec?.product || artefact.product || null;
+  const refMatch = backendProduct
+    ? LENS_PRODUCTS.find(lp => lp.slug === backendProduct.toLowerCase())
+    : null;
+  if (refMatch && /^BAK-/.test(artefact.id)) {
+    benchmarkCta = `<button type="button" class="benchmark-cta"
+      data-product="${escapeHtml(refMatch.slug)}"
+      data-ref-pack="${escapeHtml(refMatch.refPackId)}"
+      title="Compare your ${escapeHtml(refMatch.label)} posture against the catalogue reference pack."
+    >⛯ Benchmark vs ${escapeHtml(refMatch.label)} →</button>`;
+  }
+
   btn.innerHTML = `
     <div class="card-head">
       <span class="card-id">${escapeHtml(artefact.id)}</span>
@@ -884,10 +902,55 @@ function renderCard(artefact, def, sublayerKey) {
     <div class="card-foot">
       ${artefact.tool ? `<span class="tool">${escapeHtml(artefact.tool)}</span>` : ''}
       ${tags}
+      ${benchmarkCta}
     </div>
   `;
-  btn.onclick = () => openDrawer(artefact, def, sublayerKey);
+  btn.onclick = (ev) => {
+    // The Benchmark CTA lives inside the card button. Intercept clicks
+    // on it so the drawer doesn't open.
+    const cta = ev.target.closest('.benchmark-cta');
+    if (cta) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      runBenchmark(cta.dataset.product, cta.dataset.refPack);
+      return;
+    }
+    openDrawer(artefact, def, sublayerKey);
+  };
   return btn;
+}
+
+// Drive the benchmark action — load the reference pack as Pack B,
+// apply the product lens, switch to Compare. Centralised so the
+// Backend CTA and the (future) Benchmark view CTA both use it.
+async function runBenchmark(product, refPackId) {
+  if (!product || !refPackId) return;
+  state.compareLens = product;
+  try {
+    // The Pack B picker handles fetch + render. We dispatch a change
+    // event on it so the existing path (auto-load + render Compare)
+    // runs as if the user had picked it.
+    const bSel = document.querySelector('#pack-b-select');
+    if (bSel) {
+      bSel.value = refPackId;
+      bSel.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      // Fallback: drive state directly if the picker isn't mounted yet.
+      state.compareBId = refPackId;
+      state.view = 'compare';
+      renderTabs(); renderMainView();
+    }
+    // Belt-and-suspenders: ensure view ends up on Compare. The picker's
+    // own handler may auto-switch but only when Pack A is loaded.
+    setTimeout(() => {
+      if (state.view !== 'compare') {
+        state.view = 'compare';
+        renderTabs(); renderMainView();
+      }
+    }, 600);
+  } catch (e) {
+    console.warn('[benchmark] failed:', e);
+  }
 }
 
 // ---------- conformance view ----------
