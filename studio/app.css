@@ -1998,6 +1998,245 @@ a:hover { color: var(--ink); }
   border-color: var(--CMP);
 }
 
+/* ============================================================
+   Benchmark view (Phase 4) — scorecard + missing/extras callouts
+   on top of the same lens-scoped side-by-side as Compare.
+   ============================================================ */
+.benchmark-view {
+  display: flex; flex-direction: column;
+}
+.benchmark-head {
+  padding: 22px 24px 16px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line-2);
+}
+.benchmark-head-eyebrow {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--CMP);
+  margin-bottom: 8px;
+}
+.benchmark-head-title {
+  display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  font: 400 20px/1.2 var(--serif);
+  color: var(--ink-1);
+}
+.benchmark-head-pack {
+  font-weight: 600;
+}
+.benchmark-head-pack-a { color: var(--ink-1); }
+.benchmark-head-pack-b { color: var(--CMP); }
+.benchmark-head-vs {
+  font: 400 13px/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.benchmark-head-meta {
+  margin-top: 8px;
+  font: 13px/1.5 var(--serif);
+  color: var(--ink-3);
+}
+.benchmark-head-meta strong { color: var(--ink-1); font-weight: 600; }
+.benchmark-head-hint {
+  margin-left: 12px;
+  color: var(--ink-4);
+  font-style: italic;
+}
+
+.benchmark-scorecard {
+  padding: 18px 24px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+.benchmark-scorecard-grid {
+  display: grid;
+  grid-template-columns: 200px 1fr 240px;
+  gap: 20px;
+  align-items: stretch;
+}
+.benchmark-card {
+  padding: 14px 16px;
+  background: var(--paper);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+}
+.benchmark-card-key {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: 8px;
+}
+.benchmark-card-overall .benchmark-card-pct {
+  font: 700 44px/1 var(--serif);
+  color: var(--ink-1);
+  letter-spacing: -0.02em;
+  margin-bottom: 6px;
+}
+.benchmark-card-overall .benchmark-card-pct.is-good { color: rgb(46, 110, 50); }
+.benchmark-card-overall .benchmark-card-pct.is-warn { color: rgb(217, 119, 6); }
+.benchmark-card-overall .benchmark-card-pct.is-poor { color: rgb(178, 34, 34); }
+.benchmark-card-overall .benchmark-card-sub {
+  font: 12.5px/1.5 var(--serif);
+  color: var(--ink-3);
+}
+.benchmark-layer-row {
+  display: grid;
+  grid-template-columns: 30px 60px 1fr 40px;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0;
+  font: 12px/1 var(--mono);
+  color: var(--ink-2);
+  border-bottom: 1px dotted var(--line-2);
+}
+.benchmark-layer-row:last-child { border-bottom: 0; }
+.benchmark-layer-num {
+  font: 600 11px/1 var(--mono);
+  color: var(--ink-1);
+}
+.benchmark-layer-counts {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.benchmark-layer-a {
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.benchmark-layer-sep { color: var(--ink-4); margin: 0 2px; }
+.benchmark-layer-b { color: var(--CMP); }
+.benchmark-layer-bar {
+  position: relative;
+  height: 6px;
+  background: var(--line-2);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.benchmark-layer-bar-empty { background: transparent; }
+.benchmark-layer-bar-fill {
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, var(--CMP), var(--ink-1));
+  border-radius: 99px;
+}
+.benchmark-layer-pct {
+  font: 600 11px/1 var(--mono);
+  color: var(--ink-2);
+  text-align: right;
+}
+.benchmark-meta-line {
+  font: 12.5px/1.5 var(--serif);
+  color: var(--ink-2);
+  margin-bottom: 8px;
+}
+.benchmark-meta-line strong { color: var(--ink-1); font-weight: 600; }
+.benchmark-meta-sub-head {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin: 8px 0 4px;
+}
+.benchmark-meta-live-row {
+  display: flex; justify-content: space-between;
+  font: 11.5px/1.4 var(--mono);
+  color: var(--ink-3);
+  padding: 1px 0;
+}
+.benchmark-meta-live-row strong { color: var(--ink-1); font-weight: 600; }
+.benchmark-meta-empty {
+  font: 12px/1.4 var(--serif);
+  color: var(--ink-4);
+}
+
+.benchmark-callout {
+  padding: 14px 24px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line-2);
+}
+.benchmark-callout-missing { border-left: 3px solid var(--CONF); }
+.benchmark-callout-extras  { border-left: 3px solid var(--CMP); }
+.benchmark-callout-head {
+  display: flex; align-items: baseline; gap: 8px;
+  font: 13.5px/1.4 var(--serif);
+  color: var(--ink-2);
+  margin-bottom: 8px;
+}
+.benchmark-callout-eyebrow {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.benchmark-callout-missing .benchmark-callout-eyebrow { color: var(--CONF-text); }
+.benchmark-callout-extras  .benchmark-callout-eyebrow { color: var(--CMP); }
+.benchmark-callout-count {
+  margin-left: auto;
+  padding: 1px 8px;
+  background: var(--ink-bg);
+  border-radius: 99px;
+  font: 600 11px/1.4 var(--mono);
+  color: var(--ink-2);
+}
+.benchmark-callout-list {
+  margin: 0; padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+}
+.benchmark-callout-list li {
+  display: flex; align-items: baseline; gap: 8px;
+  font: 12.5px/1.4 var(--serif);
+  color: var(--ink-2);
+  padding: 2px 0;
+}
+.benchmark-callout-layer {
+  font: 600 10px/1 var(--mono);
+  color: var(--ink-4);
+  padding: 1px 5px;
+  background: var(--ink-bg);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.benchmark-callout-title { flex: 1; }
+.benchmark-callout-id {
+  font: 10.5px/1.4 var(--mono);
+  color: var(--ink-4);
+}
+.benchmark-callout-empty {
+  font: 13px/1.5 var(--serif);
+  color: var(--ink-3);
+  padding: 4px 0;
+}
+.benchmark-callout-more {
+  margin-top: 6px;
+  font: 11.5px/1 var(--mono);
+  color: var(--ink-4);
+  font-style: italic;
+}
+
+.benchmark-detail-head {
+  padding: 14px 24px 8px;
+  background: var(--paper);
+  font: 13px/1.5 var(--serif);
+  color: var(--ink-3);
+  border-bottom: 0;
+}
+.benchmark-detail-eyebrow {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-1);
+  margin-right: 8px;
+}
+
+@media (max-width: 1100px) {
+  .benchmark-scorecard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Per-layer row: header spans both columns, then two aligned grids. */
 .compare-layer-row {
   background: var(--card);

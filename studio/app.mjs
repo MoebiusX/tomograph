@@ -619,6 +619,7 @@ function renderPrimaryViewNav() {
     { id: 'conformance',label: 'Conformance',hint: 'Maturity rubric per tier with pass/fail.' },
     { id: 'compile',    label: 'Compile',    hint: 'Per-artefact compilation to native platform format.' },
     ...(hasB ? [
+      { id: 'benchmark',   label: 'Benchmark',   hint: 'Score PACK A\'s posture against PACK B as a reference. Use the lens to scope to one product (Grafana, Prometheus, …) for an apples-to-apples comparison.' },
       { id: 'compare',     label: 'Compare',     hint: 'Side-by-side per-layer comparison of PACK A vs PACK B.' },
       { id: 'traceability',label: 'Traceability',hint: 'Repo vs live: aligned / declared-not-verified / verified-not-declared / stale.' },
     ] : []),
@@ -711,6 +712,7 @@ function renderMainView() {
   // nav when state.packB is truthy, so we can reach them here without
   // needing a separate 'compare' mode.
   switch (state.view) {
+    case 'benchmark':    renderBenchmarkView(view); return;
     case 'compare':      renderCompareView(view); return;
     case 'traceability': renderTraceabilityView(view); return;
     case 'atlas':        renderAtlasView(view); return;
@@ -937,17 +939,16 @@ async function runBenchmark(product, refPackId) {
     } else {
       // Fallback: drive state directly if the picker isn't mounted yet.
       state.compareBId = refPackId;
-      state.view = 'compare';
+      state.view = 'benchmark';
       renderTabs(); renderMainView();
     }
-    // Belt-and-suspenders: ensure view ends up on Compare. The picker's
-    // own handler may auto-switch but only when Pack A is loaded.
+    // Belt-and-suspenders: the picker's auto-switch lands on Compare,
+    // but a Benchmark CTA should land on the Benchmark view. Override
+    // explicitly here a tick later.
     setTimeout(() => {
-      if (state.view !== 'compare') {
-        state.view = 'compare';
-        renderTabs(); renderMainView();
-      }
-    }, 600);
+      state.view = 'benchmark';
+      renderTabs(); renderMainView();
+    }, 700);
   } catch (e) {
     console.warn('[benchmark] failed:', e);
   }
@@ -1930,6 +1931,284 @@ function renderTraceRow(bucketKey, finding, resolvedSet) {
   row.querySelector('[data-act="resolve"]').onclick = () => { toggleTraceResolved(finding.findingKey); renderMainView(); };
   row.querySelector('[data-act="suppress"]').onclick = () => { toggleTraceSuppressed(finding.findingKey); renderMainView(); };
   return row;
+}
+
+// ============================================================
+// Benchmark view (Phase 4)
+//
+// A focused destination — answers "how does PACK A's posture for
+// <product> compare to PACK B as the reference?" Built on the same
+// machinery as Compare (productSurface lens + buildCompareKeySets)
+// but framed as a scorecard rather than a free-form side-by-side.
+//
+//   ┌─────────────────────────────────────────────────────────────┐
+//   │  BENCHMARK: krystaline-live  vs  grafana-reference          │
+//   │  Lens: [Grafana ▼]                                          │
+//   │                                                             │
+//   │   Coverage      Per-layer       Verified by MCP             │
+//   │     14%         L1 0/16         29 backends                 │
+//   │                 L2 1/1          live versions: Grafana 12.4 │
+//   │                 L3 6/31                                     │
+//   │                 L4 0/17                                     │
+//   │                 L5 0/8                                      │
+//   ├─────────────────────────────────────────────────────────────┤
+//   │  Missing from your live pack (top 10)                       │
+//   │   • http_request_success_ratio (SLI)                        │
+//   │   • datasource_proxy_success_ratio (SLI)                    │
+//   │   • burn-rate alert: http_request_success_99_9 (POL)        │
+//   │   • …                                                       │
+//   ├─────────────────────────────────────────────────────────────┤
+//   │  In your live pack but not in the reference (top 5)         │
+//   │   • adz2hpb (custom DASH)                                   │
+//   │   • …                                                       │
+//   ├─────────────────────────────────────────────────────────────┤
+//   │  Side-by-side                                               │
+//   │  [the same lens-scoped compare grid as Compare view]        │
+//   └─────────────────────────────────────────────────────────────┘
+// ============================================================
+function renderBenchmarkView(view) {
+  if (!state.compareBId) state.compareBId = defaultCompareB();
+  if (!state.compareBEnv) state.compareBEnv = defaultEnvFor(state.compareBId);
+  if (!state.compareBId) {
+    view.innerHTML = '<div class="placeholder">Benchmark needs a reference pack as Pack B.</div>';
+    return;
+  }
+
+  const scaffold = document.createElement('section');
+  scaffold.className = 'section benchmark-view';
+  scaffold.dataset.layer = 'BENCHMARK';
+  view.appendChild(scaffold);
+
+  // Same loading gate as Compare — both packs + diff must be present.
+  const haveA = !!state.pack, haveB = !!state.packB, haveDiff = !!state.diff && !state.diff.error;
+  if (!haveA || !haveB || !haveDiff) {
+    if (state.diff?.error) {
+      const err = document.createElement('div');
+      err.className = 'error';
+      err.textContent = `Diff failed: ${state.diff.error}`;
+      scaffold.appendChild(err);
+      return;
+    }
+    const loading = document.createElement('div');
+    loading.className = 'placeholder';
+    loading.textContent = 'Loading both packs…';
+    scaffold.appendChild(loading);
+    Promise.all([
+      haveB    ? Promise.resolve() : loadPackB(),
+      haveDiff ? Promise.resolve() : loadDiff(),
+    ]).then(() => { renderTabs(); renderMainView(); });
+    return;
+  }
+
+  // Compute the scorecard under the current lens. The lens scopes
+  // both the numerator (A items matched by B) and denominator (B
+  // items in scope).
+  const lens = state.compareLens || 'all';
+  const scorecard = computeBenchmarkScorecard(state.pack, state.packB, lens);
+
+  scaffold.appendChild(renderBenchmarkHeader(scorecard, lens));
+  scaffold.appendChild(renderBenchmarkScorecard(scorecard));
+  // The two callout lists — what's missing, what's extra. Each gives
+  // the demo audience an immediate "here's what to do next" feel.
+  scaffold.appendChild(renderBenchmarkMissing(scorecard));
+  scaffold.appendChild(renderBenchmarkExtras(scorecard));
+
+  // Beneath the scorecard, the same lens-scoped compare grid users
+  // get on the Compare view — for drill-down.
+  const detailHead = document.createElement('div');
+  detailHead.className = 'benchmark-detail-head';
+  detailHead.innerHTML = `<span class="benchmark-detail-eyebrow">SIDE-BY-SIDE</span> drill into each layer to see what matches and what differs.`;
+  scaffold.appendChild(detailHead);
+
+  // Reuse the existing compare filter bar so the user can tweak the
+  // lens / slice / search without leaving Benchmark.
+  scaffold.appendChild(renderCompareFilters());
+  const sets = buildCompareKeySets();
+  for (const L of LAYERS_FOR_DIFF) {
+    const row = renderCompareLayerRow(L, sets);
+    if (row) scaffold.appendChild(row);
+  }
+}
+
+function renderBenchmarkHeader(score, lens) {
+  const head = document.createElement('div');
+  head.className = 'benchmark-head';
+  const lensLabel = lens === 'all' ? 'All artefacts' : (LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens);
+  head.innerHTML = `
+    <div class="benchmark-head-eyebrow">BENCHMARK</div>
+    <div class="benchmark-head-title">
+      <span class="benchmark-head-pack benchmark-head-pack-a">${escapeHtml(state.pack?.name || state.pack?.id || 'Pack A')}</span>
+      <span class="benchmark-head-vs">vs</span>
+      <span class="benchmark-head-pack benchmark-head-pack-b">${escapeHtml(state.packB?.name || state.packB?.id || 'Pack B')}</span>
+    </div>
+    <div class="benchmark-head-meta">
+      Lens · <strong>${escapeHtml(lensLabel)}</strong>
+      ${lens === 'all'
+        ? '<span class="benchmark-head-hint">Tip: pick a product lens for an apples-to-apples scorecard.</span>'
+        : `<span class="benchmark-head-hint">Scoring only artefacts in ${escapeHtml(lensLabel)}'s surface.</span>`}
+    </div>
+  `;
+  return head;
+}
+
+function renderBenchmarkScorecard(score) {
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-scorecard';
+  const overall = score.overall;
+  const pct = overall.bTotal === 0 ? 0 : Math.round((overall.matched / overall.bTotal) * 100);
+  const pctClass = pct >= 75 ? 'is-good' : pct >= 40 ? 'is-warn' : 'is-poor';
+
+  // Per-layer rows: each shows A/B counts + a tiny coverage bar
+  const layerRows = score.byLayer.map(L => {
+    const lpct = L.bTotal === 0 ? null : Math.round((L.matched / L.bTotal) * 100);
+    const bar = lpct === null ? '<span class="benchmark-layer-bar benchmark-layer-bar-empty"></span>' :
+      `<span class="benchmark-layer-bar">
+         <span class="benchmark-layer-bar-fill" style="width:${lpct}%"></span>
+       </span>`;
+    return `
+      <div class="benchmark-layer-row">
+        <span class="benchmark-layer-num">${escapeHtml(L.layer)}</span>
+        <span class="benchmark-layer-counts">
+          <span class="benchmark-layer-a">${L.aTotal}</span>
+          <span class="benchmark-layer-sep">/</span>
+          <span class="benchmark-layer-b">${L.bTotal}</span>
+        </span>
+        ${bar}
+        <span class="benchmark-layer-pct">${lpct === null ? '—' : lpct + '%'}</span>
+      </div>
+    `;
+  }).join('');
+
+  // Live version sidebar — pulled from mcp.versions.* annotations
+  // so the demo narrative ("the platform is running Grafana 12.4.0,
+  // declared in the live pack") sits right next to the scorecard.
+  const ann = state.pack?.meta?.annotations || state.pack?.metadata?.annotations || {};
+  const liveVersions = [];
+  for (const [k, v] of Object.entries(ann)) {
+    const m = /^mcp\.versions\.([a-z0-9_-]+)$/.exec(k);
+    if (m) liveVersions.push({ product: m[1], version: v });
+  }
+  const liveVersionsHtml = liveVersions.length
+    ? `<div class="benchmark-meta-sub-head">Live versions</div>` +
+      liveVersions.map(lv =>
+        `<div class="benchmark-meta-live-row"><strong>${escapeHtml(lv.product)}</strong><span>${escapeHtml(lv.version)}</span></div>`
+      ).join('')
+    : '<div class="benchmark-meta-empty"><em>No live versions captured</em></div>';
+
+  wrap.innerHTML = `
+    <div class="benchmark-scorecard-grid">
+      <div class="benchmark-card benchmark-card-overall">
+        <div class="benchmark-card-key">Coverage</div>
+        <div class="benchmark-card-pct ${pctClass}">${pct}%</div>
+        <div class="benchmark-card-sub">${overall.matched} of ${overall.bTotal} reference artefacts present in your live pack</div>
+      </div>
+      <div class="benchmark-card benchmark-card-layers">
+        <div class="benchmark-card-key">Per-layer (live / ref)</div>
+        ${layerRows}
+      </div>
+      <div class="benchmark-card benchmark-card-meta">
+        <div class="benchmark-card-key">Evidence</div>
+        <div class="benchmark-meta-line"><strong>${score.verifiedCount}</strong> artefacts verified by MCP</div>
+        ${liveVersionsHtml}
+      </div>
+    </div>
+  `;
+  return wrap;
+}
+
+function renderBenchmarkMissing(score) {
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-callout benchmark-callout-missing';
+  const top = score.missing.slice(0, 10);
+  wrap.innerHTML = `
+    <div class="benchmark-callout-head">
+      <span class="benchmark-callout-eyebrow">MISSING</span>
+      Items the reference recommends, not present in your live pack
+      <span class="benchmark-callout-count">${score.missing.length}</span>
+    </div>
+    ${top.length === 0
+      ? '<div class="benchmark-callout-empty">Nothing missing — your live pack covers everything the reference recommends. 🎯</div>'
+      : '<ul class="benchmark-callout-list">' + top.map(m => `
+          <li>
+            <span class="benchmark-callout-layer">${escapeHtml(m.layer)}</span>
+            <span class="benchmark-callout-title">${escapeHtml(m.title)}</span>
+            ${m.id ? `<span class="benchmark-callout-id">${escapeHtml(m.id)}</span>` : ''}
+          </li>
+        `).join('') + '</ul>'}
+    ${score.missing.length > 10 ? `<div class="benchmark-callout-more">+ ${score.missing.length - 10} more</div>` : ''}
+  `;
+  return wrap;
+}
+
+function renderBenchmarkExtras(score) {
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-callout benchmark-callout-extras';
+  const top = score.extras.slice(0, 5);
+  wrap.innerHTML = `
+    <div class="benchmark-callout-head">
+      <span class="benchmark-callout-eyebrow">EXTRAS</span>
+      In your live pack, not in the reference
+      <span class="benchmark-callout-count">${score.extras.length}</span>
+    </div>
+    ${top.length === 0
+      ? '<div class="benchmark-callout-empty">No extras in scope.</div>'
+      : '<ul class="benchmark-callout-list">' + top.map(m => `
+          <li>
+            <span class="benchmark-callout-layer">${escapeHtml(m.layer)}</span>
+            <span class="benchmark-callout-title">${escapeHtml(m.title)}</span>
+            ${m.id ? `<span class="benchmark-callout-id">${escapeHtml(m.id)}</span>` : ''}
+          </li>
+        `).join('') + '</ul>'}
+    ${score.extras.length > 5 ? `<div class="benchmark-callout-more">+ ${score.extras.length - 5} more</div>` : ''}
+  `;
+  return wrap;
+}
+
+// Pure: walks both packs under the lens, returns scorecard data.
+function computeBenchmarkScorecard(packA, packB, lens) {
+  const byLayer = [];
+  const missing = [];   // in B, not in A
+  const extras  = [];   // in A, not in B
+  let overallA = 0, overallB = 0, overallMatched = 0, verifiedCount = 0;
+  const sets = buildCompareKeySets();
+
+  // Walk B's annotations to count "verified by MCP" markers (any
+  // artefact whose mcp.verified.<sym> stamp is present).
+  const annA = packA?.meta?.annotations || packA?.metadata?.annotations || {};
+  for (const k of Object.keys(annA)) {
+    if (/^mcp\.verified\./.test(k)) verifiedCount++;
+  }
+
+  for (const L of LAYERS_FOR_DIFF) {
+    const aItems = layerItemsFor(packA, L).filter(a => productSurface(a, lens, packA));
+    const bItems = layerItemsFor(packB, L).filter(a => productSurface(a, lens, packB));
+    const aKeys = new Set(aItems.map(a => compareKeyOf(a)));
+    const bKeys = new Set(bItems.map(a => compareKeyOf(a)));
+
+    let matched = 0;
+    for (const b of bItems) {
+      const k = compareKeyOf(b);
+      if (aKeys.has(k)) matched++;
+      else missing.push({ layer: L, key: k, id: b.id || '', title: b.title || k });
+    }
+    for (const a of aItems) {
+      const k = compareKeyOf(a);
+      if (!bKeys.has(k)) extras.push({ layer: L, key: k, id: a.id || '', title: a.title || k });
+    }
+
+    byLayer.push({ layer: L, aTotal: aItems.length, bTotal: bItems.length, matched });
+    overallA += aItems.length;
+    overallB += bItems.length;
+    overallMatched += matched;
+  }
+
+  return {
+    overall: { aTotal: overallA, bTotal: overallB, matched: overallMatched },
+    byLayer,
+    missing,
+    extras,
+    verifiedCount,
+  };
 }
 
 function renderCompareView(view) {
