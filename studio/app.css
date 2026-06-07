@@ -5537,21 +5537,83 @@ body.chrome-observa {
   --obs-amber:     #f59e0b;
   background: var(--obs-bg);
   color: var(--obs-ink);
+  --observa-chrome-h: 96px;
 }
-body.chrome-observa .hdr,
-body.chrome-observa .meta,
-body.chrome-observa #layer-tabs {
+/* The old per-layer tab strip and the old brand block are gone —
+   the OBSERVA chrome owns navigation + brand now. */
+body.chrome-observa #layer-tabs,
+body.chrome-observa .hdr-brand {
   display: none !important;
 }
-body.chrome-observa.observa-controls-open .hdr,
-body.chrome-observa.observa-controls-open .meta {
+
+/* The pack/env controls are PINNED as a permanent master row directly
+   beneath the chrome. This is the user's control surface — PACK A,
+   ENV A, PACK B (×), ENV B, plus load actions — and it is ALWAYS
+   visible (except on the home/hero screen, which has its own CTA).
+   Dark-themed to sit on the navy chrome. */
+body.chrome-observa .hdr {
   display: flex !important;
-  position: relative;
-  z-index: 50;
+  position: sticky;
+  top: var(--observa-chrome-h, 96px);
+  z-index: 90;
   background: var(--obs-bg-2);
   border-bottom: 1px solid var(--obs-line);
+  padding: 10px 28px;
 }
-body.chrome-observa.observa-controls-open .meta { display: block !important; }
+body.chrome-observa[data-mode="home"] .hdr { display: none !important; }
+
+/* Meta strip stays hidden under the chrome for now — the audit
+   content carries that detail. */
+body.chrome-observa .meta { display: none !important; }
+
+/* --- dark theming for the pinned controls --- */
+body.chrome-observa .hdr-controls {
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+}
+body.chrome-observa .ctrl-key { color: var(--obs-ink-3); }
+body.chrome-observa .ctrl select {
+  background: var(--obs-bg-3);
+  color: var(--obs-ink);
+  border-color: var(--obs-line-2);
+}
+body.chrome-observa .ctrl select:hover,
+body.chrome-observa .ctrl select:focus { border-color: var(--obs-purple); }
+body.chrome-observa .ctrl select option {
+  background: var(--obs-bg-3);
+  color: var(--obs-ink);
+}
+body.chrome-observa .ctrl-btn {
+  background: var(--obs-bg-3);
+  color: var(--obs-ink-2);
+  border-color: var(--obs-line-2);
+}
+body.chrome-observa .ctrl-btn:hover {
+  background: rgba(255,255,255,0.07);
+  color: var(--obs-ink);
+  border-color: var(--obs-line-2);
+}
+body.chrome-observa .ctrl-link {
+  color: var(--obs-ink-3);
+  border-color: var(--obs-line-2);
+}
+body.chrome-observa .ctrl-link:hover { color: var(--obs-ink); }
+body.chrome-observa .ctrl-key-clear { color: var(--obs-ink-4); }
+body.chrome-observa .ctrl-key-clear:hover { color: var(--obs-pink); }
+body.chrome-observa .mcp-btn { color: var(--obs-ink-2); }
+body.chrome-observa .upload-popover {
+  background: var(--obs-bg-3);
+  border-color: var(--obs-line-2);
+  color: var(--obs-ink);
+}
+body.chrome-observa .upload-popover-item:hover { background: rgba(255,255,255,0.06); }
+body.chrome-observa .upload-popover-label { color: var(--obs-ink); }
+body.chrome-observa .upload-popover-sub { color: var(--obs-ink-3); }
+body.chrome-observa .upload-popover-divider {
+  color: var(--obs-ink-4);
+  border-color: var(--obs-line);
+}
 
 /* The new chrome itself ------------------------------------------ */
 .observa-hdr {
@@ -5813,10 +5875,6 @@ body.chrome-observa #layer-view {
   padding: 0;
   min-height: calc(100vh - 96px);
 }
-
-/* When the controls drawer is open, leave breathing room above the
-   main view so the legacy controls don't crash into the content. */
-body.chrome-observa.observa-controls-open #layer-view { padding-top: 8px; }
 
 /* ============= responsive: stack the tabs below ~960px ============ */
 @media (max-width: 960px) {

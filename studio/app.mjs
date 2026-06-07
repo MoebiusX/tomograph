@@ -5692,11 +5692,6 @@ function installObservaChrome() {
           <span class="observa-action-glyph">?</span>
           <span class="observa-action-label">Help</span>
         </button>
-        <button type="button" class="observa-action observa-controls-toggle" title="Pack controls"
-                aria-expanded="false" aria-controls="observa-controls-drawer">
-          <span class="observa-action-glyph">⚙</span>
-          <span class="observa-action-label">Controls</span>
-        </button>
         <button type="button" class="observa-avatar" title="Account">AD<span class="observa-avatar-caret">▾</span></button>
       </div>
     </div>
@@ -5717,15 +5712,6 @@ function installObservaChrome() {
       renderMainView();
     });
   }
-
-  // Wire the "Controls" toggle to reveal the legacy header as a drawer
-  // beneath the new chrome. Lets the user still upload / scan / pick
-  // packs / change theme until those features move into the new design.
-  const toggle = hdr.querySelector('.observa-controls-toggle');
-  toggle?.addEventListener('click', () => {
-    const open = document.body.classList.toggle('observa-controls-open');
-    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-  });
 
   paintObservaActiveTab();
 }
@@ -5872,13 +5858,13 @@ function enterCompareMode(aId, aEnv, bId, bEnv) {
 // new pack.
 function applyModeChrome() {
   const isHome = state.mode === 'home';
-  // The artefact-id side-by-side view ('compare-artefacts') has its own
-  // pack-A / pack-B cards with inline pickers, env selectors, swap button,
-  // and metadata chips. Showing the header pickers above it is pure
-  // duplication. Hide them only on that view.
-  // The new 'compare' view (diagnostic-grade verdict) uses the header
-  // pickers as its only pack-selection control — keep them visible.
-  const onCompare = state.view === 'compare-artefacts';
+  // Under the OBSERVA chrome the pack/env selectors are PINNED as a
+  // permanent master row — they are the user's primary controls and
+  // must never be hidden by view. Only the legacy (non-chrome) layout
+  // hides them on the artefact-id side-by-side view, where the inline
+  // pack cards carry their own pickers.
+  const observa = document.body.classList.contains('chrome-observa');
+  const onCompare = !observa && state.view === 'compare-artefacts';
   document.body.dataset.mode = state.mode;
   document.body.dataset.view = state.view || '';
   const packSel = $('#pack-select')?.parentElement;
