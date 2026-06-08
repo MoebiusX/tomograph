@@ -15,60 +15,23 @@ import {
   DISCO_SLAB_ACCENT, discoGradeLetter, discoGradeWord,
 } from './constants.mjs';
 import { state, $, $$, persistence } from './state.mjs';
+import { api, loadCatalog, validateUploaded } from './api.mjs';
+import {
+  effectiveFocus, focusedPackId, focusedEnv, focusedPack,
+  focusedConformance, setFocusedConformance,
+  focusedCompileCatalog, setFocusedCompileCatalog,
+  focusedCompileContent, setFocusedCompileContent,
+  focusedCompileGroup, setFocusedCompileGroup,
+  focusedCompileFlavor, setFocusedCompileFlavor,
+  focusedCompileArtifact, setFocusedCompileArtifact,
+} from './focus.mjs';
 
 // `state`, the `$`/`$$` DOM helpers and the persistence layer now live in
 // studio/state.mjs (imported above).
 
-// ---------- API ----------
-
-async function api(path, opts = {}) {
-  const r = await fetch(path, { headers: { Accept: 'application/json' }, ...opts });
-  if (!r.ok) {
-    const body = await r.text().catch(() => '');
-    throw new Error(`${r.status} ${r.statusText} on ${path}${body ? ': ' + body.slice(0, 200) : ''}`);
-  }
-  // Some routes might be missing on a stale server, returning an HTML
-  // fallback even at 200. Sniff the content-type first.
-  const ct = r.headers.get('content-type') || '';
-  if (!ct.includes('application/json')) {
-    const body = await r.text().catch(() => '');
-    throw new Error(`${path}: server returned non-JSON (${ct || 'no content-type'}, ${r.status}). Restart \`npm run dev\` if the route is new.${body ? '\n' + body.slice(0, 200) : ''}`);
-  }
-  return r.json();
-}
-
-async function loadCatalog() {
-  const { packs } = await api('/api/packs');
-  state.catalog = packs || [];
-}
-
-// ---------- focus (A | B) ----------
-//
-// Conformance / Compile / Schema render a single pack at a time. When
-// both A and B are loaded the user can flip focus between them via the
-// toggle in the view nav. effectiveFocus() falls back to 'a' if focus is
-// 'b' but Pack B isn't loaded — defensive, since the toggle is hidden
-// in that state anyway.
-function effectiveFocus() {
-  return (state.viewFocus === 'b' && state.packB) ? 'b' : 'a';
-}
-function focusedPackId()   { return effectiveFocus() === 'b' ? state.compareBId  : state.selectedPackId; }
-function focusedEnv()      { return effectiveFocus() === 'b' ? state.compareBEnv : state.selectedEnv; }
-function focusedPack()     { return effectiveFocus() === 'b' ? state.packB       : state.pack; }
-
-function focusedConformance()     { return effectiveFocus() === 'b' ? state.conformanceB     : state.conformance; }
-function setFocusedConformance(v) { if (effectiveFocus() === 'b') state.conformanceB = v; else state.conformance = v; }
-
-function focusedCompileCatalog()     { return effectiveFocus() === 'b' ? state.compileCatalogB     : state.compileCatalog; }
-function setFocusedCompileCatalog(v) { if (effectiveFocus() === 'b') state.compileCatalogB = v; else state.compileCatalog = v; }
-function focusedCompileContent()     { return effectiveFocus() === 'b' ? state.compileContentB     : state.compileContent; }
-function setFocusedCompileContent(v) { if (effectiveFocus() === 'b') state.compileContentB = v; else state.compileContent = v; }
-function focusedCompileGroup()       { return effectiveFocus() === 'b' ? state.compileGroupB       : state.compileGroup; }
-function setFocusedCompileGroup(v)   { if (effectiveFocus() === 'b') state.compileGroupB = v; else state.compileGroup = v; }
-function focusedCompileFlavor()      { return effectiveFocus() === 'b' ? state.compileFlavorB      : state.compileFlavor; }
-function setFocusedCompileFlavor(v)  { if (effectiveFocus() === 'b') state.compileFlavorB = v; else state.compileFlavor = v; }
-function focusedCompileArtifact()    { return effectiveFocus() === 'b' ? state.compileArtifactB    : state.compileArtifact; }
-function setFocusedCompileArtifact(v){ if (effectiveFocus() === 'b') state.compileArtifactB = v; else state.compileArtifact = v; }
+// `api` / `loadCatalog` / `validateUploaded` now live in studio/api.mjs and
+// the pack-focus (A | B) getters/setters in studio/focus.mjs (imported
+// above). setViewFocus stays here — it re-renders, which is orchestration.
 
 function setViewFocus(focus) {
   if (state.viewFocus === focus) return;
@@ -170,16 +133,6 @@ async function loadPack(id, env) {
   state.conformance = conformance;
   state.uploadedSource = null;
   state.symbolTable = buildSymbolTable(pack);
-}
-
-async function validateUploaded(body, contentType, env) {
-  const q = env ? `?env=${encodeURIComponent(env)}` : '';
-  const r = await fetch(`/api/validate${q}`, {
-    method: 'POST',
-    headers: { 'Content-Type': contentType, Accept: 'application/json' },
-    body,
-  });
-  return r.json();
 }
 
 // ---------- selectors ----------
