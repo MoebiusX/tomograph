@@ -14,6 +14,7 @@ import { LAYER_DEFS, L4_SUBGROUPS } from './constants.mjs';
 import { openDrawer } from './drawer.mjs';
 import { defaultEnvFor, loadPackB, openDeployModal, renderMainView, renderTabs, refresh } from './app.mjs';
 import { cardKey } from './layers-view.mjs';
+import { diffEntryLabel } from './artifact-model.mjs';
 
 // ---------- compare view ----------
 
@@ -640,13 +641,10 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
   const wrap = document.createElement('div');
   wrap.className = `benchmark-block drift-drill-block drift-mode-${mode}`;
 
-  // Sample keys for a bucket, prettified (strip the family prefix).
+  // Sample keys for a bucket, using the human artefact title when the
+  // server key is a structural projection like sli:{"id":"..."}.
   const sampleKeys = (entries, max = 4) => {
-    const names = entries.slice(0, max).map(e => {
-      const k = e.key || '';
-      const short = k.includes(':') ? k.slice(k.indexOf(':') + 1) : k;
-      return escapeHtml(short || k);
-    });
+    const names = entries.slice(0, max).map(e => escapeHtml(diffEntryLabel(e)));
     const more = entries.length > max ? ` +${entries.length - max}` : '';
     return names.length ? names.join(' · ') + more : '—';
   };
@@ -655,10 +653,8 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
   // WHICH artefacts drifted but WHICH FIELDS diverged.
   const sampleDeltas = (entries, max = 3) => {
     const names = entries.slice(0, max).map(e => {
-      const k = e.key || '';
-      const short = k.includes(':') ? k.slice(k.indexOf(':') + 1) : k;
       const fields = (e.deltas || []).map(d => d.field).slice(0, 3).join(',');
-      return escapeHtml(short || k) + (fields ? `<span class="drift-delta-fields">(${escapeHtml(fields)})</span>` : '');
+      return escapeHtml(diffEntryLabel(e)) + (fields ? `<span class="drift-delta-fields">(${escapeHtml(fields)})</span>` : '');
     });
     const more = entries.length > max ? ` +${entries.length - max}` : '';
     return names.length ? names.join(' · ') + more : '—';
@@ -2949,4 +2945,3 @@ function renderCompareColumn(label, cls, items, def, inBothPairs = null) {
   }
   return col;
 }
-

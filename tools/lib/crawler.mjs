@@ -211,6 +211,7 @@ export function crawlFiles(filesInput, opts = {}) {
     },
     inferred: { slis: 0, slos: 0, baselines: false, tier: null },
     warnings: [],
+    omitted: { syntheticRecordingRules: [] },
   };
   const evidence = {};   // <artefact-id> -> <relPath>
 
@@ -405,17 +406,22 @@ export function crawlFiles(filesInput, opts = {}) {
   };
   summary.inferred.baselines = true;
 
-  // ----- recording rule per SLO (spec rubric requires this) -----
-  // Recording rule names must match ^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*:[a-z0-9_]+$
-  // (Prometheus convention: namespace:metric:operation). Slug the repo
-  // name so hyphens and uppercase don't break the pattern.
+  // ----- source-backed deployability guard -----
+  // Older crawler builds emitted one synthetic recording rule per SLO to
+  // satisfy the conformance rubric. Those rows were useful hints, but they
+  // had no source provenance in the repo and were indistinguishable from
+  // deployable rules in the Remediate flow. Keep the candidate names in the
+  // crawl summary, but do not place them in spec.queries.recording_rules.
   const repoNs = String(repoName).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'svc';
   for (const slo of sloMap.values()) {
     const sliName = (slo.sli || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'sli';
     const ruleName = `${repoNs}:${sliName}:ratio_5m`;
     if (!recordingRules.some(r => r.name === ruleName)) {
-      recordingRules.push({ name: ruleName, expr: `ref:slis.${slo.sli}` });
+      summary.omitted.syntheticRecordingRules.push({ name: ruleName, expr: `ref:slis.${slo.sli}` });
     }
+  }
+  if (summary.omitted.syntheticRecordingRules.length) {
+    summary.warnings.push(`Skipped ${summary.omitted.syntheticRecordingRules.length} synthetic recording rule candidate(s) with no source provenance. Add source Prometheus/Grafana rules or compile them explicitly before deploying.`);
   }
 
   // ----- tier inference -----
@@ -450,6 +456,7 @@ export function crawlFiles(filesInput, opts = {}) {
         'crawler.filesClassified': String(summary.files.classified),
         'crawler.tierInferred':    tier,
         'crawler.warningCount':    String(summary.warnings.length),
+        'crawler.syntheticRecordingRulesSkipped': String(summary.omitted.syntheticRecordingRules.length),
       },
     },
     spec: {

@@ -19,6 +19,7 @@ import {
 } from './focus.mjs';
 import { openDeployModal, renderMainView } from './app.mjs';
 import { catalogEntryFor, layerItemsFor, loadDiff, LAYERS_FOR_DIFF } from './compare-view.mjs';
+import { artefactLabel, deploySelectionFromEntries, deploySurfaceForArtefact } from './artifact-model.mjs';
 
 // ---------- COMPILE view ----------
 //
@@ -244,28 +245,6 @@ function effectiveRemediateOp() {
   return op;
 }
 
-// Is this layered artefact part of the deployable Grafana surface, and
-// if so what identity does the deploy manifest key it by? Mirrors
-// tools/lib/compile.mjs::compileCatalog — only SLOs (recording +
-// burn-rate alert rules), author-declared recording rules, and
-// dashboards land through the Grafana deploy path. Returns
-// { deployable, kind, identity } where identity matches the deploy
-// manifest row.id (slo.id / rule name / dashboard id).
-function remediationDeployIdentity(art) {
-  const id = String(art?.id || '').toUpperCase();
-  const defines = String(art?.defines || '');
-  if (/^SLO-/.test(id) || defines.startsWith('slos.')) {
-    return { deployable: true, kind: 'rules', identity: art.title || defines.replace(/^slos\./, '') };
-  }
-  if (/^QRY-/.test(id)) {
-    return { deployable: true, kind: 'rules', identity: art.title || art.id };
-  }
-  if (/^DASH-/.test(id) || defines.startsWith('dashboards.')) {
-    return { deployable: true, kind: 'dashboard', identity: defines.replace(/^dashboards\./, '') || art.title || art.id };
-  }
-  return { deployable: false, kind: null, identity: null };
-}
-
 // Resolve a set operation to a per-layer artefact list. Uses the
 // server-computed diff (state.diff) for B / ∪ / − so the membership
 // matches the Diagnose drill exactly; falls back to whole-pack walks
@@ -293,7 +272,7 @@ function resolveRemediationSet(op) {
     }
     const enriched = entries
       .filter(e => e.art)
-      .map(e => ({ ...e, ...remediationDeployIdentity(e.art) }));
+      .map(e => ({ ...e, ...deploySurfaceForArtefact(e.art) }));
     if (enriched.length) {
       out.byLayer[L] = enriched;
       out.total += enriched.length;
@@ -305,23 +284,22 @@ function resolveRemediationSet(op) {
 }
 
 // Selected deployable identities = all deployable in the set minus the
-// ones the user unchecked. Drives the deploy hand-off.
-function remediationSelectedIdentities(resolved) {
+// ones the user unchecked. `rows` is the count the deploy modal will show
+// after expanding SLOs into recording + alerting rows.
+function remediationSelectedDeployment(resolved) {
   const deselected = state.remediateDeselected || new Set();
-  const ids = new Set();
+  const entries = [];
   for (const L of LAYERS_FOR_DIFF) {
-    for (const e of (resolved.byLayer[L] || [])) {
-      if (e.deployable && e.identity && !deselected.has(e.identity)) ids.add(e.identity);
-    }
+    entries.push(...(resolved.byLayer[L] || []));
   }
-  return ids;
+  return deploySelectionFromEntries(entries, deselected);
 }
 
 const REMEDIATE_OPS = [
   { id: 'A',   label: 'A', sub: 'your pack',        needsB: false },
   { id: 'B',   label: 'B', sub: 'reference',        needsB: true  },
   { id: 'AUB', label: 'A ∪ B', sub: 'union',        needsB: true  },
-  { id: 'A-B', label: 'A − B', sub: 'gap to close', needsB: true  },
+  { id: 'A-B', label: 'A − B', sub: 'delta to push', needsB: true  },
 ];
 
 const REMEDIATE_LAYER_NAMES = { L1:'Contract', L2:'Telemetry', L2X:'Extended', L3:'Insight', L4:'Action', L5:'Validation', GOV:'Governance' };
@@ -380,7 +358,7 @@ function renderRemediationPlan(host) {
     return;
   }
 
-  const selectedIds = remediationSelectedIdentities(resolved);
+  const selectedDeployment = remediationSelectedDeployment(resolved);
 
   // ---- Summary tiles ----
   const summary = document.createElement('div');
@@ -395,8 +373,8 @@ function renderRemediationPlan(host) {
     <div class="remediate-summary-lede">${opMeaning[op] || ''}</div>
     <div class="remediate-tiles">
       <div class="remediate-tile is-total"><div class="remediate-tile-n">${resolved.total}</div><div class="remediate-tile-l">in set</div></div>
-      <div class="remediate-tile is-deployable"><div class="remediate-tile-n">${selectedIds.size}</div><div class="remediate-tile-l">selected to deploy</div></div>
-      <div class="remediate-tile is-author"><div class="remediate-tile-n">${resolved.author}</div><div class="remediate-tile-l">to author in pack</div></div>
+      <div class="remediate-tile is-deployable"><div class="remediate-tile-n">${selectedDeployment.rows}</div><div class="remediate-tile-l">deploy rows selected</div></div>
+      <div class="remediate-tile is-author"><div class="remediate-tile-n">${resolved.author}</div><div class="remediate-tile-l">manual follow-up</div></div>
     </div>
   `;
   wrap.appendChild(summary);
@@ -421,12 +399,12 @@ function renderRemediationPlan(host) {
     if (!entries || !entries.length) continue;
     const layerEl = document.createElement('div');
     layerEl.className = 'remediate-layer';
-    const depCount = entries.filter(e => e.deployable).length;
+    const depCount = entries.reduce((sum, e) => sum + (e.deployable ? (e.deployRows || 1) : 0), 0);
     layerEl.innerHTML = `
       <div class="remediate-layer-head">
         <span class="remediate-layer-num">${L}</span>
         <span class="remediate-layer-name">${escapeHtml(REMEDIATE_LAYER_NAMES[L] || L)}</span>
-        <span class="remediate-layer-count">${entries.length}${depCount ? ` · ${depCount} deployable` : ''}</span>
+        <span class="remediate-layer-count">${entries.length}${depCount ? ` · ${depCount} deploy row${depCount === 1 ? '' : 's'}` : ''}</span>
       </div>
     `;
     const ul = document.createElement('ul');
@@ -435,13 +413,13 @@ function renderRemediationPlan(host) {
       const li = document.createElement('li');
       const checked = e.deployable && e.identity && !deselected.has(e.identity);
       li.className = 'remediate-item' + (e.deployable ? '' : ' is-author');
-      const labelText = e.art.title || e.art.id || e.identity || '—';
+      const labelText = artefactLabel(e.art, e.identity || '—');
       if (e.deployable) {
         li.innerHTML = `
           <label class="remediate-item-row">
             <input type="checkbox" ${checked ? 'checked' : ''}>
             <span class="remediate-item-name">${escapeHtml(labelText)}</span>
-            <span class="remediate-item-tag is-deploy">${e.kind === 'dashboard' ? 'dashboard' : 'rules'}</span>
+            <span class="remediate-item-tag is-deploy">${escapeHtml(e.deployLabel || (e.kind === 'dashboard' ? 'dashboard' : 'rules'))}</span>
           </label>
         `;
         const cb = li.querySelector('input');
@@ -454,7 +432,7 @@ function renderRemediationPlan(host) {
         li.innerHTML = `
           <div class="remediate-item-row">
             <span class="remediate-item-name">${escapeHtml(labelText)}</span>
-            <span class="remediate-item-tag is-author">author in pack</span>
+            <span class="remediate-item-tag is-author">manual fix</span>
           </div>
         `;
       }
@@ -468,19 +446,19 @@ function renderRemediationPlan(host) {
   // ---- Deploy action ----
   const action = document.createElement('div');
   action.className = 'remediate-action';
-  const n = selectedIds.size;
+  const n = selectedDeployment.rows;
   const deployPackId = (op === 'B') ? state.compareBId : state.selectedPackId;
   action.innerHTML = `
     <button type="button" class="remediate-deploy-btn" ${n === 0 ? 'disabled' : ''}>
       Deploy ${n} selected →
     </button>
     <span class="remediate-action-hint">${n === 0
-      ? 'Select at least one deployable artefact, or author the rest in the pack.'
-      : 'Opens the deploy form pre-selected to your choices. Non-deployable artefacts are fixed by editing the pack.'}</span>
+      ? 'Select at least one deployable row, or handle the manual follow-up items.'
+      : 'Opens the deploy form pre-selected to these rows. Manual items need pack, instrumentation, or platform config changes.'}</span>
   `;
   const btn = action.querySelector('.remediate-deploy-btn');
   if (btn && n > 0) {
-    btn.onclick = () => openDeployModal({ packId: deployPackId, presetIdentities: selectedIds });
+    btn.onclick = () => openDeployModal({ packId: deployPackId, presetIdentities: selectedDeployment.identities });
   }
   wrap.appendChild(action);
 
@@ -749,14 +727,11 @@ export function renderCompileView(host) {
 // server/index.mjs::defaultDeployTool.
 function computeDeployTool(target) {
   const product = state.deployProduct;
-  const scope   = state.deployScope;
   if (product === 'grafana') {
     if (target === 'prometheus-rules') {
-      if (scope === 'recording') return 'apply_grafana_recording_rules';
-      if (scope === 'alerting')  return 'apply_grafana_alerting_rules';
-      return 'apply_grafana_rules';
+      return 'grafana_create_alert_rule';
     }
-    if (target === 'grafana-dashboard') return 'apply_grafana_dashboard';
+    if (target === 'grafana-dashboard') return 'grafana_create_dashboard';
   }
   return `apply_${String(target || '').replace(/-/g, '_')}`;
 }
@@ -807,11 +782,11 @@ function renderDeployPanelMarkup(target) {
       </label>
       <label class="mcp-field">
         <span class="mcp-field-key">Tool name <em>(default per product · version · scope)</em></span>
-        <input id="deploy-mcp-tool" type="text" placeholder="apply_*" autocomplete="off">
+        <input id="deploy-mcp-tool" type="text" placeholder="grafana_create_alert_rule" autocomplete="off">
       </label>
       <label class="mcp-field">
-        <span class="mcp-field-key">Auth token <em>(optional, not persisted)</em></span>
-        <input id="deploy-mcp-auth" type="password" placeholder="bearer token" autocomplete="off">
+        <span class="mcp-field-key">MCP client key <em>(optional, not persisted)</em></span>
+        <input id="deploy-mcp-auth" type="password" placeholder="sk-..." autocomplete="off">
       </label>
       <div class="deploy-panel-actions">
         <button id="deploy-go-btn" class="mcp-refresh-btn" type="button">deploy</button>
@@ -891,4 +866,3 @@ async function doDeploy(panel) {
     goBtn.disabled = false;
   }
 }
-

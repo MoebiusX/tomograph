@@ -23,7 +23,7 @@ before write.
 |---|---|
 | `spec.slis` / `spec.slos` | One ratio SLI + 99% / 30d SLO per service discovered by `system_health` |
 | `spec.telemetry.backends` | `metrics-prom` + `logs-elastic` always; `traces-jaeger` marked verified when `system_topology` shows a jaeger edge |
-| `spec.queries.recording_rules` | One per synthesised SLO |
+| `spec.queries.recording_rules` | Discovered recording rules from MCP probes or metric inventory; a minimal synthesized fallback only when no rules are visible |
 | `spec.policy.burn_rate_alerts` | `5m/1h@14x SEV1` + `30m/6h@6x SEV2` per SLO |
 | `spec.baselines` | MTTD derived from `anomalies_baselines`' smallest threshold; MTTR from criticality default; `measurement_source: mcp.anomalies_baselines` |
 
@@ -81,6 +81,39 @@ MCP_URL=https://otel-mcp.internal/mcp \
 MCP_AUTH=$MCP_TOKEN \
 node tools/fetch-live-pack.mjs
 ```
+
+## Deploying Back Through MCP
+
+The Remediate deploy flow targets the `otel-mcp-server` Grafana write
+tools directly:
+
+| Tomograph artefact | MCP tool |
+|---|---|
+| Grafana-managed recording rules | `grafana_create_alert_rule` |
+| Grafana-managed alerting rules | `grafana_create_alert_rule` |
+| Grafana dashboards | `grafana_create_dashboard` |
+
+Tomograph compiles rule artefacts to Grafana-managed provisioning YAML,
+then converts each rule into the JSON model expected by
+`grafana_create_alert_rule`. Deploy mode defaults to `upsert`, so retrying
+a remediation is idempotent by UID.
+
+For `otel-mcp-server`, writes require three separate pieces:
+
+```bash
+# On the MCP server:
+MCP_ENABLE_WRITES=true
+GRAFANA_URL=https://grafana.example.net
+GRAFANA_AUTH_TOKEN=glsa_...   # service account token
+MCP_AUTH_KEYS='{"keys":[{"id":"tomograph","key":"sk-tomograph-prod"}]}'
+```
+
+The Grafana token belongs on the MCP server, not in the browser. The
+Tomograph deploy modal's **MCP client key** field should receive
+`sk-tomograph-prod` when `MCP_AUTH_KEYS` is configured. Grafana rule
+writes need `alert.provisioning:write`; dashboard writes need
+`dashboards:write`; folder creation, if managed separately, needs
+`folders:write`.
 
 ## MCP tools the fetcher uses
 
