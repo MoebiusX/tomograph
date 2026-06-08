@@ -1242,6 +1242,8 @@ export function compile(canonical, target, opts = {}) {
       label: profile.label,
       tractability: profile.tractability,
       matched: profile.matched,
+      extrapolated: profile.extrapolated,
+      protocols: profile.protocols,
     },
   };
 }
@@ -1259,4 +1261,4 @@ export function listTargets() {
 
 // Re-export the profile API so callers that already import compile.mjs can
 // inspect/select version profiles without a second import.
-export { resolveProfile, listProfiles, satisfies, parseVersion } from './profiles.mjs';
+export { resolveProfile, listProfiles, listProtocols, satisfies, parseVersion } from './profiles.mjs';

@@ -34,6 +34,7 @@
     "dev":             "node server/index.mjs",
     "fetch-live":      "node tools/fetch-live-pack.mjs",
     "drift":           "node tools/detect-drift.mjs",
+    "drift:profiles":  "node tools/drift-profiles.mjs",
     "lint:drift":      "node --check tools/detect-drift.mjs",
     "validate-pack":   "node tools/validate-pack.mjs",
     "validate":        "node tools/validate-pack.mjs vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml",

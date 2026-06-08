@@ -9,8 +9,11 @@
  */
 
 import {
-  resolveProfile, listProfiles, satisfies, parseVersion,
+  resolveProfile, listProfiles, listProtocols, satisfies, parseVersion,
 } from './lib/profiles.mjs';
+import {
+  resolveProtocolVersion, compareVersions, rangeFloor, PROTOCOLS,
+} from './lib/protocols.mjs';
 import {
   compileGrafanaDashboard, compilePrometheusRules, compileOtelCollector,
   compileAlertmanager,
@@ -48,8 +51,13 @@ const g9 = resolveProfile('grafana', '9.5');
 assert(g9.knobs.datasourceForm === 'string', 'grafana 9 uses bare-uid datasource form', g9.knobs.datasourceForm, 'string');
 
 const gUnknown = resolveProfile('grafana', '999');
-assert(gUnknown.matched === false, 'grafana 999 falls back (no band)');
-assert(gUnknown.band === 'grafana-12', 'grafana fallback is the default band', gUnknown.band, 'grafana-12');
+assert(gUnknown.matched === false, 'grafana 999 did not match a known band');
+assert(gUnknown.extrapolated === true, 'grafana 999 is flagged extrapolated (future version)');
+assert(gUnknown.band === 'grafana-13', 'grafana 999 extrapolates to the newest known band', gUnknown.band, 'grafana-13');
+
+const gOld = resolveProfile('grafana', '7');
+assert(gOld.matched === false && gOld.extrapolated === false, 'grafana 7 (below all bands) falls back, not extrapolated');
+assert(gOld.band === 'grafana-12', 'grafana 7 falls back to the default band', gOld.band, 'grafana-12');
 
 const prom = resolveProfile('prometheus', '2.40');
 assert(prom.knobs.keepFiringFor === false, 'prometheus <2.42 has no keep_firing_for', prom.knobs.keepFiringFor, false);
@@ -70,6 +78,61 @@ const am26 = resolveProfile('alertmanager', '0.26.0');
 assert(am26.knobs.msteamsV2 === false && am26.knobs.msteams === true, 'alertmanager 0.26 has msteams but not v2');
 
 assert(listProfiles().length >= 6, 'registry lists all products', listProfiles().length, '>=6');
+
+// ---------------------------------------------------------------------------
+// Protocol layer: the facts live once, products bind to them, and several
+// products converge on the same protocol version (the whole point).
+// ---------------------------------------------------------------------------
+process.stdout.write('\n[protocols] versioned canon + cross-product binding\n');
+
+assert(listProtocols().length >= 5, 'protocol registry lists the protocols', listProtocols().length, '>=5');
+
+// keep_firing_for is a fact of the rule FORMAT at 2.42, not of any product.
+const prf242 = resolveProtocolVersion('prometheus-rule-format', '2.42');
+assert(prf242?.features.keepFiringFor === true, 'rule-format 2.42 has keep_firing_for');
+const prf2 = resolveProtocolVersion('prometheus-rule-format', '2.0');
+assert(prf2?.features.keepFiringFor === false, 'rule-format <2.42 lacks keep_firing_for');
+
+// Prometheus 2.45, Thanos, and Mimir all SPEAK the rule format — they converge
+// on the same capability without the fact being duplicated per product.
+const p245 = resolveProfile('prometheus', '2.45');
+const thanos = resolveProfile('thanos', '0.37');
+const mimir = resolveProfile('mimir', '2.15');
+assert(p245.protocols.some(x => x.protocol === 'prometheus-rule-format'),
+  'prometheus binds the rule-format protocol');
+assert(thanos.knobs.keepFiringFor === p245.knobs.keepFiringFor,
+  'Thanos and Prometheus 2.45 converge on the same keep_firing_for', thanos.knobs.keepFiringFor, p245.knobs.keepFiringFor);
+assert(mimir.knobs.keepFiringFor === true, 'Mimir (rule-format 3) supports keep_firing_for');
+
+// VictoriaMetrics consumes the SAME protocol but the MetricsQL dialect override
+// wins — same protocol binding, divergent capability.
+const vmProf = resolveProfile('victoriametrics', '1.99');
+assert(vmProf.protocols.some(x => x.protocol === 'prometheus-rule-format'),
+  'VictoriaMetrics binds the rule-format protocol');
+assert(vmProf.knobs.keepFiringFor === false,
+  'VictoriaMetrics dialect overrides keep_firing_for to false despite binding rule-format 2.42');
+assert(vmProf.knobs.queryLanguage === 'metricsql', 'VictoriaMetrics dialect marks MetricsQL');
+
+// PromQL is its own protocol, associated with several products.
+const promqlModern = resolveProtocolVersion('promql', '2.49');
+assert(promqlModern?.features.atModifier === true, 'PromQL 2.49 has the @ modifier');
+assert(p245.protocols.some(x => x.protocol === 'promql'), 'Prometheus also binds the PromQL protocol');
+
+// Per-protocol tractability rides on the resolved profile.
+const gProf = resolveProfile('grafana', '12.3');
+const gds = gProf.protocols.find(x => x.protocol === 'grafana-dashboard-schema');
+assert(gds?.tractability === 'native', 'grafana-dashboard-schema is native-tractable');
+assert(p245.protocols.find(x => x.protocol === 'prometheus-rule-format')?.tractability === 'vendored-go-needed',
+  'prometheus-rule-format needs vendored Go for faithful validation');
+
+// Evidence provenance: every feature carries since/evidence.
+const rawFeat = PROTOCOLS['prometheus-rule-format'].versions[0].features.keepFiringFor;
+assert(rawFeat.since === '2.42' && typeof rawFeat.evidence === 'string',
+  'rule-format features carry since + evidence provenance');
+
+// rangeFloor / compareVersions primitives
+assert(compareVersions('2.45', '2.42') > 0, 'compareVersions 2.45 > 2.42');
+assert(rangeFloor('>=12 <13').join('.') === '12.0.0', 'rangeFloor extracts the lower bound', rangeFloor('>=12 <13'), [12,0,0]);
 
 // ---------------------------------------------------------------------------
 // The real test: the compiler emits DIFFERENT artefacts per version.

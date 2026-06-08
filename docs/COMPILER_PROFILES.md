@@ -27,22 +27,60 @@ There are two different jobs and they must not be conflated:
 `artefact-model.mjs` has no import of `compile.mjs`, and `profiles.mjs` has no
 import of `artefact-model.mjs`. The two stay decoupled on purpose.
 
-## The profile registry
+## Two tiers: protocols (canon) and products (bindings)
 
-[`tools/lib/profiles.mjs`](../tools/lib/profiles.mjs) is a registry keyed by
-product. Each product lists **version bands** newest-first; each band carries a
-semver `range` and a set of **knobs** — the things that genuinely differ across
-versions and change what the running system accepts or does. Nothing cosmetic
-goes in a knob.
+The registry is split into two modules because a *version-determining fact*
+belongs to a **wire/serialization protocol**, not to any one product:
 
-`resolveProfile(product, version)` returns the first band whose range matches
-the declared version; if none match (or no version is declared) it returns the
-band flagged `default: true` and sets `matched: false` so the caller can surface
-*"emitted for &lt;default&gt; because the declared version isn't profiled."*
+- [`tools/lib/protocols.mjs`](../tools/lib/protocols.mjs) — the **versioned
+  canon**. Each protocol (`prometheus-rule-format`, `promql`,
+  `grafana-dashboard-schema`, `grafana-alerting-provisioning`,
+  `otel-collector-config`, `alertmanager-config`) has its own version line and a
+  set of **features**, each one an evidence-anchored
+  `{ value, since, evidence }` record. `keep_firing_for` is a fact of the
+  *rule format* at 2.42 — it is written **once**, here.
+- [`tools/lib/profiles.mjs`](../tools/lib/profiles.mjs) — the **product
+  bindings**. A product at a version band *speaks* a set of
+  `(protocol, protocolVersion)` pairs. Multiple products that converge on the
+  same protocol version (Prometheus 2.45, Thanos, Mimir all consume the
+  Prometheus rule format) share the feature set without duplicating it.
 
-A small pure-JS semver matcher (`satisfies`, `parseVersion`) drives selection so
-the module stays browser-importable with zero dependencies — it never pulls in
-the Node-only `semver` package.
+This is why PromQL can be modelled as its own protocol associated with several
+products, and why VictoriaMetrics — which consumes the same rule format but
+lacks `keep_firing_for` — is expressed as a one-line **dialect override** on its
+product band rather than a forked copy of the format.
+
+```
+ protocol  prometheus-rule-format @ 2.42  → { keepFiringFor: true,  … }
+   ▲ speaks            ▲ speaks                       ▲ speaks + dialect override
+ prometheus 2.45    thanos                       victoriametrics (keepFiringFor:false)
+```
+
+Grafana deliberately does **not** bind the `promql` protocol: its PromQL
+capability depends on the *datasource* Prometheus, not on the Grafana version.
+Encoding it on Grafana would be dishonest.
+
+## The product registry
+
+Each product in `profiles.mjs` lists **version bands** newest-first; each band
+carries a semver `range`, the protocols it `speaks`, and an optional `dialect`
+override. `resolveProfile(product, version)` composes the bound protocol feature
+sets into one flat **knobs** map (dialect overrides win), so downstream
+`compile*` code reads `profile.knobs.<knob>` exactly as before — the binding
+model is invisible to the emitter.
+
+Band selection:
+
+- A version that matches a band's range → that band, `matched: true`.
+- A version **newer** than the newest band's floor → the newest band, with
+  `matched: false, extrapolated: true` ("treated as the latest line we know").
+- Anything else (below all bands, or no/unparseable version) → the
+  `default: true` band, `matched: false, extrapolated: false`.
+
+A small pure-JS semver matcher (`satisfies`, `parseVersion`, `compareVersions`,
+`rangeFloor`, now living in `protocols.mjs`) drives selection so both modules
+stay browser-importable with zero dependencies — they never pull in the
+Node-only `semver` package.
 
 ### What each profile encodes (real, documented differences)
 
@@ -76,21 +114,29 @@ show *which* product+version the artefact was shaped for:
 ```js
 const out = compile(pack, 'grafana-dashboard');
 // out.profile = { product:'grafana', version:'12.3', band:'grafana-12',
-//                 label:'Grafana 12.x', tractability:'native', matched:true }
+//                 label:'Grafana 12.x', tractability:'native', matched:true,
+//                 extrapolated:false,
+//                 protocols:[ { protocol:'grafana-dashboard-schema', version:'gds-12', … },
+//                             { protocol:'grafana-alerting-provisioning', … } ] }
 ```
+
+`out.profile.protocols` lists exactly which protocol versions the artefact was
+shaped against, each with its own `tractability` — so a UI can show "this rule
+file speaks prometheus-rule-format 2.42 (vendored-go-needed)."
 
 ## Tractability — JS vs vendored Go schemas
 
 This repo's hard constraint is that everything under `tools/lib/` is **pure ESM,
 browser-importable, deps = `express` only**. The studio imports the compiler
 directly in the browser. That bounds how faithfully each family can be modelled,
-so every profile carries an honest `tractability` marker:
+so every **protocol** carries an honest `tractability` marker (and each product
+surfaces the markers of the protocols it speaks):
 
-| Marker | Meaning | Families |
+| Marker | Meaning | Protocols |
 | --- | --- | --- |
-| `native` | The version-determining shape is small and fully expressible in JS — we implement it faithfully. | Grafana dashboard (schemaVersion + datasource form) |
-| `partial` | We model the high-impact knobs; the product's full schema is larger than we encode, and unmodelled fields pass through. | OTel Collector, Alertmanager, Grafana-managed rules |
-| `vendored-go-needed` | **Faithful validation** requires the product's own Go schema/parser. We emit best-effort and flag it; we do **not** claim canonical fidelity. | Prometheus rules (`promtool`/`rulefmt`) |
+| `native` | The version-determining shape is small and fully expressible in JS — we implement it faithfully. | `grafana-dashboard-schema` (schemaVersion + datasource form) |
+| `partial` | We model the high-impact features; the full schema is larger than we encode, and unmodelled fields pass through. | `otel-collector-config`, `alertmanager-config`, `grafana-alerting-provisioning` |
+| `vendored-go-needed` | **Faithful validation** requires the product's own Go schema/parser. We emit best-effort and flag it; we do **not** claim canonical fidelity. | `prometheus-rule-format`, `promql` (`promtool`/`rulefmt`) |
 
 ### Why some families need vendored Go schemas
 
@@ -111,26 +157,64 @@ it must run **server-side and be optional** — never imported into the browser
 bundle. The `tractability` marker is the contract that keeps us honest about the
 difference between "shaped for the version" and "validated by the canon."
 
-## Adding a product or version band
+## Adding a protocol version, product, or band
 
-1. Add a band to the product's `bands` array in `profiles.mjs`, newest-first,
-   with a semver `range` and only behaviour-determining `knobs`.
-2. If the product is new, register it under a new key and add aliases to
+1. **New protocol feature/version** → add it to `PROTOCOLS` in `protocols.mjs`,
+   newest-first, as a `{ value, since, evidence }` record. The `evidence`
+   string (changelog/PR/doc reference) is mandatory — facts are anchored.
+2. **New product band** → add a band to the product's `bands` array in
+   `profiles.mjs`, newest-first, with a semver `range` and a `speaks` map
+   binding `(protocolId: selector)`. Use `dialect` only for genuine product
+   divergences (e.g. MetricsQL).
+3. **New product** → register it under a new key and add aliases to
    `normalizeProduct`.
-3. Thread any new knob into the relevant `compile*` function — gate the
+4. Thread any new knob into the relevant `compile*` function — gate the
    version-specific output on `profile.knobs.<knob>`.
-4. Add an assertion to [`tools/test-profiles.mjs`](../tools/test-profiles.mjs)
+5. Add an assertion to [`tools/test-profiles.mjs`](../tools/test-profiles.mjs)
    proving the compiler emits *differently* across the new boundary. A profile
    with no observable effect on the output is not a profile.
+6. Bump the affected `upstream.latestKnown` if you verified against a newer
+   release, and run `npm run drift:profiles` to confirm the baseline.
+
+## Keeping in sync as new versions ship
+
+The profile facts are hand-curated — someone has to read a changelog to know a
+new feature landed. What **can** be automated is detecting that a new release
+exists at all. [`tools/drift-profiles.mjs`](../tools/drift-profiles.mjs)
+(`npm run drift:profiles`) reads each registry entry's
+`upstream { repo, latestKnown }`, queries the GitHub Releases API for the latest
+stable tag, and warns when an upstream has moved past what we've profiled:
+
+```
+  ⚠ open-telemetry/opentelemetry-collector: upstream 0.153.0 > profiled 0.96
+      referenced by: product:otel-collector, protocol:otel-collector-config
+      → review the changelog and add a band/protocol version.
+```
+
+It is advisory (not part of the `lint` / `test` / `build` gate): offline it
+reports "could not check" and exits 0, so it never blocks a build it can't
+evaluate. Pass `--strict` to fail on unreachable upstreams (for a scheduled CI
+job), `--json` for machine output, and set `GITHUB_TOKEN` for a higher rate
+limit. Exit codes: `0` current, `1` stale, `2` `--strict` + unreachable.
 
 ## Public API
+
+From `tools/lib/protocols.mjs`:
+
+- `resolveProtocolVersion(protocolId, selector)` → the resolved protocol version
+  with **flattened** features.
+- `listProtocols()` → every protocol and its version lines (for UIs / docs /
+  the drift checker).
+- `parseVersion`, `compareVersions`, `satisfies`, `rangeFloor` → semver
+  primitives.
 
 From `tools/lib/profiles.mjs` (also re-exported from `compile.mjs`):
 
 - `resolveProfile(product, version)` → frozen `{ product, family, tractability,
-  version, band, label, knobs, matched }`.
-- `listProfiles()` → every product and its version bands (for UIs / docs).
-- `satisfies(version, range)`, `parseVersion(v)` → the semver primitives.
+  version, band, label, knobs, protocols, matched, extrapolated }`.
+- `listProfiles()` → every product, its bands, and the protocols each speaks.
+- `listProtocols`, `satisfies(version, range)`, `parseVersion(v)` —
+  re-exported from `protocols.mjs`.
 
 From `tools/lib/compile.mjs`:
 

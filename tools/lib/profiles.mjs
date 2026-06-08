@@ -1,268 +1,168 @@
 // tools/lib/profiles.mjs
 //
-// PRODUCT + VERSION PROFILES
+// PRODUCT PROFILES — product@version bound to the protocols it speaks.
 //
-// The compiler used to be version-blind: it hardcoded one shape per target
-// (schemaVersion 41, the `logging` exporter, a fixed telemetry block) and
-// emitted it no matter what version the pack declared. That makes the output a
-// heuristic, not a faithful artefact — a dashboard emitted for "Grafana 13"
-// looked identical to one for "Grafana 10", which is wrong.
+// A *profile* is the resolved canon for ONE product at ONE version: the union
+// of the feature sets of every protocol that product speaks at that version,
+// plus any product-level *dialect* overrides. The compiler resolves a profile
+// from the version the pack declares (or an explicit override) and shapes every
+// artefact through it.
 //
-// A profile is the canon for ONE product at ONE version range. It encodes the
-// knobs that genuinely differ across versions — the things that change what the
-// running system accepts or does — and nothing cosmetic. The compiler resolves
-// a profile from the version the pack declares (or an explicit override) and
-// shapes every artefact through it.
+// The facts themselves live in protocols.mjs (the versioned canon). A product
+// entry here is a thin *binding*: "at my version V, I speak protocol P at
+// version W." Multiple products that bind to the same (protocol, version)
+// converge on the same feature set — that's how Prometheus, Thanos, and Mimir
+// share `keep_firing_for` without duplicating the fact. A product that consumes
+// a protocol but diverges (VictoriaMetrics / MetricsQL) carries a `dialect`
+// override that wins over the protocol features.
 //
-// TRACTABILITY
-//   We are honest about how faithfully each family can be modelled in pure JS
-//   (this repo's hard constraint: browser-importable, deps = express only):
+// The returned `knobs` map is intentionally the same flat shape the compiler
+// already consumes, so compile.mjs and every existing test are unaffected by
+// the protocol decomposition.
 //
-//     'native'   the version-determining shape is small and fully expressible
-//                in JS — we implement it faithfully (e.g. Grafana dashboard
-//                schemaVersion + datasource shape, OTel exporter renames,
-//                Prometheus rule features).
-//     'partial'  we model the high-impact knobs but the product's full schema
-//                is larger than we encode; unmodelled fields pass through.
-//     'vendored-go-needed'  faithful validation requires the product's own Go
-//                schema/parser (promtool rulefmt, Grafana's dashboard-schema,
-//                the Collector's config unmarshaller). We emit best-effort and
-//                flag it; we do NOT claim canonical fidelity.
-//
-//   `profile.tractability` carries this marker so the UI and docs can show it.
+// TRACTABILITY ('native' / 'partial' / 'vendored-go-needed') is now a property
+// of each *protocol* (see protocols.mjs); the product carries the family
+// headline, and the resolved profile lists per-protocol tractability under
+// `protocols[]`.
 //
 // Pure ESM, no Node APIs — the studio imports this in the browser.
 
+import {
+  parseVersion, satisfies, compareVersions, rangeFloor,
+  resolveProtocolVersion, listProtocols, PROTOCOLS,
+} from './protocols.mjs';
+
+// Re-export the semver primitives so existing importers (and compile.mjs's
+// re-export) keep working unchanged.
+export { parseVersion, satisfies, compareVersions, listProtocols };
+
 // ---------------------------------------------------------------------------
-// Minimal semver-range matcher
+// Product registry
 //
-// Enough to drive profile selection without pulling in `semver` (a Node-only
-// dependency). Supports a declared version like "12", "12.3", "12.3.1",
-// "v2.45.0", "0.96.0" and range predicates ">=", ">", "<=", "<", "=" plus a
-// bare "major" shorthand. Ranges are ANDed space-separated terms, e.g.
-// ">=12 <13".
-// ---------------------------------------------------------------------------
-
-export function parseVersion(v) {
-  if (v == null) return null;
-  const s = String(v).trim().replace(/^v/i, '');
-  const m = s.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
-  if (!m) return null;
-  return [Number(m[1]), Number(m[2] || 0), Number(m[3] || 0)];
-}
-
-function cmp(a, b) {
-  for (let i = 0; i < 3; i++) {
-    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
-  }
-  return 0;
-}
-
-function satisfiesTerm(ver, term) {
-  const t = term.trim();
-  if (!t || t === '*') return true;
-  const m = t.match(/^(>=|<=|>|<|=)?\s*(.+)$/);
-  if (!m) return false;
-  const op = m[1] || '=';
-  const target = parseVersion(m[2]);
-  if (!target) return false;
-  const c = cmp(ver, target);
-  switch (op) {
-    case '>=': return c >= 0;
-    case '>':  return c > 0;
-    case '<=': return c <= 0;
-    case '<':  return c < 0;
-    case '=':  // bare major/minor "=12" means same major (and minor if given)
-      if (/^\d+$/.test(m[2].trim())) return ver[0] === target[0];
-      if (/^\d+\.\d+$/.test(m[2].trim())) return ver[0] === target[0] && ver[1] === target[1];
-      return c === 0;
-    default:   return false;
-  }
-}
-
-export function satisfies(version, range) {
-  const ver = parseVersion(version);
-  if (!ver) return false;
-  return String(range).split(/\s+/).filter(Boolean).every((term) => satisfiesTerm(ver, term));
-}
-
-// ---------------------------------------------------------------------------
-// Profile registry
+// Each product lists version bands newest-first. A band has:
+//   range    semver range over the PRODUCT version
+//   speaks   { protocolId: selectorVersion } — the protocol versions this
+//            product band speaks, resolved against protocols.mjs.
+//   dialect  optional knob overrides that win over the protocol features
+//            (e.g. VictoriaMetrics omitting keep_firing_for).
 //
-// Each product lists version bands newest-first. `resolveProfile` returns the
-// first band whose range matches the declared version; if none match (or no
-// version is declared) it returns the band flagged `default: true`.
+// `family` / `tractability` are the product-family headline. `upstream` ties
+// the product to a GitHub repo + the newest version we've profiled, for the
+// staleness checker (tools/drift-profiles.mjs).
 // ---------------------------------------------------------------------------
 
-const REGISTRY = {
-  // -------------------------------------------------------------------------
-  // Grafana dashboards — the schemaVersion + panel/datasource shape are the
-  // real version differentiators. (schemaVersion is Grafana's own dashboard
-  // migration counter; it is NOT the product version.)
-  // -------------------------------------------------------------------------
-  grafana: {
-    family: 'grafana-dashboard',
-    tractability: 'native',
-    bands: [
-      {
-        id: 'grafana-13', range: '>=13 <14', label: 'Grafana 13.x',
-        knobs: {
-          schemaVersion: 42,
-          datasourceForm: 'object',     // { type, uid } — mandatory since v10
-          panelTargetDatasource: true,  // every target carries its datasource
-          thresholdsMode: 'absolute',
-          legacyAngular: false,
-        },
-      },
-      {
-        id: 'grafana-12', range: '>=12 <13', label: 'Grafana 12.x', default: true,
-        knobs: {
-          schemaVersion: 41,
-          datasourceForm: 'object',
-          panelTargetDatasource: true,
-          thresholdsMode: 'absolute',
-          legacyAngular: false,
-        },
-      },
-      {
-        id: 'grafana-11', range: '>=11 <12', label: 'Grafana 11.x',
-        knobs: {
-          schemaVersion: 40,
-          datasourceForm: 'object',
-          panelTargetDatasource: true,
-          thresholdsMode: 'absolute',
-          legacyAngular: false,         // angular panels removed in v11
-        },
-      },
-      {
-        id: 'grafana-10', range: '>=10 <11', label: 'Grafana 10.x',
-        knobs: {
-          schemaVersion: 39,
-          datasourceForm: 'object',     // object form became mandatory in v10
-          panelTargetDatasource: true,
-          thresholdsMode: 'absolute',
-          legacyAngular: true,
-        },
-      },
-      {
-        id: 'grafana-9', range: '>=9 <10', label: 'Grafana 9.x',
-        knobs: {
-          schemaVersion: 37,
-          datasourceForm: 'string',     // pre-v10 accepted the bare uid string
-          panelTargetDatasource: false,
-          thresholdsMode: 'absolute',
-          legacyAngular: true,
-        },
-      },
-    ],
-  },
-
-  // -------------------------------------------------------------------------
-  // Grafana-managed alerting/recording rules (provisioning YAML). The rule
-  // object shape evolved: `record` block for recording rules (Grafana 11+),
-  // `keep_firing_for` and `notification_settings` (Grafana 10.4+/11+).
-  // -------------------------------------------------------------------------
-  'grafana-managed': {
-    family: 'grafana-managed-rules',
-    tractability: 'partial',
-    bands: [
-      {
-        id: 'gma-12', range: '>=12 <14', label: 'Grafana 12–13 unified alerting', default: true,
-        knobs: { apiVersion: 1, recordBlock: true, keepFiringFor: true, notificationSettings: true },
-      },
-      {
-        id: 'gma-11', range: '>=11 <12', label: 'Grafana 11 unified alerting',
-        knobs: { apiVersion: 1, recordBlock: true, keepFiringFor: true, notificationSettings: true },
-      },
-      {
-        id: 'gma-10', range: '>=9 <11', label: 'Grafana 9–10 unified alerting',
-        knobs: { apiVersion: 1, recordBlock: false, keepFiringFor: false, notificationSettings: false },
-      },
-    ],
-  },
-
-  // -------------------------------------------------------------------------
-  // Prometheus rules. The rule-group format is stable; the genuine version
-  // knob is `keep_firing_for` on alerting rules, added in Prometheus 2.42
-  // (Jan 2023). Faithful validation needs promtool (Go) — vendored-go-needed.
-  // -------------------------------------------------------------------------
+const PRODUCTS = {
+  // ----- Metrics stores: speak the Prometheus rule format + PromQL ---------
   prometheus: {
     family: 'prometheus-rules',
     tractability: 'vendored-go-needed',
+    upstream: { repo: 'prometheus/prometheus', latestKnown: '3' },
     bands: [
-      {
-        id: 'prom-3', range: '>=3 <4', label: 'Prometheus 3.x', default: true,
-        knobs: { keepFiringFor: true, ruleQueryOffset: true },
-      },
-      {
-        id: 'prom-2.42', range: '>=2.42 <3', label: 'Prometheus 2.42+',
-        knobs: { keepFiringFor: true, ruleQueryOffset: false },
-      },
-      {
-        id: 'prom-2', range: '>=2 <2.42', label: 'Prometheus 2.x (<2.42)',
-        knobs: { keepFiringFor: false, ruleQueryOffset: false },
-      },
+      { id: 'prom-3',    range: '>=3 <4',    label: 'Prometheus 3.x', default: true,
+        speaks: { 'prometheus-rule-format': '3.0',  promql: '3.0' } },
+      { id: 'prom-2.42', range: '>=2.42 <3', label: 'Prometheus 2.42+',
+        speaks: { 'prometheus-rule-format': '2.42', promql: '2.42' } },
+      { id: 'prom-2',    range: '>=2 <2.42', label: 'Prometheus 2.x (<2.42)',
+        speaks: { 'prometheus-rule-format': '2.0',  promql: '2.0' } },
     ],
   },
 
-  // VictoriaMetrics vmalert consumes Prometheus rule format but does NOT
-  // support `keep_firing_for` — a real, easy-to-get-wrong difference.
+  // Thanos consumes the Prometheus rule format and modern PromQL.
+  thanos: {
+    family: 'prometheus-rules',
+    tractability: 'vendored-go-needed',
+    upstream: { repo: 'thanos-io/thanos', latestKnown: '0.37' },
+    bands: [
+      { id: 'thanos', range: '*', label: 'Thanos', default: true,
+        speaks: { 'prometheus-rule-format': '2.42', promql: '2.49' } },
+    ],
+  },
+
+  // Mimir / Cortex: rule format on par with Prometheus 3, modern PromQL.
+  mimir: {
+    family: 'prometheus-rules',
+    tractability: 'vendored-go-needed',
+    upstream: { repo: 'grafana/mimir', latestKnown: '2.15' },
+    bands: [
+      { id: 'mimir', range: '*', label: 'Mimir / Cortex', default: true,
+        speaks: { 'prometheus-rule-format': '3.0', promql: '2.49' } },
+    ],
+  },
+
+  // VictoriaMetrics vmalert consumes the Prometheus rule format but speaks the
+  // MetricsQL dialect — notably it does NOT support keep_firing_for. The
+  // dialect override wins over the bound protocol's features.
   victoriametrics: {
     family: 'prometheus-rules',
     tractability: 'vendored-go-needed',
+    upstream: { repo: 'VictoriaMetrics/VictoriaMetrics', latestKnown: '1.99' },
     bands: [
-      {
-        id: 'vm', range: '*', label: 'VictoriaMetrics vmalert', default: true,
-        knobs: { keepFiringFor: false, ruleQueryOffset: false },
-      },
+      { id: 'vm', range: '*', label: 'VictoriaMetrics vmalert', default: true,
+        speaks: { 'prometheus-rule-format': '2.42' },
+        dialect: { keepFiringFor: false, queryLanguage: 'metricsql' } },
     ],
   },
 
-  // -------------------------------------------------------------------------
-  // OTel Collector. Real version knobs: the `logging` exporter was renamed to
-  // `debug` in v0.86 (the old name kept working with a warning, removed
-  // later); `service.telemetry.metrics.address` was deprecated in favour of
-  // `readers`. Full config validation needs the Collector's Go unmarshaller.
-  // -------------------------------------------------------------------------
+  // ----- Grafana: dashboard schema + alerting provisioning -----------------
+  grafana: {
+    family: 'grafana-dashboard',
+    tractability: 'native',
+    upstream: { repo: 'grafana/grafana', latestKnown: '13' },
+    bands: [
+      { id: 'grafana-13', range: '>=13 <14', label: 'Grafana 13.x',
+        speaks: { 'grafana-dashboard-schema': '13', 'grafana-alerting-provisioning': '13' } },
+      { id: 'grafana-12', range: '>=12 <13', label: 'Grafana 12.x', default: true,
+        speaks: { 'grafana-dashboard-schema': '12', 'grafana-alerting-provisioning': '12' } },
+      { id: 'grafana-11', range: '>=11 <12', label: 'Grafana 11.x',
+        speaks: { 'grafana-dashboard-schema': '11', 'grafana-alerting-provisioning': '11' } },
+      { id: 'grafana-10', range: '>=10 <11', label: 'Grafana 10.x',
+        speaks: { 'grafana-dashboard-schema': '10', 'grafana-alerting-provisioning': '10' } },
+      { id: 'grafana-9',  range: '>=9 <10',  label: 'Grafana 9.x',
+        speaks: { 'grafana-dashboard-schema': '9', 'grafana-alerting-provisioning': '9' } },
+    ],
+  },
+
+  // Grafana-managed rules — the alerting/recording provisioning family,
+  // version-tracked by the Grafana release.
+  'grafana-managed': {
+    family: 'grafana-managed-rules',
+    tractability: 'partial',
+    upstream: { repo: 'grafana/grafana', latestKnown: '13' },
+    bands: [
+      { id: 'gma-12', range: '>=11', label: 'Grafana 11–13 unified alerting', default: true,
+        speaks: { 'grafana-alerting-provisioning': '12' } },
+      { id: 'gma-10', range: '>=9 <11', label: 'Grafana 9–10 unified alerting',
+        speaks: { 'grafana-alerting-provisioning': '10' } },
+    ],
+  },
+
+  // ----- OTel Collector ----------------------------------------------------
   'otel-collector': {
     family: 'otel-collector',
     tractability: 'partial',
+    upstream: { repo: 'open-telemetry/opentelemetry-collector', latestKnown: '0.96' },
     bands: [
-      {
-        id: 'otelcol-0.96+', range: '>=0.96', label: 'OTel Collector 0.96+', default: true,
-        knobs: { debugExporter: true, telemetryMetricsReaders: true },
-      },
-      {
-        id: 'otelcol-0.86', range: '>=0.86 <0.96', label: 'OTel Collector 0.86–0.95',
-        knobs: { debugExporter: true, telemetryMetricsReaders: false },
-      },
-      {
-        id: 'otelcol-pre-0.86', range: '<0.86', label: 'OTel Collector <0.86',
-        knobs: { debugExporter: false, telemetryMetricsReaders: false },
-      },
+      { id: 'otelcol-0.96+', range: '>=0.96', label: 'OTel Collector 0.96+', default: true,
+        speaks: { 'otel-collector-config': '0.96' } },
+      { id: 'otelcol-0.86', range: '>=0.86 <0.96', label: 'OTel Collector 0.86–0.95',
+        speaks: { 'otel-collector-config': '0.86' } },
+      { id: 'otelcol-pre-0.86', range: '<0.86', label: 'OTel Collector <0.86',
+        speaks: { 'otel-collector-config': '0.80' } },
     ],
   },
 
-  // -------------------------------------------------------------------------
-  // Alertmanager. `msteamsv2_configs` was added in v0.28; `msteams_configs`
-  // in v0.26. Route/receiver shape is otherwise stable.
-  // -------------------------------------------------------------------------
+  // ----- Alertmanager ------------------------------------------------------
   alertmanager: {
     family: 'alertmanager',
     tractability: 'partial',
+    upstream: { repo: 'prometheus/alertmanager', latestKnown: '0.28' },
     bands: [
-      {
-        id: 'am-0.28+', range: '>=0.28', label: 'Alertmanager 0.28+', default: true,
-        knobs: { msteamsV2: true, msteams: true },
-      },
-      {
-        id: 'am-0.26', range: '>=0.26 <0.28', label: 'Alertmanager 0.26–0.27',
-        knobs: { msteamsV2: false, msteams: true },
-      },
-      {
-        id: 'am-pre-0.26', range: '<0.26', label: 'Alertmanager <0.26',
-        knobs: { msteamsV2: false, msteams: false },
-      },
+      { id: 'am-0.28+', range: '>=0.28', label: 'Alertmanager 0.28+', default: true,
+        speaks: { 'alertmanager-config': '0.28' } },
+      { id: 'am-0.26', range: '>=0.26 <0.28', label: 'Alertmanager 0.26–0.27',
+        speaks: { 'alertmanager-config': '0.26' } },
+      { id: 'am-pre-0.26', range: '<0.26', label: 'Alertmanager <0.26',
+        speaks: { 'alertmanager-config': '0.20' } },
     ],
   },
 };
@@ -271,27 +171,61 @@ const REGISTRY = {
 // Resolver
 // ---------------------------------------------------------------------------
 
-// Resolve the profile for a product at a declared version. Returns a frozen
-// object { product, family, tractability, version, band, label, knobs,
-// matched }. `matched` is false when no band matched the version and we fell
-// back to the default band — the caller can surface that as "emitted for
-// <default> because the declared version <v> isn't profiled."
+// Resolve the profile for a product at a declared version. Composes the bound
+// protocol feature sets into a flat `knobs` map (dialect overrides win), and
+// reports which protocol versions were resolved.
+//
+// Returns a frozen object:
+//   { product, family, tractability, version, band, label, knobs,
+//     protocols: [{ protocol, version, label, tractability }],
+//     matched, extrapolated }
+//
+//   matched=false, extrapolated=true  → version is newer than the newest band
+//                                        we know; shaped as the newest band.
+//   matched=false, extrapolated=false → version below all bands / unparseable;
+//                                        fell back to the default band.
 export function resolveProfile(product, version) {
   const key = normalizeProduct(product);
-  const entry = REGISTRY[key];
+  const entry = PRODUCTS[key];
   if (!entry) {
     return Object.freeze({
       product: key, family: 'unknown', tractability: 'vendored-go-needed',
       version: version ?? null, band: null, label: `${product} (no profile)`,
-      knobs: {}, matched: false,
+      knobs: Object.freeze({}), protocols: Object.freeze([]),
+      matched: false, extrapolated: false,
     });
   }
-  let band = null;
-  if (version != null && parseVersion(version)) {
-    band = entry.bands.find((b) => satisfies(version, b.range)) || null;
-  }
+
+  const v = version != null ? parseVersion(version) : null;
+  let band = v ? (entry.bands.find((b) => satisfies(version, b.range)) || null) : null;
   const matched = !!band;
-  if (!band) band = entry.bands.find((b) => b.default) || entry.bands[0];
+  let extrapolated = false;
+
+  if (!band) {
+    // No band matched. If the version sits at/above the newest known band's
+    // floor, it's a *future* version — shape it as the newest band and flag
+    // the extrapolation rather than silently dropping to the default.
+    const newest = entry.bands[0];
+    if (v && compareVersions(v, rangeFloor(newest.range)) >= 0) {
+      band = newest;
+      extrapolated = true;
+    } else {
+      band = entry.bands.find((b) => b.default) || entry.bands[0];
+    }
+  }
+
+  // Compose protocol feature sets → flat knobs.
+  const knobs = {};
+  const protocols = [];
+  for (const [pid, selector] of Object.entries(band.speaks || {})) {
+    const pv = resolveProtocolVersion(pid, selector);
+    if (!pv) continue;
+    Object.assign(knobs, pv.features);
+    protocols.push({ protocol: pid, version: pv.id, label: pv.label, tractability: pv.tractability });
+  }
+  // Dialect overrides win over protocol features.
+  if (band.dialect) Object.assign(knobs, band.dialect);
+
   return Object.freeze({
     product: key,
     family: entry.family,
@@ -299,8 +233,10 @@ export function resolveProfile(product, version) {
     version: version ?? null,
     band: band.id,
     label: band.label,
-    knobs: Object.freeze({ ...band.knobs }),
+    knobs: Object.freeze({ ...knobs }),
+    protocols: Object.freeze(protocols),
     matched,
+    extrapolated,
   });
 }
 
@@ -312,16 +248,28 @@ function normalizeProduct(product) {
   if (/otel|opentelemetry|collector/.test(p)) return 'otel-collector';
   if (/alertmanager/.test(p)) return 'alertmanager';
   if (/grafana/.test(p)) return 'grafana';
-  if (/prometheus|mimir|thanos/.test(p)) return 'prometheus';
+  if (/thanos/.test(p)) return 'thanos';
+  if (/mimir|cortex/.test(p)) return 'mimir';
+  if (/prometheus/.test(p)) return 'prometheus';
   return p;
 }
 
-// Enumerate the registry for UIs/tests: every product and its version bands.
+// Enumerate the product registry for UIs / tests / the drift checker. Each
+// band lists the protocols it binds so the UI can show the product→protocol map.
 export function listProfiles() {
-  return Object.entries(REGISTRY).map(([product, entry]) => ({
+  return Object.entries(PRODUCTS).map(([product, entry]) => ({
     product,
     family: entry.family,
     tractability: entry.tractability,
-    bands: entry.bands.map((b) => ({ id: b.id, range: b.range, label: b.label, default: !!b.default })),
+    upstream: entry.upstream || null,
+    bands: entry.bands.map((b) => ({
+      id: b.id, range: b.range, label: b.label, default: !!b.default,
+      speaks: Object.keys(b.speaks || {}),
+      dialect: b.dialect ? Object.keys(b.dialect) : [],
+    })),
   }));
 }
+
+// Expose the raw registries for the staleness checker (it reads `upstream` to
+// know which repos and which "latest known" version to compare).
+export { PRODUCTS, PROTOCOLS };
