@@ -504,14 +504,41 @@ export function buildCanonicalPack({
   // Probes drive multiple downstream sections — hoist their results.
   const discoveredRules = probeResults?.recording_rules?.adapted || [];
 
+  // Second, independent source of the platform's recorded SLO series: the
+  // metric-inventory grep (metrics_label_values/__name__ filtered to the
+  // `ns:metric:op` convention, surfaced on ruleEvidence.recordingRuleNames).
+  // When the rules API comes back empty — as it does on MCP endpoints that
+  // don't surface /api/v1/rules — the recorded series are STILL in the
+  // metric inventory and ARE the live evidence of which SLIs the platform
+  // runs. This is what makes the live reconstruction the true inverse of
+  // the compiler: a pack compiled and deployed exposes `<svc>:<sli>:<op>`
+  // recorded series, and reading those names back — from a repo crawl OR
+  // from this live inventory — reconstructs the SAME SLI identities, so
+  // diff.mjs can match them instead of reporting false drift. We only have
+  // NAMES here (no exprs), so each pseudo-rule's expr is the recorded
+  // series itself (a bare series selector is valid PromQL).
+  const RULE_NAME_RE = /^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*:[a-z0-9_]+$/;
+  const inventoryRules = (ruleEvidence?.recordingRuleNames || [])
+    .filter(n => typeof n === 'string' && RULE_NAME_RE.test(n))
+    .map(n => ({ name: n, expr: n }));
+
+  // Real recorded rules, preferring the rules API (carries exprs) and
+  // falling back to the inventory-discovered series (names only). Both
+  // feed the SAME inference the crawler uses — the symmetry contract.
+  const recordedRules = (Array.isArray(discoveredRules) && discoveredRules.length > 0)
+    ? discoveredRules
+    : inventoryRules;
+
   // ---- spec.slis + spec.slos ----
-  // We first try to infer SLIs from any discovered recording rules
-  // (their `ns:metric:op` names + exprs are SLO evidence — exactly the
-  // point the user pushed back on). Service-derived SLIs only fill the
-  // gap when rule discovery returned nothing.
+  // We first infer SLIs from the platform's recorded SLO series (their
+  // `ns:metric:op` names are the SLO evidence — exactly the inverse of how
+  // the compiler materialises each SLI as recording rules). Service-derived
+  // availability SLIs are a LAST resort, only when no recorded SLO series
+  // exist at all — they're guesses, not evidence, so we never let them
+  // mask the real recorded contracts.
   const slis = [];
   const slos = [];
-  const inferredFromRules = inferSlisFromRecordingRules(discoveredRules || []);
+  const inferredFromRules = inferSlisFromRecordingRules(recordedRules);
   if (inferredFromRules.length) {
     for (const { sli, slo } of inferredFromRules) {
       slis.push(sli);
@@ -569,15 +596,15 @@ export function buildCanonicalPack({
   };
 
   // ---- spec.queries.recording_rules ----
-  // PREFER what the MCP attested via the recording_rules probe. Only
-  // fall back to the synthesised per-SLO stub if nothing came back.
+  // PREFER the platform's real recorded series (rules API or inventory
+  // grep). Only fall back to the synthesised per-SLO stub when the
+  // platform exposed no recorded series at all.
   let recordingRules;
-  if (Array.isArray(discoveredRules) && discoveredRules.length > 0) {
+  if (recordedRules.length > 0) {
     // Schema requires the rule NAME to match the prometheus convention
     // ns:metric:op. Anything that doesn't can't go in spec.queries —
     // skip those (and they'll surface in the warnings).
-    const RULE_NAME = /^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*:[a-z0-9_]+$/;
-    recordingRules = discoveredRules.filter(r => RULE_NAME.test(r.name));
+    recordingRules = recordedRules.filter(r => RULE_NAME_RE.test(r.name));
     markVerified('queries.recording_rules');
   } else {
     recordingRules = slos.map(s => ({
