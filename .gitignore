@@ -18,6 +18,7 @@ coverage/
 # repos and routinely carry real secrets (webhook tokens, on-call emails,
 # internal URLs) — they must never land in this public repo.
 *.service.repo.yaml
+*.repo.pack.yaml
 
 # Internal, repo-local working docs — status surveys, ad-hoc audits,
 # brand/rename strategy and launch backlog. Not part of the public doc set.
