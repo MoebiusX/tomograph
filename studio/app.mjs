@@ -2700,6 +2700,11 @@ function renderBenchmarkView(view) {
   // coverage-only read; the A-vs-B comparison is the optional deepening.
   if (!haveB) {
     scaffold.appendChild(renderComparePrompt());
+  } else {
+    // Pack B present — render the true side-by-side A-vs-B drill (drift
+    // cells / gap deltas) as the evidence directly beneath the verdict.
+    const drill = renderDriftDrill(state.diff, state.packB, state.compareBId, lens);
+    if (drill) scaffold.appendChild(drill);
   }
 
   // Drill-down — per-layer × per-mechanism coverage map. Pack-A-derived,
@@ -2729,6 +2734,160 @@ function renderComparePrompt() {
     </div>
   `;
   return el;
+}
+
+// Detect what KIND of comparison Pack B represents so the drill can
+// frame the deltas correctly:
+//   'gap'   — B is a target / reference / contract ("what good looks
+//             like"). onlyInB = the gap to close; onlyInA = beyond target.
+//   'drift' — B is the live / deployed system ("what's actually out
+//             there"). onlyInA = declared but unconfirmed (drift risk);
+//             onlyInB = observed live but undeclared (shadow signal).
+// Ambiguous comparisons default to 'gap' — "what's different / missing"
+// is the more common intent when benchmarking against another pack.
+function compareModeFor(packB, compareBId) {
+  const bId = String(compareBId || packB?.id || '').toLowerCase();
+  const src = inferPackSource(packB);
+  const isLiveLike = /(^|[-_])(live|deployed|prod|runtime)([-_]|$)/.test(bId) || src === 'Live';
+  if (isLiveLike) return 'drift';
+  return 'gap';
+}
+
+// THE A-vs-B drill — the real side-by-side evidence behind the verdict.
+// Consumes state.diff (server-computed set arithmetic on the two packs'
+// artefact keys) and projects it through the active product lens, then
+// frames the three buckets (inBoth / onlyInA / onlyInB) in either drift
+// or gap language. Returns null when no usable diff exists so the caller
+// can simply skip the section.
+function renderDriftDrill(diff, packB, compareBId, lens) {
+  if (!diff || diff.error || !diff.layers) return null;
+
+  const mode = compareModeFor(packB, compareBId);
+  const useLens = lens && lens !== 'all';
+
+  // Project a bucket entry's artefact (shape varies: onlyIn* carry
+  // `.artefact`, inBoth carries `.a`/`.b`). For lens scoping we test
+  // the A-side projection (or B-side for onlyInB) against the surface.
+  const passesLens = (entry, side) => {
+    if (!useLens) return true;
+    const art = side === 'b' ? (entry.artefact || entry.b) : (entry.artefact || entry.a);
+    const pack = side === 'b' ? packB : state.pack;
+    return productSurface(art, lens, pack);
+  };
+
+  // Per-layer filtered buckets + running totals.
+  const layerNames = { L1:'Contract', L2:'Telemetry', L2X:'Extended', L3:'Insight', L4:'Action', L5:'Validation', GOV:'Governance' };
+  let totAligned = 0, totA = 0, totB = 0;
+  const rows = [];
+  for (const L of LAYERS_FOR_DIFF) {
+    const bucket = diff.layers[L] || { onlyInA: [], onlyInB: [], inBoth: [] };
+    const inBoth  = bucket.inBoth.filter(e => passesLens(e, 'a'));
+    const onlyInA = bucket.onlyInA.filter(e => passesLens(e, 'a'));
+    const onlyInB = bucket.onlyInB.filter(e => passesLens(e, 'b'));
+    if (inBoth.length === 0 && onlyInA.length === 0 && onlyInB.length === 0) continue;
+    totAligned += inBoth.length;
+    totA += onlyInA.length;
+    totB += onlyInB.length;
+    rows.push({ L, name: layerNames[L] || L, inBoth, onlyInA, onlyInB });
+  }
+
+  const universe = totAligned + totA + totB;
+  if (universe === 0) return null;
+  const alignedPct = Math.round((totAligned / universe) * 100);
+
+  // Mode-specific framing for the two delta columns.
+  const bName = catalogEntryFor(compareBId)?.label || packB?.meta?.name || packB?.metadata?.name || packB?.id || 'Pack B';
+  const frame = mode === 'drift'
+    ? {
+        eyebrow: 'DRIFT · DECLARED vs LIVE',
+        lede: totA > 0
+          ? `<strong>${totA}</strong> declared artefact${totA === 1 ? '' : 's'} not confirmed in <strong>${escapeHtml(bName)}</strong> — possible drift.`
+          : `Every declared artefact is confirmed live in <strong>${escapeHtml(bName)}</strong>.`,
+        aLabel: 'Declared, not live',
+        aHint: 'in your pack · not seen in the live system → drift risk',
+        aClass: 'is-drift',
+        bLabel: 'Live, not declared',
+        bHint: 'seen live · missing from your pack → shadow signal',
+        bClass: 'is-shadow',
+      }
+    : {
+        eyebrow: 'GAP · CURRENT vs TARGET',
+        lede: totB > 0
+          ? `<strong>${totB}</strong> artefact${totB === 1 ? '' : 's'} in <strong>${escapeHtml(bName)}</strong> you don't have yet — the gap to close.`
+          : `You match or exceed <strong>${escapeHtml(bName)}</strong> on every artefact.`,
+        aLabel: 'Beyond target',
+        aHint: 'in your pack · not in the target → extra coverage',
+        aClass: 'is-extra',
+        bLabel: 'Missing vs target',
+        bHint: 'in the target · not in your pack → gap to close',
+        bClass: 'is-gap',
+      };
+
+  const wrap = document.createElement('div');
+  wrap.className = `benchmark-block drift-drill-block drift-mode-${mode}`;
+
+  // Sample keys for a bucket, prettified (strip the family prefix).
+  const sampleKeys = (entries, max = 4) => {
+    const names = entries.slice(0, max).map(e => {
+      const k = e.key || '';
+      const short = k.includes(':') ? k.slice(k.indexOf(':') + 1) : k;
+      return escapeHtml(short || k);
+    });
+    const more = entries.length > max ? ` +${entries.length - max}` : '';
+    return names.length ? names.join(' · ') + more : '—';
+  };
+
+  const tile = (n, label, hint, cls) => `
+    <div class="drift-tile ${cls}">
+      <div class="drift-tile-n">${n}</div>
+      <div class="drift-tile-label">${escapeHtml(label)}</div>
+      <div class="drift-tile-hint">${escapeHtml(hint)}</div>
+    </div>`;
+
+  const layerRowsHtml = rows.map(r => `
+    <tr class="drift-row">
+      <th class="drift-row-layer"><span class="drift-row-num">${r.L}</span> ${escapeHtml(r.name)}</th>
+      <td class="drift-cell is-aligned">
+        <span class="drift-cell-n">${r.inBoth.length}</span>
+        <span class="drift-cell-keys">${r.inBoth.length ? sampleKeys(r.inBoth) : ''}</span>
+      </td>
+      <td class="drift-cell ${frame.aClass}">
+        <span class="drift-cell-n">${r.onlyInA.length}</span>
+        <span class="drift-cell-keys">${r.onlyInA.length ? sampleKeys(r.onlyInA) : ''}</span>
+      </td>
+      <td class="drift-cell ${frame.bClass}">
+        <span class="drift-cell-n">${r.onlyInB.length}</span>
+        <span class="drift-cell-keys">${r.onlyInB.length ? sampleKeys(r.onlyInB) : ''}</span>
+      </td>
+    </tr>`).join('');
+
+  const lensNote = useLens
+    ? ` <span class="drift-lens-note">· lens: ${escapeHtml(LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens)}</span>`
+    : '';
+
+  wrap.innerHTML = `
+    <div class="benchmark-block-head">
+      <span class="benchmark-block-eyebrow">${frame.eyebrow}</span>
+      ${frame.lede}${lensNote}
+    </div>
+    <div class="drift-tiles">
+      ${tile(alignedPct + '%', 'Aligned', `${totAligned} matched · both A and B agree`, 'is-aligned')}
+      ${tile(totA, frame.aLabel, frame.aHint, frame.aClass)}
+      ${tile(totB, frame.bLabel, frame.bHint, frame.bClass)}
+    </div>
+    <table class="drift-table">
+      <thead>
+        <tr>
+          <th class="drift-th-layer">Layer</th>
+          <th class="drift-th is-aligned">Aligned</th>
+          <th class="drift-th ${frame.aClass}">${escapeHtml(frame.aLabel)}</th>
+          <th class="drift-th ${frame.bClass}">${escapeHtml(frame.bLabel)}</th>
+        </tr>
+      </thead>
+      <tbody>${layerRowsHtml}</tbody>
+    </table>
+  `;
+  return wrap;
 }
 
 // ============================================================

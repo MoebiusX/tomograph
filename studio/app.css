@@ -1873,6 +1873,102 @@ a:hover { color: var(--ink); }
 .compare-prompt-text strong { color: var(--ink); font-weight: 600; }
 .compare-prompt-text em { font-style: normal; font-family: var(--mono); font-size: 11.5px; color: var(--ink-4); }
 
+/* ---------- Drift / gap drill — the A-vs-B side-by-side evidence ---------- */
+.drift-drill-block { margin: 20px 0 24px; }
+.drift-lens-note { color: var(--ink-4); font-family: var(--mono); font-size: 11px; }
+
+.drift-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin: 12px 0 14px;
+}
+.drift-tile {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  border-left-width: 3px;
+}
+.drift-tile-n {
+  font: 700 22px/1 var(--mono);
+  color: var(--ink-1);
+}
+.drift-tile-label {
+  margin-top: 6px;
+  font: 600 12px/1.3 var(--sans);
+  color: var(--ink-2);
+}
+.drift-tile-hint {
+  margin-top: 3px;
+  font: 11px/1.4 var(--sans);
+  color: var(--ink-4);
+}
+.drift-tile.is-aligned { border-left-color: var(--ok, #16a34a); }
+.drift-tile.is-drift,
+.drift-tile.is-gap     { border-left-color: rgb(200, 70, 40); }
+.drift-tile.is-shadow,
+.drift-tile.is-extra   { border-left-color: rgb(180, 120, 0); }
+
+.drift-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: 12px/1.4 var(--sans);
+}
+.drift-th, .drift-th-layer {
+  text-align: left;
+  padding: 6px 10px;
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  border-bottom: 1px solid var(--line);
+}
+.drift-th.is-aligned { color: var(--ok, #16a34a); }
+.drift-th.is-drift, .drift-th.is-gap { color: rgb(200, 70, 40); }
+.drift-th.is-shadow, .drift-th.is-extra { color: rgb(180, 120, 0); }
+.drift-row { border-bottom: 1px solid var(--line-2, var(--line)); }
+.drift-row-layer {
+  text-align: left;
+  padding: 8px 10px;
+  white-space: nowrap;
+  font: 600 12px/1.3 var(--sans);
+  color: var(--ink-2);
+  vertical-align: top;
+}
+.drift-row-num {
+  font: 700 10px/1 var(--mono);
+  color: var(--ink-4);
+  margin-right: 4px;
+}
+.drift-cell {
+  padding: 8px 10px;
+  vertical-align: top;
+  border-left: 1px solid var(--line-2, var(--line));
+}
+.drift-cell-n {
+  display: inline-block;
+  min-width: 1.4em;
+  font: 700 13px/1 var(--mono);
+  color: var(--ink-3);
+}
+.drift-cell-keys {
+  display: block;
+  margin-top: 3px;
+  font: 11px/1.4 var(--mono);
+  color: var(--ink-4);
+  word-break: break-word;
+}
+.drift-cell.is-aligned .drift-cell-n { color: var(--ok, #16a34a); }
+.drift-cell.is-drift .drift-cell-n,
+.drift-cell.is-gap .drift-cell-n { color: rgb(200, 70, 40); }
+.drift-cell.is-shadow .drift-cell-n,
+.drift-cell.is-extra .drift-cell-n { color: rgb(180, 120, 0); }
+
+@media (max-width: 720px) {
+  .drift-tiles { grid-template-columns: 1fr; }
+}
+
 /* ---------- Criterion table (one row per criterion) ---------- */
 .diag-crit-table, .diag-evidence-table {
   width: 100%;
