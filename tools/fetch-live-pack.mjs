@@ -267,6 +267,18 @@ export function buildCanonicalPack({
   ruleEvidence = { firingAlerts: [], recordingRuleNames: [] },
   packName = PACK_NAME,
 } = {}) {
+  // Destructuring defaults only fire for `undefined`. The MCP probe
+  // helper returns `null` when a tool responds with an empty/null
+  // payload (an honest zero, not a failure), and those nulls are
+  // spread straight in — so coalesce the object params to safe shapes
+  // before anything dereferences them (e.g. baselinesData.baselines).
+  health          = health          || {};
+  topology        = topology        || {};
+  anomaliesActive = anomaliesActive || {};
+  baselinesData   = baselinesData   || {};
+  probeResults    = probeResults    || {};
+  errors          = errors          || {};
+
   const services = Array.isArray(health.services) ? health.services : [];
   const serviceNames = services.map(s => s?.name).filter(Boolean);
   const serviceSlugs = serviceNames.map(n => slug(n));
