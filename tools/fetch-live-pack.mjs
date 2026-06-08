@@ -36,6 +36,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emit as emitYaml } from './lib/mini-yaml.mjs';
 import { validateCanonical, SPEC_VERSION } from './lib/validator.mjs';
+import { inferSlisFromRecordingRules } from './lib/sli-inference.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = resolve(__dirname, '..', 'vendor', 'observability-pack-spec', `v${SPEC_VERSION}`, 'observability-pack.schema.json');
@@ -143,82 +144,6 @@ function defaultBaselines(criticality) {
   if (criticality === 'tier-1') return { mttd_target_p50: '2m', mttr_target_p50: '30m' };
   if (criticality === 'tier-2') return { mttd_target_p50: '5m', mttr_target_p50: '2h' };
   return { mttd_target_p50: '15m', mttr_target_p50: '1d' };
-}
-
-// Parse Prometheus-convention recording rules into SLI / SLO pairs.
-// Names that follow `service:metric:op` are a strong SLO signal —
-// the user pushed back that "SLIs will be reflected in recording rules"
-// and they're right: that's the convention. We only infer SLIs from
-// rules whose name expression matches the canonical ratio / latency
-// shape; anything ambiguous flows through to spec.queries verbatim
-// so the engineer can decide.
-function inferSlisFromRecordingRules(rules) {
-  if (!Array.isArray(rules)) return [];
-  // Group rules by (service, metric) — the `op` (good/total/ratio/...)
-  // tells us what KIND of SLI it likely encodes.
-  const byBase = new Map();
-  for (const r of rules) {
-    if (!r?.name) continue;
-    const m = /^([a-z][a-z0-9_]*):([a-z][a-z0-9_]*):([a-z0-9_]+)$/.exec(r.name);
-    if (!m) continue;
-    const [, service, metric, op] = m;
-    const key = `${service}:${metric}`;
-    if (!byBase.has(key)) byBase.set(key, { service, metric, ops: {} });
-    byBase.get(key).ops[op] = r;
-  }
-  const out = [];
-  for (const { service, metric, ops } of byBase.values()) {
-    const sliId = `${service}_${metric}`.toLowerCase();
-    let sli, slo;
-    // Ratio-shaped: we have good + total recording. The presence of
-    // `ratio_*` or `error_ratio_*` confirms the ratio family.
-    const goodKey = Object.keys(ops).find(k => /^good_/.test(k));
-    const totalKey = Object.keys(ops).find(k => /^total_/.test(k));
-    const ratioKey = Object.keys(ops).find(k => /^ratio_/.test(k) || /^error_ratio_/.test(k));
-    if (goodKey && totalKey) {
-      sli = {
-        id: sliId,
-        description: `Inferred from MCP-discovered recording rules ${service}:${metric}:good/total.`,
-        type: 'ratio',
-        good:  ops[goodKey].expr,
-        total: ops[totalKey].expr,
-      };
-    } else if (ratioKey) {
-      // We have a ratio recording rule directly. Treat it as the SLI's
-      // canonical expression (the engineer can decompose later).
-      sli = {
-        id: sliId,
-        description: `Inferred from MCP-discovered recording rule ${ops[ratioKey].name}.`,
-        type: 'ratio',
-        good:  ops[ratioKey].expr,
-        total: '1',   // placeholder; engineer to refine
-      };
-    } else {
-      // Threshold-shaped (latency p95, queue depth, etc).
-      const first = Object.values(ops)[0];
-      sli = {
-        id: sliId,
-        description: `Inferred from MCP-discovered recording rule ${first.name}.`,
-        type: 'threshold',
-        query: first.expr,
-        // Spec requires a numeric threshold; we can't infer it from a
-        // flat recording rule — engineer to set per the SLO objective.
-        // Use 1 as the conservative placeholder; the rule's `expr` is
-        // already preserved in spec.queries.recording_rules.
-        threshold: 1,
-        unit: 'ratio',
-      };
-    }
-    slo = {
-      id: `${sliId}_99`,
-      sli: sliId,
-      objective: 0.99,
-      window: '30d',
-      error_budget_policy: 'ref:platform/default-budget',
-    };
-    out.push({ sli, slo });
-  }
-  return out;
 }
 
 function durationFromMs(ms, fallback) {

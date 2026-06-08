@@ -22,6 +22,7 @@
 // ============================================================
 
 import { parse as parseYaml, parseAll as parseYamlAll, emit as emitYaml } from './mini-yaml.mjs';
+import { inferSlisFromRecordingRules, ruleNameToSloId } from './sli-inference.mjs';
 
 // Parse a (possibly multi-document) YAML file into a list of non-null
 // documents. Prometheus rule files, Alertmanager configs and Kubernetes
@@ -178,13 +179,41 @@ export function crawlFiles(filesInput, opts = {}) {
     }
   }
 
-  // ----- infer SLIs/SLOs from alert names -----
-  // Burn-rate alerts target an SLO; if the alert references a metric we
-  // recognise we can synthesize the SLI/SLO. We never invent thresholds
-  // we can't justify — we emit a placeholder PromQL + an annotation.
+  // ----- infer SLIs/SLOs (decompiler ⇄ compiler symmetry) -----
+  // PRIMARY source: recording rules. compile.mjs materialises every SLI in
+  // spec.slis as `<svc>:<sli>:<op>` recording rules, so reading those names
+  // back is the exact inverse — and it is the SAME derivation the live
+  // system reconstruction uses (tools/fetch-live-pack.mjs). A pack that is
+  // compiled, deployed, then crawled (or drafted from its live MCP) now
+  // describes its L1 contracts in one shared vocabulary, so diff.mjs can
+  // actually match them instead of reporting false drift.
   const sliMap = new Map();
   const sloMap = new Map();
+  for (const { sli, slo } of inferSlisFromRecordingRules(recordingRules)) {
+    if (!sliMap.has(sli.id)) { sliMap.set(sli.id, sli); summary.inferred.slis++; }
+    if (!sloMap.has(slo.id)) { sloMap.set(slo.id, slo); summary.inferred.slos++; }
+  }
+
+  // Burn-rate alerts target an SLO. The compiler only ever emits alerts
+  // FROM an SLO, so the faithful inverse treats recording rules as the
+  // authoritative L1 source and reverses an alert into a contract only when
+  // it is genuinely an SLO burn-rate alert:
+  //   1. it references a recorded ratio series we already turned into an
+  //      SLO (the exact inverse of compile.mjs) — link it; or
+  //   2. no recording-rule SLIs were discovered at all (a tier-3 repo) — in
+  //      that case fall back to the legacy alert-name synthesis so the pack
+  //      still has at least one contract.
+  // Operational alerts (CPU, disk, pod, queue-down, …) in a repo that DOES
+  // define recorded SLIs are NOT SLOs; they're dropped from the burn-rate
+  // policy rather than manufacturing junk L1 contracts that can never match
+  // the live system.
+  const haveRecordedSlis = sliMap.size > 0;
   for (const alert of burnRateAlerts) {
+    const linked = linkAlertToRecordedSlo(alert, sloMap);
+    if (linked) { alert.slo = linked; continue; }
+
+    if (haveRecordedSlis) { alert._drop = true; continue; }
+
     const sloId = alert.slo;
     if (!sloMap.has(sloId)) {
       const sliId = sloId.replace(/_99|_999|_995|_slo$/i, '') || sloId;
@@ -195,6 +224,7 @@ export function crawlFiles(filesInput, opts = {}) {
         window: '30d',
         error_budget_policy: 'ref:platform/default-budget',
       });
+      summary.inferred.slos++;
       if (!sliMap.has(sliId)) {
         sliMap.set(sliId, {
           id: sliId,
@@ -205,9 +235,21 @@ export function crawlFiles(filesInput, opts = {}) {
         });
         summary.inferred.slis++;
       }
-      summary.inferred.slos++;
     }
   }
+
+  // Drop operational (non-SLO) alerts, then fold the remaining burn-rate
+  // alerts that now share a recording-rule SLO into one entry per SLO,
+  // unioning their windows so the emitted policy stays valid.
+  const droppedOps = burnRateAlerts.filter(a => a._drop).length;
+  if (droppedOps) {
+    summary.warnings.push(`Excluded ${droppedOps} operational alert(s) from burn-rate policy — not SLO burn-rate alerts (no recorded-ratio reference). They remain available as alerting signals.`);
+  }
+  for (let i = burnRateAlerts.length - 1; i >= 0; i--) {
+    if (burnRateAlerts[i]._drop) burnRateAlerts.splice(i, 1);
+  }
+  dedupeBurnRateAlerts(burnRateAlerts);
+
 
   // If still no SLI/SLO discovered, fill the minimum tier-3 stub so the
   // result validates.
@@ -353,7 +395,7 @@ export function crawlFiles(filesInput, opts = {}) {
       pipelines,
       queries: { recording_rules: recordingRules },
       dashboards,
-      policy: { burn_rate_alerts: burnRateAlerts },
+      policy: { burn_rate_alerts: burnRateAlerts.map(({ slo, windows }) => ({ slo, windows })) },
       alerting: { routes: alertingRoutes },
       baselines,
       validation: {
@@ -476,7 +518,8 @@ function walkPrometheusRules(f, recordingRules, burnRateAlerts, evidence, summar
           const sloId = slug(alertName).replace(/-burn-?rate.*$/, '_99');
           if (!burnRateAlerts.some(a => a.slo === sloId)) {
             const windows = parseAlertWindows(rule);
-            burnRateAlerts.push({ slo: sloId, windows });
+            const expr = typeof rule.expr === 'string' ? rule.expr : String(rule.expr || '');
+            burnRateAlerts.push({ slo: sloId, windows, expr, alertName });
             const id = `pol-${burnRateAlerts.length}`;
             evidence[id] = `${f.relPath}#${group.name || '_'}/${alertName}`;
             summary.discovered.burnRateAlerts++;
@@ -499,6 +542,42 @@ function parseAlertWindows(rule) {
     out.push({ short: rule.for, long: '6h', factor: 6, severity });
   }
   return out;
+}
+
+// Map a burn-rate alert to a recording-rule-derived SLO by scanning its
+// expression for any `ns:metric:op` recorded-series reference. Returns the
+// matching SLO id present in `sloMap`, or null. This is the inverse of the
+// compiler, which builds burn-rate alerts on top of the recorded ratios.
+function linkAlertToRecordedSlo(alert, sloMap) {
+  const expr = typeof alert?.expr === 'string' ? alert.expr : '';
+  if (!expr) return null;
+  const re = /[a-z][a-z0-9_]*:[a-z][a-z0-9_]*:[a-z0-9_]+/g;
+  let m;
+  while ((m = re.exec(expr)) !== null) {
+    const sloId = ruleNameToSloId(m[0]);
+    if (sloId && sloMap.has(sloId)) return sloId;
+  }
+  return null;
+}
+
+// Collapse burn-rate alerts that now share an SLO (after linking) into one
+// entry per SLO, unioning their windows (de-duplicated by short/long/factor)
+// so spec.policy.burn_rate_alerts stays one-entry-per-SLO and valid.
+function dedupeBurnRateAlerts(alerts) {
+  const bySlo = new Map();
+  for (const a of alerts) {
+    if (!bySlo.has(a.slo)) { bySlo.set(a.slo, a); continue; }
+    const tgt = bySlo.get(a.slo);
+    const seen = new Set((tgt.windows || []).map(w => `${w.short}|${w.long}|${w.factor}`));
+    for (const w of a.windows || []) {
+      const k = `${w.short}|${w.long}|${w.factor}`;
+      if (!seen.has(k)) { tgt.windows.push(w); seen.add(k); }
+    }
+    a._drop = true;
+  }
+  for (let i = alerts.length - 1; i >= 0; i--) {
+    if (alerts[i]._drop) alerts.splice(i, 1);
+  }
 }
 
 function walkAlertmanager(f, routes, evidence, summary) {
