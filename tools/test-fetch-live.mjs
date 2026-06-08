@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { parse as parseYaml, emit as emitYaml } from './lib/mini-yaml.mjs';
 import { validateCanonical, SPEC_VERSION } from './lib/validator.mjs';
 import { adapt } from './lib/adapter.mjs';
-import { buildCanonicalPack } from './fetch-live-pack.mjs';
+import { buildCanonicalPack, PROBES } from './fetch-live-pack.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA = JSON.parse(readFileSync(
@@ -301,6 +301,66 @@ assert(!probedEmpty.metadata.annotations['mcp.probesSucceeded']?.includes('recor
        'probesSucceeded does NOT list recording_rules when none answered');
 assert(probedEmpty.metadata.annotations['mcp.verified.queries.recording_rules'] === undefined,
        'recording rules NOT marked verified when probes returned empty');
+
+// ---------- case 5: VMAlert probe adapters recover REAL exprs ----------
+//
+// Regression guard for the name-only-stub bug: on VictoriaMetrics stacks
+// the Prometheus ruler (metrics_alerts) returns {groups:[]} empty, so the
+// fetcher used to fall back to a name-only inventory grep that stubbed
+// each expr as the bare series name. `vmalert_rules` carries the full
+// PromQL `query` body + group `interval` (seconds) + alert `severity`.
+
+const recProbe = PROBES.find(p => p.name === 'recording_rules');
+const altProbe = PROBES.find(p => p.name === 'alert_rules');
+
+assert(recProbe.candidates[0] === 'vmalert_rules',
+       'recording_rules tries vmalert_rules first (VM ruler returns empty)');
+assert(altProbe.candidates[0] === 'vmalert_rules',
+       'alert_rules tries vmalert_rules first');
+
+// Real vmalert_rules response shape (recording + alerting in one payload,
+// interval expressed in integer SECONDS on the group).
+const vmalertResponse = {
+  count: 2,
+  groups: [
+    {
+      name: 'finops:capacity',
+      file: '/etc/vmalert/recording-rules.yml',
+      interval: 300,
+      rules: [
+        { name: 'finops:cpu:usage_per_pod_5m', type: 'recording', query: 'sum(rate(container_cpu_usage_seconds_total[5m])) by (pod) * 3600' },
+      ],
+    },
+    {
+      name: 'krystalinex.container_health',
+      file: '/etc/vmalert/alerting-rules.yml',
+      interval: 15,
+      rules: [
+        { name: 'ContainerOOMKilled', type: 'alerting', severity: 'warning', duration: 120, query: 'kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1', annotations: { summary: 'Container was OOM killed' } },
+      ],
+    },
+  ],
+};
+
+const recAdapted = recProbe.adapt(vmalertResponse);
+assert(recAdapted.length === 1 && recAdapted[0].name === 'finops:cpu:usage_per_pod_5m',
+       'vmalert recording rule recovered (alerting rule excluded)');
+assert(recAdapted[0].expr.includes('container_cpu_usage_seconds_total') && recAdapted[0].expr !== recAdapted[0].name,
+       'vmalert recording rule carries REAL PromQL expr, not the name stub');
+assert(recAdapted[0].interval === '5m',
+       'group interval seconds (300) normalised to prom duration (5m)', recAdapted[0].interval, '5m');
+
+const altAdapted = altProbe.adapt(vmalertResponse);
+assert(altAdapted.length === 1 && altAdapted[0].name === 'ContainerOOMKilled',
+       'vmalert alerting rule recovered (recording rule excluded)');
+assert(altAdapted[0].expr.includes('OOMKilled') && altAdapted[0].labels?.severity === 'warning',
+       'vmalert alert carries real expr + severity label');
+assert(altAdapted[0].for === '2m',
+       'alert duration seconds (120) normalised to prom duration (2m)', altAdapted[0].for, '2m');
+
+// metrics_alerts empty ruler payload yields no rules (the trigger for fallback).
+assert(recProbe.adapt({ groups: [] }).length === 0,
+       'empty Prometheus ruler payload adapts to zero recording rules');
 
 // ---------- summary ----------
 

@@ -783,40 +783,71 @@ export function buildCanonicalPack({
 // missing vs what we never asked for.
 // ============================================================
 
-const PROBES = [
+// Prometheus/VMAlert express rule-group evaluation intervals and alert
+// `for` windows as integer SECONDS (e.g. interval: 300). The pack schema —
+// and the crawled declared side — use Prometheus duration strings
+// ("5m", "30s", "1h"). Normalise so live and declared compare apples to
+// apples instead of reporting "300" vs "5m" as drift.
+function secondsToPromDuration(s) {
+  const n = Number(s);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n % 3600 === 0) return `${n / 3600}h`;
+  if (n % 60 === 0) return `${n / 60}m`;
+  return `${n}s`;
+}
+function normInterval(v) {
+  if (v == null || v === '') return undefined;
+  if (typeof v === 'number') return secondsToPromDuration(v) || undefined;
+  if (typeof v === 'string' && /^\d+$/.test(v)) return secondsToPromDuration(Number(v)) || undefined;
+  return v; // already a duration string ("5m", "30s", ...)
+}
+
+export const PROBES = [
   {
     name: 'recording_rules',
-    // Prometheus /api/v1/rules returns BOTH recording rules and alert rules
-    // in one payload. The otel-mcp-server's metrics_alerts tool exposes it
-    // directly (the name is historical; it returns ALL rule types). Our adapt
-    // function filters to record-only rules.
-    candidates: ['metrics_alerts', 'list_recording_rules', 'prometheus_recording_rules', 'metrics_recording_rules', 'mimir_recording_rules', 'rules_list_recording', 'prometheus_rules', 'rules_list'],
+    // VictoriaMetrics stacks expose recorded series + their PromQL via
+    // `vmalert_rules` (type=recording carries the real `query` body and the
+    // group `interval`). It is tried FIRST because on VM-backed clusters the
+    // Prometheus ruler endpoint (`metrics_alerts` / `/api/v1/rules`) returns
+    // EMPTY — which previously forced a name-only inventory fallback that
+    // stubbed each expr as the bare series name. Prometheus /api/v1/rules
+    // returns BOTH recording and alert rules in one payload; our adapt
+    // filters to record-only rules.
+    candidates: ['vmalert_rules', 'metrics_alerts', 'list_recording_rules', 'prometheus_recording_rules', 'metrics_recording_rules', 'mimir_recording_rules', 'rules_list_recording', 'prometheus_rules', 'rules_list'],
     target: 'spec.queries.recording_rules',
     adapt: (response) => {
       // Common shapes:
-      //   { groups: [{ name, rules: [{ record, expr, labels?, interval? }] }] }
+      //   { groups: [{ name, interval, rules: [{ record|name, expr|query, type?, interval? }] }] }
       //   { rules: [{ record/name, expr/query, interval? }] }
       //   { data: { groups: [...] } }   (Prometheus /api/v1/rules)
       const groups = response?.groups || response?.data?.groups || [];
       const flat = response?.rules || groups.flatMap(g => (g.rules || []).map(r => ({ ...r, _group: g.name, _interval: g.interval })));
       return flat
-        .filter(r => (r.record || r.name) && !r.alert)
-        .map(r => ({
-          name: r.record || r.name,
-          expr: r.expr || r.query || '',
-          ...(r._interval || r.interval ? { interval: r.interval || r._interval } : {}),
-          ...(r.labels ? { labels: r.labels } : {}),
-        }))
+        // Recording rules only: exclude anything VMAlert/Prometheus marks as
+        // an alert (type==='alerting' on VMAlert, or a bare `alert` field).
+        .filter(r => (r.record || r.name) && r.type !== 'alerting' && !r.alert)
+        .map(r => {
+          const interval = normInterval(r.interval ?? r._interval);
+          return {
+            name: r.record || r.name,
+            expr: r.expr || r.query || '',
+            ...(interval ? { interval } : {}),
+            ...(r.labels ? { labels: r.labels } : {}),
+          };
+        })
         .filter(r => r.expr);
     },
   },
   {
     name: 'alert_rules',
-    // metrics_alerts (Prometheus alert rules via /api/v1/rules) and
-    // grafana_alert_rules (Grafana unified alerting) are the canonical
-    // otel-mcp-server names. alertmanager_alerts surfaces FIRING alerts
-    // (not declarations) but counts as evidence the alerting stack works.
-    candidates: ['metrics_alerts', 'grafana_alert_rules', 'alertmanager_alerts', 'list_alert_rules', 'prometheus_alert_rules', 'metrics_alert_rules', 'mimir_alert_rules', 'rules_list_alerting', 'prometheus_alerts'],
+    // VMAlert (`vmalert_rules` type=alerting) carries the real alert `query`,
+    // `severity`, and `for`/`duration`; tried FIRST for the same reason as
+    // recording_rules (the Prometheus ruler comes back empty on VM stacks).
+    // metrics_alerts (Prometheus /api/v1/rules) and grafana_alert_rules
+    // (Grafana unified alerting) are the next canonical names; alertmanager_alerts
+    // surfaces FIRING alerts (not declarations) but counts as evidence the
+    // alerting stack works.
+    candidates: ['vmalert_rules', 'metrics_alerts', 'grafana_alert_rules', 'alertmanager_alerts', 'list_alert_rules', 'prometheus_alert_rules', 'metrics_alert_rules', 'mimir_alert_rules', 'rules_list_alerting', 'prometheus_alerts'],
     target: 'spec.policy.burn_rate_alerts',
     adapt: (response) => {
       const groups = response?.groups || response?.data?.groups || [];
@@ -825,12 +856,15 @@ const PROBES = [
       // from a flat rule, but we CAN capture the alert as a forecast
       // signal — the user can re-shape via the studio later.
       return flat
-        .filter(r => r.alert || (r.name && !r.record))
+        // Alerting rules only: VMAlert marks them type==='alerting'; generic
+        // Prometheus uses an `alert` field; the `!== 'recording'` guard keeps
+        // VMAlert recording rules (name set, no `record`) out of this bucket.
+        .filter(r => r.type === 'alerting' || r.alert || (r.name && !r.record && r.type !== 'recording'))
         .map(r => ({
           name: r.alert || r.name,
           expr: r.expr || r.query || '',
-          for: r.for || '5m',
-          labels: r.labels || {},
+          for: r.for || (r.duration ? secondsToPromDuration(r.duration) : null) || '5m',
+          labels: r.labels || (r.severity ? { severity: r.severity } : {}),
           annotations: r.annotations || {},
         }));
     },
