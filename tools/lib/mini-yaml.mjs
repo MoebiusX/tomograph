@@ -6,34 +6,71 @@
 //
 // SUPPORTED
 //   - Block mappings: `key: value` and `key:` (nested block follows)
-//   - Block sequences: `- item`, `- key: value` (compact sequence-of-mappings)
+//   - Block sequences: `- item`, `- key: value` (compact sequence-of-mappings),
+//     including items whose first key carries a nested block (`- key:` then
+//     an indented mapping/sequence below)
 //   - Flow mappings: `{k: v, k2: v2}`
 //   - Flow sequences: `[a, b, c]`
 //   - Literal block scalars: `|` (preserves newlines, strips common indent)
 //   - Single- and double-quoted scalars
 //   - Bare scalars: integers, floats, booleans, null, plain strings
 //   - Full-line comments (`# ...`) and trailing comments
+//   - Multi-document streams (`---`/`...`) via parseAll(); parse() returns
+//     the first content-bearing document and tolerates a leading `---`
 //
 // INTENTIONAL NON-GOALS (not used in canonical packs we care about)
 //   - YAML anchors / aliases (& / *)
 //   - Folded block scalars `>`
 //   - Block chomping indicators (`|+`, `|-`)
 //   - Tag handles (`!!str`)
-//   - Multi-document streams (`---`/`...`)
 //   - Complex keys (`? key`)
 //
 // If a canonical pack uses something outside this subset, parse throws and
 // the caller surfaces the line number.
 
 export function parse(text) {
+  const docs = parseAll(text);
+  // Canonical packs are single-document. Return the first document that
+  // carries content; tolerate (and skip past) leading `---` markers and
+  // empty leading documents.
+  for (const doc of docs) {
+    if (doc !== null && doc !== undefined) return doc;
+  }
+  return docs.length ? docs[docs.length - 1] : null;
+}
+
+// Parse a (possibly multi-document) YAML stream into an array of documents.
+// Documents are separated by a `---` line and optionally terminated by a
+// `...` line, both at column 0 (indented `---`/`...` belong to scalars or
+// values and are left untouched). Single-document input yields a one-element
+// array, so callers that only care about the first document can use parse().
+export function parseAll(text) {
   if (typeof text !== 'string') throw new Error('mini-yaml: input must be a string');
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);   // strip BOM
   text = text.replace(/\r\n?/g, '\n');
   const lines = text.split('\n');
-  const stream = new TokenStream(lines);
-  const value = parseAtIndent(stream, 0);
-  // refuse trailing significant content past the top-level node
-  return value;
+
+  // Split into documents on bare `---` / `...` markers at column 0.
+  const docs = [];
+  let current = [];
+  const hasContent = ls => ls.some(l => { const t = l.trim(); return t !== '' && !t.startsWith('#'); });
+  for (const line of lines) {
+    if (/^---(?:\s.*)?$/.test(line) || line === '---') {
+      if (hasContent(current)) docs.push(current);
+      current = [];
+      continue;
+    }
+    if (/^\.\.\.(?:\s.*)?$/.test(line) || line === '...') {
+      if (hasContent(current)) docs.push(current);
+      current = [];
+      continue;
+    }
+    current.push(line);
+  }
+  if (hasContent(current)) docs.push(current);
+
+  if (docs.length === 0) return [null];
+  return docs.map(docLines => parseAtIndent(new TokenStream(docLines), 0));
 }
 
 class TokenStream {
@@ -214,18 +251,42 @@ function parseBlockSequence(stream, indent) {
       // Compact sequence-of-mappings: first key inline, rest of the mapping
       // at indent + 2 (YAML standard: continuation indents past `- `).
       const item = {};
+      const itemIndent = indent + 2;          // column where this item's keys sit
       const firstColon = findMappingColon(inline);
       const firstKey = unquote(inline.slice(0, firstColon).trim());
       const firstRest = inline.slice(firstColon + 1).trim();
-      if (firstRest === '' || firstRest === '|') {
-        // First key has a block value — its content lives at indent + 4
-        // (past `- key: `). We don't see this pattern in the canonical example,
-        // so reject early to keep the parser honest.
-        throw new Error(`yaml line ${sig + 1}: compact sequence item with empty/block first value is not supported`);
+      if (firstRest === '|') {
+        // `- key: |` — literal block scalar value living below itemIndent.
+        item[firstKey] = readLiteralBlockScalar(stream, itemIndent);
+      } else if (firstRest === '') {
+        // `- key:` — the first key carries a nested block (mapping/sequence)
+        // at a deeper indent, e.g.
+        //     - match:
+        //         severity: critical
+        //       receiver: pager
+        const ns = stream.nextSignificantIdx();
+        if (ns !== -1) {
+          const childIndent = indentOf(stream.lines[ns]);
+          const childContent = stripTrailingComment(stream.lines[ns].slice(childIndent));
+          const isSeqItem = childContent.startsWith('- ') || childContent === '-';
+          if (childIndent > itemIndent) {
+            item[firstKey] = isSeqItem
+              ? parseBlockSequence(stream, childIndent)
+              : parseBlockMapping(stream, childIndent);
+          } else if (childIndent === itemIndent && isSeqItem) {
+            // compact sequence whose items share the key's indent
+            item[firstKey] = parseBlockSequence(stream, itemIndent);
+          } else {
+            item[firstKey] = null;
+          }
+        } else {
+          item[firstKey] = null;
+        }
+      } else {
+        item[firstKey] = parseValue(firstRest);
       }
-      item[firstKey] = parseValue(firstRest);
-      // Then continue reading the rest of THIS item's mapping at indent + 2.
-      const cont = parseBlockMapping(stream, indent + 2);
+      // Then continue reading the rest of THIS item's mapping at itemIndent.
+      const cont = parseBlockMapping(stream, itemIndent);
       Object.assign(item, cont);
       arr.push(item);
     } else {

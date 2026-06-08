@@ -21,7 +21,14 @@
 // for the engineer to fill in.
 // ============================================================
 
-import { parse as parseYaml, emit as emitYaml } from './mini-yaml.mjs';
+import { parse as parseYaml, parseAll as parseYamlAll, emit as emitYaml } from './mini-yaml.mjs';
+
+// Parse a (possibly multi-document) YAML file into a list of non-null
+// documents. Prometheus rule files, Alertmanager configs and Kubernetes
+// manifests are frequently shipped as multi-document streams (`---`).
+function parseYamlDocs(content) {
+  return parseYamlAll(content).filter(d => d && typeof d === 'object');
+}
 
 // Known backend image-name fragments → spec.telemetry.backends.product enum.
 // Prefix match against the docker-compose service image. Order matters —
@@ -398,9 +405,9 @@ export function crawlToYaml(filesInput, opts) {
 // ============================================================
 
 function walkDockerCompose(f, backends, evidence, summary) {
-  const obj = parseYaml(f.content);
-  if (!obj?.services) return;
-  for (const [svcName, svc] of Object.entries(obj.services)) {
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!obj?.services) continue;
+    for (const [svcName, svc] of Object.entries(obj.services)) {
     const image = String(svc?.image || '');
     if (!image) continue;
     for (const p of BACKEND_PATTERNS) {
@@ -429,6 +436,7 @@ function walkDockerCompose(f, backends, evidence, summary) {
       }
     }
   }
+  }
 }
 
 function inferEndpoint(svc, product) {
@@ -444,35 +452,40 @@ function inferEndpoint(svc, product) {
 }
 
 function walkPrometheusRules(f, recordingRules, burnRateAlerts, evidence, summary) {
-  const obj = parseYaml(f.content);
-  if (!obj?.groups) return;
-  for (const group of obj.groups) {
-    for (const rule of group.rules || []) {
-      if (rule.record) {
-        const id = `QRY-${recordingRules.length + 1}-${slug(rule.record).slice(0, 16)}`;
-        const entry = {
-          name: rule.record,
-          expr: typeof rule.expr === 'string' ? rule.expr : String(rule.expr || ''),
-        };
-        if (group.interval) entry.interval = group.interval;
-        recordingRules.push(entry);
-        evidence[id] = `${f.relPath}#${group.name || '_'}/${rule.record}`;
-        summary.discovered.recordingRules++;
-      } else if (rule.alert) {
-        // Burn-rate alerts in repos can take many shapes; the most we
-        // can do is record the alert name as a target SLO. The shape
-        // checking will fall back to defaults later.
-        const sloId = slug(rule.alert).replace(/-burn-?rate.*$/, '_99');
-        if (!burnRateAlerts.some(a => a.slo === sloId)) {
-          const windows = parseAlertWindows(rule);
-          burnRateAlerts.push({ slo: sloId, windows });
-          const id = `pol-${burnRateAlerts.length}`;
-          evidence[id] = `${f.relPath}#${group.name || '_'}/${rule.alert}`;
-          summary.discovered.burnRateAlerts++;
+  let any = false;
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!Array.isArray(obj.groups)) continue;
+    any = true;
+    for (const group of obj.groups) {
+      for (const rule of group.rules || []) {
+        if (rule.record) {
+          const id = `QRY-${recordingRules.length + 1}-${slug(rule.record).slice(0, 16)}`;
+          const entry = {
+            name: rule.record,
+            expr: typeof rule.expr === 'string' ? rule.expr : String(rule.expr || ''),
+          };
+          if (group.interval) entry.interval = group.interval;
+          recordingRules.push(entry);
+          evidence[id] = `${f.relPath}#${group.name || '_'}/${rule.record}`;
+          summary.discovered.recordingRules++;
+        } else if (rule.alert || rule.title) {
+          // `rule.alert` is the Prometheus form; `rule.title` is the Grafana
+          // unified-alerting form (provisioned alert rules). Both target an
+          // SLO we synthesize from the alert name.
+          const alertName = rule.alert || rule.title;
+          const sloId = slug(alertName).replace(/-burn-?rate.*$/, '_99');
+          if (!burnRateAlerts.some(a => a.slo === sloId)) {
+            const windows = parseAlertWindows(rule);
+            burnRateAlerts.push({ slo: sloId, windows });
+            const id = `pol-${burnRateAlerts.length}`;
+            evidence[id] = `${f.relPath}#${group.name || '_'}/${alertName}`;
+            summary.discovered.burnRateAlerts++;
+          }
         }
       }
     }
   }
+  if (!any) return;
 }
 
 function parseAlertWindows(rule) {
@@ -489,16 +502,17 @@ function parseAlertWindows(rule) {
 }
 
 function walkAlertmanager(f, routes, evidence, summary) {
-  const obj = parseYaml(f.content);
-  if (!obj?.route) return;
-  // Walk top-level route + its children. Each route → one entry per severity.
-  const collected = [];
-  walkRoute(obj.route, collected, obj.receivers || []);
-  for (const r of collected) {
-    const id = `ALR-${routes.length + 1}`;
-    routes.push(r);
-    evidence[id] = `${f.relPath}#route/${r.severity || 'default'}`;
-    summary.discovered.alertingRoutes++;
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!obj?.route) continue;
+    // Walk top-level route + its children. Each route → one entry per severity.
+    const collected = [];
+    walkRoute(obj.route, collected, obj.receivers || []);
+    for (const r of collected) {
+      const id = `ALR-${routes.length + 1}`;
+      routes.push(r);
+      evidence[id] = `${f.relPath}#route/${r.severity || 'default'}`;
+      summary.discovered.alertingRoutes++;
+    }
   }
 }
 
@@ -545,35 +559,36 @@ function receiverChannels(recv) {
 }
 
 function walkOtelCollector(f, pipelines, evidence, summary) {
-  const obj = parseYaml(f.content);
-  if (!obj?.service?.pipelines) return;
-  const seen = new Set();
-  for (const pipeline of Object.values(obj.service.pipelines)) {
-    for (const recv of pipeline.receivers || []) {
-      if (!seen.has(`r:${recv}`)) {
-        seen.add(`r:${recv}`);
-        pipelines.receivers.push({ name: recv.split('/')[0] });
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!obj?.service?.pipelines) continue;
+    const seen = new Set();
+    for (const pipeline of Object.values(obj.service.pipelines)) {
+      for (const recv of pipeline.receivers || []) {
+        if (!seen.has(`r:${recv}`)) {
+          seen.add(`r:${recv}`);
+          pipelines.receivers.push({ name: recv.split('/')[0] });
+        }
+      }
+      for (const proc of pipeline.processors || []) {
+        if (!seen.has(`p:${proc}`)) {
+          seen.add(`p:${proc}`);
+          pipelines.processors.push({ name: proc.split('/')[0] });
+        }
+      }
+      for (const exp of pipeline.exporters || []) {
+        const kind = exp.split('/')[0];
+        const sig = Object.entries(obj.service.pipelines).find(([_, p]) => p === pipeline)?.[0] || '';
+        const signalClass = /^metrics/i.test(sig) ? 'metrics'
+                         : /^logs/i.test(sig) ? 'logs'
+                         : /^traces/i.test(sig) ? 'traces' : null;
+        if (signalClass && !pipelines.exporters[signalClass]) {
+          pipelines.exporters[signalClass] = { kind: mapExporterKind(kind) };
+        }
       }
     }
-    for (const proc of pipeline.processors || []) {
-      if (!seen.has(`p:${proc}`)) {
-        seen.add(`p:${proc}`);
-        pipelines.processors.push({ name: proc.split('/')[0] });
-      }
-    }
-    for (const exp of pipeline.exporters || []) {
-      const kind = exp.split('/')[0];
-      const sig = Object.entries(obj.service.pipelines).find(([_, p]) => p === pipeline)?.[0] || '';
-      const signalClass = /^metrics/i.test(sig) ? 'metrics'
-                       : /^logs/i.test(sig) ? 'logs'
-                       : /^traces/i.test(sig) ? 'traces' : null;
-      if (signalClass && !pipelines.exporters[signalClass]) {
-        pipelines.exporters[signalClass] = { kind: mapExporterKind(kind) };
-      }
-    }
+    evidence[`PIP-${summary.discovered.pipelines + 1}`] = f.relPath;
+    summary.discovered.pipelines++;
   }
-  evidence[`PIP-${summary.discovered.pipelines + 1}`] = f.relPath;
-  summary.discovered.pipelines++;
 }
 
 function mapExporterKind(name) {
