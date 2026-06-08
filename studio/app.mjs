@@ -25,6 +25,7 @@ import {
   focusedCompileFlavor, setFocusedCompileFlavor,
   focusedCompileArtifact, setFocusedCompileArtifact,
 } from './focus.mjs';
+import { escapeHtml, toast, fmtRelative } from './util.mjs';
 
 // `state`, the `$`/`$$` DOM helpers and the persistence layer now live in
 // studio/state.mjs (imported above).
@@ -6237,15 +6238,6 @@ function closeDrawer(side) {
 
 // ---------- toast ----------
 
-function toast(message, kind = '') {
-  const el = $('#toast');
-  el.textContent = message;
-  el.className = 'toast' + (kind ? ' is-' + kind : '');
-  el.hidden = false;
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => { el.hidden = true; }, 4000);
-}
-
 // ---------- upload ----------
 
 async function handleFile(file) {
@@ -7499,19 +7491,6 @@ const MCP_STALE_HOURS = 1;
 async function loadLiveStatus() {
   try { return await api('/api/live-status'); }
   catch { return { present: false }; }
-}
-
-function fmtRelative(iso) {
-  if (!iso) return '';
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return '';
-  const secs = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  if (secs < 90)        return `${secs}s ago`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 90)        return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 36)       return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
 }
 
 function renderMcpBadge(status) {
@@ -8866,12 +8845,5 @@ function setupTheme() {
 }
 
 // ---------- helpers ----------
-
-function escapeHtml(s) {
-  if (s == null) return '';
-  return String(s)
-    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
-}
 
 boot();
