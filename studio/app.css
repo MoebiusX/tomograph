@@ -1686,6 +1686,36 @@ a:hover { color: var(--ink); }
   font: 13px/1.5 var(--sans);
   color: var(--ink-2);
 }
+.diag-subtab-sub { font: 10.5px/1.2 var(--sans); color: var(--ink-4); }
+
+/* ---------- DIAGNOSE sub-tabs (Diagnostic Grade · Compare) ---------- */
+.diag-subnav {
+  display: flex;
+  gap: 8px;
+  padding: 12px 24px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+.diag-subtab {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 16px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .12s, background .12s;
+}
+.diag-subtab:hover { border-color: var(--accent, #6366f1); }
+.diag-subtab.is-active {
+  border-color: var(--accent, #6366f1);
+  background: var(--accent-tint, rgba(99,102,241,0.08));
+  box-shadow: inset 0 0 0 1px var(--accent, #6366f1);
+}
+.diag-subtab-label { font: 600 13.5px/1.2 var(--sans); color: var(--ink-1); }
+.diag-subtab-sub { font: 10.5px/1.2 var(--sans); color: var(--ink-4); }
 
 /* ---------- Report header ---------- */
 .diag-report-head {

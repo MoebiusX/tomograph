@@ -80,6 +80,7 @@ const state = {
   activeCardKeyA: null,        // side-A card highlight (compare view)
   activeCardKeyB: null,        // side-B card highlight (compare view)
   uploadedSource: null,        // set when user uploaded a pack instead of using the catalog
+  diagnoseSub: 'grade',        // DIAGNOSE sub-tab: 'grade' (verdict report) | 'compare' (A-vs-B side-by-side)
   compareBId: null,            // second pack id for the COMPARE view
   compareBEnv: null,
   compareSlice: 'all',         // 'all' | 'onlyA' | 'onlyB' | 'both' | 'a-b' | 'a+b'
@@ -191,7 +192,7 @@ const PERSIST_KEY = 'studioState.v1';
 const PERSIST_FIELDS = [
   'selectedPackId', 'selectedEnv',
   'compareBId', 'compareBEnv',
-  'view', 'layerFilter',
+  'view', 'layerFilter', 'diagnoseSub',
   'compareSlice', 'compareSearch', 'compareLens',
   'viewFocus',
   'atlasVariant', 'arborView',
@@ -2925,7 +2926,46 @@ function renderTraceRow(bucketKey, finding, resolvedSet) {
 //   │  [the same lens-scoped compare grid as Compare view]        │
 //   └─────────────────────────────────────────────────────────────┘
 // ============================================================
+// DIAGNOSE sub-tab nav. The three MAIN journey tabs (Discover · Diagnose ·
+// Remediate) are unchanged; this split lives entirely INSIDE Diagnose:
+//   · Diagnostic Grade — the YES/NO verdict + coverage/trust/evidence report
+//   · Compare          — the artefact-level A-vs-B side-by-side diff
+// Switching is local (state.diagnoseSub) and persisted.
+function renderDiagnoseSubnav(active) {
+  const nav = document.createElement('div');
+  nav.className = 'diag-subnav';
+  const tabs = [
+    { id: 'grade',   label: 'Diagnostic Grade', sub: 'is it good enough?' },
+    { id: 'compare', label: 'Compare',          sub: 'A vs B — what differs?' },
+  ];
+  for (const t of tabs) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'diag-subtab' + (t.id === active ? ' is-active' : '');
+    btn.dataset.sub = t.id;
+    btn.innerHTML = `
+      <span class="diag-subtab-label">${escapeHtml(t.label)}</span>
+      <span class="diag-subtab-sub">${escapeHtml(t.sub)}</span>
+    `;
+    btn.addEventListener('click', () => {
+      if (state.diagnoseSub === t.id) return;
+      state.diagnoseSub = t.id;
+      renderMainView();
+    });
+    nav.appendChild(btn);
+  }
+  return nav;
+}
+
 function renderBenchmarkView(view) {
+  // Sub-tabs under DIAGNOSE: Diagnostic Grade (the verdict report) and
+  // Compare (the artefact-level A-vs-B side-by-side). The Compare sub-tab
+  // restores the dedicated side-by-side VS view; the grade report stays
+  // exactly as-is beneath its own sub-tab.
+  const sub = state.diagnoseSub === 'compare' ? 'compare' : 'grade';
+  view.appendChild(renderDiagnoseSubnav(sub));
+  if (sub === 'compare') { renderCompareView(view); return; }
+
   const scaffold = document.createElement('section');
   scaffold.className = 'section benchmark-view';
   scaffold.dataset.layer = 'BENCHMARK';
