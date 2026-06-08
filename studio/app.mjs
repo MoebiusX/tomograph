@@ -35,6 +35,7 @@ import { openDrawer, closeDrawer } from './drawer.mjs';
 import { renderDiscoverDashboard, renderLayersView, renderCard, cardKey } from './layers-view.mjs';
 import { renderAtlasView } from './atlas-view.mjs';
 import { renderBenchmarkView, renderComparePicker, renderTraceabilityView, refreshDiff, loadDiff, LENS_PRODUCTS } from './compare-view.mjs';
+import { catalogToDeployManifest } from './artifact-model.mjs';
 
 // `state`, the `$`/`$$` DOM helpers and the persistence layer now live in
 // studio/state.mjs (imported above).
@@ -2629,8 +2630,11 @@ function setupDeployModal() {
   $('#deploy-manifest-all').onclick     = () => bulkSelectVisibleManifest(true);
   $('#deploy-manifest-none').onclick    = () => bulkSelectVisibleManifest(false);
 
-  // Esc closes
-  modal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDeployModal(); });
+  // Esc closes even when focus is inside a field. The modal itself is
+  // focusable, but target fields usually own focus during deploy.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !modal.hidden) closeDeployModal();
+  });
 }
 
 export function openDeployModal({ packId, packLabel, presetIdentities } = {}) {
@@ -2754,7 +2758,7 @@ async function loadDeployManifest(packId) {
     const params = new URLSearchParams();
     if (state.selectedEnv) params.set('env', state.selectedEnv);
     const cat = await api(`/api/packs/${encodeURIComponent(packId)}/compile-catalog?${params}`);
-    deployModalState.manifest = catalogToManifest(cat);
+    deployModalState.manifest = catalogToDeployManifest(cat);
     // Default-select: when a preset (from the Remediate plan) is present,
     // select only deployable rows whose id matches a preset identity; fall
     // back to all-deployable if nothing matched (safe — never deploys
@@ -2779,65 +2783,6 @@ async function loadDeployManifest(packId) {
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="5" class="error">Could not load manifest: ${escapeHtml(e.message)}</td></tr>`;
   }
-}
-
-// Map a compile catalog (groups → items) to a flat manifest with
-// per-row deploy semantics. Rules' per-SLO items expand into separate
-// recording + alerting rows so the type filter is meaningful.
-function catalogToManifest(catalog) {
-  const out = [];
-  for (const g of (catalog.groups || [])) {
-    const deployable = g.flavors?.some(f => f.deployable);
-    if (g.id === 'rules') {
-      // Per-SLO items: each becomes TWO rows (recording + alerting).
-      // The 'all' bundle becomes one row of each flavor as well.
-      for (const it of g.items) {
-        if (it.kind === 'rules-slo') {
-          out.push({
-            key: `rules:recording:slo:${it.sloId}`,
-            type: 'recording',
-            name: `${it.label} (recording rules)`,
-            id: it.sloId,
-            group: 'rules', flavor: 'prometheus', artifact: `slo:${it.sloId}`, scope: 'recording',
-            deployable, source: 'Repo',
-          });
-          out.push({
-            key: `rules:alert:slo:${it.sloId}`,
-            type: 'alert',
-            name: `${it.label} (burn-rate alerts)`,
-            id: it.sloId,
-            group: 'rules', flavor: 'prometheus', artifact: `slo:${it.sloId}`, scope: 'alerting',
-            deployable, source: 'Repo',
-          });
-        } else if (it.kind === 'rules-declared') {
-          out.push({
-            key: `rules:recording:declared:${it.ruleIndex}`,
-            type: 'recording',
-            name: it.label,
-            id: it.ruleName || it.id,
-            group: 'rules', flavor: 'prometheus', artifact: `declared:${it.ruleIndex}`, scope: 'recording',
-            deployable, source: 'Repo',
-          });
-        }
-      }
-    } else if (g.id === 'dashboards') {
-      for (const it of g.items) {
-        if (it.kind !== 'dashboard') continue;
-        out.push({
-          key: `dashboards:${it.dashboardId}`,
-          type: 'dashboard',
-          name: it.label,
-          id: it.dashboardId,
-          subtitle: it.subtitle,
-          group: 'dashboards', flavor: 'grafana', dashboardId: it.dashboardId,
-          deployable, source: 'Repo',
-        });
-      }
-    }
-    // pipelines + alertmanager are excluded from the Grafana deploy
-    // surface — they're emitted by compile but not deployable here.
-  }
-  return out;
 }
 
 function renderDeployManifestTable() {
