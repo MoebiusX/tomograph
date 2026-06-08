@@ -1,6 +1,6 @@
 {
   "name": "tomograph",
-  "version": "1.0.0",
+  "version": "0.3.0",
   "description": "Tomograph — the Observability Compiler. Compiles, scans, and scores ObservabilityPack spec v1.2 manifests. Express server + thin client.",
   "type": "module",
   "engines": {

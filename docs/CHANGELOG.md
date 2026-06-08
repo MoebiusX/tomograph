@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0
+## 0.3.0 — 2026-06-08
 
 **The spec v1.2 migration.** Studio now reads, renders, validates, scores, and lives on the canonical [ObservabilityPack spec v1.2](https://github.com/MoebiusX/otel-observability-pack/blob/main/spec/ObservabilityPack-Spec.md). All studio-shape v0.1/v0.2 artefacts are gone.
 
