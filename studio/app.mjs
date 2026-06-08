@@ -7084,15 +7084,39 @@ function renderDiscoverEmpty(view) {
         </p>
       </header>
 
+      <ol class="discover-journey" aria-label="The drift check, in three steps">
+        <li class="discover-journey-step">
+          <span class="discover-journey-num">1</span>
+          <span class="discover-journey-body">
+            <span class="discover-journey-label">Scan a repo</span>
+            <span class="discover-journey-sub">what the service <em>declares</em> — Pack A</span>
+          </span>
+        </li>
+        <li class="discover-journey-step">
+          <span class="discover-journey-num">2</span>
+          <span class="discover-journey-body">
+            <span class="discover-journey-label">Generate from live</span>
+            <span class="discover-journey-sub">what the platform <em>verifies</em> — Pack B</span>
+          </span>
+        </li>
+        <li class="discover-journey-step">
+          <span class="discover-journey-num">3</span>
+          <span class="discover-journey-body">
+            <span class="discover-journey-label">Diagnose drift</span>
+            <span class="discover-journey-sub">where declared and live disagree — automatic</span>
+          </span>
+        </li>
+      </ol>
+
       <div class="discover-load">
         <button type="button" class="discover-load-card" data-load="crawl">
           <span class="discover-load-glyph" aria-hidden="true">↻</span>
-          <span class="discover-load-label">Crawl a repository</span>
+          <span class="discover-load-label">① Scan a repository</span>
           <span class="discover-load-sub">walk Prom / OTel / Grafana / Alertmanager configs — local folder or a GitHub URL</span>
         </button>
         <button type="button" class="discover-load-card" data-load="mcp">
           <span class="discover-load-glyph" aria-hidden="true">⟳</span>
-          <span class="discover-load-label">Generate live from MCP</span>
+          <span class="discover-load-label">② Generate live from MCP</span>
           <span class="discover-load-sub">interrogate a live OpenTelemetry MCP server for backends, baselines and anomalies</span>
         </button>
         <button type="button" class="discover-load-card" data-load="upload">
@@ -7163,10 +7187,10 @@ function renderHomeView() {
       <div class="home-hero-eyebrow">tomograph · the observability compiler</div>
       <h2 class="home-hero-title">Map your observability platform in seconds.</h2>
       <p class="home-hero-lede">
-        Connect to any OpenTelemetry MCP server. Tomograph interrogates it
-        for backends, topology, baselines, and anomalies — and renders a
-        complete, conformant ObservabilityPack v1.2 manifest you can compile
-        and deploy. Trust what your eyes see.
+        Scan a service repo to capture what it <em>declares</em>, then draft
+        from a live OpenTelemetry MCP server to capture what the platform
+        <em>verifies</em> — Tomograph diffs the two and shows you exactly where
+        they drift. Connect below to begin, or scan a repo from Discover.
       </p>
 
       <div class="home-mcp-card">
@@ -8208,30 +8232,36 @@ function renderCrawlResult(out) {
   dl.download = `${out.canonical.metadata.name}.pack.yaml`;
 }
 
-async function adoptCrawlResult() {
-  const out = crawlState.lastResult;
-  if (!out) return;
-  // Reuse the upload flow: POST /api/validate → if ok, load into the
-  // active state and re-render. Same path as drag-dropping a yaml file
-  // onto the studio shell.
-  try {
-    const res = await validateUploaded(out.canonicalYaml, 'application/x-yaml', state.selectedEnv);
-    if (!res.ok) {
-      toast(`Could not adopt — ${res.errors.length} validation error(s)`, 'error');
-      return;
-    }
-    state.pack = res.adapted;
-    state.conformance = res.conformance;
-    state.symbolTable = buildSymbolTable(res.adapted);
-    state.uploadedSource = `${out.canonical.metadata.name} (scanned draft)`;
-    state.activeLayer = 'L1';
-    state.activeCardKey = null;
+// Shared adoption for the two pack-creation paths — Path A (repo scan)
+// and Path B (live MCP draft). Routes the new pack into the canonical
+// drift journey instead of blindly overwriting Pack A:
+//
+//   • repo scans prefer slot A ("declared"), live drafts prefer slot B
+//     ("verified") — so "scan a repo, then scan the live deployment"
+//     lands you straight in the Diagnose / drift compare view.
+//   • whichever slot is empty gets filled; as soon as BOTH are present
+//     we auto-switch to compare. With only one pack we stay in
+//     single-pack Discover.
+//   • re-running the same path while comparing replaces just that slot
+//     (a fresh repo scan refreshes A and keeps the live B, and vice
+//     versa) so the drift view stays put.
+//
+// kind ∈ {'repo','live'}. Returns true when it entered compare.
+async function adoptValidatedPack(res, sourceLabel, kind) {
+  state.pack = res.adapted;
+  state.conformance = res.conformance;
+  state.symbolTable = buildSymbolTable(res.adapted);
+  state.uploadedSource = sourceLabel;
+  state.activeCardKey = null;
+
+  const newId = res.registered?.id;
+  if (!newId) {
+    // No server id (shouldn't normally happen) — render the adapted
+    // pack inline as a single, unaddressable view.
+    state.selectedPackId = null;
     state.mode = 'single';
-    if (res.registered?.id) {
-      state.selectedPackId = res.registered.id;
-      state.selectedEnv = defaultEnvFor(state.selectedPackId);
-      await loadCatalog();
-    }
+    state.view = 'layers';
+    state.activeLayer = 'L1';
     applyModeChrome();
     renderPackSelect();
     renderPackBSelect();
@@ -8239,8 +8269,61 @@ async function adoptCrawlResult() {
     renderMeta();
     renderTabs();
     renderMainView();
+    return false;
+  }
+
+  await loadCatalog();
+
+  const prevA = state.selectedPackId;
+  const prevB = state.compareBId;
+  const wasCompare = state.mode === 'compare' && prevA && prevB;
+
+  let aId = null, bId = null;
+  if (wasCompare && (newId === prevA || newId === prevB)) {
+    // Re-adopted a pack already on screen — keep the existing pairing.
+    aId = prevA; bId = prevB;
+  } else if (wasCompare) {
+    // Already comparing — replace the slot matching this path's kind,
+    // keep the other half of the drift view intact.
+    if (kind === 'repo') { aId = newId; bId = prevB; }
+    else                 { aId = prevA; bId = newId; }
+  } else if (prevA && state.mode !== 'home' && prevA !== newId) {
+    // One pack already loaded — pair it with the new one. Repo → A,
+    // live → B; the existing pack takes the other slot.
+    if (kind === 'repo') { aId = newId; bId = prevA; }
+    else                 { aId = prevA; bId = newId; }
+  } else {
+    // Empty start (or re-adopting the only pack) — single Discover.
+    aId = newId; bId = null;
+  }
+
+  if (aId && bId && aId !== bId) {
+    state.view = 'compare';
+    enterCompareMode(aId, defaultEnvFor(aId), bId, defaultEnvFor(bId));
+    return true;
+  }
+  state.view = 'layers';
+  enterAnalyzeMode(aId, defaultEnvFor(aId));
+  return false;
+}
+
+async function adoptCrawlResult() {
+  const out = crawlState.lastResult;
+  if (!out) return;
+  // Reuse the upload flow: POST /api/validate → if ok, route the pack
+  // into the drift journey (repo scan → Pack A). Same validation path
+  // as drag-dropping a yaml file onto the studio shell.
+  try {
+    const res = await validateUploaded(out.canonicalYaml, 'application/x-yaml', state.selectedEnv);
+    if (!res.ok) {
+      toast(`Could not adopt — ${res.errors.length} validation error(s)`, 'error');
+      return;
+    }
     $('#crawl-panel').hidden = true;
-    toast(`Loaded scanned draft for ${out.canonical.metadata.name}`);
+    const compared = await adoptValidatedPack(res, `${out.canonical.metadata.name} (scanned draft)`, 'repo');
+    toast(compared
+      ? `Comparing ${out.canonical.metadata.name} against the live deployment`
+      : `Loaded scanned draft for ${out.canonical.metadata.name}`);
   } catch (e) {
     toast(`Adopt failed: ${e.message}`, 'error');
   }
@@ -8863,27 +8946,12 @@ async function adoptDraftFromMcpResult() {
       toast(`Could not adopt — ${res.errors.length} validation error(s)`, 'error');
       return;
     }
-    state.pack = res.adapted;
-    state.conformance = res.conformance;
-    state.symbolTable = buildSymbolTable(res.adapted);
-    state.uploadedSource = `${out.canonical.metadata.name} (live draft)`;
-    state.activeLayer = 'L1';
-    state.activeCardKey = null;
-    state.mode = 'single';
-    if (res.registered?.id) {
-      state.selectedPackId = res.registered.id;
-      state.selectedEnv = defaultEnvFor(state.selectedPackId);
-      await loadCatalog();
-    }
-    applyModeChrome();
-    renderPackSelect();
-    renderPackBSelect();
-    renderEnvSelect();
-    renderMeta();
-    renderTabs();
-    renderMainView();
     $('#draft-mcp-panel').hidden = true;
-    toast(`Loaded live draft for ${out.canonical.metadata.name}`);
+    // Live drafts are the "verified" half of the drift journey → Pack B.
+    const compared = await adoptValidatedPack(res, `${out.canonical.metadata.name} (live draft)`, 'live');
+    toast(compared
+      ? `Comparing the repo scan against ${out.canonical.metadata.name} (live)`
+      : `Loaded live draft for ${out.canonical.metadata.name}`);
   } catch (e) {
     toast(`Adopt failed: ${e.message}`, 'error');
   }

@@ -46,35 +46,30 @@ try {
   assert(Array.isArray(catalog.packs), 'GET /api/packs returns packs[]');
   assert(catalog.packs.length === 0, 'GET /api/packs returns empty catalog (Phase 7q)', catalog.packs.length, 0);
 
-  // /api/examples — the archived reference packs
+  // /api/examples — the curated reference packs. Trimmed to the three
+  // hand-authored baselines; demo-skeleton and production-live are no
+  // longer seeded (production state is generated live via scan / MCP).
   const examples = await getJson(base, '/api/examples');
   assert(Array.isArray(examples.examples), 'GET /api/examples returns examples[]');
-  assert(examples.examples.length === 5, 'examples lists all 5 archived packs', examples.examples.length, 5);
-  for (const id of ['payment-service', 'target-advanced', 'production-curated', 'demo-skeleton']) {
+  assert(examples.examples.length === 3, 'examples lists the 3 seeded packs', examples.examples.length, 3);
+  for (const id of ['payment-service', 'target-advanced', 'production-curated']) {
     const entry = examples.examples.find(p => p.id === id);
     assert(!!entry && entry.ok === true, `example '${id}' loads ok from examples/`, entry?.error, 'ok');
   }
+  // demo-skeleton and production-live are intentionally not seeded.
+  assert(!examples.examples.find(p => p.id === 'demo-skeleton'),
+         'demo-skeleton is no longer a seeded example');
+  assert(!examples.examples.find(p => p.id === 'production-live'),
+         'production-live is no longer a seeded example');
   // Catalogue reference packs moved out of /api/examples into /api/references.
   assert(!examples.examples.find(p => /-reference$/.test(p.id)),
          'examples no longer include catalogue reference packs');
   const target = examples.examples.find(p => p.id === 'target-advanced');
   assert(target?.criticality === 'tier-1', 'target-advanced declares tier-1');
-  const demo = examples.examples.find(p => p.id === 'demo-skeleton');
-  assert(demo?.criticality === 'tier-3', 'demo-skeleton declares tier-3');
   const example = examples.examples.find(p => p.id === 'payment-service');
   assert(!!example, 'examples include payment-service');
   assert(example?.criticality === 'tier-1', 'payment-service criticality');
   assert(example?.environments?.length === 2, 'payment-service environments count');
-  const live = examples.examples.find(p => p.id === 'production-live');
-  assert(!!live, 'examples include production-live entry');
-  // The cron writes examples/production-live.pack.yaml; in CI the file
-  // may not exist yet, in which case the entry reports ok:false.
-  if (live.ok) {
-    assert(live.name === 'production-live', 'production-live pack name when present');
-  } else {
-    assert(/pack file missing|file not found|ENOENT/i.test(live.error || ''),
-           'production-live missing-file error is surfaced cleanly');
-  }
 
   // /api/references — the catalogue reference packs (Advanced → References)
   const references = await getJson(base, '/api/references');
@@ -133,17 +128,17 @@ try {
   assert(stgConf.declaredTier === 'tier-2', 'staging env overlay reports tier-2');
 
   // /api/diff
-  const diff = await getJson(base, '/api/diff?a=target-advanced&b=demo-skeleton');
+  const diff = await getJson(base, '/api/diff?a=target-advanced&b=production-curated');
   // .id is the canonical metadata.name (consistent with /api/packs/:id)
   assert(diff.a?.id === 'platform-edge',  'diff.a.id = target-advanced metadata.name');
-  assert(diff.b?.id === 'demo-skeleton',  'diff.b.id = demo-skeleton metadata.name');
+  assert(diff.b?.id === 'production-curated',  'diff.b.id = production-curated metadata.name');
   assert(diff.a?.criticality === 'tier-1', 'diff.a carries criticality');
-  assert(diff.b?.criticality === 'tier-3', 'diff.b carries criticality');
+  assert(diff.b?.criticality === 'tier-2', 'diff.b carries criticality');
   assert(typeof diff.summary?.onlyInA === 'number', 'diff.summary.onlyInA present');
   assert(typeof diff.summary?.inBoth  === 'number', 'diff.summary.inBoth present');
   assert(typeof diff.summary?.jaccard === 'number', 'diff.summary.jaccard present');
   assert(diff.summary.aTotal > diff.summary.bTotal,
-         'target-advanced has more artefacts than demo-skeleton',
+         'target-advanced has more artefacts than production-curated',
          { aTotal: diff.summary.aTotal, bTotal: diff.summary.bTotal },
          'aTotal > bTotal');
   assert(Array.isArray(diff.layers?.L1?.onlyInA), 'diff.layers.L1.onlyInA array');

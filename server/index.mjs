@@ -89,18 +89,6 @@ const EXAMPLE_PACKS = [
     path: 'examples/production-curated.pack.yaml',
     description: 'Hand-curated baseline with intentional gaps the conformance panel surfaces.',
   },
-  {
-    id: 'production-live',
-    label: 'Production live (MCP fetcher)',
-    path: 'examples/production-live.pack.yaml',
-    description: 'Refreshed by the refresh-live-pack workflow. Reflects MCP-verifiable state.',
-  },
-  {
-    id: 'demo-skeleton',
-    label: 'Demo skeleton (smallest valid pack)',
-    path: 'examples/demo-skeleton.pack.yaml',
-    description: "Smallest valid canonical v1.2 pack — every schema-required section with the leanest content.",
-  },
 ];
 
 // Catalogue reference packs — the curated, evidence-cited "state of the
