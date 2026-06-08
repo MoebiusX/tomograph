@@ -2058,6 +2058,7 @@ a:hover { color: var(--ink); }
   color: var(--ink-4);
 }
 .drift-tile.is-aligned { border-left-color: var(--ok, #16a34a); }
+.drift-tile.is-drifted  { border-left-color: rgb(150, 90, 200); }
 .drift-tile.is-drift,
 .drift-tile.is-gap     { border-left-color: rgb(200, 70, 40); }
 .drift-tile.is-shadow,
@@ -2078,6 +2079,7 @@ a:hover { color: var(--ink); }
   border-bottom: 1px solid var(--line);
 }
 .drift-th.is-aligned { color: var(--ok, #16a34a); }
+.drift-th.is-drifted { color: rgb(150, 90, 200); }
 .drift-th.is-drift, .drift-th.is-gap { color: rgb(200, 70, 40); }
 .drift-th.is-shadow, .drift-th.is-extra { color: rgb(180, 120, 0); }
 .drift-row { border-bottom: 1px solid var(--line-2, var(--line)); }
@@ -2113,10 +2115,29 @@ a:hover { color: var(--ink); }
   word-break: break-word;
 }
 .drift-cell.is-aligned .drift-cell-n { color: var(--ok, #16a34a); }
+.drift-cell.is-drifted .drift-cell-n { color: rgb(150, 90, 200); }
 .drift-cell.is-drift .drift-cell-n,
 .drift-cell.is-gap .drift-cell-n { color: rgb(200, 70, 40); }
 .drift-cell.is-shadow .drift-cell-n,
 .drift-cell.is-extra .drift-cell-n { color: rgb(180, 120, 0); }
+.drift-cell-oos {
+  display: block;
+  margin-top: 4px;
+  font: 10px/1.3 var(--mono);
+  color: var(--ink-4);
+  opacity: 0.7;
+  font-style: italic;
+}
+.drift-oos-note {
+  margin: 10px 2px 0;
+  font: 11px/1.5 var(--mono);
+  color: var(--ink-4);
+}
+.drift-delta-fields {
+  color: rgb(150, 90, 200);
+  opacity: 0.85;
+  margin-left: 2px;
+}
 
 @media (max-width: 720px) {
   .drift-tiles { grid-template-columns: 1fr; }

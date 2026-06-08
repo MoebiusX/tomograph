@@ -24,6 +24,7 @@
 // without going through the dispatcher.
 
 import { emit as emitYaml } from './mini-yaml.mjs';
+import { resolveProfile } from './profiles.mjs';
 
 // ============================================================
 // Helpers — ref resolution, slug normalisation, expression building
@@ -31,6 +32,54 @@ import { emit as emitYaml } from './mini-yaml.mjs';
 
 const RATE_WINDOW_RECORD = '5m';   // default record window for ratio SLIs
 const DEFAULT_DATASOURCE_UID = '${DS_PROMETHEUS}';
+
+// ------------------------------------------------------------
+// Version resolution — find the declared product version a target should be
+// compiled against, then resolve its profile. The version is read from the
+// pack (the backend serving a signal, or a dashboard's provider) and can be
+// overridden explicitly via opts (e.g. the deploy UI's targetVersion).
+// ------------------------------------------------------------
+
+// The declared version of the backend serving a given signal (metrics/logs/
+// traces/profiles). This is the product the artefact actually lands on.
+function backendForSignal(canonical, signal) {
+  const bs = canonical?.spec?.telemetry?.backends || [];
+  return bs.find((b) => b.signal === signal) || null;
+}
+
+// Resolve the profile for a target family from the pack's declared versions,
+// honouring an explicit override. `opts.product` / `opts.version` win; then we
+// read the version from the most relevant declared backend/provider.
+function profileForTarget(canonical, family, opts = {}) {
+  if (opts.product || opts.version) {
+    return resolveProfile(opts.product || family, opts.version);
+  }
+  switch (family) {
+    case 'grafana-dashboard':
+    case 'grafana': {
+      const dash = (canonical?.spec?.dashboards || [])[0];
+      return resolveProfile(dash?.provider?.kind || 'grafana', dash?.provider?.version);
+    }
+    case 'grafana-managed':
+      return resolveProfile('grafana-managed', opts.version);
+    case 'prometheus-rules':
+    case 'prometheus': {
+      const b = backendForSignal(canonical, 'metrics');
+      return resolveProfile(b?.product || 'prometheus', b?.version?.declared);
+    }
+    case 'alertmanager': {
+      const b = (canonical?.spec?.telemetry?.backends || []).find((x) => /alertmanager/i.test(x.product || ''));
+      return resolveProfile('alertmanager', b?.version?.declared);
+    }
+    case 'otel-collector': {
+      // The collector version is declared on the otel block when present.
+      const v = canonical?.spec?.otel?.collector?.version || canonical?.spec?.pipelines?.collector_version;
+      return resolveProfile('otel-collector', v);
+    }
+    default:
+      return resolveProfile(family, opts.version);
+  }
+}
 
 function slug(s) {
   if (typeof s !== 'string') return 'pack';
@@ -113,8 +162,9 @@ function durationSeconds(d) {
 // 1) Prometheus rules — recording + burn-rate alerts
 // ============================================================
 
-export function compilePrometheusRules(canonical) {
+export function compilePrometheusRules(canonical, opts = {}) {
   const svc = serviceSlug(canonical);
+  const profile = opts.profile || profileForTarget(canonical, 'prometheus-rules', opts);
   const groups = [];
 
   // ----- recording rules -----
@@ -203,6 +253,11 @@ export function compilePrometheusRules(canonical) {
         alert: alertName,
         expr: `(${shortErr} > ${threshold}) and (${longErr} > ${threshold})`,
         for: shortFor(short),
+        // `keep_firing_for` debounces resolution so a burn alert doesn't
+        // flap as the ratio crosses the threshold. It was added in
+        // Prometheus 2.42; VictoriaMetrics/vmalert and older Prometheus
+        // reject the field, so only the profiles that support it emit it.
+        ...(profile.knobs.keepFiringFor ? { keep_firing_for: long } : {}),
         labels: {
           severity: sev,
           slo: slo.id,
@@ -764,10 +819,11 @@ const CHANNEL_TO_RECEIVER = {
   webhook:  'webhook_configs',
 };
 
-export function compileAlertmanager(canonical) {
+export function compileAlertmanager(canonical, opts = {}) {
   const routes = canonical?.spec?.alerting?.routes || [];
   const suppress = canonical?.spec?.alerting?.suppress || [];
   const svc = nameOf(canonical);
+  const profile = opts.profile || profileForTarget(canonical, 'alertmanager', opts);
 
   const receivers = [];
   const childRoutes = [];
@@ -778,7 +834,15 @@ export function compileAlertmanager(canonical) {
     for (const ch of route.channels || []) {
       const kind = Object.keys(ch)[0];
       const target = ch[kind];
-      const key = CHANNEL_TO_RECEIVER[kind] || 'webhook_configs';
+      // Microsoft Teams: v0.28 introduced the `msteamsv2_configs` receiver
+      // (Power Automate workflows); older Alertmanager only has
+      // `msteams_configs`, and pre-0.26 has neither. Route to the form the
+      // resolved profile actually supports.
+      let key = CHANNEL_TO_RECEIVER[kind] || 'webhook_configs';
+      if (kind === 'msteams') {
+        if (profile.knobs.msteamsV2) key = 'msteamsv2_configs';
+        else if (profile.knobs.msteams === false) key = 'webhook_configs';
+      }
       recCfg[key] = recCfg[key] || [];
       if (kind === 'msteams')      recCfg[key].push({ webhook_url: `# secret: msteams_${slug(target)}`, send_resolved: true, room: target });
       else if (kind === 'voice')   recCfg[key].push({ service_key: `# secret: pagerduty_${slug(target.replace(/^.*:\/\//, ''))}`, target });
@@ -837,9 +901,11 @@ export function compileAlertmanager(canonical) {
 // 3) OTel Collector — receivers + processors + exporters + service.pipelines
 // ============================================================
 
-export function compileOtelCollector(canonical) {
+export function compileOtelCollector(canonical, opts = {}) {
   const p = canonical?.spec?.pipelines || {};
   const otel = canonical?.spec?.otel || {};
+  const profile = opts.profile || profileForTarget(canonical, 'otel-collector', opts);
+  const kc = profile.knobs;
 
   // Receivers
   const receivers = {};
@@ -892,13 +958,34 @@ export function compileOtelCollector(canonical) {
     exporters[exporterName] = Object.assign(exporters[exporterName] || {}, rest);
   }
 
+  // The console/debug exporter was renamed `logging` → `debug` in Collector
+  // v0.86. A config that names the wrong one fails to start on the target
+  // version, so rewrite to the form the resolved profile expects.
+  const renameExporter = (from, to) => {
+    if (exporters[from] && !exporters[to]) {
+      exporters[to] = exporters[from];
+      delete exporters[from];
+      for (const sig of ['metrics', 'logs', 'traces']) {
+        if (exporterNames[sig] === from) exporterNames[sig] = to;
+      }
+    }
+  };
+  if (kc.debugExporter) renameExporter('logging', 'debug');
+  else renameExporter('debug', 'logging');
+
   // service.pipelines
   const pipelineNames = Object.keys(receivers);
   const processorNames = Object.keys(processors);
+  // The Collector's self-telemetry metrics block changed: the bare
+  // `address` was deprecated in favour of the OpenTelemetry `readers`
+  // form. Emit whichever the resolved profile speaks.
+  const metricsTelemetry = kc.telemetryMetricsReaders
+    ? { readers: [{ pull: { exporter: { prometheus: { host: '0.0.0.0', port: 8888 } } } }] }
+    : { address: '0.0.0.0:8888' };
   const service = {
     telemetry: {
       logs: { level: 'info', development: false },
-      metrics: { address: '0.0.0.0:8888' },
+      metrics: metricsTelemetry,
     },
     pipelines: {},
   };
@@ -938,13 +1025,27 @@ export function compileOtelCollector(canonical) {
 
 const GRAFANA_DEFAULT_SCHEMA_VERSION = 41;   // Grafana 12.x baseline
 
-export function compileGrafanaDashboard(canonical, dashboardId) {
+export function compileGrafanaDashboard(canonical, dashboardId, opts = {}) {
   const dash = (canonical?.spec?.dashboards || []).find(d => d.id === dashboardId);
   if (!dash) throw new Error(`dashboard not found: ${dashboardId}`);
   const svc = nameOf(canonical);
   const svcS = serviceSlug(canonical);
 
-  const dsMetrics = { type: 'prometheus', uid: DEFAULT_DATASOURCE_UID };
+  // Resolve the Grafana version profile from the dashboard's declared
+  // provider (or an explicit override). The profile decides the datasource
+  // form (object since v10, bare string before) and the dashboard
+  // schemaVersion floor when the pack doesn't pin one.
+  const profile = opts.profile || resolveProfile(dash.provider?.kind || 'grafana', opts.version ?? dash.provider?.version);
+  const k = profile.knobs;
+  // Pre-v10 Grafana referenced datasources by their bare uid string; v10+
+  // requires the { type, uid } object. Emitting the wrong form makes panels
+  // fail to bind on the real install — a genuine version behaviour.
+  const dsMetrics = k.datasourceForm === 'string'
+    ? DEFAULT_DATASOURCE_UID
+    : { type: 'prometheus', uid: DEFAULT_DATASOURCE_UID };
+  // Whether each query target repeats its datasource (post-v10) or inherits
+  // it from the panel (pre-v10).
+  const targetDs = k.panelTargetDatasource === false ? undefined : dsMetrics;
   const panels = [];
   let panelId = 0;
   let row = 0;
@@ -973,7 +1074,7 @@ export function compileGrafanaDashboard(canonical, dashboardId) {
       gridPos: { x, y, w, h },
       targets: [{
         refId: 'A',
-        datasource: dsMetrics,
+        datasource: targetDs,
         expr: sli && sli.type === 'ratio'
           ? `${svcS}:${sliId}:ratio_${RATE_WINDOW_RECORD}`
           : (sli ? sliExpression(sli) : `# unresolved: ${target}`),
@@ -1022,7 +1123,7 @@ export function compileGrafanaDashboard(canonical, dashboardId) {
         gridPos: { x: (i % 4) * 6, y: 0, w: 6, h: 4 },
         targets: [{
           refId: 'A',
-          datasource: dsMetrics,
+          datasource: targetDs,
           expr: sli && sli.type === 'ratio' ? `${svcS}:${sli.id}:ratio_${RATE_WINDOW_RECORD}` : '',
           legendFormat: slo?.id,
         }],
@@ -1053,7 +1154,9 @@ export function compileGrafanaDashboard(canonical, dashboardId) {
     description: `Compiled from ${nameOf(canonical)} pack. Do not hand-edit — re-emit from the pack.`,
     tags: ['observability-pack', svcS],
     timezone: 'browser',
-    schemaVersion: dash.provider?.schemaVersion ?? GRAFANA_DEFAULT_SCHEMA_VERSION,
+    // The pack MAY pin schemaVersion explicitly; otherwise the resolved
+    // Grafana profile supplies the version-correct value.
+    schemaVersion: dash.provider?.schemaVersion ?? k.schemaVersion ?? GRAFANA_DEFAULT_SCHEMA_VERSION,
     version: 1,
     refresh: '30s',
     time: { from: 'now-6h', to: 'now' },
@@ -1087,43 +1190,61 @@ export const TARGETS = {
     description: 'Recording + multi-window burn-rate alerting rules. Ingestible by Prometheus or Mimir ruler.',
     contentType: 'application/x-yaml',
     extension: 'yaml',
+    family: 'prometheus-rules',
     suggestedFile: (canonical) => `${serviceSlug(canonical)}.rules.yaml`,
-    compile: (canonical) => compilePrometheusRules(canonical),
+    compile: (canonical, opts) => compilePrometheusRules(canonical, opts),
   },
   'otel-collector': {
     label: 'OTel Collector',
     description: 'OpenTelemetry Collector config (receivers / processors / exporters / service.pipelines).',
     contentType: 'application/x-yaml',
     extension: 'yaml',
+    family: 'otel-collector',
     suggestedFile: (canonical) => `${serviceSlug(canonical)}.otel-collector.yaml`,
-    compile: (canonical) => compileOtelCollector(canonical),
+    compile: (canonical, opts) => compileOtelCollector(canonical, opts),
   },
   'alertmanager': {
     label: 'Alertmanager',
     description: 'Route tree + receivers per severity. Inhibit rules from suppress contexts.',
     contentType: 'application/x-yaml',
     extension: 'yaml',
+    family: 'alertmanager',
     suggestedFile: (canonical) => `${serviceSlug(canonical)}.alertmanager.yaml`,
-    compile: (canonical) => compileAlertmanager(canonical),
+    compile: (canonical, opts) => compileAlertmanager(canonical, opts),
   },
   'grafana-dashboard': {
     label: 'Grafana dashboard',
-    description: 'Grafana 11 dashboard JSON. One per `spec.dashboards[]` entry; pass the dashboard id as an arg.',
+    description: 'Grafana dashboard JSON, emitted at the schemaVersion of the pack-declared Grafana version. One per `spec.dashboards[]` entry; pass the dashboard id as an arg.',
     contentType: 'application/json',
     extension: 'json',
+    family: 'grafana-dashboard',
     suggestedFile: (canonical, opts) => `${serviceSlug(canonical)}.${slug(opts?.dashboardId || 'dashboard')}.json`,
-    compile: (canonical, opts) => compileGrafanaDashboard(canonical, opts?.dashboardId || canonical?.spec?.dashboards?.[0]?.id),
+    compile: (canonical, opts) => compileGrafanaDashboard(canonical, opts?.dashboardId || canonical?.spec?.dashboards?.[0]?.id, opts),
   },
 };
 
 export function compile(canonical, target, opts = {}) {
   const t = TARGETS[target];
   if (!t) throw new Error(`unknown compile target: ${target}. Try one of: ${Object.keys(TARGETS).join(', ')}`);
+  // Resolve the version profile this target compiles against so callers can
+  // see which product+version the artefact was shaped for (and whether the
+  // declared version actually matched a known band).
+  const profile = profileForTarget(canonical, t.family || target, opts);
   return {
     target,
     contentType: t.contentType,
     filename: t.suggestedFile(canonical, opts),
-    content: t.compile(canonical, opts),
+    content: t.compile(canonical, { ...opts, profile }),
+    profile: {
+      product: profile.product,
+      version: profile.version,
+      band: profile.band,
+      label: profile.label,
+      tractability: profile.tractability,
+      matched: profile.matched,
+      extrapolated: profile.extrapolated,
+      protocols: profile.protocols,
+    },
   };
 }
 
@@ -1134,5 +1255,10 @@ export function listTargets() {
     description: t.description,
     contentType: t.contentType,
     extension: t.extension,
+    family: t.family || id,
   }));
 }
+
+// Re-export the profile API so callers that already import compile.mjs can
+// inspect/select version profiles without a second import.
+export { resolveProfile, listProfiles, listProtocols, satisfies, parseVersion } from './profiles.mjs';

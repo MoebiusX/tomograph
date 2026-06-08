@@ -5,70 +5,53 @@
 // a future restoration) call it directly.
 //
 // MATCHING
-//   Two artefacts "are the same" when they share a canonical key. The key
-//   is derived from the canonical content (not from the positional ID the
-//   adapter assigns, which is pack-local). `keyOf(artefact)` is the
-//   single source of truth — extend it as the adapter grows.
+//   Two artefacts "are the same" when they share a behavioural identity —
+//   NOT a name. The behavioural model (tools/lib/artefact-model.mjs) builds a
+//   typed object per artefact family: an `identity` derived from what the
+//   artefact DOES (a backend's product+signal, a metric's series name, a
+//   rule's output series, a panel's binding target) and a `behavior` that
+//   captures its full deployed contract. `identityKeyOf` pairs A↔B by
+//   behaviour; `behaviorEqual` / `deltasOf` decide aligned vs drifted.
 //
 // SET OPS
-//   For each layer we produce three buckets:
+//   For each layer we produce these buckets:
 //     - onlyInA  artefacts present in A but not B
-//     - onlyInB  artefacts present in B but not A
+//     - onlyInB  artefacts present in B but not A, in a family A also declares
 //     - inBoth   matched pairs, with both A's and B's projection so the
 //                  caller can show spec differences side-by-side
+//     - outOfScope  present in B, in a family A declares NOTHING of — the rest
+//                  of the platform's inventory, kept out of the drift headline
 //
 //   The classic operations follow:
 //     A ∪ B  = onlyInA ∪ inBoth ∪ onlyInB
 //     A ∩ B  = inBoth
 //     A − B  = onlyInA
-//     B − A  = onlyInB
+//     B − A  = onlyInB ∪ outOfScope
+
+import {
+  identityKeyOf,
+  behaviorOf,
+  deltasOf,
+} from './artefact-model.mjs';
 
 const LAYER_ORDER = ['L1', 'L2', 'L2X', 'L3', 'L4', 'L5', 'GOV'];
 
-// Per-family key derivation. For artefacts the adapter already gave a
-// `defines` symbol (SLIs, SLOs, backends, dashboards, derived views) we
-// reuse it. For the rest we synthesise from the canonical spec fields
-// the adapter preserved on `artefact.spec`.
+// Behavioural identity key for pairing A↔B. Delegates to the artefact model so
+// matching is driven by what an artefact does, never by its name or position.
+// Exported under the historical `keyOf` name for backward compatibility.
 export function keyOf(artefact) {
-  if (!artefact) return null;
-  if (artefact.defines) return artefact.defines;
-
-  const id = artefact.id || '';
-  const s = artefact.spec || {};
-
-  if (id === 'OTEL-01')          return 'otel';
-  if (id.startsWith('PIP-RCV-')) return `pipeline.receiver:${s.name || '_'}`;
-  if (id.startsWith('PIP-PRC-')) return `pipeline.processor:${s.name || '_'}`;
-  if (id === 'PIP-EXP-MET')      return `pipeline.exporter.metrics:${s.kind || '_'}`;
-  if (id === 'PIP-EXP-LOG')      return `pipeline.exporter.logs:${s.kind || '_'}`;
-  if (id === 'PIP-EXP-TRC')      return `pipeline.exporter.traces:${s.kind || '_'}`;
-  if (id === 'STO-MET-01')       return `storage.metrics:${s.backend || '_'}`;
-  if (id === 'STO-LOG-01')       return `storage.logs:${s.backend || '_'}`;
-  if (id === 'STO-TRC-01')       return `storage.traces:${s.backend || '_'}`;
-  if (id === 'PROF-01')          return `profiling:${s.product || '_'}`;
-  if (id === 'NET-01')           return `network:${s.product || '_'}`;
-  if (id === 'POE-01')           return `policy_engine:${s.product || '_'}`;
-  if (id.startsWith('MESH-'))    return `mesh:${s.product || '_'}:${s.role || '_'}`;
-  if (id.startsWith('COL-'))     return `collection:${s.product || '_'}:${s.role || '_'}`;
-  if (id.startsWith('QRY-'))     return `recording_rule:${s.name || '_'}`;
-  if (id.startsWith('POL-'))     return `policy.burn_rate:${stripRef(s.slo)}`;
-  if (id.startsWith('FCST-'))    return `policy.forecast:${stripRef(s.slo)}`;
-  if (id.startsWith('ALR-'))     return `alerting.route:${s.severity || '_'}`;
-  if (id.startsWith('HEAL-'))    return `remediation:${s.trigger || '_'}`;
-  if (id === 'BASE-01')          return 'baselines';
-  if (id.startsWith('CHAOS-'))   return `chaos:${s.id || '_'}`;
-  if (id.startsWith('SYN-'))     return `synthetic:${s.id || '_'}`;
-  if (id.startsWith('IMP-'))     return `imports:${s.ref || '_'}`;
-
-  // Fallback — anything unrecognised stays pack-local so it always
-  // appears in onlyInA / onlyInB rather than crashing the comparison.
-  return `_unknown:${id}`;
+  return identityKeyOf(artefact);
 }
 
-function stripRef(s) {
-  if (typeof s !== 'string') return s ?? '';
-  return s.replace(/^ref:/, '').replace(/^slos\./, '');
+// The full behavioural contract object of an artefact — what "compare the
+// contents" actually compares. Retained under the `projectOf` name for
+// backward compatibility; delegates to the artefact model.
+export function projectOf(artefact) {
+  return behaviorOf(artefact);
 }
+
+// Re-export the behavioural delta helper so existing importers keep working.
+export { deltasOf };
 
 function layerArtefacts(layered, layerId) {
   const ls = layered?.layers || {};
@@ -97,7 +80,7 @@ export function diffPacks(aLayered, bLayered) {
   if (!aLayered || !bLayered) throw new Error('diffPacks: both packs required');
 
   const layers = {};
-  let onlyInA = 0, onlyInB = 0, inBoth = 0;
+  let onlyInA = 0, onlyInB = 0, inBoth = 0, aligned = 0, drifted = 0, outOfScope = 0;
 
   for (const layerId of LAYER_ORDER) {
     const aItems = layerArtefacts(aLayered, layerId);
@@ -108,14 +91,38 @@ export function diffPacks(aLayered, bLayered) {
     for (const a of aItems) aByKey.set(keyOf(a), a);
     for (const b of bItems) bByKey.set(keyOf(b), b);
 
-    const bucket = { onlyInA: [], onlyInB: [], inBoth: [] };
+    // Kinds (artefact families) the declared side (A) actually participates in
+    // for this layer. The behavioural key is `${kind}::${identity}`, so the
+    // prefix is the family. When A contributes ZERO artefacts of a family, B's
+    // artefacts of that family are out of the declared pack's SCOPE, not
+    // actionable drift: comparing one service's declaration against a
+    // whole-platform live inventory would otherwise flood "live, not declared"
+    // with the entire fleet. Declare even one artefact of a family and the rest
+    // of that family's live members become in-scope (genuine shadow signal).
+    const aKinds = new Set();
+    for (const k of aByKey.keys()) aKinds.add(k.slice(0, k.indexOf('::')));
+
+    const bucket = { onlyInA: [], onlyInB: [], inBoth: [], outOfScope: [] };
 
     for (const [k, a] of aByKey) {
-      if (bByKey.has(k)) bucket.inBoth.push({ key: k, a, b: bByKey.get(k) });
-      else               bucket.onlyInA.push({ key: k, artefact: a });
+      if (bByKey.has(k)) {
+        // Same behavioural identity — now compare the full behavioural
+        // contracts to decide whether they actually AGREE. Aligned only when
+        // the behaviour objects are equal (no deltas); otherwise drifted, with
+        // the diverging behavioural fields attached.
+        const b = bByKey.get(k);
+        const deltas = deltasOf(a, b);
+        const match = deltas.length === 0 ? 'aligned' : 'drifted';
+        bucket.inBoth.push({ key: k, a, b, match, deltas });
+      } else {
+        bucket.onlyInA.push({ key: k, artefact: a });
+      }
     }
     for (const [k, b] of bByKey) {
-      if (!aByKey.has(k)) bucket.onlyInB.push({ key: k, artefact: b });
+      if (aByKey.has(k)) continue;
+      const kind = k.slice(0, k.indexOf('::'));
+      if (aKinds.has(kind)) bucket.onlyInB.push({ key: k, artefact: b });
+      else bucket.outOfScope.push({ key: k, artefact: b });
     }
 
     // Stable order — alphabetical by key — so the UI doesn't reshuffle on
@@ -123,11 +130,19 @@ export function diffPacks(aLayered, bLayered) {
     bucket.onlyInA.sort((x, y) => x.key.localeCompare(y.key));
     bucket.onlyInB.sort((x, y) => x.key.localeCompare(y.key));
     bucket.inBoth.sort ((x, y) => x.key.localeCompare(y.key));
+    bucket.outOfScope.sort((x, y) => x.key.localeCompare(y.key));
+
+    // Per-layer aligned/drifted split of the matched pairs.
+    bucket.aligned = bucket.inBoth.filter((e) => e.match === 'aligned').length;
+    bucket.drifted = bucket.inBoth.filter((e) => e.match === 'drifted').length;
 
     layers[layerId] = bucket;
     onlyInA += bucket.onlyInA.length;
     onlyInB += bucket.onlyInB.length;
     inBoth  += bucket.inBoth.length;
+    aligned += bucket.aligned;
+    drifted += bucket.drifted;
+    outOfScope += bucket.outOfScope.length;
   }
 
   return {
@@ -137,12 +152,23 @@ export function diffPacks(aLayered, bLayered) {
       onlyInA,
       onlyInB,
       inBoth,
+      aligned,
+      drifted,
+      // Live artefacts whose whole family the declared pack never mentions —
+      // surfaced separately so the headline drift count isn't dominated by the
+      // rest of the platform's inventory.
+      outOfScope,
       union: onlyInA + onlyInB + inBoth,
       aTotal: onlyInA + inBoth,
       bTotal: onlyInB + inBoth,
       jaccard: (onlyInA + onlyInB + inBoth) === 0
         ? 1
         : Math.round((inBoth / (onlyInA + onlyInB + inBoth)) * 100) / 100,
+      // True alignment ratio: only structurally-equal matches count, over
+      // the full union. Identity-only matches that drifted are excluded.
+      alignment: (onlyInA + onlyInB + inBoth) === 0
+        ? 1
+        : Math.round((aligned / (onlyInA + onlyInB + inBoth)) * 100) / 100,
     },
     layers,
   };

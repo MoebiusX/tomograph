@@ -65,6 +65,48 @@ const BACKEND_PATTERNS = [
   { match: /datadog\/agent|datadoghq\/agent/i,                            product: 'datadog-agent',           signal: 'collection' },
 ];
 
+// Kubernetes workload kinds whose pod template carries container images we
+// can decompile into telemetry.backends. Helm charts ship observability
+// stacks as these (Deployment-prometheus, StatefulSet-loki, DaemonSet-promtail,
+// …), so reading their images back is the inverse of deploying them.
+const K8S_WORKLOAD_KINDS = new Set([
+  'Deployment', 'StatefulSet', 'DaemonSet', 'ReplicaSet',
+  'ReplicationController', 'Pod', 'Job', 'CronJob',
+]);
+
+// Match an image reference (`repository[:tag]`) against the known backend
+// catalog and register it on the backends bucket. Shared by the Helm values,
+// Helm template, and plain-K8s workload walkers. When `dedupeByProduct` is set
+// (Helm/K8s paths — the same backend appears across many manifests, replicas,
+// and per-environment values files), an existing backend with the same
+// signal+product is treated as already-discovered; the docker-compose walker
+// keeps its historical per-service uniqueness and so does not pass the flag.
+function registerBackendFromImage(image, relPath, backends, evidence, summary, { dedupeByProduct = false } = {}) {
+  const ref = String(image || '').trim();
+  if (!ref) return false;
+  const tag = (ref.split(':')[1] || '').trim();
+  for (const p of BACKEND_PATTERNS) {
+    if (!p.match.test(ref)) continue;
+    const baseId = `${p.signal}-${p.product}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (dedupeByProduct && backends.some(b => b.signal === p.signal && b.product === p.product)) return false;
+    let id = baseId, n = 2;
+    while (backends.some(b => b.id === id)) id = `${baseId}-${n++}`;
+    const backend = {
+      id,
+      signal: p.signal,
+      product: p.product,
+      endpoints: [`http://${p.product}:80`],
+      auth: { kind: 'none' },
+    };
+    if (tag && /^v?\d/.test(tag)) backend.version = { declared: tag.replace(/^v/, ''), gating: 'off' };
+    backends.push(backend);
+    evidence[id] = relPath;
+    summary.discovered.backends++;
+    return true;
+  }
+  return false;
+}
+
 // ============================================================
 // Public API
 // ============================================================
@@ -91,6 +133,14 @@ export function detectArtefactKind(relPath, content) {
   }
   // YAML — could be many things; look at shape.
   if (!/\.ya?ml$/i.test(lower)) return 'unknown';
+
+  // Helm values file — the chart's concrete image references live here
+  // (`<svc>.image.repository`), even though the templates that consume them
+  // are Go-templated. Detected by the Helm `values[...].yaml` convention and
+  // routed to walkHelmValues, which harvests telemetry.backends. Checked
+  // before the Helm-template sniff because a values file carries no
+  // `{{ include }}` scaffolding and would otherwise fall through to 'unknown'.
+  if (/(^|\/)values[\w.-]*\.ya?ml$/.test(lower)) return 'helm-values';
 
   // Helm template — Go-template scaffolding ({{ include ... }}, {{ .Values.x }})
   // breaks plain YAML parsing, so these files would otherwise be misclassified
@@ -121,6 +171,14 @@ export function detectArtefactKind(relPath, content) {
   if (obj.receivers && obj.exporters && obj.service?.pipelines)   return 'otel-collector';
   if (obj.services && typeof obj.services === 'object'
       && Object.values(obj.services).some(s => s?.image))         return 'docker-compose';
+  // Plain (non-templated) Kubernetes workload manifest carrying concrete
+  // container images — the backends a Helm chart would otherwise template.
+  if (K8S_WORKLOAD_KINDS.has(obj.kind)
+      && (obj.spec?.template?.spec?.containers
+          || obj.spec?.containers
+          || obj.spec?.jobTemplate?.spec?.template?.spec?.containers)) {
+    return 'k8s-workload';
+  }
   return 'unknown';
 }
 
