@@ -108,6 +108,10 @@ const state = {
   deployProduct: 'grafana',    // chosen target product
   deployVersion: '12',         // chosen target version (string — matches matrix.versions)
   deployScope: 'both',         // for prometheus-rules: both | recording | alerting
+  // Remediate set-operation: which artefacts to deploy. null → resolves to
+  // 'A-B' when Pack B is loaded (the delta to close), else 'A'.
+  remediateOp: null,           // 'A' | 'B' | 'AUB' | 'A-B'
+  remediateDeselected: null,   // Set<string> of identities the user unchecked
   mcpStatus: null,
 };
 
@@ -1862,7 +1866,283 @@ function renderOtlpBody(host, canonical, layered) {
   `;
 }
 
+// ============================================================
+// REMEDIATION PLAN — the set-operation band that leads Remediate.
+//
+// "Fix the gaps" starts by deciding WHAT to deploy. Four set
+// operations over the two packs' artefacts:
+//
+//   A      — everything in your pack (the default with no Pack B)
+//   B      — everything in the reference / target pack
+//   A ∪ B  — union: your pack plus anything B adds
+//   A − B  — the delta: artefacts in A but not B (the gap to close)
+//
+// A−B is the default when Pack B is loaded because it answers the
+// remediation question directly: "what do I need to push that isn't
+// already there?" The resolved set is shown per-layer with each item
+// selectable; deployable artefacts (the Grafana surface — rules from
+// SLOs, declared recording rules, dashboards) carry a checkbox and a
+// "deploy" affordance, while everything else is flagged "author in
+// pack" (you fix it by editing the manifest, not by pushing).
+// ============================================================
+
+// The active set operation, resolving the null default by Pack-B
+// presence. B / ∪ / − require Pack B; without it we clamp to 'A'.
+function effectiveRemediateOp() {
+  const op = state.remediateOp || (state.packB ? 'A-B' : 'A');
+  if (!state.packB && op !== 'A') return 'A';
+  return op;
+}
+
+// Is this layered artefact part of the deployable Grafana surface, and
+// if so what identity does the deploy manifest key it by? Mirrors
+// tools/lib/compile.mjs::compileCatalog — only SLOs (recording +
+// burn-rate alert rules), author-declared recording rules, and
+// dashboards land through the Grafana deploy path. Returns
+// { deployable, kind, identity } where identity matches the deploy
+// manifest row.id (slo.id / rule name / dashboard id).
+function remediationDeployIdentity(art) {
+  const id = String(art?.id || '').toUpperCase();
+  const defines = String(art?.defines || '');
+  if (/^SLO-/.test(id) || defines.startsWith('slos.')) {
+    return { deployable: true, kind: 'rules', identity: art.title || defines.replace(/^slos\./, '') };
+  }
+  if (/^QRY-/.test(id)) {
+    return { deployable: true, kind: 'rules', identity: art.title || art.id };
+  }
+  if (/^DASH-/.test(id) || defines.startsWith('dashboards.')) {
+    return { deployable: true, kind: 'dashboard', identity: defines.replace(/^dashboards\./, '') || art.title || art.id };
+  }
+  return { deployable: false, kind: null, identity: null };
+}
+
+// Resolve a set operation to a per-layer artefact list. Uses the
+// server-computed diff (state.diff) for B / ∪ / − so the membership
+// matches the Diagnose drill exactly; falls back to whole-pack walks
+// when the diff isn't present (op 'A', or B-ops before the diff loads).
+function resolveRemediationSet(op) {
+  const haveB = !!state.packB;
+  const diff = (state.diff && !state.diff.error && state.diff.layers) ? state.diff : null;
+  const out = { byLayer: {}, total: 0, deployable: 0, author: 0, needsDiff: false };
+
+  for (const L of LAYERS_FOR_DIFF) {
+    let entries = [];
+    if (op === 'A' || !haveB) {
+      entries = layerItemsFor(state.pack, L).map(a => ({ art: a }));
+    } else if (op === 'B') {
+      entries = layerItemsFor(state.packB, L).map(a => ({ art: a }));
+    } else if (op === 'A-B') {
+      if (!diff) { out.needsDiff = true; entries = layerItemsFor(state.pack, L).map(a => ({ art: a })); }
+      else entries = (diff.layers[L]?.onlyInA || []).map(e => ({ art: e.artefact }));
+    } else if (op === 'AUB') {
+      const aItems = layerItemsFor(state.pack, L).map(a => ({ art: a }));
+      let bExtra;
+      if (!diff) { out.needsDiff = true; bExtra = layerItemsFor(state.packB, L).map(a => ({ art: a })); }
+      else bExtra = (diff.layers[L]?.onlyInB || []).map(e => ({ art: e.artefact }));
+      entries = [...aItems, ...bExtra];
+    }
+    const enriched = entries
+      .filter(e => e.art)
+      .map(e => ({ ...e, ...remediationDeployIdentity(e.art) }));
+    if (enriched.length) {
+      out.byLayer[L] = enriched;
+      out.total += enriched.length;
+      out.deployable += enriched.filter(e => e.deployable).length;
+      out.author += enriched.filter(e => !e.deployable).length;
+    }
+  }
+  return out;
+}
+
+// Selected deployable identities = all deployable in the set minus the
+// ones the user unchecked. Drives the deploy hand-off.
+function remediationSelectedIdentities(resolved) {
+  const deselected = state.remediateDeselected || new Set();
+  const ids = new Set();
+  for (const L of LAYERS_FOR_DIFF) {
+    for (const e of (resolved.byLayer[L] || [])) {
+      if (e.deployable && e.identity && !deselected.has(e.identity)) ids.add(e.identity);
+    }
+  }
+  return ids;
+}
+
+const REMEDIATE_OPS = [
+  { id: 'A',   label: 'A', sub: 'your pack',        needsB: false },
+  { id: 'B',   label: 'B', sub: 'reference',        needsB: true  },
+  { id: 'AUB', label: 'A ∪ B', sub: 'union',        needsB: true  },
+  { id: 'A-B', label: 'A − B', sub: 'gap to close', needsB: true  },
+];
+
+const REMEDIATE_LAYER_NAMES = { L1:'Contract', L2:'Telemetry', L2X:'Extended', L3:'Insight', L4:'Action', L5:'Validation', GOV:'Governance' };
+
+// The remediation plan band — leads the Remediate view. Appends to host.
+function renderRemediationPlan(host) {
+  const op = effectiveRemediateOp();
+  const haveB = !!state.packB;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'remediate-plan';
+
+  // ---- Set-operation selector ----
+  const bName = haveB
+    ? (catalogEntryFor(state.compareBId)?.label || state.packB?.meta?.name || state.packB?.id || 'Pack B')
+    : null;
+  const opsHtml = REMEDIATE_OPS.map(o => {
+    const disabled = o.needsB && !haveB;
+    return `<button type="button" class="remediate-op${o.id === op ? ' is-active' : ''}${disabled ? ' is-disabled' : ''}"
+      data-op="${o.id}" ${disabled ? 'disabled title="Load a Pack B from the header to enable"' : ''}>
+      <span class="remediate-op-label">${escapeHtml(o.label)}</span>
+      <span class="remediate-op-sub">${escapeHtml(o.sub)}</span>
+    </button>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="remediate-plan-head">
+      <span class="remediate-plan-eyebrow">PLAN</span>
+      What do we deploy?
+      ${haveB ? `<span class="remediate-plan-vs">A = your pack · B = <strong>${escapeHtml(bName)}</strong></span>`
+              : `<span class="remediate-plan-vs">Load a <strong>Pack B</strong> from the header to unlock B · A∪B · A−B</span>`}
+    </div>
+    <div class="remediate-ops">${opsHtml}</div>
+  `;
+
+  // Wire op buttons.
+  wrap.querySelectorAll('.remediate-op:not(.is-disabled)').forEach(btn => {
+    btn.onclick = () => {
+      state.remediateOp = btn.dataset.op;
+      state.remediateDeselected = new Set();   // reset curation on op change
+      renderMainView();
+    };
+  });
+
+  // ---- Resolve the set ----
+  const resolved = resolveRemediationSet(op);
+
+  // B-ops need the diff; load it lazily, then re-render.
+  if (resolved.needsDiff && haveB && state.compareBId) {
+    const loading = document.createElement('div');
+    loading.className = 'remediate-loading';
+    loading.textContent = 'Computing the set…';
+    wrap.appendChild(loading);
+    host.appendChild(wrap);
+    loadDiff().then(() => renderMainView());
+    return;
+  }
+
+  const selectedIds = remediationSelectedIdentities(resolved);
+
+  // ---- Summary tiles ----
+  const summary = document.createElement('div');
+  summary.className = 'remediate-summary';
+  const opMeaning = {
+    'A':   'Every artefact in your pack.',
+    'B':   `Every artefact in ${escapeHtml(bName || 'Pack B')}.`,
+    'AUB': `Your pack combined with everything ${escapeHtml(bName || 'Pack B')} adds.`,
+    'A-B': `Artefacts in your pack but not in ${escapeHtml(bName || 'Pack B')} — the delta to push.`,
+  };
+  summary.innerHTML = `
+    <div class="remediate-summary-lede">${opMeaning[op] || ''}</div>
+    <div class="remediate-tiles">
+      <div class="remediate-tile is-total"><div class="remediate-tile-n">${resolved.total}</div><div class="remediate-tile-l">in set</div></div>
+      <div class="remediate-tile is-deployable"><div class="remediate-tile-n">${selectedIds.size}</div><div class="remediate-tile-l">selected to deploy</div></div>
+      <div class="remediate-tile is-author"><div class="remediate-tile-n">${resolved.author}</div><div class="remediate-tile-l">to author in pack</div></div>
+    </div>
+  `;
+  wrap.appendChild(summary);
+
+  if (resolved.total === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'remediate-empty';
+    empty.textContent = op === 'A-B'
+      ? 'Nothing to close — your pack has no artefacts beyond Pack B.'
+      : 'This set is empty.';
+    wrap.appendChild(empty);
+    host.appendChild(wrap);
+    return;
+  }
+
+  // ---- Per-layer, per-item checklist ----
+  const list = document.createElement('div');
+  list.className = 'remediate-list';
+  const deselected = state.remediateDeselected || (state.remediateDeselected = new Set());
+  for (const L of LAYERS_FOR_DIFF) {
+    const entries = resolved.byLayer[L];
+    if (!entries || !entries.length) continue;
+    const layerEl = document.createElement('div');
+    layerEl.className = 'remediate-layer';
+    const depCount = entries.filter(e => e.deployable).length;
+    layerEl.innerHTML = `
+      <div class="remediate-layer-head">
+        <span class="remediate-layer-num">${L}</span>
+        <span class="remediate-layer-name">${escapeHtml(REMEDIATE_LAYER_NAMES[L] || L)}</span>
+        <span class="remediate-layer-count">${entries.length}${depCount ? ` · ${depCount} deployable` : ''}</span>
+      </div>
+    `;
+    const ul = document.createElement('ul');
+    ul.className = 'remediate-items';
+    for (const e of entries) {
+      const li = document.createElement('li');
+      const checked = e.deployable && e.identity && !deselected.has(e.identity);
+      li.className = 'remediate-item' + (e.deployable ? '' : ' is-author');
+      const labelText = e.art.title || e.art.id || e.identity || '—';
+      if (e.deployable) {
+        li.innerHTML = `
+          <label class="remediate-item-row">
+            <input type="checkbox" ${checked ? 'checked' : ''}>
+            <span class="remediate-item-name">${escapeHtml(labelText)}</span>
+            <span class="remediate-item-tag is-deploy">${e.kind === 'dashboard' ? 'dashboard' : 'rules'}</span>
+          </label>
+        `;
+        const cb = li.querySelector('input');
+        cb.onchange = () => {
+          if (cb.checked) deselected.delete(e.identity);
+          else deselected.add(e.identity);
+          renderMainView();
+        };
+      } else {
+        li.innerHTML = `
+          <div class="remediate-item-row">
+            <span class="remediate-item-name">${escapeHtml(labelText)}</span>
+            <span class="remediate-item-tag is-author">author in pack</span>
+          </div>
+        `;
+      }
+      ul.appendChild(li);
+    }
+    layerEl.appendChild(ul);
+    list.appendChild(layerEl);
+  }
+  wrap.appendChild(list);
+
+  // ---- Deploy action ----
+  const action = document.createElement('div');
+  action.className = 'remediate-action';
+  const n = selectedIds.size;
+  const deployPackId = (op === 'B') ? state.compareBId : state.selectedPackId;
+  action.innerHTML = `
+    <button type="button" class="remediate-deploy-btn" ${n === 0 ? 'disabled' : ''}>
+      Deploy ${n} selected →
+    </button>
+    <span class="remediate-action-hint">${n === 0
+      ? 'Select at least one deployable artefact, or author the rest in the pack.'
+      : 'Opens the deploy form pre-selected to your choices. Non-deployable artefacts are fixed by editing the pack.'}</span>
+  `;
+  const btn = action.querySelector('.remediate-deploy-btn');
+  if (btn && n > 0) {
+    btn.onclick = () => openDeployModal({ packId: deployPackId, presetIdentities: selectedIds });
+  }
+  wrap.appendChild(action);
+
+  host.appendChild(wrap);
+}
+
 function renderCompileView(host) {
+  // The remediation PLAN leads the view — set-operation (A | B | A∪B |
+  // A−B) → resolved set → per-item select → deploy. The per-artefact
+  // compiler below is the drill-down: inspect/emit one artefact at a time.
+  renderRemediationPlan(host);
+
   const section = document.createElement('section');
   section.className = 'section compile-view';
   section.dataset.layer = 'COMPILE';
@@ -1874,7 +2154,7 @@ function renderCompileView(host) {
   const focusBadge = state.packB ? ` · pack ${effectiveFocus().toUpperCase()}` : '';
   head.innerHTML = `
     <span class="section-num">BLD</span>
-    <span class="section-name">Compile — pack as the source of truth${focusBadge}</span>
+    <span class="section-name">Compile — inspect &amp; emit one artefact${focusBadge}</span>
     <span class="section-count">${escapeHtml(focusedPk?.id || '')}</span>
   `;
   section.appendChild(head);
@@ -1882,7 +2162,7 @@ function renderCompileView(host) {
   const lede = document.createElement('div');
   lede.className = 'compile-lede';
   lede.innerHTML = `
-    Pick an artifact on the left and choose its target flavor. Each leaf compiles individually — one SLO's rules,
+    Drill into a single artifact and choose its target flavor. Each leaf compiles individually — one SLO's rules,
     one dashboard, or the full file. Every output declares its platform explicitly so you know whether you're
     holding a <em>Prometheus / Mimir</em> rules file or a <em>Grafana-managed</em> provisioning YAML.
   `;
@@ -7636,6 +7916,7 @@ const deployModalState = {
   manifest: null,        // [{id, type, name, group, flavor, artifact, dashboardId, scope}]
   packId: null,
   selected: new Set(),
+  presetIdentities: null,  // Set<string> from Remediate plan, or null
   inflight: false,
 };
 
@@ -7672,9 +7953,13 @@ function setupDeployModal() {
   modal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDeployModal(); });
 }
 
-function openDeployModal({ packId, packLabel } = {}) {
+function openDeployModal({ packId, packLabel, presetIdentities } = {}) {
   const modal = $('#deploy-modal');
   if (!modal) return;
+  // Optional preset: when the Remediate plan hands off a curated set, pre-
+  // select only the matching manifest rows (by row.id). Cleared otherwise
+  // so a direct open defaults to all-deployable.
+  deployModalState.presetIdentities = (presetIdentities && presetIdentities.size) ? presetIdentities : null;
   if (!state.deployMatrix) loadDeployMatrix().then(() => populateDeployTargetSelects());
   else populateDeployTargetSelects();
   populateDeploySourcePackSelect(packId || state.selectedPackId);
@@ -7790,9 +8075,25 @@ async function loadDeployManifest(packId) {
     if (state.selectedEnv) params.set('env', state.selectedEnv);
     const cat = await api(`/api/packs/${encodeURIComponent(packId)}/compile-catalog?${params}`);
     deployModalState.manifest = catalogToManifest(cat);
-    // Default-select all deployable rows.
+    // Default-select: when a preset (from the Remediate plan) is present,
+    // select only deployable rows whose id matches a preset identity; fall
+    // back to all-deployable if nothing matched (safe — never deploys
+    // something the user didn't intend, never silently empties the form).
+    const preset = deployModalState.presetIdentities;
+    let presetMatched = 0;
     for (const row of deployModalState.manifest) {
-      if (row.deployable) deployModalState.selected.add(row.key);
+      if (!row.deployable) continue;
+      if (preset) {
+        if (preset.has(row.id)) { deployModalState.selected.add(row.key); presetMatched++; }
+      } else {
+        deployModalState.selected.add(row.key);
+      }
+    }
+    if (preset && presetMatched === 0) {
+      // No id overlap (keyspace mismatch) — fall back to all-deployable.
+      for (const row of deployModalState.manifest) {
+        if (row.deployable) deployModalState.selected.add(row.key);
+      }
     }
     renderDeployManifestTable();
   } catch (e) {
