@@ -10,50 +10,10 @@
 // Phase 7c adds the Atlas tab (6 SVG metaphors).
 
 import { render as renderAtlas, VARIANTS as ATLAS_VARIANTS, ATLAS_META } from './atlases.mjs';
-
-const LAYER_DEFS = [
-  { id: 'L1',  num: 'L1',  name: 'Contract'   },
-  { id: 'L2',  num: 'L2',  name: 'Telemetry'  },
-  { id: 'L2X', num: 'L2X', name: 'Extended'   },
-  { id: 'L3',  num: 'L3',  name: 'Insight'    },
-  { id: 'L4',  num: 'L4',  name: 'Action'     },
-  { id: 'L5',  num: 'L5',  name: 'Validation' },
-  { id: 'GOV', num: 'GOV', name: 'Governance' },
-];
-
-const L4_SUBGROUPS = [
-  { key: 'policy',   label: 'Policy' },
-  { key: 'alerting', label: 'Alerting' },
-  { key: 'healing',  label: 'Self-healing' },
-];
-
-// Discover resolution knob — global level-of-detail for the layers view.
-// Each stop maps to the existing per-layer `expand` flags so the default
-// (Overview) hides the inventory and surfaces only what produces/consumes
-// telemetry; raising resolution drills down top→bottom: few dashboards →
-// many panels → most metrics.
-const RESOLUTION_STOPS = [
-  { label: 'Overview', hint: 'exporters · scrape jobs · dashboards', expandL2: false, expandL3: false },
-  { label: 'Panels',   hint: '+ dashboard panels',                   expandL2: false, expandL3: true  },
-  { label: 'Metrics',  hint: '+ discovered metric inventory',        expandL2: true,  expandL3: true  },
-];
-
-// DOMAIN facet — a fixed four-bucket taxonomy that cuts ACROSS the layers,
-// answering "which slice of the stack does this artefact belong to?" The
-// layer (L1…GOV) says WHAT KIND of artefact it is; the domain says WHICH
-// PART OF THE SYSTEM it observes. Classification is deterministic (see
-// artefactDomain) and falls back to Application.
-const DOMAIN_DEFS = [
-  { id: 'infrastructure', label: 'Infrastructure' },
-  { id: 'platform',       label: 'Platform' },
-  { id: 'application',    label: 'Application' },
-  { id: 'ux',             label: 'User Experience' },
-];
-
-const CONFORMANCE_TAB = { id: 'CONF',    num: 'CONF', name: 'Conformance' };
-const COMPILE_TAB     = { id: 'COMPILE', num: 'BLD',  name: 'Compile' };
-const COMPARE_TAB     = { id: 'COMPARE', num: 'CMP',  name: 'Compare' };
-const ATLAS_TAB       = { id: 'ATLAS',   num: 'ATL',  name: 'Atlas' };
+import {
+  LAYER_DEFS, L4_SUBGROUPS, RESOLUTION_STOPS, DOMAIN_DEFS,
+  DISCO_SLAB_ACCENT, discoGradeLetter, discoGradeWord,
+} from './constants.mjs';
 
 const state = {
   // 'home' starts the studio empty; user picks Analyze (one pack) or
@@ -777,27 +737,9 @@ function renderMainView() {
 //
 // Every panel is wired to real pack data — meta, conformance,
 // symbol table, catalog. No fabricated trends or activity logs.
+// (Display vocabulary — DISCO_SLAB_ACCENT, discoGradeLetter/Word — now
+// lives in constants.mjs.)
 // ============================================================
-// Slab accents only — the layer NAMES come from the canonical
-// LAYER_DEFS (L1 Contract · L2 Telemetry · L2X Extended · L3 Insight ·
-// L4 Action · L5 Validation · GOV Governance). Never invent layer
-// semantics; the spec is the source of truth.
-const DISCO_SLAB_ACCENT = {
-  L1: '#3b82f6', L2: '#06b6d4', L2X: '#0ea5e9', L3: '#10b981',
-  L4: '#f59e0b', L5: '#a855f7', GOV: '#64748b',
-};
-
-function discoGradeLetter(pct) {
-  if (pct >= 97) return 'A+'; if (pct >= 93) return 'A'; if (pct >= 90) return 'A-';
-  if (pct >= 87) return 'B+'; if (pct >= 83) return 'B'; if (pct >= 80) return 'B-';
-  if (pct >= 77) return 'C+'; if (pct >= 73) return 'C'; if (pct >= 70) return 'C-';
-  if (pct >= 60) return 'D';  return 'F';
-}
-function discoGradeWord(pct) {
-  if (pct >= 90) return 'Excellent'; if (pct >= 80) return 'Good';
-  if (pct >= 70) return 'Fair';      if (pct >= 60) return 'Weak';
-  return 'Failing';
-}
 
 function renderDiscoverDashboard(view) {
   view.innerHTML = '';
