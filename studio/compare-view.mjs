@@ -12,7 +12,8 @@ import { api } from './api.mjs';
 import { escapeHtml, toast } from './util.mjs';
 import { LAYER_DEFS, L4_SUBGROUPS } from './constants.mjs';
 import { openDrawer } from './drawer.mjs';
-import { cardKey, defaultEnvFor, loadPackB, openDeployModal, renderMainView, renderTabs, refresh } from './app.mjs';
+import { defaultEnvFor, loadPackB, openDeployModal, renderMainView, renderTabs, refresh } from './app.mjs';
+import { cardKey } from './layers-view.mjs';
 
 // ---------- compare view ----------
 

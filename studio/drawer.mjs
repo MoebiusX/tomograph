@@ -9,7 +9,8 @@
 import { state, $, $$ } from './state.mjs';
 import { L4_SUBGROUPS } from './constants.mjs';
 import { escapeHtml, toast } from './util.mjs';
-import { cardKey, renderMainView, renderTabs } from './app.mjs';
+import { renderMainView, renderTabs } from './app.mjs';
+import { cardKey } from './layers-view.mjs';
 
 // ---------- drawer ----------
 
