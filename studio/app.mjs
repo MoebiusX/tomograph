@@ -11,7 +11,7 @@
 
 import { render as renderAtlas, VARIANTS as ATLAS_VARIANTS, ATLAS_META } from './atlases.mjs';
 import {
-  LAYER_DEFS, L4_SUBGROUPS, RESOLUTION_STOPS, DOMAIN_DEFS,
+  LAYER_DEFS, L4_SUBGROUPS, DOMAIN_DEFS,
   DISCO_SLAB_ACCENT, discoGradeLetter, discoGradeWord,
 } from './constants.mjs';
 import { state, $, $$, persistence } from './state.mjs';
@@ -129,15 +129,10 @@ async function rehydrateFromPersistence() {
       resolved:   Array.isArray(saved.tracePrefs.resolved)   ? saved.tracePrefs.resolved   : [],
     };
   }
+  // Per-section Expand toggles (L2 metric inventory; L3 panels + queries).
   if (typeof saved.expandL2 === 'boolean') state.expandL2 = saved.expandL2;
-  if (typeof saved.expandL3 === 'boolean') state.expandL3 = saved.expandL3;
-  // Resolution knob — restore it, or derive from the legacy expand flags
-  // for sessions saved before the knob existed (back-compat).
-  if (typeof saved.resolution === 'number') {
-    applyResolution(saved.resolution);
-  } else if (typeof saved.expandL2 === 'boolean' || typeof saved.expandL3 === 'boolean') {
-    applyResolution(state.expandL2 ? 2 : (state.expandL3 ? 1 : 0));
-  }
+  if (typeof saved.expandL3Panels === 'boolean') state.expandL3Panels = saved.expandL3Panels;
+  if (typeof saved.expandL3Queries === 'boolean') state.expandL3Queries = saved.expandL3Queries;
   if (typeof saved.layersSearch === 'string') state.layersSearch = saved.layersSearch;
   if (typeof saved.layersDomain === 'string') state.layersDomain = saved.layersDomain;
 
@@ -879,15 +874,6 @@ function renderLayersView(view) {
   renderLayersBody(body);
 }
 
-// Apply a resolution stop: set the knob position and derive the per-layer
-// expand flags from it. Clamped so out-of-range persisted values are safe.
-function applyResolution(idx) {
-  const i = Math.max(0, Math.min(RESOLUTION_STOPS.length - 1, idx | 0));
-  state.resolution = i;
-  state.expandL2 = RESOLUTION_STOPS[i].expandL2;
-  state.expandL3 = RESOLUTION_STOPS[i].expandL3;
-}
-
 // Domain classifier — maps an artefact (plus the layer it lives on) into one
 // of the four DOMAIN_DEFS buckets. Layer is the strongest signal; tags refine
 // it. Deterministic, with Application as the catch-all.
@@ -967,31 +953,9 @@ function renderLayersToolbar(rerender) {
   const controls = document.createElement('div');
   controls.className = 'layers-controls';
 
-  // Resolution knob
-  const res = state.resolution ?? 0;
-  const stop = RESOLUTION_STOPS[res] || RESOLUTION_STOPS[0];
-  const knob = document.createElement('div');
-  knob.className = 'res-knob';
-  knob.innerHTML = `
-    <span class="res-knob-key">RESOLUTION</span>
-    <input type="range" class="res-knob-range" min="0" max="${RESOLUTION_STOPS.length - 1}"
-           step="1" value="${res}" aria-label="Detail resolution">
-    <span class="res-knob-cap"><strong class="res-knob-label">${escapeHtml(stop.label)}</strong> <span class="res-knob-hint">${escapeHtml(stop.hint)}</span></span>
-  `;
-  const range = knob.querySelector('.res-knob-range');
-  const capLabel = knob.querySelector('.res-knob-label');
-  const capHint = knob.querySelector('.res-knob-hint');
-  // Live caption while dragging; commit (re-render sections) on release.
-  range.addEventListener('input', () => {
-    const s = RESOLUTION_STOPS[+range.value] || RESOLUTION_STOPS[0];
-    capLabel.textContent = s.label;
-    capHint.textContent = s.hint;
-  });
-  range.addEventListener('change', () => {
-    applyResolution(+range.value);
-    rerender();
-  });
-  controls.appendChild(knob);
+  // Detail-level is controlled per-section now (the Expand toggles in each
+  // L2 / L3 section header), not by a global knob — so the controls row
+  // carries just the DOMAIN facet and search.
 
   // DOMAIN filter — fixed four-bucket taxonomy. Count artefacts per domain
   // and only offer the dropdown when 2+ domains are actually present.
@@ -1062,29 +1026,56 @@ function renderLayersBody(body) {
   }
 }
 
+// Detail-level artefacts a section hides by default behind its own Expand
+// toggle(s) — the prototype's per-section model. L2 hides the discovered
+// metric inventory behind one toggle (so only producers/consumers — exporters,
+// scrape jobs — show by default). L3 hides dashboard panels and queries behind
+// their own toggles, leaving just the dashboards. Classified by tag so no
+// adapter change is needed.
+function expandBucketsFor(def, filtered) {
+  if (def.id === 'L2') {
+    const metrics = filtered.filter(a => a.expand);
+    return metrics.length
+      ? [{ key: 'expandL2', label: 'Metrics', items: metrics,
+           title: `Toggle the metric inventory — ${metrics.length} discovered metric${metrics.length === 1 ? '' : 's'} (vs the exporters / scrape jobs that produce them)` }]
+      : [];
+  }
+  if (def.id === 'L3') {
+    const panels  = filtered.filter(a => a.tags?.includes('panel'));
+    const queries = filtered.filter(a => a.tags?.includes('recording') || a.tags?.includes('view') || a.tags?.includes('derived'));
+    const out = [];
+    if (panels.length)  out.push({ key: 'expandL3Panels',  label: 'Panels',  items: panels,
+      title: `Toggle dashboard panels — ${panels.length} panel binding${panels.length === 1 ? '' : 's'}` });
+    if (queries.length) out.push({ key: 'expandL3Queries', label: 'Queries', items: queries,
+      title: `Toggle queries — ${queries.length} recording rule${queries.length === 1 ? '' : 's'} / derived view${queries.length === 1 ? '' : 's'}` });
+    return out;
+  }
+  return [];
+}
+
 function renderSection(def, items, opts = {}) {
   const section = document.createElement('section');
   section.className = 'section';
   section.dataset.layer = def.id;
 
-  // Apply the Discover content filters (DOMAIN + search) first so counts
-  // and expand logic operate on the filtered set.
+  // Apply the Discover content filters (DOMAIN + search) first so counts and
+  // the Expand toggles operate on the filtered set.
   const filtered = items.filter(a => passesLayersFilter(a, def.id));
   const searching = !!(state.layersSearch || '').trim();
 
-  // L2 and L3 carry "expand-level" artefacts (metric inventory, dashboard
-  // panels) gated by the global resolution knob (state.expandL2/expandL3).
-  // An active search overrides the knob so matches are never hidden.
-  const expandableLayer = (def.id === 'L2' || def.id === 'L3');
-  const expandKey = def.id === 'L2' ? 'expandL2' : (def.id === 'L3' ? 'expandL3' : null);
-  const expandOn = expandKey ? !!state[expandKey] : false;
-  const expandItems = filtered.filter(a => a.expand);
-  const baseItems   = filtered.filter(a => !a.expand);
-  const visible = (expandableLayer && !expandOn && !searching) ? baseItems : filtered;
+  const buckets = expandBucketsFor(def, filtered);
+  // Hide items whose bucket toggle is off — unless a search is active, which
+  // forces everything open so matches are never hidden.
+  const hidden = new Set();
+  if (!searching) {
+    for (const b of buckets) if (!state[b.key]) for (const a of b.items) hidden.add(a);
+  }
+  const visible = filtered.filter(a => !hidden.has(a));
+  const expandTotal = buckets.reduce((n, b) => n + b.items.length, 0);
 
   const head = document.createElement('div');
   head.className = 'section-head';
-  const countLabel = expandableLayer && expandItems.length
+  const countLabel = expandTotal
     ? `${visible.length} of ${filtered.length} artefact${filtered.length === 1 ? '' : 's'}`
     : `${filtered.length} artefact${filtered.length === 1 ? '' : 's'}`;
   head.innerHTML = `
@@ -1092,6 +1083,19 @@ function renderSection(def, items, opts = {}) {
     <span class="section-name">${escapeHtml(opts.subtitle || def.name)}</span>
     <span class="section-count">${countLabel}</span>
   `;
+  // Per-bucket Expand toggles. Suppressed while searching (everything's open).
+  if (!searching) {
+    for (const b of buckets) {
+      const on = !!state[b.key];
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'section-expand-toggle' + (on ? ' is-on' : '');
+      toggle.title = b.title;
+      toggle.innerHTML = `<span class="section-expand-glyph" aria-hidden="true">${on ? '⊟' : '⊞'}</span> ${on ? 'Hide' : 'Expand'} ${escapeHtml(b.label)} <span class="section-expand-count">${b.items.length}</span>`;
+      toggle.onclick = () => { state[b.key] = !state[b.key]; persistence.schedule(); renderMainView(); };
+      head.appendChild(toggle);
+    }
+  }
   section.appendChild(head);
 
   if (!visible.length) {
@@ -1099,9 +1103,7 @@ function renderSection(def, items, opts = {}) {
     empty.className = 'empty';
     empty.textContent = (searching || (state.layersDomain && state.layersDomain !== 'all'))
       ? 'no artefacts match the current filter'
-      : (expandableLayer && expandItems.length
-          ? 'collapsed — raise resolution to reveal'
-          : 'no artefacts declared in this section');
+      : (expandTotal ? 'collapsed — click Expand to reveal' : 'no artefacts declared in this section');
     section.appendChild(empty);
     return section;
   }

@@ -42,20 +42,14 @@ export const state = {
   // are hidden from their bucket; resolved findings render as resolved.
   tracePrefs: { suppressed: [], resolved: [] },
   traceOpen: { aligned: false, declaredNotVerified: true, verifiedNotDeclared: true, stale: true },
-  // Per-layer Expand toggle — flips between high-level artefacts (default)
-  // and full inventory. L2 expand reveals metric_inventory entries (METRIC-NN)
-  // discovered from the live MCP; L3 expand reveals per-dashboard PANEL-NN
-  // bindings. Persisted so the user's choice survives refresh.
+  // Per-section Expand toggles — each L2/L3 section hides its detail-level
+  // artefacts by default and reveals them on demand. L2: metric inventory
+  // (METRIC-NN) vs the exporters / scrape jobs that produce it. L3: dashboard
+  // panels (PANEL-NN) and queries (recording rules / derived views) vs the
+  // dashboards. Persisted so the user's choice survives refresh.
   expandL2: false,
-  expandL3: false,
-  // Discover resolution knob — a single global level-of-detail control for
-  // the layers view that replaces the old per-section click-to-expand.
-  // 0 = Overview (only what produces/consumes telemetry: exporters, scrape
-  // jobs, backends, dashboards), 1 = + dashboard panels, 2 = + discovered
-  // metric inventory. We hide complexity by default and let the user drill
-  // down top→bottom (few dashboards → many panels → most metrics). Drives
-  // expandL2/expandL3 above.
-  resolution: 0,
+  expandL3Panels: false,
+  expandL3Queries: false,
   // Discover content filters (only active on view='layers').
   layersSearch: '',            // free-text over card id/title/desc/tags/tool
   layersDomain: 'all',         // facet over artefact tool/system
@@ -124,8 +118,8 @@ const PERSIST_FIELDS = [
   'compileGroup', 'compileFlavor', 'compileArtifact',
   'compileGroupB', 'compileFlavorB', 'compileArtifactB',
   'tracePrefs',
-  'expandL2', 'expandL3',
-  'resolution', 'layersSearch', 'layersDomain',
+  'expandL2', 'expandL3Panels', 'expandL3Queries',
+  'layersSearch', 'layersDomain',
 ];
 export const persistence = {
   _suspended: true,  // boot-phase guard — flipped to false once rehydrate finishes

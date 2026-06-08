@@ -23,17 +23,6 @@ export const L4_SUBGROUPS = [
   { key: 'healing',  label: 'Self-healing' },
 ];
 
-// Discover resolution knob — global level-of-detail for the layers view.
-// Each stop maps to the existing per-layer `expand` flags so the default
-// (Overview) hides the inventory and surfaces only what produces/consumes
-// telemetry; raising resolution drills down top→bottom: few dashboards →
-// many panels → most metrics.
-export const RESOLUTION_STOPS = [
-  { label: 'Overview', hint: 'exporters · scrape jobs · dashboards', expandL2: false, expandL3: false },
-  { label: 'Panels',   hint: '+ dashboard panels',                   expandL2: false, expandL3: true  },
-  { label: 'Metrics',  hint: '+ discovered metric inventory',        expandL2: true,  expandL3: true  },
-];
-
 // DOMAIN facet — a fixed four-bucket taxonomy that cuts ACROSS the layers,
 // answering "which slice of the stack does this artefact belong to?" The
 // layer (L1…GOV) says WHAT KIND of artefact it is; the domain says WHICH
