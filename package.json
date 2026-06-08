@@ -7,7 +7,8 @@
     "node": ">=18"
   },
   "bin": {
-    "tomograph": "server/index.mjs"
+    "packc": "tools/cli.mjs",
+    "tomograph": "tools/cli.mjs"
   },
   "files": [
     "server/",
@@ -44,6 +45,7 @@
     "lint:crawler":    "node --check tools/crawl-repo.mjs && node --check tools/lib/crawler.mjs",
     "lint:server":     "node --check server/index.mjs",
     "lint:studio":     "node --check studio/app.mjs",
+    "lint:cli":        "node --check tools/cli.mjs",
     "adapt":           "node tools/adapt-spec-pack.mjs",
     "crawl":           "node tools/crawl-repo.mjs",
     "test:adapt":      "node tools/test-adapt.mjs",
