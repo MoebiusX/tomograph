@@ -169,6 +169,21 @@ npm run crawl -- ./payments-service 2>summary.txt > payments.pack.yaml
 npm run validate -- payments.pack.yaml      # sanity check the draft
 ```
 
+The draft loads straight into the studio. Below, a real service repo
+(`krystalinex-core`) was x-rayed — its Prometheus rules, Alertmanager configs,
+OTel Collector pipelines, and Grafana dashboards became a tier-2 draft pack
+(110 L1 contracts, 93 L3 insights, 63 L4 actions) rendered across the layers:
+
+![Discover — the x-rayed repo rendered as a layered ObservabilityPack](docs/img/xray-discover.png)
+
+The real payoff is **DIAGNOSE**: load the live system (drafted from its MCP
+server) as Pack B and the studio scores drift between what the repo *declares*
+and what's *actually running*. Here the static config drifts hard from the live
+platform — only 2% aligned, 256 declared artefacts unconfirmed live (drift
+risk), and 245 live signals never declared (shadow signals):
+
+![Diagnose — drift between the declared pack and the live MCP system](docs/img/xray-diagnose-drift.png)
+
 ### Path B — interrogate a live MCP server
 
 ```bash
