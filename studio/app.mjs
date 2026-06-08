@@ -361,15 +361,15 @@ function renderPackSelect() {
 function renderPackBSelect() {
   const sel = $('#pack-b-select');
   if (!sel) return;
-  // Merge catalog + cached examples + catalogue reference packs, dedup by
-  // id, drop the active Pack A. The reference packs power the benchmark /
-  // reference component analysis (Advanced → References) by loading as Pack B.
+  // Merge catalog + cached examples, dedup by id, drop the active Pack A.
+  // Catalogue reference packs are intentionally NOT offered here: comparing
+  // a single product's reference pack against a whole service's posture is
+  // an apples-to-oranges comparison. They live under Advanced → References.
   const cat = state.catalog || [];
   const ex  = state._examplesCache || [];
-  const refs = state._referencesCache || [];
   const seen = new Set();
   const options = [];
-  for (const p of [...cat, ...ex, ...refs]) {
+  for (const p of [...cat, ...ex]) {
     if (!p?.id || !p.ok) continue;
     if (p.id === state.selectedPackId) continue;
     if (seen.has(p.id)) continue;
