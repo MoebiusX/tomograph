@@ -3283,12 +3283,40 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
     return names.length ? names.join(' · ') + more : '—';
   };
 
-  const tile = (n, label, hint, cls) => `
-    <div class="drift-tile ${cls}">
-      <div class="drift-tile-n">${n}</div>
-      <div class="drift-tile-label">${escapeHtml(label)}</div>
-      <div class="drift-tile-hint">${escapeHtml(hint)}</div>
-    </div>`;
+  // Drift makeup as two donuts: how much aligns (donut 1), then what the
+  // non-aligned remainder is made of (donut 2). A legend carries the counts
+  // so labels never crowd the rings. Each segment is a dash on a full
+  // circle, accumulating clockwise from 12 o'clock.
+  const donut = (segs, centerText) => {
+    const r = 40, cx = 52, cy = 52, sw = 18, C = 2 * Math.PI * r;
+    const total = segs.reduce((s, x) => s + x.value, 0) || 1;
+    let acc = 0;
+    const arcs = segs.filter(s => s.value > 0).map(s => {
+      const len = (s.value / total) * C;
+      const a = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${s.color}" stroke-width="${sw}" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-acc).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+      acc += len;
+      return a;
+    }).join('');
+    const center = centerText ? `<text x="${cx}" y="${cy}" class="drift-donut-pct" text-anchor="middle" dominant-baseline="central">${centerText}</text>` : '';
+    return `<svg viewBox="0 0 104 104" class="drift-donut-svg" aria-hidden="true"><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--line)" stroke-width="${sw}"/>${arcs}${center}</svg>`;
+  };
+
+  const C_ALIGNED = 'var(--ok, #16a34a)';
+  const C_DRIFTED = 'rgb(150, 90, 200)';
+  const C_DECL    = 'rgb(200, 70, 40)';
+  const C_SHADOW  = 'rgb(180, 120, 0)';
+  const notAligned = totDrifted + totA + totB;
+  const legendHtml = [
+    { n: totAligned, color: C_ALIGNED, label: 'Aligned',    hint: 'shape matches live' },
+    { n: totDrifted, color: C_DRIFTED, label: 'Drifted',    hint: 'field values diverge' },
+    { n: totA,       color: C_DECL,    label: frame.aLabel, hint: frame.aHint },
+    { n: totB,       color: C_SHADOW,  label: frame.bLabel, hint: frame.bHint },
+  ].map(l => `<li class="drift-legend-item">
+      <span class="drift-legend-sw" style="background:${l.color}"></span>
+      <span class="drift-legend-n">${l.n}</span>
+      <span class="drift-legend-label">${escapeHtml(l.label)}</span>
+      <span class="drift-legend-hint">${escapeHtml(l.hint)}</span>
+    </li>`).join('');
 
   const layerRowsHtml = rows.map(r => `
     <tr class="drift-row">
@@ -3321,11 +3349,17 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
       <span class="benchmark-block-eyebrow">${frame.eyebrow}</span>
       ${frame.lede}${lensNote}
     </div>
-    <div class="drift-tiles">
-      ${tile(alignedPct + '%', 'Aligned', `${totAligned} matched · object shapes agree`, 'is-aligned')}
-      ${tile(totDrifted, 'Drifted', 'same artefact · field values diverge', 'is-drifted')}
-      ${tile(totA, frame.aLabel, frame.aHint, frame.aClass)}
-      ${tile(totB, frame.bLabel, frame.bHint, frame.bClass)}
+    <div class="drift-charts">
+      <figure class="drift-chart">
+        ${donut([{ value: totAligned, color: C_ALIGNED }, { value: notAligned, color: 'var(--ink-4)' }], alignedPct + '%')}
+        <figcaption>aligned</figcaption>
+      </figure>
+      <span class="drift-charts-arrow" aria-hidden="true">→</span>
+      <figure class="drift-chart">
+        ${donut([{ value: totDrifted, color: C_DRIFTED }, { value: totA, color: C_DECL }, { value: totB, color: C_SHADOW }], (100 - alignedPct) + '%')}
+        <figcaption>the rest</figcaption>
+      </figure>
+      <ul class="drift-legend">${legendHtml}</ul>
     </div>
     <table class="drift-table">
       <thead>
