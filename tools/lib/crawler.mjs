@@ -586,7 +586,7 @@ function extractConfigMapData(content) {
       if (trimmed !== '' && indent <= dataIndent) {
         dataIndent = -1;   // left the data block
       } else {
-        const keyM = /^(\s*)([\w][\w.\-]*):\s*\|[-+0-9]*\s*$/.exec(line);
+        const keyM = /^(\s*)([\w][\w.-]*):\s*\|[-+0-9]*\s*$/.exec(line);
         if (keyM && keyM[1].length > dataIndent) {
           current = { key: keyM[2], indent: keyM[1].length, body: [] };
           continue;

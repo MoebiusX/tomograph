@@ -4,6 +4,10 @@ node_modules/
 .env
 .env.*
 
+# Coverage output (c8 / nyc).
+coverage/
+.nyc_output/
+
 # Ad-hoc test/debug dumps created during fetcher + adapter probing.
 # These are scratch artefacts, not source of truth.
 .tmp-*

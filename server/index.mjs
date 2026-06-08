@@ -1163,7 +1163,7 @@ function parseGithubUrl(input) {
   const bare = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/.exec(cleaned);
   if (bare) return { owner: bare[1], repo: bare[2] };
   // Full URL form
-  const url = /github\.com[/:]([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)(?:\/tree\/([A-Za-z0-9._\/-]+))?/.exec(cleaned);
+  const url = /github\.com[/:]([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)(?:\/tree\/([A-Za-z0-9._/-]+))?/.exec(cleaned);
   if (url) return { owner: url[1], repo: url[2], ref: url[3] };
   return null;
 }

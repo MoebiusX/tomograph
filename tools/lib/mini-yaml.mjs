@@ -418,7 +418,7 @@ function needsQuoting(s) {
   // Numeric-looking
   if (/^[-+]?(\d+(\.\d+)?([eE][-+]?\d+)?|\.\d+([eE][-+]?\d+)?)$/.test(s)) return true;
   // Leading sigils / whitespace / structural chars
-  if (/^[\s\-?:,\[\]{}#&*!|>'"%@`]/.test(s)) return true;
+  if (/^[\s\-?:,[\]{}#&*!|>'"%@`]/.test(s)) return true;
   // Trailing whitespace would lose data on parse
   if (/[\s]$/.test(s)) return true;
   // Embedded ": " (mapping ambiguity) or " #" (comment ambiguity)
