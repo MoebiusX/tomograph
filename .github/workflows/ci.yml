@@ -47,6 +47,9 @@ jobs:
       - name: Lint CLI dispatcher (node --check)
         run: npm run lint:cli
 
+      - name: Lint ZIP writer (node --check)
+        run: npm run lint:zip
+
       - name: ESLint (correctness rules; warnings allowed, errors fail)
         run: npm run lint
 
