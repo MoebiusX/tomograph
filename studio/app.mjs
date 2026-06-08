@@ -38,6 +38,18 @@ const RESOLUTION_STOPS = [
   { label: 'Metrics',  hint: '+ discovered metric inventory',        expandL2: true,  expandL3: true  },
 ];
 
+// DOMAIN facet — a fixed four-bucket taxonomy that cuts ACROSS the layers,
+// answering "which slice of the stack does this artefact belong to?" The
+// layer (L1…GOV) says WHAT KIND of artefact it is; the domain says WHICH
+// PART OF THE SYSTEM it observes. Classification is deterministic (see
+// artefactDomain) and falls back to Application.
+const DOMAIN_DEFS = [
+  { id: 'infrastructure', label: 'Infrastructure' },
+  { id: 'platform',       label: 'Platform' },
+  { id: 'application',    label: 'Application' },
+  { id: 'ux',             label: 'User Experience' },
+];
+
 const CONFORMANCE_TAB = { id: 'CONF',    num: 'CONF', name: 'Conformance' };
 const COMPILE_TAB     = { id: 'COMPILE', num: 'BLD',  name: 'Compile' };
 const COMPARE_TAB     = { id: 'COMPARE', num: 'CMP',  name: 'Compare' };
@@ -1077,32 +1089,58 @@ function applyResolution(idx) {
   state.expandL3 = RESOLUTION_STOPS[i].expandL3;
 }
 
-// Domain facet for an artefact — the tool/system that owns it. Used by the
-// Discover DOMAIN filter. Falls back to a dash when unknown.
-function artefactDomain(a) {
-  return (a.tool || '').trim() || '—';
+// Domain classifier — maps an artefact (plus the layer it lives on) into one
+// of the four DOMAIN_DEFS buckets. Layer is the strongest signal; tags refine
+// it. Deterministic, with Application as the catch-all.
+function artefactDomain(a, layerId) {
+  const tags = (a.tags || []).map(t => String(t).toLowerCase());
+  const has = (...t) => t.some(x => tags.includes(x));
+  // User Experience — synthetic / canary / blackbox / RUM probes that stand
+  // in for a real user. L5 Validation is the home layer for these.
+  if (layerId === 'L5' || has('synthetic', 'canary', 'blackbox', 'probe', 'rum', 'e2e')) {
+    return 'ux';
+  }
+  // Infrastructure — the telemetry plumbing & storage that physically carries
+  // signal: backends, exporters, receivers, processors, scrape jobs, the
+  // discovered metric inventory. L2 / L2X are the home layers.
+  if (layerId === 'L2' || layerId === 'L2X' ||
+      has('backend', 'exporter', 'receiver', 'processor', 'storage',
+          'metric', 'collector', 'scrape')) {
+    return 'infrastructure';
+  }
+  // Platform — cross-cutting operability: alerting, policy, recording rules,
+  // pipelines, self-healing, governance. L4 Action & GOV are the home layers.
+  if (layerId === 'L4' || layerId === 'GOV' ||
+      has('alert', 'burn-rate', 'policy', 'recording', 'pipeline',
+          'route', 'governance', 'healing')) {
+    return 'platform';
+  }
+  // Application — the service's own contract & insight: SLIs, SLOs, dashboards,
+  // panels. The catch-all (L1 / L3).
+  return 'application';
 }
 
-// Every artefact across the loaded pack's layers (L4 is grouped). Used to
-// populate the DOMAIN dropdown.
-function allLayerArtefacts() {
+// Every artefact across the loaded pack's layers, tagged with its layer id
+// (L4 is grouped). Used to populate the DOMAIN filter and apply it.
+function layerArtefactsWithLayer() {
   const out = [];
   const layers = state.pack?.layers || {};
   for (const def of LAYER_DEFS) {
     if (def.id === 'L4') {
       const l4 = layers.L4 || {};
-      for (const sg of L4_SUBGROUPS) for (const a of (l4[sg.key] || [])) out.push(a);
+      for (const sg of L4_SUBGROUPS) for (const a of (l4[sg.key] || [])) out.push({ a, layerId: 'L4' });
     } else {
-      for (const a of (layers[def.id] || [])) out.push(a);
+      for (const a of (layers[def.id] || [])) out.push({ a, layerId: def.id });
     }
   }
   return out;
 }
 
-// Discover content filter predicate — DOMAIN dropdown + search box.
-function passesLayersFilter(a) {
+// Discover content filter predicate — DOMAIN dropdown + search box. layerId
+// lets the domain classifier use the artefact's home layer.
+function passesLayersFilter(a, layerId) {
   const dom = state.layersDomain || 'all';
-  if (dom !== 'all' && artefactDomain(a) !== dom) return false;
+  if (dom !== 'all' && artefactDomain(a, layerId) !== dom) return false;
   const q = (state.layersSearch || '').trim().toLowerCase();
   if (q) {
     const hay = [a.id, a.title, a.desc, a.tool, ...(a.tags || [])]
@@ -1119,7 +1157,18 @@ function renderLayersToolbar(rerender) {
   const wrap = document.createElement('div');
   wrap.className = 'layers-toolbar';
 
-  // --- Resolution knob ---
+  // --- Layer chips (All · L1 · L2 · … · GOV) ---
+  // Primitive but indispensable on a 1500-artefact production pack: one
+  // click jumps the whole view to a single layer. Clicking a chip mutates
+  // state.layerFilter then re-renders the entire Discover view (renderTabs +
+  // renderMainView) so the active chip + sections update together.
+  wrap.appendChild(renderLayerFilterChips());
+
+  // --- Controls row: resolution knob · DOMAIN · search ---
+  const controls = document.createElement('div');
+  controls.className = 'layers-controls';
+
+  // Resolution knob
   const res = state.resolution ?? 0;
   const stop = RESOLUTION_STOPS[res] || RESOLUTION_STOPS[0];
   const knob = document.createElement('div');
@@ -1143,12 +1192,22 @@ function renderLayersToolbar(rerender) {
     applyResolution(+range.value);
     rerender();
   });
-  wrap.appendChild(knob);
+  controls.appendChild(knob);
 
-  // --- DOMAIN filter (only when there's something to choose between) ---
-  const domains = [...new Set(allLayerArtefacts().map(artefactDomain))]
-    .filter(d => d && d !== '—').sort();
-  if (domains.length >= 2) {
+  // DOMAIN filter — fixed four-bucket taxonomy. Count artefacts per domain
+  // and only offer the dropdown when 2+ domains are actually present.
+  const domCounts = new Map();
+  for (const { a, layerId } of layerArtefactsWithLayer()) {
+    const d = artefactDomain(a, layerId);
+    domCounts.set(d, (domCounts.get(d) || 0) + 1);
+  }
+  const domOptions = DOMAIN_DEFS.filter(d => domCounts.has(d.id));
+  if (domOptions.length >= 2) {
+    // A previously-selected domain that no longer exists (pack switch) falls
+    // back to 'all' so we never filter everything out invisibly.
+    if (state.layersDomain !== 'all' && !domCounts.has(state.layersDomain)) {
+      state.layersDomain = 'all';
+    }
     const cur = state.layersDomain || 'all';
     const dwrap = document.createElement('label');
     dwrap.className = 'layers-domain';
@@ -1156,14 +1215,14 @@ function renderLayersToolbar(rerender) {
     const sel = document.createElement('select');
     sel.className = 'layers-domain-select';
     sel.innerHTML = `<option value="all">all</option>`
-      + domains.map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('');
+      + domOptions.map(d => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.label)} (${domCounts.get(d.id)})</option>`).join('');
     sel.value = cur;
     sel.onchange = () => { state.layersDomain = sel.value; rerender(); };
     dwrap.appendChild(sel);
-    wrap.appendChild(dwrap);
+    controls.appendChild(dwrap);
   }
 
-  // --- Search ---
+  // Search
   const swrap = document.createElement('div');
   swrap.className = 'layers-search';
   const sin = document.createElement('input');
@@ -1174,8 +1233,9 @@ function renderLayersToolbar(rerender) {
   sin.value = state.layersSearch || '';
   sin.addEventListener('input', () => { state.layersSearch = sin.value; rerender(); });
   swrap.appendChild(sin);
-  wrap.appendChild(swrap);
+  controls.appendChild(swrap);
 
+  wrap.appendChild(controls);
   return wrap;
 }
 
@@ -1210,7 +1270,7 @@ function renderSection(def, items, opts = {}) {
 
   // Apply the Discover content filters (DOMAIN + search) first so counts
   // and expand logic operate on the filtered set.
-  const filtered = items.filter(passesLayersFilter);
+  const filtered = items.filter(a => passesLayersFilter(a, def.id));
   const searching = !!(state.layersSearch || '').trim();
 
   // L2 and L3 carry "expand-level" artefacts (metric inventory, dashboard
@@ -1261,7 +1321,7 @@ function renderLayer4(view) {
   // Count L4 after applying the Discover content filters so the header
   // matches the (filtered) subgroups below it.
   const l4Count = L4_SUBGROUPS.reduce(
-    (n, sg) => n + (state.pack.layers.L4?.[sg.key] || []).filter(passesLayersFilter).length, 0);
+    (n, sg) => n + (state.pack.layers.L4?.[sg.key] || []).filter(a => passesLayersFilter(a, 'L4')).length, 0);
   head.innerHTML = `
     <div class="section-head">
       <span class="section-num">L4</span>
@@ -1272,7 +1332,7 @@ function renderLayer4(view) {
   view.appendChild(head);
 
   for (const sg of L4_SUBGROUPS) {
-    const items = (state.pack.layers.L4?.[sg.key] || []).filter(passesLayersFilter);
+    const items = (state.pack.layers.L4?.[sg.key] || []).filter(a => passesLayersFilter(a, 'L4'));
     const wrapper = document.createElement('div');
     wrapper.className = 'subgroup';
     const h = document.createElement('h4');

@@ -1237,6 +1237,14 @@ a:hover { color: var(--ink); }
   background: var(--card);
   border: 1px solid var(--line-2);
 }
+/* Two stacked rows: layer chips on top, level-of-detail + filters below. */
+.layers-toolbar { flex-direction: column; align-items: stretch; gap: 10px; }
+.layers-toolbar .layer-chips { margin: 0; padding: 0; background: transparent; flex-wrap: wrap; }
+.layers-controls {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 18px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-2);
+}
 .res-knob { display: flex; align-items: center; gap: 10px; }
 .res-knob-key, .layers-filter-key {
   font: 700 10px/1 var(--mono);
