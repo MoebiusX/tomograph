@@ -5,10 +5,13 @@
 // a future restoration) call it directly.
 //
 // MATCHING
-//   Two artefacts "are the same" when they share a canonical key. The key
-//   is derived from the canonical content (not from the positional ID the
-//   adapter assigns, which is pack-local). `keyOf(artefact)` is the
-//   single source of truth — extend it as the adapter grows.
+//   Two artefacts "are the same" when they share a behavioural identity —
+//   NOT a name. The behavioural model (tools/lib/artefact-model.mjs) builds a
+//   typed object per artefact family: an `identity` derived from what the
+//   artefact DOES (a backend's product+signal, a metric's series name, a
+//   rule's output series, a panel's binding target) and a `behavior` that
+//   captures its full deployed contract. `identityKeyOf` pairs A↔B by
+//   behaviour; `behaviorEqual` / `deltasOf` decide aligned vs drifted.
 //
 // SET OPS
 //   For each layer we produce three buckets:
@@ -23,136 +26,30 @@
 //     A − B  = onlyInA
 //     B − A  = onlyInB
 
+import {
+  identityKeyOf,
+  behaviorOf,
+  deltasOf,
+} from './artefact-model.mjs';
+
 const LAYER_ORDER = ['L1', 'L2', 'L2X', 'L3', 'L4', 'L5', 'GOV'];
 
-// Per-family key derivation. For artefacts the adapter already gave a
-// `defines` symbol (SLIs, SLOs, backends, dashboards, derived views) we
-// reuse it. For the rest we synthesise from the canonical spec fields
-// the adapter preserved on `artefact.spec`.
+// Behavioural identity key for pairing A↔B. Delegates to the artefact model so
+// matching is driven by what an artefact does, never by its name or position.
+// Exported under the historical `keyOf` name for backward compatibility.
 export function keyOf(artefact) {
-  if (!artefact) return null;
-  if (artefact.defines) return artefact.defines;
-
-  const id = artefact.id || '';
-  const s = artefact.spec || {};
-
-  if (id === 'OTEL-01')          return 'otel';
-  if (id.startsWith('PIP-RCV-')) return `pipeline.receiver:${s.name || '_'}`;
-  if (id.startsWith('PIP-PRC-')) return `pipeline.processor:${s.name || '_'}`;
-  if (id === 'PIP-EXP-MET')      return `pipeline.exporter.metrics:${s.kind || '_'}`;
-  if (id === 'PIP-EXP-LOG')      return `pipeline.exporter.logs:${s.kind || '_'}`;
-  if (id === 'PIP-EXP-TRC')      return `pipeline.exporter.traces:${s.kind || '_'}`;
-  if (id === 'STO-MET-01')       return `storage.metrics:${s.backend || '_'}`;
-  if (id === 'STO-LOG-01')       return `storage.logs:${s.backend || '_'}`;
-  if (id === 'STO-TRC-01')       return `storage.traces:${s.backend || '_'}`;
-  if (id === 'PROF-01')          return `profiling:${s.product || '_'}`;
-  if (id === 'NET-01')           return `network:${s.product || '_'}`;
-  if (id === 'POE-01')           return `policy_engine:${s.product || '_'}`;
-  if (id.startsWith('MESH-'))    return `mesh:${s.product || '_'}:${s.role || '_'}`;
-  if (id.startsWith('COL-'))     return `collection:${s.product || '_'}:${s.role || '_'}`;
-  if (id.startsWith('QRY-'))     return `recording_rule:${s.name || '_'}`;
-  if (id.startsWith('POL-'))     return `policy.burn_rate:${stripRef(s.slo)}`;
-  if (id.startsWith('FCST-'))    return `policy.forecast:${stripRef(s.slo)}`;
-  if (id.startsWith('ALR-'))     return `alerting.route:${s.severity || '_'}`;
-  if (id.startsWith('HEAL-'))    return `remediation:${s.trigger || '_'}`;
-  if (id === 'BASE-01')          return 'baselines';
-  if (id.startsWith('CHAOS-'))   return `chaos:${s.id || '_'}`;
-  if (id.startsWith('SYN-'))     return `synthetic:${s.id || '_'}`;
-  if (id.startsWith('IMP-'))     return `imports:${s.ref || '_'}`;
-
-  // Fallback — anything unrecognised stays pack-local so it always
-  // appears in onlyInA / onlyInB rather than crashing the comparison.
-  return `_unknown:${id}`;
+  return identityKeyOf(artefact);
 }
 
-function stripRef(s) {
-  if (typeof s !== 'string') return s ?? '';
-  return s.replace(/^ref:/, '').replace(/^slos\./, '');
-}
-
-// ============================================================
-// STRUCTURAL MATCHING
-//
-// A shared key (keyOf) establishes that two artefacts are the SAME
-// artefact — same identity. It does NOT establish that they AGREE.
-// Two SLOs both named `slos.api_availability_99` are the same contract;
-// whether they're *aligned* depends on whether their objective, window
-// and SLI binding actually match. Identity is the name on the door;
-// alignment is the contents of the room.
-//
-// `projectOf(artefact)` reifies an artefact into its canonical comparable
-// object — the semantic spec definition with volatile, environment-specific
-// wiring removed. Two artefacts are aligned only when their projections are
-// structurally equal; otherwise they're drifted, and `deltasOf` reports
-// exactly which fields diverged.
-// ============================================================
-
-// Fields that legitimately differ between a repo manifest and a live
-// reconstruction of the same artefact — deployment coordinates and
-// presentation, not the contract. Stripped before comparison so "aligned"
-// means the SEMANTIC definition matches, not that the URLs happen to agree.
-const VOLATILE_SPEC_KEYS = new Set([
-  'endpoints', 'endpoint', 'url', 'address', 'host', 'auth',
-  'description', 'desc', 'title', 'summary', 'annotations',
-  'source', 'evidence', 'mcp', 'default',
-]);
-
-// Recursively normalise a value for order-independent structural equality:
-// sort object keys, drop volatile/empty fields, and collapse a version block
-// to its declared contract (gating is an operational toggle, not the
-// contract). Arrays are normalised element-wise then sorted so declaration
-// order doesn't masquerade as drift.
-function canonicalize(value, keyName) {
-  if (Array.isArray(value)) {
-    return value
-      .map((v) => canonicalize(v))
-      .sort((x, y) => JSON.stringify(x).localeCompare(JSON.stringify(y)));
-  }
-  if (value && typeof value === 'object') {
-    if (keyName === 'version') {
-      return value.declared !== undefined ? { declared: value.declared } : sortedObject(value);
-    }
-    const out = {};
-    for (const k of Object.keys(value).sort()) {
-      if (VOLATILE_SPEC_KEYS.has(k)) continue;
-      const cv = canonicalize(value[k], k);
-      if (cv === undefined || cv === null || cv === '') continue;
-      if (typeof cv === 'object' && !Array.isArray(cv) && Object.keys(cv).length === 0) continue;
-      out[k] = cv;
-    }
-    return out;
-  }
-  return value;
-}
-
-function sortedObject(value) {
-  const out = {};
-  for (const k of Object.keys(value).sort()) out[k] = value[k];
-  return out;
-}
-
-// The structured comparable projection of an artefact: its canonical spec
-// definition with volatile deployment fields removed. This is the object
-// that "matching" actually compares.
+// The full behavioural contract object of an artefact — what "compare the
+// contents" actually compares. Retained under the `projectOf` name for
+// backward compatibility; delegates to the artefact model.
 export function projectOf(artefact) {
-  return canonicalize(artefact?.spec ?? {});
+  return behaviorOf(artefact);
 }
 
-// Top-level spec fields whose canonical projections differ between two
-// matched artefacts. Powers the per-pair "what drifted" detail.
-export function deltasOf(a, b) {
-  const pa = projectOf(a);
-  const pb = projectOf(b);
-  const fields = new Set([...Object.keys(pa), ...Object.keys(pb)]);
-  const deltas = [];
-  for (const f of [...fields].sort()) {
-    const sa = JSON.stringify(pa[f] ?? null);
-    const sb = JSON.stringify(pb[f] ?? null);
-    if (sa !== sb) deltas.push({ field: f, a: pa[f] ?? null, b: pb[f] ?? null });
-  }
-  return deltas;
-}
-
+// Re-export the behavioural delta helper so existing importers keep working.
+export { deltasOf };
 
 function layerArtefacts(layered, layerId) {
   const ls = layered?.layers || {};
@@ -196,9 +93,10 @@ export function diffPacks(aLayered, bLayered) {
 
     for (const [k, a] of aByKey) {
       if (bByKey.has(k)) {
-        // Same identity — now compare the reified objects to decide
-        // whether they actually AGREE. Aligned only when the canonical
-        // projections match; otherwise drifted, with field-level deltas.
+        // Same behavioural identity — now compare the full behavioural
+        // contracts to decide whether they actually AGREE. Aligned only when
+        // the behaviour objects are equal (no deltas); otherwise drifted, with
+        // the diverging behavioural fields attached.
         const b = bByKey.get(k);
         const deltas = deltasOf(a, b);
         const match = deltas.length === 0 ? 'aligned' : 'drifted';
