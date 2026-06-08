@@ -486,7 +486,7 @@ export function renderBenchmarkView(view) {
 
   // THE verdict — diagnostic-grade YES/NO from coverage (2A) + trust /
   // drift (2B), Pack A alone. Always leads the view.
-  const diagnostic = computeDiagnosticGrade(state.pack, state.packB, posture, state.compareBId);
+  const diagnostic = computeDiagnosticGrade(state.pack, state.packB, posture, state.compareBId, state.diff);
   const verdict = renderDiagnosticGradeVerdict(diagnostic, lens, state.packB);
   scaffold.appendChild(verdict);
 
@@ -1196,7 +1196,7 @@ const FRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
 // the live system didn't confirm what the pack declares.
 const DRIFT_FAIL_TOLERANCE = 0.30;
 
-function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
+function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff) {
   // ===== Coverage criteria (2A) =====
   const meta = packA?.meta || {};
   const ann = meta?.annotations || packA?.metadata?.annotations || {};
@@ -1306,15 +1306,31 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
 
   // ---- 7. Drift-free ----
   // Live signal integrity: did the declarations the pack makes about
-  // the world match what the MCP actually observed? Read directly off
-  // the probe-outcome annotations stamped by the fetcher.
+  // the world match what the MCP actually observed? When Pack B is a
+  // live reconstruction, use the actual A-vs-B diff. Probe success only
+  // says the live scanner worked; it does not prove declared artefacts
+  // are active in production.
   const probesAttempted = (liveAnn['mcp.probesAttempted']  || '').split(',').filter(Boolean);
   const probesSucceeded = (liveAnn['mcp.probesSucceeded']  || '').split(',').filter(Boolean);
   const probesEmpty     = (liveAnn['mcp.probesEmpty']      || '').split(',').filter(Boolean);
   const probesFailed    = (liveAnn['mcp.probesFailed']     || '').split(',').filter(Boolean);
   const hasMcpSource = probesAttempted.length > 0 || !!liveAnn['mcp.refreshedAt'];
   let driftFree, driftDetail;
-  if (!hasMcpSource) {
+  const hasLiveDiff = !!diff?.layers && compareModeFor(packB, catalogBId) === 'drift';
+  if (hasLiveDiff) {
+    let declaredMissing = 0;
+    let behaviorDrifted = 0;
+    let liveShadow = 0;
+    for (const bucket of Object.values(diff.layers || {})) {
+      declaredMissing += bucket.onlyInA?.length || 0;
+      behaviorDrifted += bucket.drifted ?? (bucket.inBoth || []).filter(e => e.match === 'drifted').length;
+      liveShadow += bucket.onlyInB?.length || 0;
+    }
+    driftFree = declaredMissing === 0 && behaviorDrifted === 0;
+    driftDetail = driftFree
+      ? `repo declaration matches live state (${liveShadow} live-only shadow signal${liveShadow === 1 ? '' : 's'} noted separately)`
+      : `${declaredMissing} declared artefact${declaredMissing === 1 ? '' : 's'} not confirmed live; ${behaviorDrifted} matched artefact${behaviorDrifted === 1 ? '' : 's'} drifted; ${liveShadow} live-only shadow signal${liveShadow === 1 ? '' : 's'}`;
+  } else if (!hasMcpSource) {
     driftFree = false;
     driftDetail = 'declared-only — no live signal to verify against (connect MCP or scan live)';
   } else if (probesAttempted.length === 0) {
@@ -1398,6 +1414,7 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
       passed: overallPassed,
       total:  overallTotal,
       verdict,
+      liveDriftFree: driftFree,
     },
   };
 }
@@ -1422,7 +1439,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   // Single binary verdict in audit terms. No "Almost diagnostic-grade",
   // no "Critical" — just PASS or FAIL with the threshold stated.
   const PASS_THRESHOLD = 7; // 7 of 8 to pass — graded against contract
-  const passes = overall.passed >= PASS_THRESHOLD;
+  const passes = overall.passed >= PASS_THRESHOLD && overall.liveDriftFree !== false;
   const status = passes ? 'PASS' : 'FAIL';
 
   // Coverage-only when no Pack B is loaded: the coverage criteria are
@@ -1512,8 +1529,8 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
     C('chaos-validated')?.detail || '—',
     C('chaos-validated')?.pass));
   evidenceRows.push(rowFor(
-    'metadata.annotations.mcp.probesSucceeded',
-    '≥ 70% of attempted probes return data',
+    'repo-vs-live diff · fallback metadata.annotations.mcp.probesSucceeded',
+    'declared artefacts active in live; fallback ≥70% probes when no live pack is loaded',
     C('drift-free')?.detail || '—',
     C('drift-free')?.pass));
   evidenceRows.push(rowFor(
