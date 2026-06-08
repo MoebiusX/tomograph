@@ -8,8 +8,10 @@ name: refresh-live-pack
 # Configure secrets MCP_URL and (optionally) MCP_AUTH in repo settings.
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'   # every 15 minutes
+  # The every-15-minute schedule was removed on 2026-06-08: the automated
+  # chore(live) commits push to develop AND main, racing manual pushes and
+  # dominating history. Refresh on demand (workflow_dispatch) or when the
+  # fetcher code changes (push). Re-add a `schedule:` block here to restore.
   workflow_dispatch:
   push:
     paths:
