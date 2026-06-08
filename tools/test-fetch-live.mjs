@@ -150,6 +150,34 @@ assert(empty.metadata.annotations['mcp.toolsFailed'].includes('anomalies_baselin
 assert(empty.metadata.annotations['mcp.verified.baselines'] === undefined,
        'baselines NOT marked verified when anomalies_baselines failed');
 
+// ---------- case 2b: tool responded with a null payload ----------
+// The MCP probe helper returns `null` when a tool answers with an
+// empty/null body (an honest zero, not a failure). Those nulls are
+// spread straight into buildCanonicalPack, bypassing the `= {}`
+// destructuring defaults (which only fire for `undefined`). Guard
+// against the regression where `baselinesData.baselines` threw
+// "Cannot read properties of null (reading 'baselines')".
+{
+  let nullPayload;
+  try {
+    nullPayload = buildCanonicalPack({
+      refreshedAt,
+      mcpUrl: 'https://fake-mcp.test/observability',
+      health: { services: [] },
+      topology: null,
+      anomaliesActive: null,
+      baselinesData: null,
+    });
+  } catch (e) {
+    nullPayload = e;
+  }
+  assert(!(nullPayload instanceof Error),
+         'null tool payloads do not crash buildCanonicalPack',
+         nullPayload instanceof Error ? nullPayload.message : 'ok', 'ok');
+  const nErrors = validateCanonical(nullPayload, SCHEMA);
+  assert(nErrors.length === 0, 'null-payload pack still validates', nErrors, []);
+}
+
 // ---------- case 3: probes return real data — recording rules, dashboards, scrape jobs, metrics ----------
 //
 // This is the case the user pushed back on: "metrics we're exporting or
