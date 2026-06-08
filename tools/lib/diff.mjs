@@ -70,6 +70,90 @@ function stripRef(s) {
   return s.replace(/^ref:/, '').replace(/^slos\./, '');
 }
 
+// ============================================================
+// STRUCTURAL MATCHING
+//
+// A shared key (keyOf) establishes that two artefacts are the SAME
+// artefact — same identity. It does NOT establish that they AGREE.
+// Two SLOs both named `slos.api_availability_99` are the same contract;
+// whether they're *aligned* depends on whether their objective, window
+// and SLI binding actually match. Identity is the name on the door;
+// alignment is the contents of the room.
+//
+// `projectOf(artefact)` reifies an artefact into its canonical comparable
+// object — the semantic spec definition with volatile, environment-specific
+// wiring removed. Two artefacts are aligned only when their projections are
+// structurally equal; otherwise they're drifted, and `deltasOf` reports
+// exactly which fields diverged.
+// ============================================================
+
+// Fields that legitimately differ between a repo manifest and a live
+// reconstruction of the same artefact — deployment coordinates and
+// presentation, not the contract. Stripped before comparison so "aligned"
+// means the SEMANTIC definition matches, not that the URLs happen to agree.
+const VOLATILE_SPEC_KEYS = new Set([
+  'endpoints', 'endpoint', 'url', 'address', 'host', 'auth',
+  'description', 'desc', 'title', 'summary', 'annotations',
+  'source', 'evidence', 'mcp', 'default',
+]);
+
+// Recursively normalise a value for order-independent structural equality:
+// sort object keys, drop volatile/empty fields, and collapse a version block
+// to its declared contract (gating is an operational toggle, not the
+// contract). Arrays are normalised element-wise then sorted so declaration
+// order doesn't masquerade as drift.
+function canonicalize(value, keyName) {
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => canonicalize(v))
+      .sort((x, y) => JSON.stringify(x).localeCompare(JSON.stringify(y)));
+  }
+  if (value && typeof value === 'object') {
+    if (keyName === 'version') {
+      return value.declared !== undefined ? { declared: value.declared } : sortedObject(value);
+    }
+    const out = {};
+    for (const k of Object.keys(value).sort()) {
+      if (VOLATILE_SPEC_KEYS.has(k)) continue;
+      const cv = canonicalize(value[k], k);
+      if (cv === undefined || cv === null || cv === '') continue;
+      if (typeof cv === 'object' && !Array.isArray(cv) && Object.keys(cv).length === 0) continue;
+      out[k] = cv;
+    }
+    return out;
+  }
+  return value;
+}
+
+function sortedObject(value) {
+  const out = {};
+  for (const k of Object.keys(value).sort()) out[k] = value[k];
+  return out;
+}
+
+// The structured comparable projection of an artefact: its canonical spec
+// definition with volatile deployment fields removed. This is the object
+// that "matching" actually compares.
+export function projectOf(artefact) {
+  return canonicalize(artefact?.spec ?? {});
+}
+
+// Top-level spec fields whose canonical projections differ between two
+// matched artefacts. Powers the per-pair "what drifted" detail.
+export function deltasOf(a, b) {
+  const pa = projectOf(a);
+  const pb = projectOf(b);
+  const fields = new Set([...Object.keys(pa), ...Object.keys(pb)]);
+  const deltas = [];
+  for (const f of [...fields].sort()) {
+    const sa = JSON.stringify(pa[f] ?? null);
+    const sb = JSON.stringify(pb[f] ?? null);
+    if (sa !== sb) deltas.push({ field: f, a: pa[f] ?? null, b: pb[f] ?? null });
+  }
+  return deltas;
+}
+
+
 function layerArtefacts(layered, layerId) {
   const ls = layered?.layers || {};
   if (layerId === 'L4') {
@@ -97,7 +181,7 @@ export function diffPacks(aLayered, bLayered) {
   if (!aLayered || !bLayered) throw new Error('diffPacks: both packs required');
 
   const layers = {};
-  let onlyInA = 0, onlyInB = 0, inBoth = 0;
+  let onlyInA = 0, onlyInB = 0, inBoth = 0, aligned = 0, drifted = 0;
 
   for (const layerId of LAYER_ORDER) {
     const aItems = layerArtefacts(aLayered, layerId);
@@ -111,8 +195,17 @@ export function diffPacks(aLayered, bLayered) {
     const bucket = { onlyInA: [], onlyInB: [], inBoth: [] };
 
     for (const [k, a] of aByKey) {
-      if (bByKey.has(k)) bucket.inBoth.push({ key: k, a, b: bByKey.get(k) });
-      else               bucket.onlyInA.push({ key: k, artefact: a });
+      if (bByKey.has(k)) {
+        // Same identity — now compare the reified objects to decide
+        // whether they actually AGREE. Aligned only when the canonical
+        // projections match; otherwise drifted, with field-level deltas.
+        const b = bByKey.get(k);
+        const deltas = deltasOf(a, b);
+        const match = deltas.length === 0 ? 'aligned' : 'drifted';
+        bucket.inBoth.push({ key: k, a, b, match, deltas });
+      } else {
+        bucket.onlyInA.push({ key: k, artefact: a });
+      }
     }
     for (const [k, b] of bByKey) {
       if (!aByKey.has(k)) bucket.onlyInB.push({ key: k, artefact: b });
@@ -124,10 +217,16 @@ export function diffPacks(aLayered, bLayered) {
     bucket.onlyInB.sort((x, y) => x.key.localeCompare(y.key));
     bucket.inBoth.sort ((x, y) => x.key.localeCompare(y.key));
 
+    // Per-layer aligned/drifted split of the matched pairs.
+    bucket.aligned = bucket.inBoth.filter((e) => e.match === 'aligned').length;
+    bucket.drifted = bucket.inBoth.filter((e) => e.match === 'drifted').length;
+
     layers[layerId] = bucket;
     onlyInA += bucket.onlyInA.length;
     onlyInB += bucket.onlyInB.length;
     inBoth  += bucket.inBoth.length;
+    aligned += bucket.aligned;
+    drifted += bucket.drifted;
   }
 
   return {
@@ -137,12 +236,19 @@ export function diffPacks(aLayered, bLayered) {
       onlyInA,
       onlyInB,
       inBoth,
+      aligned,
+      drifted,
       union: onlyInA + onlyInB + inBoth,
       aTotal: onlyInA + inBoth,
       bTotal: onlyInB + inBoth,
       jaccard: (onlyInA + onlyInB + inBoth) === 0
         ? 1
         : Math.round((inBoth / (onlyInA + onlyInB + inBoth)) * 100) / 100,
+      // True alignment ratio: only structurally-equal matches count, over
+      // the full union. Identity-only matches that drifted are excluded.
+      alignment: (onlyInA + onlyInB + inBoth) === 0
+        ? 1
+        : Math.round((aligned / (onlyInA + onlyInB + inBoth)) * 100) / 100,
     },
     layers,
   };

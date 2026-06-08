@@ -3400,21 +3400,27 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
 
   // Per-layer filtered buckets + running totals.
   const layerNames = { L1:'Contract', L2:'Telemetry', L2X:'Extended', L3:'Insight', L4:'Action', L5:'Validation', GOV:'Governance' };
-  let totAligned = 0, totA = 0, totB = 0;
+  let totAligned = 0, totDrifted = 0, totA = 0, totB = 0;
   const rows = [];
   for (const L of LAYERS_FOR_DIFF) {
     const bucket = diff.layers[L] || { onlyInA: [], onlyInB: [], inBoth: [] };
-    const inBoth  = bucket.inBoth.filter(e => passesLens(e, 'a'));
+    // inBoth = shared identity. Split it: structurally-equal pairs are
+    // aligned; same-identity-but-divergent pairs are drifted. Matching is
+    // an object comparison, not a name check.
+    const matched = bucket.inBoth.filter(e => passesLens(e, 'a'));
+    const aligned = matched.filter(e => e.match !== 'drifted');
+    const drifted = matched.filter(e => e.match === 'drifted');
     const onlyInA = bucket.onlyInA.filter(e => passesLens(e, 'a'));
     const onlyInB = bucket.onlyInB.filter(e => passesLens(e, 'b'));
-    if (inBoth.length === 0 && onlyInA.length === 0 && onlyInB.length === 0) continue;
-    totAligned += inBoth.length;
+    if (aligned.length === 0 && drifted.length === 0 && onlyInA.length === 0 && onlyInB.length === 0) continue;
+    totAligned += aligned.length;
+    totDrifted += drifted.length;
     totA += onlyInA.length;
     totB += onlyInB.length;
-    rows.push({ L, name: layerNames[L] || L, inBoth, onlyInA, onlyInB });
+    rows.push({ L, name: layerNames[L] || L, aligned, drifted, onlyInA, onlyInB });
   }
 
-  const universe = totAligned + totA + totB;
+  const universe = totAligned + totDrifted + totA + totB;
   if (universe === 0) return null;
   const alignedPct = Math.round((totAligned / universe) * 100);
 
@@ -3460,6 +3466,19 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
     return names.length ? names.join(' · ') + more : '—';
   };
 
+  // Sample drifted pairs as `name(field,field)` so the reader sees not just
+  // WHICH artefacts drifted but WHICH FIELDS diverged.
+  const sampleDeltas = (entries, max = 3) => {
+    const names = entries.slice(0, max).map(e => {
+      const k = e.key || '';
+      const short = k.includes(':') ? k.slice(k.indexOf(':') + 1) : k;
+      const fields = (e.deltas || []).map(d => d.field).slice(0, 3).join(',');
+      return escapeHtml(short || k) + (fields ? `<span class="drift-delta-fields">(${escapeHtml(fields)})</span>` : '');
+    });
+    const more = entries.length > max ? ` +${entries.length - max}` : '';
+    return names.length ? names.join(' · ') + more : '—';
+  };
+
   const tile = (n, label, hint, cls) => `
     <div class="drift-tile ${cls}">
       <div class="drift-tile-n">${n}</div>
@@ -3471,8 +3490,12 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
     <tr class="drift-row">
       <th class="drift-row-layer"><span class="drift-row-num">${r.L}</span> ${escapeHtml(r.name)}</th>
       <td class="drift-cell is-aligned">
-        <span class="drift-cell-n">${r.inBoth.length}</span>
-        <span class="drift-cell-keys">${r.inBoth.length ? sampleKeys(r.inBoth) : ''}</span>
+        <span class="drift-cell-n">${r.aligned.length}</span>
+        <span class="drift-cell-keys">${r.aligned.length ? sampleKeys(r.aligned) : ''}</span>
+      </td>
+      <td class="drift-cell is-drifted">
+        <span class="drift-cell-n">${r.drifted.length}</span>
+        <span class="drift-cell-keys">${r.drifted.length ? sampleDeltas(r.drifted) : ''}</span>
       </td>
       <td class="drift-cell ${frame.aClass}">
         <span class="drift-cell-n">${r.onlyInA.length}</span>
@@ -3494,7 +3517,8 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
       ${frame.lede}${lensNote}
     </div>
     <div class="drift-tiles">
-      ${tile(alignedPct + '%', 'Aligned', `${totAligned} matched · both A and B agree`, 'is-aligned')}
+      ${tile(alignedPct + '%', 'Aligned', `${totAligned} matched · object shapes agree`, 'is-aligned')}
+      ${tile(totDrifted, 'Drifted', 'same artefact · field values diverge', 'is-drifted')}
       ${tile(totA, frame.aLabel, frame.aHint, frame.aClass)}
       ${tile(totB, frame.bLabel, frame.bHint, frame.bClass)}
     </div>
@@ -3503,6 +3527,7 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
         <tr>
           <th class="drift-th-layer">Layer</th>
           <th class="drift-th is-aligned">Aligned</th>
+          <th class="drift-th is-drifted">Drifted</th>
           <th class="drift-th ${frame.aClass}">${escapeHtml(frame.aLabel)}</th>
           <th class="drift-th ${frame.bClass}">${escapeHtml(frame.bLabel)}</th>
         </tr>
