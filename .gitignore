@@ -9,3 +9,14 @@ node_modules/
 .tmp-*
 *.tmp.yaml
 /diag.mjs
+
+# Crawler drafts of real/private services. These are x-ray output from live
+# repos and routinely carry real secrets (webhook tokens, on-call emails,
+# internal URLs) — they must never land in this public repo.
+*.service.repo.yaml
+
+# Internal, repo-local working docs — status surveys, ad-hoc audits,
+# brand/rename strategy and launch backlog. Not part of the public doc set.
+PROJECT_STATUS_SURVEY.md
+docs/TOMOGRAPH_BRAND_PLAN.md
+docs/TOMOGRAPH_MIGRATION_CHECKLIST.md

@@ -1,7 +1,7 @@
 name: ci
 
 # Validates every push to develop/main and every PR targeting main.
-# Zero npm deps in this repo, so we skip install entirely.
+# Runtime deps are installed with `npm ci` (express is a dependency).
 
 on:
   push:
