@@ -2974,17 +2974,28 @@ function renderBenchmarkView(view) {
   // THE verdict — diagnostic-grade YES/NO from coverage (2A) + trust /
   // drift (2B), Pack A alone. Always leads the view.
   const diagnostic = computeDiagnosticGrade(state.pack, state.packB, posture, state.compareBId);
-  scaffold.appendChild(renderDiagnosticGradeVerdict(diagnostic, lens, state.packB));
+  const verdict = renderDiagnosticGradeVerdict(diagnostic, lens, state.packB);
+  scaffold.appendChild(verdict);
 
-  // When no Pack B is loaded, invite one — the verdict above is the
-  // coverage-only read; the A-vs-B comparison is the optional deepening.
+  // The COMPARE band (A-vs-B drill, or the invite to load a Pack B) sits
+  // DIRECTLY under the verdict summary band — before the deep 2A/2B/
+  // evidence tables — so the side-by-side comparison is the first thing
+  // the user sees, not buried beneath the full compliance report.
+  const verdictHead = verdict.querySelector('.diag-report-head');
+  const placeCompareBand = (el) => {
+    if (!el) return;
+    if (verdictHead && verdictHead.nextSibling) verdict.insertBefore(el, verdictHead.nextSibling);
+    else if (verdictHead) verdict.appendChild(el);
+    else scaffold.appendChild(el);
+  };
   if (!haveB) {
-    scaffold.appendChild(renderComparePrompt());
+    // Pack A only — invite a Pack B; the verdict above is the
+    // coverage-only read, the A-vs-B comparison the optional deepening.
+    placeCompareBand(renderComparePrompt());
   } else {
     // Pack B present — render the true side-by-side A-vs-B drill (drift
-    // cells / gap deltas) as the evidence directly beneath the verdict.
-    const drill = renderDriftDrill(state.diff, state.packB, state.compareBId, lens);
-    if (drill) scaffold.appendChild(drill);
+    // cells / gap deltas) as the lead evidence beneath the verdict.
+    placeCompareBand(renderDriftDrill(state.diff, state.packB, state.compareBId, lens));
   }
 
   // Drill-down — per-layer × per-mechanism coverage map. Pack-A-derived,
