@@ -295,5 +295,67 @@ assert(real.summary.discovered.alertingRoutes >= 1,
   `routes lifted past the block-first-key shape (got ${real.summary.discovered.alertingRoutes})`);
 assert(validateCanonical(real.canonical, SCHEMA).length === 0, 'real-world crawl still validates against v1.2 schema');
 
+// ---------- helm chart introspection ----------
+process.stdout.write('\n--- helm chart introspection ---\n');
+// A Helm template embeds Prometheus rules + a Grafana dashboard inside a
+// rendered ConfigMap, wrapped in Go-template scaffolding (control flow,
+// .Values injections, include calls, and the {{ "{{" }} literal-brace escape
+// in an annotation). The crawler must look through the scaffolding and lift
+// the embedded observability contracts exactly as if they were standalone.
+const HELM = {
+  'charts/checkout/Chart.yaml': [
+    'apiVersion: v2',
+    'name: checkout',
+    'version: 1.4.2',
+    '',
+  ].join('\n'),
+  'charts/checkout/templates/configmaps.yaml': [
+    '{{- if .Values.prometheus.enabled }}',
+    'apiVersion: v1',
+    'kind: ConfigMap',
+    'metadata:',
+    '  name: {{ include "checkout.fullname" . }}-rules',
+    '  namespace: {{ .Release.Namespace }}',
+    'data:',
+    '  recording-rules.yml: |',
+    '    groups:',
+    '      - name: slo:checkout',
+    '        interval: 30s',
+    '        rules:',
+    '          - record: slo:http_requests:good_5m',
+    '            expr: sum(rate(http_requests_total{code!~"5.."}[5m]))',
+    '          - record: slo:http_requests:total_5m',
+    '            expr: sum(rate(http_requests_total[5m]))',
+    '  alerting-rules.yml: |',
+    '    groups:',
+    '      - name: checkout.alerts',
+    '        rules:',
+    '          - alert: HighErrorRate',
+    '            expr: slo:http_requests:good_5m / slo:http_requests:total_5m < 0.99',
+    '            for: 2m',
+    '            labels:',
+    '              severity: critical',
+    '            annotations:',
+    '              summary: "error rate is {{ "{{" }} $value | humanizePercentage {{ "}}" }}"',
+    '  overview.json: |',
+    '    {"uid":"checkout-overview","title":"Checkout Overview","schemaVersion":39,"version":3,"panels":[]}',
+    '{{- end }}',
+  ].join('\n'),
+};
+assert(detectArtefactKind('charts/checkout/templates/configmaps.yaml', HELM['charts/checkout/templates/configmaps.yaml']) === 'helm-template',
+  'helm template detected via Go-template scaffolding');
+assert(detectArtefactKind('charts/checkout/Chart.yaml', HELM['charts/checkout/Chart.yaml']) === 'helm-chart',
+  'Chart.yaml detected as helm-chart');
+const helm = crawlFiles(HELM, { repoName: 'checkout-helm', now: '2026-06-05T00:00:00.000Z' });
+assert(helm.summary.warnings.every(w => !/Failed to parse/.test(w)),
+  `no parse failures on helm chart (warnings: ${JSON.stringify(helm.summary.warnings.filter(w => /Failed to parse/.test(w)))})`);
+assert(helm.canonical.spec.queries.recording_rules.some(r => r.name === 'slo:http_requests:good_5m'),
+  'recording rule lifted from embedded ConfigMap');
+assert(helm.canonical.spec.slis.some(s => s.id === 'slo_http_requests'),
+  'SLI inferred from embedded recording rules');
+assert(helm.canonical.spec.dashboards.some(d => d.id === 'checkout-overview'),
+  'grafana dashboard lifted from embedded ConfigMap JSON');
+assert(validateCanonical(helm.canonical, SCHEMA).length === 0, 'helm chart crawl validates against v1.2 schema');
+
 process.stdout.write(`\n${failures === 0 ? 'all crawler assertions pass.' : failures + ' failure(s).'}\n`);
 process.exit(failures === 0 ? 0 : 1);
