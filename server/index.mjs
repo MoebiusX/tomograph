@@ -557,6 +557,25 @@ function defaultDeployTool({ product, target, scope }) {
   return null;   // not deployable
 }
 
+async function discoverMcpToolNames(rpc) {
+  try {
+    const out = await rpc('tools/list');
+    return (out?.tools || []).map(t => t?.name).filter(Boolean).sort();
+  } catch (_) {
+    return null;
+  }
+}
+
+function deployToolMissingError(tool, availableTools) {
+  const related = (availableTools || [])
+    .filter(t => /apply|deploy|create|upsert|write|provision|grafana|rule|dashboard/i.test(t))
+    .slice(0, 18);
+  const suffix = related.length
+    ? ` Advertised related tools: ${related.join(', ')}.`
+    : ' No related write-capable tools were advertised.';
+  return `MCP endpoint does not expose required deploy tool '${tool}'.${suffix} Configure a Grafana write-capable MCP gateway, or add a compatible deploy adapter before retrying.`;
+}
+
 function targetIsDeployable(target) {
   return target === 'prometheus-rules' || target === 'grafana-dashboard';
 }
@@ -659,6 +678,8 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
     capabilities: {},
     clientInfo: { name: 'observabilitypack-studio-deploy-bulk', version: '0.3.0' },
   }).catch(() => {});
+  const availableTools = await discoverMcpToolNames(rpc);
+  const missingTools = new Set();
 
   const results = [];
   process.stderr.write(`[deploy-bulk] ${meta.id} -> ${mcpUrl} (${items.length} item${items.length === 1 ? '' : 's'}, ${product} ${version})\n`);
@@ -677,6 +698,11 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
       const tool = defaultDeployTool({ product, target: itemTarget, scope });
       if (!tool) {
         results.push({ item, ok: false, error: `no default deploy tool for (${product}, ${itemTarget})`, tookMs: Date.now() - itStart });
+        continue;
+      }
+      if (availableTools && !availableTools.includes(tool)) {
+        missingTools.add(tool);
+        results.push({ item, ok: false, tool, error: deployToolMissingError(tool, availableTools), tookMs: Date.now() - itStart });
         continue;
       }
       // Filter rules to scope if applicable.
@@ -714,6 +740,8 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
     targetProduct: product,
     targetVersion: version,
     targetFolder: folder || null,
+    missingTools: [...missingTools],
+    mcpToolsAvailable: availableTools,
     env,
     tookMs: totalMs,
   });

@@ -168,6 +168,10 @@ const rules = canonical.spec.queries.recording_rules;
 assert(rules.length >= 2, `recording rules discovered (got ${rules.length})`);
 assert(rules.some(r => r.name === 'payments:api_availability:ratio_5m'),  'availability ratio rule preserved');
 assert(rules.some(r => r.name === 'payments:api_latency_p95:ms'),         'p95 latency rule preserved');
+assert(!rules.some(r => String(r.expr || '').startsWith('ref:slis.')),
+       'source-less synthetic recording rules are not emitted');
+assert((summary.omitted?.syntheticRecordingRules || []).length >= 1,
+       'source-less synthetic recording rule candidates are reported as omitted');
 
 const alerts = canonical.spec.policy.burn_rate_alerts;
 assert(alerts.length >= 1,                       'burn-rate alerts emitted');

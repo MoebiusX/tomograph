@@ -23,7 +23,7 @@ before write.
 |---|---|
 | `spec.slis` / `spec.slos` | One ratio SLI + 99% / 30d SLO per service discovered by `system_health` |
 | `spec.telemetry.backends` | `metrics-prom` + `logs-elastic` always; `traces-jaeger` marked verified when `system_topology` shows a jaeger edge |
-| `spec.queries.recording_rules` | One per synthesised SLO |
+| `spec.queries.recording_rules` | Discovered recording rules from MCP probes or metric inventory; a minimal synthesized fallback only when no rules are visible |
 | `spec.policy.burn_rate_alerts` | `5m/1h@14x SEV1` + `30m/6h@6x SEV2` per SLO |
 | `spec.baselines` | MTTD derived from `anomalies_baselines`' smallest threshold; MTTR from criticality default; `measurement_source: mcp.anomalies_baselines` |
 
