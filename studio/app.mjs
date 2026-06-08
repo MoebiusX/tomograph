@@ -254,7 +254,7 @@ async function rehydrateFromPersistence() {
   // Permitted views: the three workflow tabs + the Advanced deep tools.
   // Anything else (legacy 'benchmark', the removed 'compare-artefacts')
   // routes to the compliance report so we never strand the user.
-  const PERMITTED_VIEWS = new Set(['layers', 'compare', 'compile', 'conformance', 'schema', 'otlp', 'traceability', 'atlas']);
+  const PERMITTED_VIEWS = new Set(['layers', 'compare', 'compile', 'conformance', 'schema', 'otlp', 'traceability', 'atlas', 'references']);
   if (state.view && !PERMITTED_VIEWS.has(state.view)) {
     state.view = 'compare';
   }
@@ -361,12 +361,15 @@ function renderPackSelect() {
 function renderPackBSelect() {
   const sel = $('#pack-b-select');
   if (!sel) return;
-  // Merge catalog + cached examples, dedup by id, drop the active Pack A.
+  // Merge catalog + cached examples + catalogue reference packs, dedup by
+  // id, drop the active Pack A. The reference packs power the benchmark /
+  // reference component analysis (Advanced → References) by loading as Pack B.
   const cat = state.catalog || [];
   const ex  = state._examplesCache || [];
+  const refs = state._referencesCache || [];
   const seen = new Set();
   const options = [];
-  for (const p of [...cat, ...ex]) {
+  for (const p of [...cat, ...ex, ...refs]) {
     if (!p?.id || !p.ok) continue;
     if (p.id === state.selectedPackId) continue;
     if (seen.has(p.id)) continue;
@@ -408,7 +411,8 @@ function renderPackBSelect() {
     // Push the chosen pack into state.catalog (if not already present)
     // so loadPackB() + the catalog-entry resolver have a label to read.
     if (!state.catalog.find(p => p.id === newId)) {
-      const ex = (state._examplesCache || []).find(p => p.id === newId);
+      const ex = (state._examplesCache || []).find(p => p.id === newId)
+              || (state._referencesCache || []).find(p => p.id === newId);
       if (ex) state.catalog.push(ex);
     }
     // Lazy-load B then refresh tabs + view. Auto-switch to Compare —
@@ -685,6 +689,9 @@ function renderMainView() {
     // load options, never the marketing hero. Diagnose/Remediate need a
     // pack first, so they point the user back to Discover.
     if (state.view === 'layers') { renderDiscoverEmpty(view); return; }
+    // References (Advanced) is a catalogue browser — it renders without a
+    // pack loaded; the per-reference benchmark action then needs Pack A.
+    if (state.view === 'references') { renderReferencesView(view); return; }
     renderNeedPackPrompt(view); return;
   }
 
@@ -702,6 +709,7 @@ function renderMainView() {
     case 'compile':            renderCompileView(view); return;
     case 'schema':             renderSchemaView(view); return;
     case 'otlp':               renderOtlpView(view); return;
+    case 'references':         renderReferencesView(view); return;
     case 'layers':
     default:
       // Discover ("What Do We Have?") IS the real layer inventory —
@@ -1239,6 +1247,77 @@ async function runBenchmark(product, refPackId) {
   } catch (e) {
     console.warn('[benchmark] failed:', e);
   }
+}
+
+// ---------- references view (Advanced) ----------
+// Reference component analysis. The catalogue reference packs (Kafka,
+// Prometheus, Grafana) live here, off the main workflow, under Advanced →
+// References. Each card describes a best-practice pack and offers a
+// one-click benchmark that loads it as Pack B and jumps to Diagnose →
+// Compare. Renders even without Pack A so the catalogue is browsable; the
+// benchmark action is gated on a loaded pack.
+function renderReferencesView(view) {
+  const refs = state._referencesCache || [];
+  // Cache may not be warm yet (boot race / failed fetch) — kick a load
+  // and re-render when it lands.
+  if (!refs.length) {
+    loadAndCacheReferences().then(list => {
+      if (list?.length && state.view === 'references') renderMainView();
+    });
+  }
+
+  const section = document.createElement('section');
+  section.className = 'section refs-view';
+  section.dataset.layer = 'REF';
+
+  const slugFor = (id) => (LENS_PRODUCTS.find(lp => lp.refPackId === id) || {}).slug || null;
+  const hasPackA = !!state.pack;
+
+  const cards = refs.map(p => {
+    const slug = slugFor(p.id);
+    const envs = (p.environments || []).join(' · ');
+    const ok = p.ok !== false;
+    const canBenchmark = ok && hasPackA && !!slug;
+    const btn = canBenchmark
+      ? `<button type="button" class="refs-bench-btn" data-product="${escapeHtml(slug)}" data-ref-pack="${escapeHtml(p.id)}"
+           title="Load ${escapeHtml(p.label)} as Pack B and compare your pack against it.">⛯ Benchmark vs ${escapeHtml(p.label)} →</button>`
+      : `<span class="refs-bench-hint">${ok
+            ? (hasPackA ? 'No product lens for this pack' : 'Load a pack in Discover to benchmark')
+            : 'Reference pack failed to load'}</span>`;
+    return `
+      <article class="refs-card${ok ? '' : ' is-error'}">
+        <div class="refs-card-head">
+          <span class="refs-card-name">${escapeHtml(p.label || p.name || p.id)}</span>
+          ${p.version ? `<span class="refs-card-ver">v${escapeHtml(p.version)}</span>` : ''}
+        </div>
+        ${p.description ? `<p class="refs-card-desc">${escapeHtml(p.description)}</p>` : ''}
+        <div class="refs-card-meta">
+          ${p.criticality ? `<span class="refs-card-tag">${escapeHtml(p.criticality)}</span>` : ''}
+          ${envs ? `<span class="refs-card-envs">${escapeHtml(envs)}</span>` : ''}
+        </div>
+        <div class="refs-card-foot">${btn}</div>
+      </article>
+    `;
+  }).join('');
+
+  section.innerHTML = `
+    <div class="refs-head">
+      <h2 class="refs-title">Reference Component Analysis</h2>
+      <p class="refs-sub">Curated, evidence-cited best-practice packs for well-known
+        observability components. Benchmark your pack against one to see how your
+        posture compares — the drift drill opens in <strong>Diagnose → Compare</strong>.</p>
+      ${hasPackA ? '' : '<p class="refs-note">Load a pack in <strong>Discover</strong> first to enable benchmarking.</p>'}
+    </div>
+    <div class="refs-grid">
+      ${cards || '<div class="refs-empty">Loading reference packs…</div>'}
+    </div>
+  `;
+
+  section.querySelectorAll('.refs-bench-btn').forEach(b => {
+    b.addEventListener('click', () => runBenchmark(b.dataset.product, b.dataset.refPack));
+  });
+
+  view.appendChild(section);
 }
 
 // ---------- conformance view ----------
@@ -5074,9 +5153,9 @@ function collectSurfaceBackendIds(pack, product) {
 }
 
 // Catalogue of products that have a matching reference pack. Drives the
-// Lens dropdown and the per-backend "Benchmark vs <product>-reference"
-// CTA. Keep in sync with EXAMPLE_PACKS in server/index.mjs (anything with
-// catalogue: true that maps cleanly to a product slug).
+// Lens dropdown, the per-backend "Benchmark vs <product>-reference" CTA,
+// and the Advanced → References view. Keep in sync with REFERENCE_PACKS in
+// server/index.mjs (each entry maps a product slug to its reference pack).
 const LENS_PRODUCTS = [
   { slug: 'grafana',    label: 'Grafana',    refPackId: 'grafana-reference' },
   { slug: 'prometheus', label: 'Prometheus', refPackId: 'prometheus-reference' },
@@ -6372,6 +6451,7 @@ const OBSERVA_TABS = [
 // chrome button (styled like the old action cluster) that opens a menu.
 // Each routes to a view that already exists in the dispatcher.
 const OBSERVA_ADV = [
+  { id: 'references',   label: 'References',   sub: 'catalogue reference packs · benchmark vs best practice' },
   { id: 'conformance',  label: 'Conformance',  sub: 'maturity rubric · MUST/SHOULD per tier' },
   { id: 'schema',       label: 'Schema',       sub: 'canonical YAML + v1.2 validation' },
   { id: 'otlp',         label: 'OTLP Coverage', sub: 'receiver protocols · per-signal exporters' },
@@ -6533,6 +6613,9 @@ async function boot() {
   // examples disclosure. AWAITED so the persistence rehydrate below can
   // validate saved pack IDs against the merged catalog ∪ examples set.
   await loadAndCacheExamples();
+  // Fetch the catalogue reference packs (Advanced → References) so they're
+  // available both in that view and as Pack B benchmark targets.
+  await loadAndCacheReferences();
   // Wire the Pack B "×" clear button.
   $('#pack-b-clear')?.addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -7289,6 +7372,20 @@ async function loadAndCacheExamples() {
     renderPackBSelect();
   } catch (_) { state._examplesCache = []; }
   return state._examplesCache;
+}
+
+// Catalogue reference packs (Kafka / Prometheus / Grafana) — fetched once
+// and cached. They power the Advanced → References view (reference
+// component analysis) and stay available as Pack B options so the
+// benchmark CTA can load them for comparison.
+async function loadAndCacheReferences() {
+  if (state._referencesCache?.length) return state._referencesCache;
+  try {
+    const r = await api('/api/references');
+    state._referencesCache = r.references || [];
+    renderPackBSelect();
+  } catch (_) { state._referencesCache = []; }
+  return state._referencesCache;
 }
 
 // loadAndRenderHomeExamples + openExampleAsPack lived here until the

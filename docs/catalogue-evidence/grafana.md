@@ -1,6 +1,6 @@
 # Evidence — `observability/grafana` reference pack
 
-Every non-obvious choice in [`examples/grafana.pack.yaml`](../../examples/grafana.pack.yaml) is grounded in a public, citeable source. This document is the audit trail.
+Every non-obvious choice in [`reference-packs/grafana.pack.yaml`](../../reference-packs/grafana.pack.yaml) is grounded in a public, citeable source. This document is the audit trail.
 
 **Pack target:** Grafana 11.x (current) + 10.4 LTS.
 **Tier:** tier-2 (production BAU floor).

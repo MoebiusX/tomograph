@@ -1,6 +1,6 @@
 # Evidence — `messaging/kafka` reference pack
 
-Every non-obvious choice in [`examples/kafka.pack.yaml`](../../examples/kafka.pack.yaml) is grounded in a public, citeable source. This document is the audit trail. Reviewers can — and should — follow every link, confirm the citation, and verify the pack content matches.
+Every non-obvious choice in [`reference-packs/kafka.pack.yaml`](../../reference-packs/kafka.pack.yaml) is grounded in a public, citeable source. This document is the audit trail. Reviewers can — and should — follow every link, confirm the citation, and verify the pack content matches.
 
 **Pack target:** Apache Kafka 3.x (broker + controller + clients), Strimzi 0.40+ operator-managed deployments.
 **Tier:** tier-2 (production BAU floor).

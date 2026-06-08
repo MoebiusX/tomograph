@@ -49,11 +49,14 @@ try {
   // /api/examples — the archived reference packs
   const examples = await getJson(base, '/api/examples');
   assert(Array.isArray(examples.examples), 'GET /api/examples returns examples[]');
-  assert(examples.examples.length === 8, 'examples lists all 8 archived packs', examples.examples.length, 8);
+  assert(examples.examples.length === 5, 'examples lists all 5 archived packs', examples.examples.length, 5);
   for (const id of ['payment-service', 'target-advanced', 'production-curated', 'demo-skeleton']) {
     const entry = examples.examples.find(p => p.id === id);
     assert(!!entry && entry.ok === true, `example '${id}' loads ok from examples/`, entry?.error, 'ok');
   }
+  // Catalogue reference packs moved out of /api/examples into /api/references.
+  assert(!examples.examples.find(p => /-reference$/.test(p.id)),
+         'examples no longer include catalogue reference packs');
   const target = examples.examples.find(p => p.id === 'target-advanced');
   assert(target?.criticality === 'tier-1', 'target-advanced declares tier-1');
   const demo = examples.examples.find(p => p.id === 'demo-skeleton');
@@ -72,6 +75,18 @@ try {
     assert(/pack file missing|file not found|ENOENT/i.test(live.error || ''),
            'production-live missing-file error is surfaced cleanly');
   }
+
+  // /api/references — the catalogue reference packs (Advanced → References)
+  const references = await getJson(base, '/api/references');
+  assert(Array.isArray(references.references), 'GET /api/references returns references[]');
+  assert(references.references.length === 3, 'references lists all 3 catalogue packs', references.references.length, 3);
+  for (const id of ['kafka-reference', 'prometheus-reference', 'grafana-reference']) {
+    const entry = references.references.find(p => p.id === id);
+    assert(!!entry && entry.ok === true, `reference '${id}' loads ok from reference-packs/`, entry?.error, 'ok');
+  }
+  // Reference packs remain resolvable as Pack B via /api/packs/:id.
+  const kafkaRef = await getJson(base, '/api/packs/kafka-reference');
+  assert(kafkaRef.meta?.apiVersion === 'observability.platform/v1', 'kafka-reference resolves via /api/packs/:id');
 
   // /api/packs/:id default env
   const adapted = await getJson(base, '/api/packs/payment-service');
