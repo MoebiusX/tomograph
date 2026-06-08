@@ -1,6 +1,6 @@
 # Evidence — `observability/prometheus` reference pack
 
-Every non-obvious choice in [`examples/prometheus.pack.yaml`](../../examples/prometheus.pack.yaml) is grounded in a public, citeable source. This document is the audit trail.
+Every non-obvious choice in [`reference-packs/prometheus.pack.yaml`](../../reference-packs/prometheus.pack.yaml) is grounded in a public, citeable source. This document is the audit trail.
 
 **Pack target:** Prometheus 2.45+ (current LTS line through 2.55).
 **Tier:** tier-2 (production BAU floor).

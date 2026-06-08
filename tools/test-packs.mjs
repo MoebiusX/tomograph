@@ -27,6 +27,10 @@ import { evaluateConformance } from './lib/conformance.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
 const PACKS_DIR = resolve(ROOT, 'examples');
+// Catalogue reference packs were moved out of examples/ into reference-packs/
+// (surfaced via the studio's Advanced → References view). Validate both
+// directories so the shipped reference packs stay schema-conformant.
+const REFERENCE_DIR = resolve(ROOT, 'reference-packs');
 const SCHEMA = JSON.parse(readFileSync(
   resolve(ROOT, 'vendor', 'observability-pack-spec', `v${SPEC_VERSION}`, 'observability-pack.schema.json'),
   'utf8'
@@ -69,20 +73,23 @@ if (!existsSync(PACKS_DIR)) {
   process.exit(1);
 }
 
-const packFiles = readdirSync(PACKS_DIR)
+const collectPacks = (dir) => (existsSync(dir) ? readdirSync(dir) : [])
   .filter(f => f.endsWith('.pack.yaml') || f.endsWith('.pack.yml'))
-  .sort();
+  .sort()
+  .map(file => ({ dir, file }));
+
+const packFiles = [...collectPacks(PACKS_DIR), ...collectPacks(REFERENCE_DIR)];
 
 if (!packFiles.length) {
-  process.stderr.write('no examples/*.pack.yaml files found\n');
+  process.stderr.write('no examples/*.pack.yaml or reference-packs/*.pack.yaml files found\n');
   process.exit(1);
 }
 
 process.stdout.write(`Found ${packFiles.length} pack(s):\n`);
 
-for (const file of packFiles) {
+for (const { dir, file } of packFiles) {
   process.stdout.write(`\n[${file}]\n`);
-  const path = join(PACKS_DIR, file);
+  const path = join(dir, file);
   let canonical;
   try {
     canonical = parseYaml(readFileSync(path, 'utf8'));

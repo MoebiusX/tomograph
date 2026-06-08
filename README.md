@@ -45,7 +45,11 @@ the layered tabs L1 → L2 / L2X → L3 → L4 (policy · alerting · healing) �
 GOV render the artefacts, and a **CONF** tab scores the pack against the
 maturity rubric. Five reference packs ship under [`examples/`](examples/) for
 benchmarking — a canonical example, a tier-1 reference, a tier-2 partial
-baseline, a tier-3 minimum, and the cron-managed live snapshot.
+baseline, a tier-3 minimum, and the cron-managed live snapshot. Three curated,
+evidence-cited **catalogue reference packs** (Kafka, Prometheus, Grafana) ship
+under [`reference-packs/`](reference-packs/) and surface in the studio under
+**Advanced → References** for reference component analysis (benchmark your pack
+against best practice).
 
 ## Architecture
 
@@ -86,6 +90,11 @@ examples/                                      bundled canonical v1.2 manifests
   production-curated.pack.yaml                   tier-2 partial BAU (86% MUST, honest gaps)
   target-advanced.pack.yaml                      tier-1 reference (100% MUST + 100% SHOULD)
   production-live.pack.yaml                      written by the refresh-live-pack cron
+
+reference-packs/                               catalogue reference packs (Advanced → References)
+  kafka.pack.yaml                                Apache Kafka 3.x best-practice pack
+  prometheus.pack.yaml                           Prometheus 2.45+ self-monitoring pack
+  grafana.pack.yaml                              Grafana 11.x best-practice pack
 ```
 
 ## API endpoints
@@ -95,6 +104,7 @@ examples/                                      bundled canonical v1.2 manifests
 | `GET`  | `/healthz` | `{ ok, specVersion, schemaPath }` |
 | `GET`  | `/api/packs` | Catalog of registered packs (uploaded + crawled + drafted + catalog) |
 | `GET`  | `/api/examples` | The 5 bundled reference packs under `examples/` |
+| `GET`  | `/api/references` | The 3 catalogue reference packs under `reference-packs/` |
 | `GET`  | `/api/packs/:id?env=<name>` | Adapted layered display pack |
 | `GET`  | `/api/packs/:id/canonical?env=<name>` | Canonical manifest + env overlay applied |
 | `GET`  | `/api/packs/:id/conformance?env=<name>` | Maturity-rubric scoring (the scan) |
@@ -159,6 +169,21 @@ npm run crawl -- ./payments-service 2>summary.txt > payments.pack.yaml
 npm run validate -- payments.pack.yaml      # sanity check the draft
 ```
 
+The draft loads straight into the studio. Below, a real service repo
+(`krystalinex-core`) was x-rayed — its Prometheus rules, Alertmanager configs,
+OTel Collector pipelines, and Grafana dashboards became a tier-2 draft pack
+(110 L1 contracts, 93 L3 insights, 63 L4 actions) rendered across the layers:
+
+![Discover — the x-rayed repo rendered as a layered ObservabilityPack](docs/img/xray-discover.png)
+
+The real payoff is **DIAGNOSE**: load the live system (drafted from its MCP
+server) as Pack B and the studio scores drift between what the repo *declares*
+and what's *actually running*. Here the static config drifts hard from the live
+platform — only 2% aligned, 256 declared artefacts unconfirmed live (drift
+risk), and 245 live signals never declared (shadow signals):
+
+![Diagnose — drift between the declared pack and the live MCP system](docs/img/xray-diagnose-drift.png)
+
 ### Path B — interrogate a live MCP server
 
 ```bash
@@ -170,7 +195,7 @@ See **MCP integration** below.
 ### Path C — load a hand-authored pack
 
 1. **Drop a file.** Drag a canonical `.yaml` / `.yml` / `.json` pack anywhere on the window (uses `POST /api/validate`).
-2. **Catalog file.** Add to `examples/`, then add an entry to `EXAMPLE_PACKS` in [`server/index.mjs`](server/index.mjs).
+2. **Catalog file.** Add to `examples/`, then add an entry to `EXAMPLE_PACKS` in [`server/index.mjs`](server/index.mjs). (Curated catalogue reference packs go in `reference-packs/` and are registered in `REFERENCE_PACKS` instead.)
 3. **API.** Hit `POST /api/validate` directly with the pack body for headless validation + adaptation.
 
 The CLI variants of the validate / adapt flow:

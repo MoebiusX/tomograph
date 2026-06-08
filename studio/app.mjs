@@ -27,6 +27,29 @@ const L4_SUBGROUPS = [
   { key: 'healing',  label: 'Self-healing' },
 ];
 
+// Discover resolution knob — global level-of-detail for the layers view.
+// Each stop maps to the existing per-layer `expand` flags so the default
+// (Overview) hides the inventory and surfaces only what produces/consumes
+// telemetry; raising resolution drills down top→bottom: few dashboards →
+// many panels → most metrics.
+const RESOLUTION_STOPS = [
+  { label: 'Overview', hint: 'exporters · scrape jobs · dashboards', expandL2: false, expandL3: false },
+  { label: 'Panels',   hint: '+ dashboard panels',                   expandL2: false, expandL3: true  },
+  { label: 'Metrics',  hint: '+ discovered metric inventory',        expandL2: true,  expandL3: true  },
+];
+
+// DOMAIN facet — a fixed four-bucket taxonomy that cuts ACROSS the layers,
+// answering "which slice of the stack does this artefact belong to?" The
+// layer (L1…GOV) says WHAT KIND of artefact it is; the domain says WHICH
+// PART OF THE SYSTEM it observes. Classification is deterministic (see
+// artefactDomain) and falls back to Application.
+const DOMAIN_DEFS = [
+  { id: 'infrastructure', label: 'Infrastructure' },
+  { id: 'platform',       label: 'Platform' },
+  { id: 'application',    label: 'Application' },
+  { id: 'ux',             label: 'User Experience' },
+];
+
 const CONFORMANCE_TAB = { id: 'CONF',    num: 'CONF', name: 'Conformance' };
 const COMPILE_TAB     = { id: 'COMPILE', num: 'BLD',  name: 'Compile' };
 const COMPARE_TAB     = { id: 'COMPARE', num: 'CMP',  name: 'Compare' };
@@ -70,6 +93,17 @@ const state = {
   // bindings. Persisted so the user's choice survives refresh.
   expandL2: false,
   expandL3: false,
+  // Discover resolution knob — a single global level-of-detail control for
+  // the layers view that replaces the old per-section click-to-expand.
+  // 0 = Overview (only what produces/consumes telemetry: exporters, scrape
+  // jobs, backends, dashboards), 1 = + dashboard panels, 2 = + discovered
+  // metric inventory. We hide complexity by default and let the user drill
+  // down top→bottom (few dashboards → many panels → most metrics). Drives
+  // expandL2/expandL3 above.
+  resolution: 0,
+  // Discover content filters (only active on view='layers').
+  layersSearch: '',            // free-text over card id/title/desc/tags/tool
+  layersDomain: 'all',         // facet over artefact tool/system
   // Secondary layer filter chips (only visible on view='layers').
   // 'all' stacks every layer; the layer ids narrow to one.
   layerFilter: 'all',
@@ -200,6 +234,7 @@ const PERSIST_FIELDS = [
   'compileGroupB', 'compileFlavorB', 'compileArtifactB',
   'tracePrefs',
   'expandL2', 'expandL3',
+  'resolution', 'layersSearch', 'layersDomain',
 ];
 const persistence = {
   _suspended: true,  // boot-phase guard — flipped to false once rehydrate finishes
@@ -254,7 +289,7 @@ async function rehydrateFromPersistence() {
   // Permitted views: the three workflow tabs + the Advanced deep tools.
   // Anything else (legacy 'benchmark', the removed 'compare-artefacts')
   // routes to the compliance report so we never strand the user.
-  const PERMITTED_VIEWS = new Set(['layers', 'compare', 'compile', 'conformance', 'schema', 'otlp', 'traceability', 'atlas']);
+  const PERMITTED_VIEWS = new Set(['layers', 'compare', 'compile', 'conformance', 'schema', 'otlp', 'traceability', 'atlas', 'references']);
   if (state.view && !PERMITTED_VIEWS.has(state.view)) {
     state.view = 'compare';
   }
@@ -279,6 +314,15 @@ async function rehydrateFromPersistence() {
   }
   if (typeof saved.expandL2 === 'boolean') state.expandL2 = saved.expandL2;
   if (typeof saved.expandL3 === 'boolean') state.expandL3 = saved.expandL3;
+  // Resolution knob — restore it, or derive from the legacy expand flags
+  // for sessions saved before the knob existed (back-compat).
+  if (typeof saved.resolution === 'number') {
+    applyResolution(saved.resolution);
+  } else if (typeof saved.expandL2 === 'boolean' || typeof saved.expandL3 === 'boolean') {
+    applyResolution(state.expandL2 ? 2 : (state.expandL3 ? 1 : 0));
+  }
+  if (typeof saved.layersSearch === 'string') state.layersSearch = saved.layersSearch;
+  if (typeof saved.layersDomain === 'string') state.layersDomain = saved.layersDomain;
 
   // Make sure the picker can label an archived example by pushing the
   // catalog-entry shape into state.catalog (same trick renderPackBSelect uses).
@@ -362,6 +406,9 @@ function renderPackBSelect() {
   const sel = $('#pack-b-select');
   if (!sel) return;
   // Merge catalog + cached examples, dedup by id, drop the active Pack A.
+  // Catalogue reference packs are intentionally NOT offered here: comparing
+  // a single product's reference pack against a whole service's posture is
+  // an apples-to-oranges comparison. They live under Advanced → References.
   const cat = state.catalog || [];
   const ex  = state._examplesCache || [];
   const seen = new Set();
@@ -408,7 +455,8 @@ function renderPackBSelect() {
     // Push the chosen pack into state.catalog (if not already present)
     // so loadPackB() + the catalog-entry resolver have a label to read.
     if (!state.catalog.find(p => p.id === newId)) {
-      const ex = (state._examplesCache || []).find(p => p.id === newId);
+      const ex = (state._examplesCache || []).find(p => p.id === newId)
+              || (state._referencesCache || []).find(p => p.id === newId);
       if (ex) state.catalog.push(ex);
     }
     // Lazy-load B then refresh tabs + view. Auto-switch to Compare —
@@ -685,6 +733,9 @@ function renderMainView() {
     // load options, never the marketing hero. Diagnose/Remediate need a
     // pack first, so they point the user back to Discover.
     if (state.view === 'layers') { renderDiscoverEmpty(view); return; }
+    // References (Advanced) is a catalogue browser — it renders without a
+    // pack loaded; the per-reference benchmark action then needs Pack A.
+    if (state.view === 'references') { renderReferencesView(view); return; }
     renderNeedPackPrompt(view); return;
   }
 
@@ -702,6 +753,7 @@ function renderMainView() {
     case 'compile':            renderCompileView(view); return;
     case 'schema':             renderSchemaView(view); return;
     case 'otlp':               renderOtlpView(view); return;
+    case 'references':         renderReferencesView(view); return;
     case 'layers':
     default:
       // Discover ("What Do We Have?") IS the real layer inventory —
@@ -1016,6 +1068,179 @@ function renderDiscoverDashboard(view) {
 // Layers view — stacks every layer when filter='all', narrows to one
 // otherwise. Replaces the old per-layer-tab navigation.
 function renderLayersView(view) {
+  // The Discover layers view is a toolbar (resolution knob + filters) over
+  // a body of layer sections. Toolbar and body are separate containers so
+  // typing in the search box re-renders only the sections — the input keeps
+  // focus and the slider keeps its thumb position.
+  const body = document.createElement('div');
+  body.className = 'layers-body';
+  const rerender = () => { persistence.schedule(); renderLayersBody(body); };
+  view.appendChild(renderLayersToolbar(rerender));
+  view.appendChild(body);
+  renderLayersBody(body);
+}
+
+// Apply a resolution stop: set the knob position and derive the per-layer
+// expand flags from it. Clamped so out-of-range persisted values are safe.
+function applyResolution(idx) {
+  const i = Math.max(0, Math.min(RESOLUTION_STOPS.length - 1, idx | 0));
+  state.resolution = i;
+  state.expandL2 = RESOLUTION_STOPS[i].expandL2;
+  state.expandL3 = RESOLUTION_STOPS[i].expandL3;
+}
+
+// Domain classifier — maps an artefact (plus the layer it lives on) into one
+// of the four DOMAIN_DEFS buckets. Layer is the strongest signal; tags refine
+// it. Deterministic, with Application as the catch-all.
+function artefactDomain(a, layerId) {
+  const tags = (a.tags || []).map(t => String(t).toLowerCase());
+  const has = (...t) => t.some(x => tags.includes(x));
+  // User Experience — synthetic / canary / blackbox / RUM probes that stand
+  // in for a real user. L5 Validation is the home layer for these.
+  if (layerId === 'L5' || has('synthetic', 'canary', 'blackbox', 'probe', 'rum', 'e2e')) {
+    return 'ux';
+  }
+  // Infrastructure — the telemetry plumbing & storage that physically carries
+  // signal: backends, exporters, receivers, processors, scrape jobs, the
+  // discovered metric inventory. L2 / L2X are the home layers.
+  if (layerId === 'L2' || layerId === 'L2X' ||
+      has('backend', 'exporter', 'receiver', 'processor', 'storage',
+          'metric', 'collector', 'scrape')) {
+    return 'infrastructure';
+  }
+  // Platform — cross-cutting operability: alerting, policy, recording rules,
+  // pipelines, self-healing, governance. L4 Action & GOV are the home layers.
+  if (layerId === 'L4' || layerId === 'GOV' ||
+      has('alert', 'burn-rate', 'policy', 'recording', 'pipeline',
+          'route', 'governance', 'healing')) {
+    return 'platform';
+  }
+  // Application — the service's own contract & insight: SLIs, SLOs, dashboards,
+  // panels. The catch-all (L1 / L3).
+  return 'application';
+}
+
+// Every artefact across the loaded pack's layers, tagged with its layer id
+// (L4 is grouped). Used to populate the DOMAIN filter and apply it.
+function layerArtefactsWithLayer() {
+  const out = [];
+  const layers = state.pack?.layers || {};
+  for (const def of LAYER_DEFS) {
+    if (def.id === 'L4') {
+      const l4 = layers.L4 || {};
+      for (const sg of L4_SUBGROUPS) for (const a of (l4[sg.key] || [])) out.push({ a, layerId: 'L4' });
+    } else {
+      for (const a of (layers[def.id] || [])) out.push({ a, layerId: def.id });
+    }
+  }
+  return out;
+}
+
+// Discover content filter predicate — DOMAIN dropdown + search box. layerId
+// lets the domain classifier use the artefact's home layer.
+function passesLayersFilter(a, layerId) {
+  const dom = state.layersDomain || 'all';
+  if (dom !== 'all' && artefactDomain(a, layerId) !== dom) return false;
+  const q = (state.layersSearch || '').trim().toLowerCase();
+  if (q) {
+    const hay = [a.id, a.title, a.desc, a.tool, ...(a.tags || [])]
+      .filter(Boolean).join(' ').toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
+// Toolbar for the Discover layers view: resolution knob, DOMAIN filter
+// (only when 2+ domains exist), and a search box. `rerender` rebuilds just
+// the sections body so inputs keep focus.
+function renderLayersToolbar(rerender) {
+  const wrap = document.createElement('div');
+  wrap.className = 'layers-toolbar';
+
+  // --- Layer chips (All · L1 · L2 · … · GOV) ---
+  // Primitive but indispensable on a 1500-artefact production pack: one
+  // click jumps the whole view to a single layer. Clicking a chip mutates
+  // state.layerFilter then re-renders the entire Discover view (renderTabs +
+  // renderMainView) so the active chip + sections update together.
+  wrap.appendChild(renderLayerFilterChips());
+
+  // --- Controls row: resolution knob · DOMAIN · search ---
+  const controls = document.createElement('div');
+  controls.className = 'layers-controls';
+
+  // Resolution knob
+  const res = state.resolution ?? 0;
+  const stop = RESOLUTION_STOPS[res] || RESOLUTION_STOPS[0];
+  const knob = document.createElement('div');
+  knob.className = 'res-knob';
+  knob.innerHTML = `
+    <span class="res-knob-key">RESOLUTION</span>
+    <input type="range" class="res-knob-range" min="0" max="${RESOLUTION_STOPS.length - 1}"
+           step="1" value="${res}" aria-label="Detail resolution">
+    <span class="res-knob-cap"><strong class="res-knob-label">${escapeHtml(stop.label)}</strong> <span class="res-knob-hint">${escapeHtml(stop.hint)}</span></span>
+  `;
+  const range = knob.querySelector('.res-knob-range');
+  const capLabel = knob.querySelector('.res-knob-label');
+  const capHint = knob.querySelector('.res-knob-hint');
+  // Live caption while dragging; commit (re-render sections) on release.
+  range.addEventListener('input', () => {
+    const s = RESOLUTION_STOPS[+range.value] || RESOLUTION_STOPS[0];
+    capLabel.textContent = s.label;
+    capHint.textContent = s.hint;
+  });
+  range.addEventListener('change', () => {
+    applyResolution(+range.value);
+    rerender();
+  });
+  controls.appendChild(knob);
+
+  // DOMAIN filter — fixed four-bucket taxonomy. Count artefacts per domain
+  // and only offer the dropdown when 2+ domains are actually present.
+  const domCounts = new Map();
+  for (const { a, layerId } of layerArtefactsWithLayer()) {
+    const d = artefactDomain(a, layerId);
+    domCounts.set(d, (domCounts.get(d) || 0) + 1);
+  }
+  const domOptions = DOMAIN_DEFS.filter(d => domCounts.has(d.id));
+  if (domOptions.length >= 2) {
+    // A previously-selected domain that no longer exists (pack switch) falls
+    // back to 'all' so we never filter everything out invisibly.
+    if (state.layersDomain !== 'all' && !domCounts.has(state.layersDomain)) {
+      state.layersDomain = 'all';
+    }
+    const cur = state.layersDomain || 'all';
+    const dwrap = document.createElement('label');
+    dwrap.className = 'layers-domain';
+    dwrap.innerHTML = `<span class="layers-filter-key">DOMAIN</span>`;
+    const sel = document.createElement('select');
+    sel.className = 'layers-domain-select';
+    sel.innerHTML = `<option value="all">all</option>`
+      + domOptions.map(d => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.label)} (${domCounts.get(d.id)})</option>`).join('');
+    sel.value = cur;
+    sel.onchange = () => { state.layersDomain = sel.value; rerender(); };
+    dwrap.appendChild(sel);
+    controls.appendChild(dwrap);
+  }
+
+  // Search
+  const swrap = document.createElement('div');
+  swrap.className = 'layers-search';
+  const sin = document.createElement('input');
+  sin.type = 'search';
+  sin.className = 'layers-search-input';
+  sin.placeholder = 'Search artefacts…';
+  sin.setAttribute('aria-label', 'Search artefacts');
+  sin.value = state.layersSearch || '';
+  sin.addEventListener('input', () => { state.layersSearch = sin.value; rerender(); });
+  swrap.appendChild(sin);
+  controls.appendChild(swrap);
+
+  wrap.appendChild(controls);
+  return wrap;
+}
+
+function renderLayersBody(body) {
+  body.innerHTML = '';
   const filter = state.layerFilter || 'all';
   const layersToShow = (filter === 'all')
     ? LAYER_DEFS
@@ -1026,15 +1251,15 @@ function renderLayersView(view) {
     // Skip L2X if empty (it's optional per spec v1.2).
     if (def.id === 'L2X' && layerArtefactCount('L2X') === 0) continue;
     if (def.id === 'L4') {
-      renderLayer4(view);
+      renderLayer4(body);
     } else {
       const items = state.pack.layers[def.id] || [];
-      view.appendChild(renderSection(def, items));
+      body.appendChild(renderSection(def, items));
     }
     rendered++;
   }
   if (rendered === 0) {
-    view.innerHTML = '<div class="placeholder">No artefacts on this layer.</div>';
+    body.innerHTML = '<div class="placeholder">No artefacts on this layer.</div>';
   }
 }
 
@@ -1043,49 +1268,41 @@ function renderSection(def, items, opts = {}) {
   section.className = 'section';
   section.dataset.layer = def.id;
 
-  // Expand toggle: L2 and L3 layers carry "expand-level" artefacts
-  // (metric inventory, dashboard panels) which the user prior prototype
-  // surfaced behind a checkbox. Default-collapsed so the high-level
-  // surface stays readable; flip to see everything.
+  // Apply the Discover content filters (DOMAIN + search) first so counts
+  // and expand logic operate on the filtered set.
+  const filtered = items.filter(a => passesLayersFilter(a, def.id));
+  const searching = !!(state.layersSearch || '').trim();
+
+  // L2 and L3 carry "expand-level" artefacts (metric inventory, dashboard
+  // panels) gated by the global resolution knob (state.expandL2/expandL3).
+  // An active search overrides the knob so matches are never hidden.
   const expandableLayer = (def.id === 'L2' || def.id === 'L3');
   const expandKey = def.id === 'L2' ? 'expandL2' : (def.id === 'L3' ? 'expandL3' : null);
   const expandOn = expandKey ? !!state[expandKey] : false;
-  const expandItems = items.filter(a => a.expand);
-  const baseItems   = items.filter(a => !a.expand);
-  const visible = (expandableLayer && !expandOn) ? baseItems : items;
+  const expandItems = filtered.filter(a => a.expand);
+  const baseItems   = filtered.filter(a => !a.expand);
+  const visible = (expandableLayer && !expandOn && !searching) ? baseItems : filtered;
 
   const head = document.createElement('div');
   head.className = 'section-head';
   const countLabel = expandableLayer && expandItems.length
-    ? `${visible.length} of ${items.length} artefact${items.length === 1 ? '' : 's'}`
-    : `${items.length} artefact${items.length === 1 ? '' : 's'}`;
+    ? `${visible.length} of ${filtered.length} artefact${filtered.length === 1 ? '' : 's'}`
+    : `${filtered.length} artefact${filtered.length === 1 ? '' : 's'}`;
   head.innerHTML = `
     <span class="section-num">${def.num}</span>
     <span class="section-name">${escapeHtml(opts.subtitle || def.name)}</span>
     <span class="section-count">${countLabel}</span>
   `;
-  if (expandableLayer && expandItems.length) {
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'section-expand-toggle' + (expandOn ? ' is-on' : '');
-    toggle.title = def.id === 'L2'
-      ? `Toggle the metric inventory — ${expandItems.length} discovered metric${expandItems.length === 1 ? '' : 's'} from live MCP`
-      : `Toggle dashboard panels — ${expandItems.length} panel binding${expandItems.length === 1 ? '' : 's'}`;
-    toggle.innerHTML = `<span class="section-expand-glyph" aria-hidden="true">${expandOn ? '⊟' : '⊞'}</span> ${expandOn ? 'Collapse' : 'Expand'} <span class="section-expand-count">+${expandItems.length}</span>`;
-    toggle.onclick = () => {
-      state[expandKey] = !state[expandKey];
-      renderMainView();
-    };
-    head.appendChild(toggle);
-  }
   section.appendChild(head);
 
   if (!visible.length) {
     const empty = document.createElement('div');
     empty.className = 'empty';
-    empty.textContent = expandableLayer && expandItems.length
-      ? 'collapsed — click Expand to reveal'
-      : 'no artefacts declared in this section';
+    empty.textContent = (searching || (state.layersDomain && state.layersDomain !== 'all'))
+      ? 'no artefacts match the current filter'
+      : (expandableLayer && expandItems.length
+          ? 'collapsed — raise resolution to reveal'
+          : 'no artefacts declared in this section');
     section.appendChild(empty);
     return section;
   }
@@ -1101,17 +1318,21 @@ function renderLayer4(view) {
   const head = document.createElement('div');
   head.className = 'section';
   head.dataset.layer = 'L4';
+  // Count L4 after applying the Discover content filters so the header
+  // matches the (filtered) subgroups below it.
+  const l4Count = L4_SUBGROUPS.reduce(
+    (n, sg) => n + (state.pack.layers.L4?.[sg.key] || []).filter(a => passesLayersFilter(a, 'L4')).length, 0);
   head.innerHTML = `
     <div class="section-head">
       <span class="section-num">L4</span>
       <span class="section-name">Action — policy · alerting · self-healing</span>
-      <span class="section-count">${layerArtefactCount('L4')} artefacts</span>
+      <span class="section-count">${l4Count} artefact${l4Count === 1 ? '' : 's'}</span>
     </div>
   `;
   view.appendChild(head);
 
   for (const sg of L4_SUBGROUPS) {
-    const items = state.pack.layers.L4?.[sg.key] || [];
+    const items = (state.pack.layers.L4?.[sg.key] || []).filter(a => passesLayersFilter(a, 'L4'));
     const wrapper = document.createElement('div');
     wrapper.className = 'subgroup';
     const h = document.createElement('h4');
@@ -1239,6 +1460,77 @@ async function runBenchmark(product, refPackId) {
   } catch (e) {
     console.warn('[benchmark] failed:', e);
   }
+}
+
+// ---------- references view (Advanced) ----------
+// Reference component analysis. The catalogue reference packs (Kafka,
+// Prometheus, Grafana) live here, off the main workflow, under Advanced →
+// References. Each card describes a best-practice pack and offers a
+// one-click benchmark that loads it as Pack B and jumps to Diagnose →
+// Compare. Renders even without Pack A so the catalogue is browsable; the
+// benchmark action is gated on a loaded pack.
+function renderReferencesView(view) {
+  const refs = state._referencesCache || [];
+  // Cache may not be warm yet (boot race / failed fetch) — kick a load
+  // and re-render when it lands.
+  if (!refs.length) {
+    loadAndCacheReferences().then(list => {
+      if (list?.length && state.view === 'references') renderMainView();
+    });
+  }
+
+  const section = document.createElement('section');
+  section.className = 'section refs-view';
+  section.dataset.layer = 'REF';
+
+  const slugFor = (id) => (LENS_PRODUCTS.find(lp => lp.refPackId === id) || {}).slug || null;
+  const hasPackA = !!state.pack;
+
+  const cards = refs.map(p => {
+    const slug = slugFor(p.id);
+    const envs = (p.environments || []).join(' · ');
+    const ok = p.ok !== false;
+    const canBenchmark = ok && hasPackA && !!slug;
+    const btn = canBenchmark
+      ? `<button type="button" class="refs-bench-btn" data-product="${escapeHtml(slug)}" data-ref-pack="${escapeHtml(p.id)}"
+           title="Load ${escapeHtml(p.label)} as Pack B and compare your pack against it.">⛯ Benchmark vs ${escapeHtml(p.label)} →</button>`
+      : `<span class="refs-bench-hint">${ok
+            ? (hasPackA ? 'No product lens for this pack' : 'Load a pack in Discover to benchmark')
+            : 'Reference pack failed to load'}</span>`;
+    return `
+      <article class="refs-card${ok ? '' : ' is-error'}">
+        <div class="refs-card-head">
+          <span class="refs-card-name">${escapeHtml(p.label || p.name || p.id)}</span>
+          ${p.version ? `<span class="refs-card-ver">v${escapeHtml(p.version)}</span>` : ''}
+        </div>
+        ${p.description ? `<p class="refs-card-desc">${escapeHtml(p.description)}</p>` : ''}
+        <div class="refs-card-meta">
+          ${p.criticality ? `<span class="refs-card-tag">${escapeHtml(p.criticality)}</span>` : ''}
+          ${envs ? `<span class="refs-card-envs">${escapeHtml(envs)}</span>` : ''}
+        </div>
+        <div class="refs-card-foot">${btn}</div>
+      </article>
+    `;
+  }).join('');
+
+  section.innerHTML = `
+    <div class="refs-head">
+      <h2 class="refs-title">Reference Component Analysis</h2>
+      <p class="refs-sub">Curated, evidence-cited best-practice packs for well-known
+        observability components. Benchmark your pack against one to see how your
+        posture compares — the drift drill opens in <strong>Diagnose → Compare</strong>.</p>
+      ${hasPackA ? '' : '<p class="refs-note">Load a pack in <strong>Discover</strong> first to enable benchmarking.</p>'}
+    </div>
+    <div class="refs-grid">
+      ${cards || '<div class="refs-empty">Loading reference packs…</div>'}
+    </div>
+  `;
+
+  section.querySelectorAll('.refs-bench-btn').forEach(b => {
+    b.addEventListener('click', () => runBenchmark(b.dataset.product, b.dataset.refPack));
+  });
+
+  view.appendChild(section);
 }
 
 // ---------- conformance view ----------
@@ -5074,9 +5366,9 @@ function collectSurfaceBackendIds(pack, product) {
 }
 
 // Catalogue of products that have a matching reference pack. Drives the
-// Lens dropdown and the per-backend "Benchmark vs <product>-reference"
-// CTA. Keep in sync with EXAMPLE_PACKS in server/index.mjs (anything with
-// catalogue: true that maps cleanly to a product slug).
+// Lens dropdown, the per-backend "Benchmark vs <product>-reference" CTA,
+// and the Advanced → References view. Keep in sync with REFERENCE_PACKS in
+// server/index.mjs (each entry maps a product slug to its reference pack).
 const LENS_PRODUCTS = [
   { slug: 'grafana',    label: 'Grafana',    refPackId: 'grafana-reference' },
   { slug: 'prometheus', label: 'Prometheus', refPackId: 'prometheus-reference' },
@@ -6372,6 +6664,7 @@ const OBSERVA_TABS = [
 // chrome button (styled like the old action cluster) that opens a menu.
 // Each routes to a view that already exists in the dispatcher.
 const OBSERVA_ADV = [
+  { id: 'references',   label: 'References',   sub: 'catalogue reference packs · benchmark vs best practice' },
   { id: 'conformance',  label: 'Conformance',  sub: 'maturity rubric · MUST/SHOULD per tier' },
   { id: 'schema',       label: 'Schema',       sub: 'canonical YAML + v1.2 validation' },
   { id: 'otlp',         label: 'OTLP Coverage', sub: 'receiver protocols · per-signal exporters' },
@@ -6533,6 +6826,9 @@ async function boot() {
   // examples disclosure. AWAITED so the persistence rehydrate below can
   // validate saved pack IDs against the merged catalog ∪ examples set.
   await loadAndCacheExamples();
+  // Fetch the catalogue reference packs (Advanced → References) so they're
+  // available both in that view and as Pack B benchmark targets.
+  await loadAndCacheReferences();
   // Wire the Pack B "×" clear button.
   $('#pack-b-clear')?.addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -6788,15 +7084,39 @@ function renderDiscoverEmpty(view) {
         </p>
       </header>
 
+      <ol class="discover-journey" aria-label="The drift check, in three steps">
+        <li class="discover-journey-step">
+          <span class="discover-journey-num">1</span>
+          <span class="discover-journey-body">
+            <span class="discover-journey-label">Scan a repo</span>
+            <span class="discover-journey-sub">what the service <em>declares</em> — Pack A</span>
+          </span>
+        </li>
+        <li class="discover-journey-step">
+          <span class="discover-journey-num">2</span>
+          <span class="discover-journey-body">
+            <span class="discover-journey-label">Generate from live</span>
+            <span class="discover-journey-sub">what the platform <em>verifies</em> — Pack B</span>
+          </span>
+        </li>
+        <li class="discover-journey-step">
+          <span class="discover-journey-num">3</span>
+          <span class="discover-journey-body">
+            <span class="discover-journey-label">Diagnose drift</span>
+            <span class="discover-journey-sub">where declared and live disagree — automatic</span>
+          </span>
+        </li>
+      </ol>
+
       <div class="discover-load">
         <button type="button" class="discover-load-card" data-load="crawl">
           <span class="discover-load-glyph" aria-hidden="true">↻</span>
-          <span class="discover-load-label">Crawl a repository</span>
+          <span class="discover-load-label">① Scan a repository</span>
           <span class="discover-load-sub">walk Prom / OTel / Grafana / Alertmanager configs — local folder or a GitHub URL</span>
         </button>
         <button type="button" class="discover-load-card" data-load="mcp">
           <span class="discover-load-glyph" aria-hidden="true">⟳</span>
-          <span class="discover-load-label">Generate live from MCP</span>
+          <span class="discover-load-label">② Generate live from MCP</span>
           <span class="discover-load-sub">interrogate a live OpenTelemetry MCP server for backends, baselines and anomalies</span>
         </button>
         <button type="button" class="discover-load-card" data-load="upload">
@@ -6867,10 +7187,10 @@ function renderHomeView() {
       <div class="home-hero-eyebrow">tomograph · the observability compiler</div>
       <h2 class="home-hero-title">Map your observability platform in seconds.</h2>
       <p class="home-hero-lede">
-        Connect to any OpenTelemetry MCP server. Tomograph interrogates it
-        for backends, topology, baselines, and anomalies — and renders a
-        complete, conformant ObservabilityPack v1.2 manifest you can compile
-        and deploy. Trust what your eyes see.
+        Scan a service repo to capture what it <em>declares</em>, then draft
+        from a live OpenTelemetry MCP server to capture what the platform
+        <em>verifies</em> — Tomograph diffs the two and shows you exactly where
+        they drift. Connect below to begin, or scan a repo from Discover.
       </p>
 
       <div class="home-mcp-card">
@@ -7289,6 +7609,20 @@ async function loadAndCacheExamples() {
     renderPackBSelect();
   } catch (_) { state._examplesCache = []; }
   return state._examplesCache;
+}
+
+// Catalogue reference packs (Kafka / Prometheus / Grafana) — fetched once
+// and cached. They power the Advanced → References view (reference
+// component analysis) and stay available as Pack B options so the
+// benchmark CTA can load them for comparison.
+async function loadAndCacheReferences() {
+  if (state._referencesCache?.length) return state._referencesCache;
+  try {
+    const r = await api('/api/references');
+    state._referencesCache = r.references || [];
+    renderPackBSelect();
+  } catch (_) { state._referencesCache = []; }
+  return state._referencesCache;
 }
 
 // loadAndRenderHomeExamples + openExampleAsPack lived here until the
@@ -7898,30 +8232,36 @@ function renderCrawlResult(out) {
   dl.download = `${out.canonical.metadata.name}.pack.yaml`;
 }
 
-async function adoptCrawlResult() {
-  const out = crawlState.lastResult;
-  if (!out) return;
-  // Reuse the upload flow: POST /api/validate → if ok, load into the
-  // active state and re-render. Same path as drag-dropping a yaml file
-  // onto the studio shell.
-  try {
-    const res = await validateUploaded(out.canonicalYaml, 'application/x-yaml', state.selectedEnv);
-    if (!res.ok) {
-      toast(`Could not adopt — ${res.errors.length} validation error(s)`, 'error');
-      return;
-    }
-    state.pack = res.adapted;
-    state.conformance = res.conformance;
-    state.symbolTable = buildSymbolTable(res.adapted);
-    state.uploadedSource = `${out.canonical.metadata.name} (scanned draft)`;
-    state.activeLayer = 'L1';
-    state.activeCardKey = null;
+// Shared adoption for the two pack-creation paths — Path A (repo scan)
+// and Path B (live MCP draft). Routes the new pack into the canonical
+// drift journey instead of blindly overwriting Pack A:
+//
+//   • repo scans prefer slot A ("declared"), live drafts prefer slot B
+//     ("verified") — so "scan a repo, then scan the live deployment"
+//     lands you straight in the Diagnose / drift compare view.
+//   • whichever slot is empty gets filled; as soon as BOTH are present
+//     we auto-switch to compare. With only one pack we stay in
+//     single-pack Discover.
+//   • re-running the same path while comparing replaces just that slot
+//     (a fresh repo scan refreshes A and keeps the live B, and vice
+//     versa) so the drift view stays put.
+//
+// kind ∈ {'repo','live'}. Returns true when it entered compare.
+async function adoptValidatedPack(res, sourceLabel, kind) {
+  state.pack = res.adapted;
+  state.conformance = res.conformance;
+  state.symbolTable = buildSymbolTable(res.adapted);
+  state.uploadedSource = sourceLabel;
+  state.activeCardKey = null;
+
+  const newId = res.registered?.id;
+  if (!newId) {
+    // No server id (shouldn't normally happen) — render the adapted
+    // pack inline as a single, unaddressable view.
+    state.selectedPackId = null;
     state.mode = 'single';
-    if (res.registered?.id) {
-      state.selectedPackId = res.registered.id;
-      state.selectedEnv = defaultEnvFor(state.selectedPackId);
-      await loadCatalog();
-    }
+    state.view = 'layers';
+    state.activeLayer = 'L1';
     applyModeChrome();
     renderPackSelect();
     renderPackBSelect();
@@ -7929,8 +8269,61 @@ async function adoptCrawlResult() {
     renderMeta();
     renderTabs();
     renderMainView();
+    return false;
+  }
+
+  await loadCatalog();
+
+  const prevA = state.selectedPackId;
+  const prevB = state.compareBId;
+  const wasCompare = state.mode === 'compare' && prevA && prevB;
+
+  let aId = null, bId = null;
+  if (wasCompare && (newId === prevA || newId === prevB)) {
+    // Re-adopted a pack already on screen — keep the existing pairing.
+    aId = prevA; bId = prevB;
+  } else if (wasCompare) {
+    // Already comparing — replace the slot matching this path's kind,
+    // keep the other half of the drift view intact.
+    if (kind === 'repo') { aId = newId; bId = prevB; }
+    else                 { aId = prevA; bId = newId; }
+  } else if (prevA && state.mode !== 'home' && prevA !== newId) {
+    // One pack already loaded — pair it with the new one. Repo → A,
+    // live → B; the existing pack takes the other slot.
+    if (kind === 'repo') { aId = newId; bId = prevA; }
+    else                 { aId = prevA; bId = newId; }
+  } else {
+    // Empty start (or re-adopting the only pack) — single Discover.
+    aId = newId; bId = null;
+  }
+
+  if (aId && bId && aId !== bId) {
+    state.view = 'compare';
+    enterCompareMode(aId, defaultEnvFor(aId), bId, defaultEnvFor(bId));
+    return true;
+  }
+  state.view = 'layers';
+  enterAnalyzeMode(aId, defaultEnvFor(aId));
+  return false;
+}
+
+async function adoptCrawlResult() {
+  const out = crawlState.lastResult;
+  if (!out) return;
+  // Reuse the upload flow: POST /api/validate → if ok, route the pack
+  // into the drift journey (repo scan → Pack A). Same validation path
+  // as drag-dropping a yaml file onto the studio shell.
+  try {
+    const res = await validateUploaded(out.canonicalYaml, 'application/x-yaml', state.selectedEnv);
+    if (!res.ok) {
+      toast(`Could not adopt — ${res.errors.length} validation error(s)`, 'error');
+      return;
+    }
     $('#crawl-panel').hidden = true;
-    toast(`Loaded scanned draft for ${out.canonical.metadata.name}`);
+    const compared = await adoptValidatedPack(res, `${out.canonical.metadata.name} (scanned draft)`, 'repo');
+    toast(compared
+      ? `Comparing ${out.canonical.metadata.name} against the live deployment`
+      : `Loaded scanned draft for ${out.canonical.metadata.name}`);
   } catch (e) {
     toast(`Adopt failed: ${e.message}`, 'error');
   }
@@ -8553,27 +8946,12 @@ async function adoptDraftFromMcpResult() {
       toast(`Could not adopt — ${res.errors.length} validation error(s)`, 'error');
       return;
     }
-    state.pack = res.adapted;
-    state.conformance = res.conformance;
-    state.symbolTable = buildSymbolTable(res.adapted);
-    state.uploadedSource = `${out.canonical.metadata.name} (live draft)`;
-    state.activeLayer = 'L1';
-    state.activeCardKey = null;
-    state.mode = 'single';
-    if (res.registered?.id) {
-      state.selectedPackId = res.registered.id;
-      state.selectedEnv = defaultEnvFor(state.selectedPackId);
-      await loadCatalog();
-    }
-    applyModeChrome();
-    renderPackSelect();
-    renderPackBSelect();
-    renderEnvSelect();
-    renderMeta();
-    renderTabs();
-    renderMainView();
     $('#draft-mcp-panel').hidden = true;
-    toast(`Loaded live draft for ${out.canonical.metadata.name}`);
+    // Live drafts are the "verified" half of the drift journey → Pack B.
+    const compared = await adoptValidatedPack(res, `${out.canonical.metadata.name} (live draft)`, 'live');
+    toast(compared
+      ? `Comparing the repo scan against ${out.canonical.metadata.name} (live)`
+      : `Loaded live draft for ${out.canonical.metadata.name}`);
   } catch (e) {
     toast(`Adopt failed: ${e.message}`, 'error');
   }

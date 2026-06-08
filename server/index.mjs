@@ -72,27 +72,6 @@ const PACK_CATALOG = [];
 // in the picker, so duplicating it in the name reads as noise.
 const EXAMPLE_PACKS = [
   {
-    id: 'kafka-reference',
-    label: 'Kafka (catalogue reference)',
-    path: 'examples/kafka.pack.yaml',
-    description: 'State-of-the-art reference pack for Apache Kafka 3.x. Five operational vital signs, multi-window burn-rate alerts, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/kafka.md.',
-    catalogue: true,
-  },
-  {
-    id: 'prometheus-reference',
-    label: 'Prometheus (catalogue reference)',
-    path: 'examples/prometheus.pack.yaml',
-    description: 'State-of-the-art reference pack for Prometheus 2.45+ self-monitoring (via Meta-Prometheus pattern). Eight operational vital signs, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/prometheus.md.',
-    catalogue: true,
-  },
-  {
-    id: 'grafana-reference',
-    label: 'Grafana (catalogue reference)',
-    path: 'examples/grafana.pack.yaml',
-    description: 'State-of-the-art reference pack for Grafana 11.x including unified alerting. Eight operational vital signs (HTTP, datasource proxy, database, alerting evaluation, plugins, login), 4 chaos experiments, 3-layer synthetic checks. Paired with the Prometheus reference pack. Every section evidence-cited in docs/catalogue-evidence/grafana.md.',
-    catalogue: true,
-  },
-  {
     id: 'payment-service',
     label: 'Payment service (canonical example)',
     path: 'examples/payment-service.pack.yaml',
@@ -110,17 +89,36 @@ const EXAMPLE_PACKS = [
     path: 'examples/production-curated.pack.yaml',
     description: 'Hand-curated baseline with intentional gaps the conformance panel surfaces.',
   },
+];
+
+// Catalogue reference packs — the curated, evidence-cited "state of the
+// art" packs for well-known observability components (Kafka, Prometheus,
+// Grafana). These are NOT example packs: they live under reference-packs/
+// and are surfaced through the studio's Advanced → References view (the
+// reference component analysis), where the user benchmarks their own pack
+// against best practice. Browsed via GET /api/references; loaded as Pack B
+// via /api/packs/:id. Keep in sync with LENS_PRODUCTS in studio/app.mjs.
+const REFERENCE_PACKS = [
   {
-    id: 'production-live',
-    label: 'Production live (MCP fetcher)',
-    path: 'examples/production-live.pack.yaml',
-    description: 'Refreshed by the refresh-live-pack workflow. Reflects MCP-verifiable state.',
+    id: 'kafka-reference',
+    label: 'Kafka (catalogue reference)',
+    path: 'reference-packs/kafka.pack.yaml',
+    description: 'State-of-the-art reference pack for Apache Kafka 3.x. Five operational vital signs, multi-window burn-rate alerts, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/kafka.md.',
+    catalogue: true,
   },
   {
-    id: 'demo-skeleton',
-    label: 'Demo skeleton (smallest valid pack)',
-    path: 'examples/demo-skeleton.pack.yaml',
-    description: "Smallest valid canonical v1.2 pack — every schema-required section with the leanest content.",
+    id: 'prometheus-reference',
+    label: 'Prometheus (catalogue reference)',
+    path: 'reference-packs/prometheus.pack.yaml',
+    description: 'State-of-the-art reference pack for Prometheus 2.45+ self-monitoring (via Meta-Prometheus pattern). Eight operational vital signs, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/prometheus.md.',
+    catalogue: true,
+  },
+  {
+    id: 'grafana-reference',
+    label: 'Grafana (catalogue reference)',
+    path: 'reference-packs/grafana.pack.yaml',
+    description: 'State-of-the-art reference pack for Grafana 11.x including unified alerting. Eight operational vital signs (HTTP, datasource proxy, database, alerting evaluation, plugins, login), 4 chaos experiments, 3-layer synthetic checks. Paired with the Prometheus reference pack. Every section evidence-cited in docs/catalogue-evidence/grafana.md.',
+    catalogue: true,
   },
 ];
 
@@ -340,13 +338,22 @@ function findPackMeta(id) {
   const upl = uploadedMeta(id);
   if (upl) return upl;
   return PACK_CATALOG.find(p => p.id === id)
-      || EXAMPLE_PACKS.find(p => p.id === id);
+      || EXAMPLE_PACKS.find(p => p.id === id)
+      || REFERENCE_PACKS.find(p => p.id === id);
 }
 
 // Browse the archived reference packs without auto-loading them. The
 // home screen renders these as a small "Browse examples" affordance.
 app.get('/api/examples', (req, res) => {
   res.json({ examples: EXAMPLE_PACKS.map(catalogEntry) });
+});
+
+// Catalogue reference packs — the curated best-practice packs surfaced in
+// the studio's Advanced → References view (reference component analysis).
+// Kept separate from /api/examples so they no longer appear in the
+// example-pack list, only under References.
+app.get('/api/references', (req, res) => {
+  res.json({ references: REFERENCE_PACKS.map(catalogEntry) });
 });
 
 app.get('/api/packs/:id', (req, res) => {

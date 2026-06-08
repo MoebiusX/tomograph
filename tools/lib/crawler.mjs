@@ -21,7 +21,15 @@
 // for the engineer to fill in.
 // ============================================================
 
-import { parse as parseYaml, emit as emitYaml } from './mini-yaml.mjs';
+import { parse as parseYaml, parseAll as parseYamlAll, emit as emitYaml } from './mini-yaml.mjs';
+import { inferSlisFromRecordingRules, ruleNameToSloId } from './sli-inference.mjs';
+
+// Parse a (possibly multi-document) YAML file into a list of non-null
+// documents. Prometheus rule files, Alertmanager configs and Kubernetes
+// manifests are frequently shipped as multi-document streams (`---`).
+function parseYamlDocs(content) {
+  return parseYamlAll(content).filter(d => d && typeof d === 'object');
+}
 
 // Known backend image-name fragments → spec.telemetry.backends.product enum.
 // Prefix match against the docker-compose service image. Order matters —
@@ -66,7 +74,8 @@ const BACKEND_PATTERNS = [
  * @param {string} relPath - repo-relative path
  * @param {string} content - file content
  * @returns {string} kind: 'prometheus-rules' | 'alertmanager' | 'grafana-dashboard' |
- *                          'otel-collector' | 'docker-compose' | 'helm-chart' | 'unknown'
+ *                          'otel-collector' | 'docker-compose' | 'helm-chart' |
+ *                          'helm-template' | 'unknown'
  */
 export function detectArtefactKind(relPath, content) {
   const lower = relPath.toLowerCase();
@@ -82,6 +91,15 @@ export function detectArtefactKind(relPath, content) {
   }
   // YAML — could be many things; look at shape.
   if (!/\.ya?ml$/i.test(lower)) return 'unknown';
+
+  // Helm template — Go-template scaffolding ({{ include ... }}, {{ .Values.x }})
+  // breaks plain YAML parsing, so these files would otherwise be misclassified
+  // or silently dropped. Route them to walkHelmTemplate, which lifts the
+  // observability payloads embedded in rendered ConfigMaps (Prometheus rules,
+  // dashboards, …). Checked before the filename heuristics because a templated
+  // `configmap-alertmanager.yaml` is a Helm template first, an Alertmanager
+  // config second.
+  if (looksLikeHelm(content)) return 'helm-template';
 
   // Filename heuristics first — fastest.
   if (/(^|\/)(docker-)?compose\.ya?ml$/.test(lower))             return 'docker-compose';
@@ -164,20 +182,52 @@ export function crawlFiles(filesInput, opts = {}) {
         case 'alertmanager':     walkAlertmanager(f, alertingRoutes, evidence, summary); break;
         case 'otel-collector':   walkOtelCollector(f, pipelines, evidence, summary); break;
         case 'grafana-dashboard':walkGrafanaDashboard(f, dashboards, evidence, summary); break;
-        case 'helm-chart':       summary.warnings.push(`Helm Chart at ${f.relPath} detected — chart introspection not yet implemented.`); break;
+        case 'helm-template':    walkHelmTemplate(f, { backends, recordingRules, burnRateAlerts, alertingRoutes, dashboards, pipelines }, evidence, summary); break;
+        // Chart.yaml itself carries no observability contracts — the payloads
+        // live in the templated manifests (handled as 'helm-template'). We
+        // record the chart only as a signal that this is a Helm-packaged repo.
+        case 'helm-chart':       summary.discovered.helmCharts = (summary.discovered.helmCharts || 0) + 1; break;
       }
     } catch (e) {
       summary.warnings.push(`Failed to parse ${f.relPath}: ${e.message}`);
     }
   }
 
-  // ----- infer SLIs/SLOs from alert names -----
-  // Burn-rate alerts target an SLO; if the alert references a metric we
-  // recognise we can synthesize the SLI/SLO. We never invent thresholds
-  // we can't justify — we emit a placeholder PromQL + an annotation.
+  // ----- infer SLIs/SLOs (decompiler ⇄ compiler symmetry) -----
+  // PRIMARY source: recording rules. compile.mjs materialises every SLI in
+  // spec.slis as `<svc>:<sli>:<op>` recording rules, so reading those names
+  // back is the exact inverse — and it is the SAME derivation the live
+  // system reconstruction uses (tools/fetch-live-pack.mjs). A pack that is
+  // compiled, deployed, then crawled (or drafted from its live MCP) now
+  // describes its L1 contracts in one shared vocabulary, so diff.mjs can
+  // actually match them instead of reporting false drift.
   const sliMap = new Map();
   const sloMap = new Map();
+  for (const { sli, slo } of inferSlisFromRecordingRules(recordingRules)) {
+    if (!sliMap.has(sli.id)) { sliMap.set(sli.id, sli); summary.inferred.slis++; }
+    if (!sloMap.has(slo.id)) { sloMap.set(slo.id, slo); summary.inferred.slos++; }
+  }
+
+  // Burn-rate alerts target an SLO. The compiler only ever emits alerts
+  // FROM an SLO, so the faithful inverse treats recording rules as the
+  // authoritative L1 source and reverses an alert into a contract only when
+  // it is genuinely an SLO burn-rate alert:
+  //   1. it references a recorded ratio series we already turned into an
+  //      SLO (the exact inverse of compile.mjs) — link it; or
+  //   2. no recording-rule SLIs were discovered at all (a tier-3 repo) — in
+  //      that case fall back to the legacy alert-name synthesis so the pack
+  //      still has at least one contract.
+  // Operational alerts (CPU, disk, pod, queue-down, …) in a repo that DOES
+  // define recorded SLIs are NOT SLOs; they're dropped from the burn-rate
+  // policy rather than manufacturing junk L1 contracts that can never match
+  // the live system.
+  const haveRecordedSlis = sliMap.size > 0;
   for (const alert of burnRateAlerts) {
+    const linked = linkAlertToRecordedSlo(alert, sloMap);
+    if (linked) { alert.slo = linked; continue; }
+
+    if (haveRecordedSlis) { alert._drop = true; continue; }
+
     const sloId = alert.slo;
     if (!sloMap.has(sloId)) {
       const sliId = sloId.replace(/_99|_999|_995|_slo$/i, '') || sloId;
@@ -188,6 +238,7 @@ export function crawlFiles(filesInput, opts = {}) {
         window: '30d',
         error_budget_policy: 'ref:platform/default-budget',
       });
+      summary.inferred.slos++;
       if (!sliMap.has(sliId)) {
         sliMap.set(sliId, {
           id: sliId,
@@ -198,9 +249,21 @@ export function crawlFiles(filesInput, opts = {}) {
         });
         summary.inferred.slis++;
       }
-      summary.inferred.slos++;
     }
   }
+
+  // Drop operational (non-SLO) alerts, then fold the remaining burn-rate
+  // alerts that now share a recording-rule SLO into one entry per SLO,
+  // unioning their windows so the emitted policy stays valid.
+  const droppedOps = burnRateAlerts.filter(a => a._drop).length;
+  if (droppedOps) {
+    summary.warnings.push(`Excluded ${droppedOps} operational alert(s) from burn-rate policy — not SLO burn-rate alerts (no recorded-ratio reference). They remain available as alerting signals.`);
+  }
+  for (let i = burnRateAlerts.length - 1; i >= 0; i--) {
+    if (burnRateAlerts[i]._drop) burnRateAlerts.splice(i, 1);
+  }
+  dedupeBurnRateAlerts(burnRateAlerts);
+
 
   // If still no SLI/SLO discovered, fill the minimum tier-3 stub so the
   // result validates.
@@ -346,7 +409,7 @@ export function crawlFiles(filesInput, opts = {}) {
       pipelines,
       queries: { recording_rules: recordingRules },
       dashboards,
-      policy: { burn_rate_alerts: burnRateAlerts },
+      policy: { burn_rate_alerts: burnRateAlerts.map(({ slo, windows }) => ({ slo, windows })) },
       alerting: { routes: alertingRoutes },
       baselines,
       validation: {
@@ -394,13 +457,169 @@ export function crawlToYaml(filesInput, opts) {
 }
 
 // ============================================================
+// Helm chart introspection
+// ============================================================
+
+// Does this file carry Go/Helm template scaffolding? We deliberately key off
+// the unambiguous Helm signals \u2014 the `include`/`template`/`tpl`/`define`/`block`
+// functions and the built-in `.Values` / `.Release` / `.Chart` / `.Capabilities`
+// / `.Files` objects. This is intentionally narrower than "contains `{{`": bare
+// `{{ $labels.x }}` / `{{ $value }}` / `{{ range .Alerts }}` appear in ordinary
+// Prometheus and Alertmanager annotation templating and must NOT be mistaken
+// for Helm.
+function looksLikeHelm(content) {
+  return /\{\{-?\s*(include|template|tpl|define|block)\b/.test(content)
+      || /\{\{[^{}]*\.(Values|Release|Chart|Capabilities|Files)\b/.test(content);
+}
+
+// Best-effort neutralisation of Go/Helm template syntax so the underlying YAML
+// structure can be parsed. Pure control-flow / definition lines ({{- if }},
+// {{- end }}, {{- range }}, comments, \u2026) are dropped; inline value injections
+// ({{ .Values.x }}, {{ include "\u2026" . }}) collapse to a stable placeholder
+// token. We are not rendering the chart \u2014 only recovering enough shape to read
+// the embedded observability contracts back out.
+function stripGoTemplate(content) {
+  return content.split(/\r?\n/).map((line) => {
+    const t = line.trim();
+    if (/^\{\{-?\s*\/\*[\s\S]*?\*\/\s*-?\}\}$/.test(t)) return null;            // comment
+    if (/^\{\{-?\s*(if|else|end|range|with|define|block)\b.*?-?\}\}$/.test(t)) return null; // control flow
+    return line
+      .replace(/\{\{-?\s*"\{\{"\s*-?\}\}/g, '{')   // Helm literal-open escape: {{ "{{" }} -> {
+      .replace(/\{\{-?\s*"\}\}"\s*-?\}\}/g, '}')   // Helm literal-close escape: {{ "}}" }} -> }
+      .replace(/\{\{-?[\s\S]*?-?\}\}/g, 'helmvalue'); // inline value injection
+  }).filter((l) => l !== null).join('\n');
+}
+
+// Lift the embedded file payloads out of a Kubernetes ConfigMap's `data:` map.
+// Each `  <name>.<ext>: |` literal-block scalar (Prometheus rules, scrape
+// configs, dashboards, \u2026) is captured verbatim and de-indented. The scan is
+// purely indentation-driven, so the surrounding Helm/Go-template directives in
+// the unrendered manifest don't get in the way.
+function extractConfigMapData(content) {
+  const lines = content.split(/\r?\n/);
+  const blocks = [];
+  let dataIndent = -1;      // indentation of the active `data:` key, or -1
+  let current = null;       // { key, indent, body: [] }
+
+  const flush = () => {
+    if (current && current.body.some((l) => l.trim())) {
+      const widths = current.body.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length);
+      const base = widths.length ? Math.min(...widths) : 0;
+      blocks.push({ key: current.key, body: current.body.map((l) => l.slice(base)).join('\n') });
+    }
+    current = null;
+  };
+
+  for (const line of lines) {
+    const indent = line.match(/^ */)[0].length;
+    const trimmed = line.trim();
+
+    if (current) {
+      // Literal-block body continues while indentation stays deeper than the
+      // key (blank lines belong to the block too).
+      if (trimmed === '' || indent > current.indent) { current.body.push(line); continue; }
+      flush(); // fall through to re-classify the dedented line below
+    }
+
+    const dataM = /^(\s*)data:\s*$/.exec(line);
+    if (dataM) { dataIndent = dataM[1].length; continue; }
+
+    if (dataIndent >= 0) {
+      if (trimmed !== '' && indent <= dataIndent) {
+        dataIndent = -1;   // left the data block
+      } else {
+        const keyM = /^(\s*)([\w][\w.\-]*):\s*\|[-+0-9]*\s*$/.exec(line);
+        if (keyM && keyM[1].length > dataIndent) {
+          current = { key: keyM[2], indent: keyM[1].length, body: [] };
+          continue;
+        }
+      }
+    }
+  }
+  flush();
+  return blocks;
+}
+
+// Content-only artefact sniff (no filename heuristics). Used for the Helm
+// whole-document fallback, where template names like `deployment-alertmanager.yaml`
+// would otherwise mislead the filename-based detector into parsing a Deployment
+// as an Alertmanager config. We only route a templated document when its *shape*
+// genuinely matches an observability artefact.
+function sniffObservabilityKind(content) {
+  let obj;
+  try { obj = parseYaml(content); } catch (_) { return 'unknown'; }
+  if (!obj || typeof obj !== 'object') return 'unknown';
+  if (Array.isArray(obj.groups) && obj.groups.some(g => g.rules?.some(r => 'record' in r || 'alert' in r))) return 'prometheus-rules';
+  if (obj.route && Array.isArray(obj.receivers)) return 'alertmanager';
+  if (obj.receivers && obj.exporters && obj.service?.pipelines) return 'otel-collector';
+  if (obj.services && typeof obj.services === 'object'
+      && Object.values(obj.services).some(s => s?.image)) return 'docker-compose';
+  return 'unknown';
+}
+
+// Introspect a Helm template. The valuable observability contracts in a chart
+// are rendered into Kubernetes ConfigMaps (Prometheus recording/alerting rules,
+// Grafana dashboards, Alertmanager routes, OTel pipelines). We extract those
+// embedded payloads and route each through the same per-kind walker the raw
+// artefact would use \u2014 so a rule shipped inside a chart is decompiled exactly
+// like a rule shipped as a standalone file. If the template embeds nothing, we
+// strip the scaffolding and treat the document itself as a single manifest.
+function walkHelmTemplate(f, buckets, evidence, summary) {
+  const { backends, recordingRules, burnRateAlerts, alertingRoutes, dashboards, pipelines } = buckets;
+  const route = (kind, sub) => {
+    switch (kind) {
+      case 'prometheus-rules': walkPrometheusRules(sub, recordingRules, burnRateAlerts, evidence, summary); return true;
+      case 'alertmanager':     walkAlertmanager(sub, alertingRoutes, evidence, summary); return true;
+      case 'otel-collector':   walkOtelCollector(sub, pipelines, evidence, summary); return true;
+      case 'grafana-dashboard':walkGrafanaDashboard(sub, dashboards, evidence, summary); return true;
+      case 'docker-compose':   walkDockerCompose(sub, backends, evidence, summary); return true;
+      default: return false;
+    }
+  };
+
+  const blocks = extractConfigMapData(f.content);
+
+  for (const { key, body } of blocks) {
+    const clean = stripGoTemplate(body);
+    const lk = key.toLowerCase();
+    const sub = { relPath: `${f.relPath}#${key}`, content: clean };
+    let kind = 'unknown';
+
+    if (/rule/.test(lk) || /^groups:\s*$/m.test(clean))                              kind = 'prometheus-rules';
+    else if (lk.endsWith('.json') || /"schemaVersion"\s*:/.test(clean))              kind = 'grafana-dashboard';
+    else if (/^route:/m.test(clean) && /^receivers:/m.test(clean))                   kind = 'alertmanager';
+    else if (/^receivers:/m.test(clean) && /^exporters:/m.test(clean) && /pipelines:/.test(clean)) kind = 'otel-collector';
+
+    // A ConfigMap whose data key looks like an observability artefact but
+    // can't be parsed is a genuine signal worth surfacing; ordinary
+    // non-observability data keys (scripts, plain config) are simply skipped.
+    try { route(kind, sub); }
+    catch (e) { summary.warnings.push(`Failed to parse ${sub.relPath}: ${e.message}`); }
+  }
+
+  // No embedded ConfigMap payloads — the template may itself be a single
+  // observability manifest. Route it only when its *shape* matches (filename
+  // heuristics are unreliable for Helm template names like
+  // `deployment-alertmanager.yaml`); stay silent otherwise, since the
+  // overwhelming majority of chart templates are Deployments, Services,
+  // Secrets, etc. that carry no observability contracts.
+  if (blocks.length === 0) {
+    const clean = stripGoTemplate(f.content);
+    const kind = sniffObservabilityKind(clean);
+    if (kind !== 'unknown') {
+      try { route(kind, { relPath: f.relPath, content: clean }); } catch (_) { /* speculative */ }
+    }
+  }
+}
+
+// ============================================================
 // Per-kind walkers
 // ============================================================
 
 function walkDockerCompose(f, backends, evidence, summary) {
-  const obj = parseYaml(f.content);
-  if (!obj?.services) return;
-  for (const [svcName, svc] of Object.entries(obj.services)) {
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!obj?.services) continue;
+    for (const [svcName, svc] of Object.entries(obj.services)) {
     const image = String(svc?.image || '');
     if (!image) continue;
     for (const p of BACKEND_PATTERNS) {
@@ -429,6 +648,7 @@ function walkDockerCompose(f, backends, evidence, summary) {
       }
     }
   }
+  }
 }
 
 function inferEndpoint(svc, product) {
@@ -444,35 +664,41 @@ function inferEndpoint(svc, product) {
 }
 
 function walkPrometheusRules(f, recordingRules, burnRateAlerts, evidence, summary) {
-  const obj = parseYaml(f.content);
-  if (!obj?.groups) return;
-  for (const group of obj.groups) {
-    for (const rule of group.rules || []) {
-      if (rule.record) {
-        const id = `QRY-${recordingRules.length + 1}-${slug(rule.record).slice(0, 16)}`;
-        const entry = {
-          name: rule.record,
-          expr: typeof rule.expr === 'string' ? rule.expr : String(rule.expr || ''),
-        };
-        if (group.interval) entry.interval = group.interval;
-        recordingRules.push(entry);
-        evidence[id] = `${f.relPath}#${group.name || '_'}/${rule.record}`;
-        summary.discovered.recordingRules++;
-      } else if (rule.alert) {
-        // Burn-rate alerts in repos can take many shapes; the most we
-        // can do is record the alert name as a target SLO. The shape
-        // checking will fall back to defaults later.
-        const sloId = slug(rule.alert).replace(/-burn-?rate.*$/, '_99');
-        if (!burnRateAlerts.some(a => a.slo === sloId)) {
-          const windows = parseAlertWindows(rule);
-          burnRateAlerts.push({ slo: sloId, windows });
-          const id = `pol-${burnRateAlerts.length}`;
-          evidence[id] = `${f.relPath}#${group.name || '_'}/${rule.alert}`;
-          summary.discovered.burnRateAlerts++;
+  let any = false;
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!Array.isArray(obj.groups)) continue;
+    any = true;
+    for (const group of obj.groups) {
+      for (const rule of group.rules || []) {
+        if (rule.record) {
+          const id = `QRY-${recordingRules.length + 1}-${slug(rule.record).slice(0, 16)}`;
+          const entry = {
+            name: rule.record,
+            expr: typeof rule.expr === 'string' ? rule.expr : String(rule.expr || ''),
+          };
+          if (group.interval) entry.interval = group.interval;
+          recordingRules.push(entry);
+          evidence[id] = `${f.relPath}#${group.name || '_'}/${rule.record}`;
+          summary.discovered.recordingRules++;
+        } else if (rule.alert || rule.title) {
+          // `rule.alert` is the Prometheus form; `rule.title` is the Grafana
+          // unified-alerting form (provisioned alert rules). Both target an
+          // SLO we synthesize from the alert name.
+          const alertName = rule.alert || rule.title;
+          const sloId = slug(alertName).replace(/-burn-?rate.*$/, '_99');
+          if (!burnRateAlerts.some(a => a.slo === sloId)) {
+            const windows = parseAlertWindows(rule);
+            const expr = typeof rule.expr === 'string' ? rule.expr : String(rule.expr || '');
+            burnRateAlerts.push({ slo: sloId, windows, expr, alertName });
+            const id = `pol-${burnRateAlerts.length}`;
+            evidence[id] = `${f.relPath}#${group.name || '_'}/${alertName}`;
+            summary.discovered.burnRateAlerts++;
+          }
         }
       }
     }
   }
+  if (!any) return;
 }
 
 function parseAlertWindows(rule) {
@@ -488,17 +714,54 @@ function parseAlertWindows(rule) {
   return out;
 }
 
+// Map a burn-rate alert to a recording-rule-derived SLO by scanning its
+// expression for any `ns:metric:op` recorded-series reference. Returns the
+// matching SLO id present in `sloMap`, or null. This is the inverse of the
+// compiler, which builds burn-rate alerts on top of the recorded ratios.
+function linkAlertToRecordedSlo(alert, sloMap) {
+  const expr = typeof alert?.expr === 'string' ? alert.expr : '';
+  if (!expr) return null;
+  const re = /[a-z][a-z0-9_]*:[a-z][a-z0-9_]*:[a-z0-9_]+/g;
+  let m;
+  while ((m = re.exec(expr)) !== null) {
+    const sloId = ruleNameToSloId(m[0]);
+    if (sloId && sloMap.has(sloId)) return sloId;
+  }
+  return null;
+}
+
+// Collapse burn-rate alerts that now share an SLO (after linking) into one
+// entry per SLO, unioning their windows (de-duplicated by short/long/factor)
+// so spec.policy.burn_rate_alerts stays one-entry-per-SLO and valid.
+function dedupeBurnRateAlerts(alerts) {
+  const bySlo = new Map();
+  for (const a of alerts) {
+    if (!bySlo.has(a.slo)) { bySlo.set(a.slo, a); continue; }
+    const tgt = bySlo.get(a.slo);
+    const seen = new Set((tgt.windows || []).map(w => `${w.short}|${w.long}|${w.factor}`));
+    for (const w of a.windows || []) {
+      const k = `${w.short}|${w.long}|${w.factor}`;
+      if (!seen.has(k)) { tgt.windows.push(w); seen.add(k); }
+    }
+    a._drop = true;
+  }
+  for (let i = alerts.length - 1; i >= 0; i--) {
+    if (alerts[i]._drop) alerts.splice(i, 1);
+  }
+}
+
 function walkAlertmanager(f, routes, evidence, summary) {
-  const obj = parseYaml(f.content);
-  if (!obj?.route) return;
-  // Walk top-level route + its children. Each route → one entry per severity.
-  const collected = [];
-  walkRoute(obj.route, collected, obj.receivers || []);
-  for (const r of collected) {
-    const id = `ALR-${routes.length + 1}`;
-    routes.push(r);
-    evidence[id] = `${f.relPath}#route/${r.severity || 'default'}`;
-    summary.discovered.alertingRoutes++;
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!obj?.route) continue;
+    // Walk top-level route + its children. Each route → one entry per severity.
+    const collected = [];
+    walkRoute(obj.route, collected, obj.receivers || []);
+    for (const r of collected) {
+      const id = `ALR-${routes.length + 1}`;
+      routes.push(r);
+      evidence[id] = `${f.relPath}#route/${r.severity || 'default'}`;
+      summary.discovered.alertingRoutes++;
+    }
   }
 }
 
@@ -545,35 +808,36 @@ function receiverChannels(recv) {
 }
 
 function walkOtelCollector(f, pipelines, evidence, summary) {
-  const obj = parseYaml(f.content);
-  if (!obj?.service?.pipelines) return;
-  const seen = new Set();
-  for (const pipeline of Object.values(obj.service.pipelines)) {
-    for (const recv of pipeline.receivers || []) {
-      if (!seen.has(`r:${recv}`)) {
-        seen.add(`r:${recv}`);
-        pipelines.receivers.push({ name: recv.split('/')[0] });
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!obj?.service?.pipelines) continue;
+    const seen = new Set();
+    for (const pipeline of Object.values(obj.service.pipelines)) {
+      for (const recv of pipeline.receivers || []) {
+        if (!seen.has(`r:${recv}`)) {
+          seen.add(`r:${recv}`);
+          pipelines.receivers.push({ name: recv.split('/')[0] });
+        }
+      }
+      for (const proc of pipeline.processors || []) {
+        if (!seen.has(`p:${proc}`)) {
+          seen.add(`p:${proc}`);
+          pipelines.processors.push({ name: proc.split('/')[0] });
+        }
+      }
+      for (const exp of pipeline.exporters || []) {
+        const kind = exp.split('/')[0];
+        const sig = Object.entries(obj.service.pipelines).find(([_, p]) => p === pipeline)?.[0] || '';
+        const signalClass = /^metrics/i.test(sig) ? 'metrics'
+                         : /^logs/i.test(sig) ? 'logs'
+                         : /^traces/i.test(sig) ? 'traces' : null;
+        if (signalClass && !pipelines.exporters[signalClass]) {
+          pipelines.exporters[signalClass] = { kind: mapExporterKind(kind) };
+        }
       }
     }
-    for (const proc of pipeline.processors || []) {
-      if (!seen.has(`p:${proc}`)) {
-        seen.add(`p:${proc}`);
-        pipelines.processors.push({ name: proc.split('/')[0] });
-      }
-    }
-    for (const exp of pipeline.exporters || []) {
-      const kind = exp.split('/')[0];
-      const sig = Object.entries(obj.service.pipelines).find(([_, p]) => p === pipeline)?.[0] || '';
-      const signalClass = /^metrics/i.test(sig) ? 'metrics'
-                       : /^logs/i.test(sig) ? 'logs'
-                       : /^traces/i.test(sig) ? 'traces' : null;
-      if (signalClass && !pipelines.exporters[signalClass]) {
-        pipelines.exporters[signalClass] = { kind: mapExporterKind(kind) };
-      }
-    }
+    evidence[`PIP-${summary.discovered.pipelines + 1}`] = f.relPath;
+    summary.discovered.pipelines++;
   }
-  evidence[`PIP-${summary.discovered.pipelines + 1}`] = f.relPath;
-  summary.discovered.pipelines++;
 }
 
 function mapExporterKind(name) {
