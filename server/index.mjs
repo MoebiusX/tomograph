@@ -542,17 +542,18 @@ const DEPLOY_VERSIONS = {
   grafana: ['12', '13'],
 };
 const RULES_SCOPES = ['both', 'recording', 'alerting'];
+const GRAFANA_ALERT_RULE_TOOL = 'grafana_create_alert_rule';
+const GRAFANA_DASHBOARD_TOOL = 'grafana_create_dashboard';
+const GRAFANA_FOLDER_DEFAULT = 'observability-pack';
 
 // (product, target) → default MCP tool name. The server lets the client
 // override via body.mcpTool; this dispatch supplies the convention.
 function defaultDeployTool({ product, target, scope }) {
   if (product === 'grafana') {
     if (target === 'prometheus-rules') {
-      if (scope === 'recording') return 'apply_grafana_recording_rules';
-      if (scope === 'alerting')  return 'apply_grafana_alerting_rules';
-      return 'apply_grafana_rules';   // both
+      return GRAFANA_ALERT_RULE_TOOL;
     }
-    if (target === 'grafana-dashboard') return 'apply_grafana_dashboard';
+    if (target === 'grafana-dashboard') return GRAFANA_DASHBOARD_TOOL;
   }
   return null;   // not deployable
 }
@@ -570,10 +571,16 @@ function deployToolMissingError(tool, availableTools) {
   const related = (availableTools || [])
     .filter(t => /apply|deploy|create|upsert|write|provision|grafana|rule|dashboard/i.test(t))
     .slice(0, 18);
+  let hint = 'Configure a Grafana write-capable MCP gateway, or add a compatible deploy adapter before retrying.';
+  if (tool === GRAFANA_ALERT_RULE_TOOL) {
+    hint = 'For otel-mcp-server, set MCP_ENABLE_WRITES=true, configure GRAFANA_URL and GRAFANA_AUTH_TOKEN with alert.provisioning:write on the MCP server, and pass a valid MCP client key in Tomograph when MCP_AUTH_KEYS is configured.';
+  } else if (tool === GRAFANA_DASHBOARD_TOOL) {
+    hint = 'For otel-mcp-server, set MCP_ENABLE_WRITES=true, configure GRAFANA_URL and GRAFANA_AUTH_TOKEN with dashboards:write on the MCP server, and pass a valid MCP client key in Tomograph when MCP_AUTH_KEYS is configured.';
+  }
   const suffix = related.length
     ? ` Advertised related tools: ${related.join(', ')}.`
     : ' No related write-capable tools were advertised.';
-  return `MCP endpoint does not expose required deploy tool '${tool}'.${suffix} Configure a Grafana write-capable MCP gateway, or add a compatible deploy adapter before retrying.`;
+  return `MCP endpoint does not expose required deploy tool '${tool}'.${suffix} ${hint}`;
 }
 
 function targetIsDeployable(target) {
@@ -632,6 +639,89 @@ function filterPromRulesScope(yamlText, scope) {
   return header + emitYaml(obj);
 }
 
+function scopeMatchesGrafanaRule(rule, scope) {
+  if (!scope || scope === 'both') return true;
+  const isRecording = !!rule?.record;
+  return scope === 'recording' ? isRecording : !isRecording;
+}
+
+function normalizeGrafanaProvisioningRule(rule, group = {}, folder = '') {
+  const out = { ...(rule || {}) };
+  if (out.noDataState === undefined && out.no_data_state !== undefined) {
+    out.noDataState = out.no_data_state;
+    delete out.no_data_state;
+  }
+  if (out.execErrState === undefined && out.exec_err_state !== undefined) {
+    out.execErrState = out.exec_err_state;
+    delete out.exec_err_state;
+  }
+  if (out.isPaused === undefined && out.is_paused !== undefined) {
+    out.isPaused = out.is_paused;
+    delete out.is_paused;
+  }
+  if (out.folderUID === undefined) {
+    out.folderUID = folder || group.folderUID || group.folderUid || group.folder || GRAFANA_FOLDER_DEFAULT;
+  }
+  if (out.ruleGroup === undefined) {
+    out.ruleGroup = group.name || 'observability-pack';
+  }
+  return out;
+}
+
+function grafanaRulesFromProvisioningYaml(yamlText, { scope = 'both', folder = '' } = {}) {
+  const obj = parseYaml(String(yamlText || '').replace(/^(\s*#[^\n]*\n)+/, ''));
+  const groups = Array.isArray(obj?.groups) ? obj.groups : [];
+  const rules = [];
+  for (const group of groups) {
+    for (const rule of (Array.isArray(group?.rules) ? group.rules : [])) {
+      if (!scopeMatchesGrafanaRule(rule, scope)) continue;
+      rules.push(normalizeGrafanaProvisioningRule(rule, group, folder));
+    }
+  }
+  return rules;
+}
+
+function dashboardFromCompiledJson(jsonText) {
+  const dashboard = JSON.parse(jsonText);
+  if (!dashboard || typeof dashboard !== 'object' || Array.isArray(dashboard)) {
+    throw new Error('compiled dashboard did not produce a Grafana dashboard object');
+  }
+  return dashboard;
+}
+
+function buildNativeDeployCalls({ target, compiled, scope, folder, tool, mode = 'upsert', dryRun = false, message }) {
+  if (tool === GRAFANA_ALERT_RULE_TOOL) {
+    const rules = grafanaRulesFromProvisioningYaml(compiled.content, { scope, folder });
+    if (!rules.length) {
+      throw new Error(`no Grafana-managed ${scope && scope !== 'both' ? scope + ' ' : ''}rules found in compiled artefact`);
+    }
+    return rules.map(rule => ({
+      tool,
+      args: { rule, mode, dry_run: dryRun },
+      bytes: JSON.stringify(rule).length,
+      name: rule.title || rule.uid || rule.record?.metric || 'rule',
+      kind: rule.record ? 'recording' : 'alerting',
+    }));
+  }
+  if (tool === GRAFANA_DASHBOARD_TOOL) {
+    const dashboard = dashboardFromCompiledJson(compiled.content);
+    return [{
+      tool,
+      args: {
+        dashboard,
+        folder_uid: folder || undefined,
+        message: message || undefined,
+        mode,
+        dry_run: dryRun,
+      },
+      bytes: JSON.stringify(dashboard).length,
+      name: dashboard.title || dashboard.uid || compiled.filename,
+      kind: 'dashboard',
+    }];
+  }
+  return null;
+}
+
 // ----------------------------------------------------------------
 // POST /api/packs/:id/deploy-bulk — multi-artefact deploy.
 // Body: {
@@ -653,6 +743,8 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   const product = (typeof body.targetProduct === 'string' && body.targetProduct.trim()) ? body.targetProduct.trim() : 'grafana';
   const version = (typeof body.targetVersion === 'string' && body.targetVersion.trim()) ? body.targetVersion.trim() : '12';
   const folder  = typeof body.targetFolder === 'string' ? body.targetFolder.trim() : '';
+  const mode = ['create', 'upsert', 'update'].includes(body.mode) ? body.mode : 'upsert';
+  const dryRun = body.dryRun === true || body.dry_run === true;
   const items = Array.isArray(body.items) ? body.items : null;
   const env = readEnv(req.query);
 
@@ -690,7 +782,7 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
     try {
       const compiled = compileArtifact(overlaid, {
         group: item.group,
-        flavor: item.flavor,
+        flavor: (product === 'grafana' && item.group === 'rules') ? 'grafana-managed' : item.flavor,
         artifact: item.artifact || 'all',
         dashboardId: item.dashboardId,
       });
@@ -705,26 +797,39 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
         results.push({ item, ok: false, tool, error: deployToolMissingError(tool, availableTools), tookMs: Date.now() - itStart });
         continue;
       }
-      // Filter rules to scope if applicable.
-      const payload = (itemTarget === 'prometheus-rules' && scope && scope !== 'both')
-        ? filterPromRulesScope(compiled.content, scope)
-        : compiled.content;
-      const result = await callTool(tool, {
-        payload,
-        content_type: compiled.contentType,
-        environment: env || undefined,
-        filename: compiled.filename,
-        pack_source: `${meta.id}@${overlaid?.metadata?.version || '?'}`,
+      const nativeCalls = buildNativeDeployCalls({
         target: itemTarget,
-        target_product: product,
-        target_version: version,
+        compiled,
         scope,
-        folder: folder || undefined,
-        artifact_group: item.group,
-        artifact_flavor: item.flavor,
-        artifact_id: item.artifact,
+        folder,
+        tool,
+        mode,
+        dryRun,
+        message: `Tomograph deploy ${meta.id}@${overlaid?.metadata?.version || '?'}`,
       });
-      results.push({ item, ok: true, tool, bytes: payload.length, tookMs: Date.now() - itStart, result });
+      if (!nativeCalls) {
+        results.push({ item, ok: false, tool, error: `no native deploy adapter for '${tool}'`, tookMs: Date.now() - itStart });
+        continue;
+      }
+      const callResults = [];
+      for (const call of nativeCalls) {
+        callResults.push({
+          name: call.name,
+          kind: call.kind,
+          result: await callTool(call.tool, call.args),
+        });
+      }
+      results.push({
+        item,
+        ok: true,
+        tool,
+        mode,
+        dryRun,
+        operations: nativeCalls.length,
+        bytes: nativeCalls.reduce((sum, c) => sum + c.bytes, 0),
+        tookMs: Date.now() - itStart,
+        result: callResults,
+      });
     } catch (e) {
       results.push({ item, ok: false, error: e.message, tookMs: Date.now() - itStart });
     }
@@ -740,6 +845,8 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
     targetProduct: product,
     targetVersion: version,
     targetFolder: folder || null,
+    mode,
+    dryRun,
     missingTools: [...missingTools],
     mcpToolsAvailable: availableTools,
     env,
@@ -766,6 +873,9 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
     ? body.targetProduct.trim() : 'grafana';
   const version = (typeof body.targetVersion === 'string' && body.targetVersion.trim())
     ? body.targetVersion.trim() : '12';
+  const folder = typeof body.targetFolder === 'string' ? body.targetFolder.trim() : '';
+  const mode = ['create', 'upsert', 'update'].includes(body.mode) ? body.mode : 'upsert';
+  const dryRun = body.dryRun === true || body.dry_run === true;
   const scope = (target === 'prometheus-rules' && typeof body.scope === 'string' && RULES_SCOPES.includes(body.scope))
     ? body.scope : (target === 'prometheus-rules' ? 'both' : undefined);
 
@@ -791,7 +901,10 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
   try {
     const canonical = loadPackCanonical(meta);
     const { canonical: overlaid } = overlaidCanonical(canonical, env);
-    const compiled = compile(overlaid, target, { dashboardId });
+    const nativeTool = mcpTool === GRAFANA_ALERT_RULE_TOOL || mcpTool === GRAFANA_DASHBOARD_TOOL;
+    const compiled = (mcpTool === GRAFANA_ALERT_RULE_TOOL && product === 'grafana' && target === 'prometheus-rules')
+      ? compileArtifact(overlaid, { group: 'rules', flavor: 'grafana-managed', artifact: 'all' })
+      : compile(overlaid, target, { dashboardId });
 
     // For rules deploy, apply the scope filter (recording-only / alerting-only).
     const payload = (target === 'prometheus-rules')
@@ -799,7 +912,7 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
       : compiled.content;
 
     process.stderr.write(`[deploy] ${meta.id}@${canonical.metadata?.version || '?'} -> ${mcpUrl} via ${mcpTool} ` +
-      `(${product} ${version}, target=${target}, scope=${scope || '—'}, env=${env || 'none'}, ${payload.length}b)\n`);
+      `(${product} ${version}, target=${target}, scope=${scope || '—'}, env=${env || 'none'}, mode=${mode}, ${payload.length}b)\n`);
 
     const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth });
     await rpc('initialize', {
@@ -808,27 +921,60 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
       clientInfo: { name: 'observabilitypack-studio-deploy', version: '0.3.0' },
     }).catch(() => {});
 
-    const args = {
-      payload,
-      content_type: compiled.contentType,
-      environment: env || undefined,
-      filename: compiled.filename,
-      pack_source: `${meta.id}@${canonical.metadata?.version || '?'}`,
-      target,
-      target_product: product,
-      target_version: version,
-      scope: scope || undefined,
-    };
-    const result = await callTool(mcpTool, args);
+    const availableTools = await discoverMcpToolNames(rpc);
+    if (availableTools && !availableTools.includes(mcpTool)) {
+      throw new Error(deployToolMissingError(mcpTool, availableTools));
+    }
+
+    let result;
+    let bytes = payload.length;
+    let operations = 1;
+    if (nativeTool) {
+      const nativeCalls = buildNativeDeployCalls({
+        target,
+        compiled,
+        scope,
+        folder,
+        tool: mcpTool,
+        mode,
+        dryRun,
+        message: `Tomograph deploy ${meta.id}@${canonical.metadata?.version || '?'}`,
+      });
+      result = [];
+      operations = nativeCalls.length;
+      bytes = nativeCalls.reduce((sum, c) => sum + c.bytes, 0);
+      for (const call of nativeCalls) {
+        result.push({
+          name: call.name,
+          kind: call.kind,
+          result: await callTool(call.tool, call.args),
+        });
+      }
+    } else {
+      const args = {
+        payload,
+        content_type: compiled.contentType,
+        environment: env || undefined,
+        filename: compiled.filename,
+        pack_source: `${meta.id}@${canonical.metadata?.version || '?'}`,
+        target,
+        target_product: product,
+        target_version: version,
+        scope: scope || undefined,
+        folder: folder || undefined,
+      };
+      result = await callTool(mcpTool, args);
+    }
 
     const tookMs = Date.now() - t0;
     process.stderr.write(`[deploy]   ok in ${tookMs}ms\n`);
     res.json({
       ok: true,
       target, env, tool: mcpTool, mcpUrl,
-      targetProduct: product, targetVersion: version, scope: scope || null,
+      targetProduct: product, targetVersion: version, scope: scope || null, targetFolder: folder || null,
+      mode, dryRun, operations,
       filename: compiled.filename,
-      bytes: payload.length,
+      bytes,
       tookMs,
       result,
     });
@@ -836,7 +982,8 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
     const tookMs = Date.now() - t0;
     process.stderr.write(`[deploy]   error in ${tookMs}ms: ${e.message}\n`);
     res.status(502).json({ ok: false, error: e.message, tool: mcpTool, target,
-      targetProduct: product, targetVersion: version, scope: scope || null, env, tookMs });
+      targetProduct: product, targetVersion: version, scope: scope || null, targetFolder: folder || null,
+      mode, dryRun, env, tookMs });
   }
 });
 

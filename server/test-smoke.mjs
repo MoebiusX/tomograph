@@ -7,6 +7,7 @@
  */
 
 import { start } from './index.mjs';
+import { createServer } from 'node:http';
 
 const failures = [];
 function assert(cond, label, got, want) {
@@ -26,6 +27,45 @@ async function getText(base, path) {
   const r = await fetch(`${base}${path}`);
   if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
   return r.text();
+}
+
+async function startFakeMcp(toolNames) {
+  const calls = [];
+  const srv = createServer(async (req, res) => {
+    let raw = '';
+    req.setEncoding('utf8');
+    for await (const chunk of req) raw += chunk;
+    let msg = {};
+    try { msg = JSON.parse(raw || '{}'); } catch (_) {}
+    const send = (result) => {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Mcp-Session-Id': 'smoke-session',
+      });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id ?? 1, result }));
+    };
+    if (msg.method === 'initialize') {
+      send({ protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'fake-mcp' } });
+      return;
+    }
+    if (msg.method === 'tools/list') {
+      send({ tools: toolNames.map(name => ({ name })) });
+      return;
+    }
+    if (msg.method === 'tools/call') {
+      calls.push(msg.params);
+      send({ content: [{ type: 'text', text: JSON.stringify({ ok: true, name: msg.params?.name }) }] });
+      return;
+    }
+    send({});
+  });
+  await new Promise(resolve => srv.listen(0, '127.0.0.1', resolve));
+  const addr = srv.address();
+  return {
+    url: `http://${addr.address}:${addr.port}/mcp`,
+    calls,
+    close: () => new Promise(resolve => srv.close(resolve)),
+  };
 }
 
 const srv = await start({ port: 0, silent: true });
@@ -311,8 +351,8 @@ try {
   });
   assert(deployBadMcp.status === 502, 'deploy unreachable MCP → 502');
   const deployErr = await deployBadMcp.json();
-  // Default deploy is to Grafana 12 with scope=both → apply_grafana_rules.
-  assert(deployErr.tool === 'apply_grafana_rules',
+  // Default deploy is to Grafana 12 with scope=both → otel-mcp-server's Grafana rule writer.
+  assert(deployErr.tool === 'grafana_create_alert_rule',
          'deploy 502 echoes the default tool for prometheus-rules → Grafana 12 + scope=both');
   assert(deployErr.target === 'prometheus-rules', 'deploy 502 echoes the target');
   assert(deployErr.targetProduct === 'grafana', 'deploy 502 echoes targetProduct');
@@ -356,7 +396,7 @@ try {
   assert(/unsupported.*version/i.test(badVerBody.error || ''),
          'bad-version error names the unsupported version');
 
-  // Deploy with scope=recording → default tool flips to recording variant
+  // Deploy with scope=recording → same Grafana alert-rule writer; scope filters the compiled rules.
   const deployRecording = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -364,20 +404,58 @@ try {
   });
   assert(deployRecording.status === 502, 'deploy with scope=recording → 502 from unreachable mcp');
   const recBody = await deployRecording.json();
-  assert(recBody.tool === 'apply_grafana_recording_rules',
-         'scope=recording defaults to apply_grafana_recording_rules');
+  assert(recBody.tool === 'grafana_create_alert_rule',
+         'scope=recording defaults to grafana_create_alert_rule');
   assert(recBody.scope === 'recording', 'echoes scope=recording');
 
-  // Deploy with scope=alerting → default tool flips again
+  // Deploy with scope=alerting → same tool, different scope.
   const deployAlerting = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no', scope: 'alerting', targetVersion: '13' }),
   });
   const alrBody = await deployAlerting.json();
-  assert(alrBody.tool === 'apply_grafana_alerting_rules',
-         'scope=alerting defaults to apply_grafana_alerting_rules');
+  assert(alrBody.tool === 'grafana_create_alert_rule',
+         'scope=alerting defaults to grafana_create_alert_rule');
   assert(alrBody.targetVersion === '13', 'echoes Grafana 13');
+
+  // Bulk deploy → converts Grafana-managed provisioning YAML into the JSON
+  // shape expected by otel-mcp-server's write tool.
+  const fakeMcp = await startFakeMcp(['grafana_create_alert_rule', 'grafana_create_dashboard']);
+  try {
+    const deployBulk = await fetch(`${base}/api/packs/payment-service/deploy-bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mcpUrl: fakeMcp.url,
+        targetProduct: 'grafana',
+        targetVersion: '12',
+        targetFolder: 'observability-pack',
+        items: [{ group: 'rules', flavor: 'prometheus', artifact: 'declared:0', scope: 'recording' }],
+      }),
+    });
+    assert(deployBulk.status === 200, 'deploy-bulk to fake MCP → 200');
+    const bulkBody = await deployBulk.json();
+    assert(bulkBody.ok === true && bulkBody.summary?.ok === 1,
+           'deploy-bulk reports the selected artefact as deployed');
+    assert(fakeMcp.calls.length === 1, 'deploy-bulk made one MCP tool call for one declared rule',
+           fakeMcp.calls.length, 1);
+    const call = fakeMcp.calls[0];
+    assert(call.name === 'grafana_create_alert_rule',
+           'deploy-bulk calls grafana_create_alert_rule');
+    assert(call.arguments?.mode === 'upsert',
+           'deploy-bulk uses idempotent upsert mode by default');
+    assert(call.arguments?.rule?.folderUID === 'observability-pack',
+           'deploy-bulk maps targetFolder to rule.folderUID');
+    assert(call.arguments?.rule?.ruleGroup,
+           'deploy-bulk populates rule.ruleGroup from the provisioning group');
+    assert(call.arguments?.rule?.record?.metric,
+           'deploy-bulk sends recording rule record.metric');
+    assert(call.arguments?.rule?.noDataState === 'OK' && !('no_data_state' in call.arguments.rule),
+           'deploy-bulk converts Grafana YAML snake_case fields to API camelCase');
+  } finally {
+    await fakeMcp.close();
+  }
 
   // /api/maturity-rubric
   const rubric = await getJson(base, '/api/maturity-rubric');

@@ -171,16 +171,16 @@
         </label>
       </div>
       <label class="deploy-field">
-        <span class="deploy-field-key">Target URL</span>
+        <span class="deploy-field-key">Target URL <em>(Grafana, for profile notes)</em></span>
         <input id="deploy-target-url" type="url" placeholder="https://grafana.example.net" autocomplete="off">
       </label>
       <div class="deploy-field-grid">
         <label class="deploy-field">
-          <span class="deploy-field-key">Auth <em>(user:password or token, not persisted)</em></span>
-          <input id="deploy-target-auth" type="password" placeholder="bearer token" autocomplete="off">
+          <span class="deploy-field-key">MCP client key <em>(optional, not persisted)</em></span>
+          <input id="deploy-target-auth" type="password" placeholder="sk-..." autocomplete="off">
         </label>
         <label class="deploy-field">
-          <span class="deploy-field-key">Grafana folder</span>
+          <span class="deploy-field-key">Grafana folder UID</span>
           <input id="deploy-target-folder" type="text" placeholder="observability-pack" autocomplete="off">
         </label>
       </div>

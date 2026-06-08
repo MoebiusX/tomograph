@@ -2909,7 +2909,7 @@ function renderDeployBulkResult(body) {
     <tr class="${r.ok ? 'is-ok' : 'is-err'}">
       <td>${r.ok ? '✓' : '✗'}</td>
       <td><code>${escapeHtml(r.item?.group || '')}/${escapeHtml(r.item?.artifact || '')}</code></td>
-      <td>${r.ok ? `${r.bytes || 0} b · ${r.tool || ''}` : escapeHtml(r.error || 'failed')}</td>
+      <td>${r.ok ? `${r.operations || 1} op · ${r.bytes || 0} b · ${r.tool || ''}` : escapeHtml(r.error || 'failed')}</td>
       <td>${r.tookMs || 0} ms</td>
     </tr>
   `).join('');

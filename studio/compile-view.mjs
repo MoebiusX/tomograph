@@ -727,14 +727,11 @@ export function renderCompileView(host) {
 // server/index.mjs::defaultDeployTool.
 function computeDeployTool(target) {
   const product = state.deployProduct;
-  const scope   = state.deployScope;
   if (product === 'grafana') {
     if (target === 'prometheus-rules') {
-      if (scope === 'recording') return 'apply_grafana_recording_rules';
-      if (scope === 'alerting')  return 'apply_grafana_alerting_rules';
-      return 'apply_grafana_rules';
+      return 'grafana_create_alert_rule';
     }
-    if (target === 'grafana-dashboard') return 'apply_grafana_dashboard';
+    if (target === 'grafana-dashboard') return 'grafana_create_dashboard';
   }
   return `apply_${String(target || '').replace(/-/g, '_')}`;
 }
@@ -785,11 +782,11 @@ function renderDeployPanelMarkup(target) {
       </label>
       <label class="mcp-field">
         <span class="mcp-field-key">Tool name <em>(default per product · version · scope)</em></span>
-        <input id="deploy-mcp-tool" type="text" placeholder="apply_*" autocomplete="off">
+        <input id="deploy-mcp-tool" type="text" placeholder="grafana_create_alert_rule" autocomplete="off">
       </label>
       <label class="mcp-field">
-        <span class="mcp-field-key">Auth token <em>(optional, not persisted)</em></span>
-        <input id="deploy-mcp-auth" type="password" placeholder="bearer token" autocomplete="off">
+        <span class="mcp-field-key">MCP client key <em>(optional, not persisted)</em></span>
+        <input id="deploy-mcp-auth" type="password" placeholder="sk-..." autocomplete="off">
       </label>
       <div class="deploy-panel-actions">
         <button id="deploy-go-btn" class="mcp-refresh-btn" type="button">deploy</button>
