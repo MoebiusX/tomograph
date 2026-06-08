@@ -4047,6 +4047,17 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
 
   // ===== Trust criteria (2B) =====
 
+  // The live/verified evidence (MCP probe outcomes + refreshedAt) is
+  // stamped by the fetcher onto whichever pack was drafted from live.
+  // In the drift journey Pack A is the declared repo scan (no MCP) and
+  // Pack B is the live draft that carries the evidence; in the single-
+  // pack refreshed workflow Pack A carries its own evidence. Read the
+  // trust signals from whichever pack actually has MCP annotations,
+  // favouring the live half (Pack B).
+  const annB = packB?.meta?.annotations || packB?.metadata?.annotations || {};
+  const hasMcpAnnotations = (a) => !!a && Object.keys(a).some(k => k.startsWith('mcp.'));
+  const liveAnn = hasMcpAnnotations(annB) ? annB : ann;
+
   // ---- 6. Chaos-validated ----
   const chaosCount = L5.filter(a => /^CHAOS-/.test(a.id || '')).length;
   const chaosValidated = chaosCount > 0;
@@ -4055,11 +4066,11 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
   // Live signal integrity: did the declarations the pack makes about
   // the world match what the MCP actually observed? Read directly off
   // the probe-outcome annotations stamped by the fetcher.
-  const probesAttempted = (ann['mcp.probesAttempted']  || '').split(',').filter(Boolean);
-  const probesSucceeded = (ann['mcp.probesSucceeded']  || '').split(',').filter(Boolean);
-  const probesEmpty     = (ann['mcp.probesEmpty']      || '').split(',').filter(Boolean);
-  const probesFailed    = (ann['mcp.probesFailed']     || '').split(',').filter(Boolean);
-  const hasMcpSource = probesAttempted.length > 0 || !!ann['mcp.refreshedAt'];
+  const probesAttempted = (liveAnn['mcp.probesAttempted']  || '').split(',').filter(Boolean);
+  const probesSucceeded = (liveAnn['mcp.probesSucceeded']  || '').split(',').filter(Boolean);
+  const probesEmpty     = (liveAnn['mcp.probesEmpty']      || '').split(',').filter(Boolean);
+  const probesFailed    = (liveAnn['mcp.probesFailed']     || '').split(',').filter(Boolean);
+  const hasMcpSource = probesAttempted.length > 0 || !!liveAnn['mcp.refreshedAt'];
   let driftFree, driftDetail;
   if (!hasMcpSource) {
     driftFree = false;
@@ -4079,7 +4090,7 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
   }
 
   // ---- 8. Fresh ----
-  const refreshedAtStr = ann['mcp.refreshedAt'];
+  const refreshedAtStr = liveAnn['mcp.refreshedAt'];
   let fresh, freshDetail;
   if (!refreshedAtStr) {
     fresh = false;
