@@ -10,7 +10,8 @@
 
 import { state } from './state.mjs';
 import { escapeHtml } from './util.mjs';
-import { renderMainView, runBenchmark, loadAndCacheReferences, LENS_PRODUCTS } from './app.mjs';
+import { renderMainView, runBenchmark, loadAndCacheReferences } from './app.mjs';
+import { LENS_PRODUCTS } from './compare-view.mjs';
 
 export function renderReferencesView(view) {
   const refs = state._referencesCache || [];

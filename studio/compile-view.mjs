@@ -17,7 +17,8 @@ import {
   focusedCompileFlavor, setFocusedCompileFlavor,
   focusedCompileArtifact, setFocusedCompileArtifact,
 } from './focus.mjs';
-import { catalogEntryFor, layerItemsFor, loadDiff, openDeployModal, renderMainView, LAYERS_FOR_DIFF } from './app.mjs';
+import { openDeployModal, renderMainView } from './app.mjs';
+import { catalogEntryFor, layerItemsFor, loadDiff, LAYERS_FOR_DIFF } from './compare-view.mjs';
 
 // ---------- COMPILE view ----------
 //
