@@ -68,24 +68,26 @@ const PACK_CATALOG = [];
 // the home screen's "Browse examples" link. Each entry mirrors the
 // catalog shape so the existing /api/packs/:id paths keep working when
 // the user opens an example.
+// Labels intentionally omit the tier — it renders as a separate badge
+// in the picker, so duplicating it in the name reads as noise.
 const EXAMPLE_PACKS = [
   {
     id: 'kafka-reference',
-    label: 'Kafka (catalogue reference · tier-2)',
+    label: 'Kafka (catalogue reference)',
     path: 'examples/kafka.pack.yaml',
     description: 'State-of-the-art reference pack for Apache Kafka 3.x. Five operational vital signs, multi-window burn-rate alerts, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/kafka.md.',
     catalogue: true,
   },
   {
     id: 'prometheus-reference',
-    label: 'Prometheus (catalogue reference · tier-2)',
+    label: 'Prometheus (catalogue reference)',
     path: 'examples/prometheus.pack.yaml',
     description: 'State-of-the-art reference pack for Prometheus 2.45+ self-monitoring (via Meta-Prometheus pattern). Eight operational vital signs, 4 chaos experiments. Every section evidence-cited in docs/catalogue-evidence/prometheus.md.',
     catalogue: true,
   },
   {
     id: 'grafana-reference',
-    label: 'Grafana (catalogue reference · tier-2)',
+    label: 'Grafana (catalogue reference)',
     path: 'examples/grafana.pack.yaml',
     description: 'State-of-the-art reference pack for Grafana 11.x including unified alerting. Eight operational vital signs (HTTP, datasource proxy, database, alerting evaluation, plugins, login), 4 chaos experiments, 3-layer synthetic checks. Paired with the Prometheus reference pack. Every section evidence-cited in docs/catalogue-evidence/grafana.md.',
     catalogue: true,
@@ -98,15 +100,15 @@ const EXAMPLE_PACKS = [
   },
   {
     id: 'target-advanced',
-    label: 'Target advanced (tier-1 reference)',
+    label: 'Target advanced (aspirational reference)',
     path: 'examples/target-advanced.pack.yaml',
     description: 'Aspirational tier-1 — 100% MUST conformance, all 5 SHOULDs pass.',
   },
   {
     id: 'production-curated',
-    label: 'Production curated (tier-2 BAU)',
+    label: 'Production curated (hand-authored baseline)',
     path: 'examples/production-curated.pack.yaml',
-    description: 'Hand-curated tier-2 baseline with intentional gaps the conformance panel surfaces.',
+    description: 'Hand-curated baseline with intentional gaps the conformance panel surfaces.',
   },
   {
     id: 'production-live',
@@ -116,7 +118,7 @@ const EXAMPLE_PACKS = [
   },
   {
     id: 'demo-skeleton',
-    label: 'Demo skeleton (tier-3 minimum)',
+    label: 'Demo skeleton (smallest valid pack)',
     path: 'examples/demo-skeleton.pack.yaml',
     description: "Smallest valid canonical v1.2 pack — every schema-required section with the leanest content.",
   },
@@ -166,7 +168,7 @@ function contentHash(canonical) {
   return createHash('sha256').update(json).digest('hex').slice(0, 8);
 }
 
-function registerUploadedPack(canonical, source) {
+function registerUploadedPack(canonical, source, label) {
   const slug = slugify(canonical?.metadata?.name || source || 'pack');
   const id = `uploaded-${slug}-${contentHash(canonical)}`;
   // Idempotent: if the same canonical content was already registered,
@@ -174,7 +176,16 @@ function registerUploadedPack(canonical, source) {
   // id. That makes re-upload safe (no duplicate entries) AND keeps the
   // user's pick alive when they're actively working with that pack.
   if (UPLOADED_PACKS.has(id)) UPLOADED_PACKS.delete(id);
-  UPLOADED_PACKS.set(id, { canonical, source: source || 'upload', createdAt: Date.now() });
+  // ALSO drop any older entry whose friendly label collides with the
+  // new one. This is how the quick-start cases stay deduplicated:
+  // a second "KrystalineX (repo scan)" replaces the first instead of
+  // accumulating clones in the picker.
+  if (label) {
+    for (const [otherId, rec] of [...UPLOADED_PACKS.entries()]) {
+      if (rec.label === label && otherId !== id) UPLOADED_PACKS.delete(otherId);
+    }
+  }
+  UPLOADED_PACKS.set(id, { canonical, source: source || 'upload', label, createdAt: Date.now() });
   // Evict the oldest if we've blown the cap.
   while (UPLOADED_PACKS.size > MAX_UPLOADS) {
     const oldestKey = UPLOADED_PACKS.keys().next().value;
@@ -190,7 +201,9 @@ function uploadedMeta(id) {
     id,
     path: null,        // signal: not file-backed
     canonical: upl.canonical,
-    label: upl.canonical?.metadata?.name || id,
+    // Prefer the explicit friendly label when present, fall back to
+    // the canonical pack name. This is what the picker dropdown reads.
+    label: upl.label || upl.canonical?.metadata?.name || id,
     description: `Uploaded pack — ${upl.source}`,
     source: upl.source,
     uploaded: true,
@@ -358,6 +371,14 @@ app.get('/api/packs/:id/canonical', (req, res) => {
     const canonical = loadPackCanonical(meta);
     const env = readEnv(req.query);
     const { canonical: overlaid, effective } = overlaidCanonical(canonical, env);
+    // Allow ?format=yaml to return the manifest as text/yaml for the
+    // Schema view's canonical-source pane (saves a round-trip + an
+    // ESM YAML emitter on the client).
+    if (req.query.format === 'yaml' || req.query.format === 'yml') {
+      res.set('Content-Type', 'application/x-yaml; charset=utf-8');
+      res.send(emitYaml(overlaid));
+      return;
+    }
     res.json({ ...overlaid, __effectiveEnvironment: env, __effective: effective });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -850,6 +871,8 @@ app.post('/api/draft-from-mcp', async (req, res) => {
     const ann = pack.metadata?.annotations || {};
     const probesAttempted = (ann['mcp.probesAttempted'] || '').split(',').filter(Boolean);
     const probesSucceeded = (ann['mcp.probesSucceeded'] || '').split(',').filter(Boolean);
+    const probesEmpty     = (ann['mcp.probesEmpty']     || '').split(',').filter(Boolean);
+    const probesFailed    = (ann['mcp.probesFailed']    || '').split(',').filter(Boolean);
 
     // Parse the capability inventory (skill → backend → product → versions)
     // out of the flat annotation set the fetcher stamped. The studio's
@@ -895,7 +918,7 @@ app.post('/api/draft-from-mcp', async (req, res) => {
         // tools/list inventory — what the MCP advertised vs what we matched
         toolsExposed:    (ann['mcp.toolsExposed']    || '').split(',').filter(Boolean),
         toolsUnmatched:  (ann['mcp.toolsUnmatched']  || '').split(',').filter(Boolean),
-        probesAttempted, probesSucceeded,
+        probesAttempted, probesSucceeded, probesEmpty, probesFailed,
       },
       // Full backend_capabilities inventory — the version-gating contract.
       // When null, the MCP didn't expose backend_capabilities (older
@@ -936,8 +959,13 @@ app.post('/api/draft-from-mcp', async (req, res) => {
     const conformance = evaluateConformance(pack);
     const canonicalYaml = banner(pack) + emitYaml(pack);
     // Register only if validation passes; bad packs aren't addressable.
+    // Prefer the caller-supplied label (the quick-start cases pass
+    // something friendlier than the auto-generated metadata name).
+    const friendlyLabel = (typeof body.label === 'string' && body.label.trim())
+      ? body.label.trim()
+      : `${pack.metadata?.name || 'mcp-draft'} (live MCP draft)`;
     const registered = errors.length === 0
-      ? { id: registerUploadedPack(pack, `${pack.metadata?.name || 'mcp-draft'} (live draft)`) }
+      ? { id: registerUploadedPack(pack, friendlyLabel, friendlyLabel) }
       : null;
     process.stderr.write(`[draft-from-mcp]   ok in ${Date.now() - t0}ms; ` +
       `valid=${errors.length === 0}; ` +
@@ -1076,8 +1104,11 @@ app.post('/api/crawl', (req, res) => {
     const conformance = evaluateConformance(canonical);
     // Register the crawled canonical only if it validates. Bad packs
     // shouldn't pollute the catalog under an addressable id.
+    const friendlyLabel = (typeof body.label === 'string' && body.label.trim())
+      ? body.label.trim()
+      : `${opts.repoName || canonical.metadata?.name || 'crawl'} (scanned)`;
     const registered = validationErrors.length === 0
-      ? { id: registerUploadedPack(canonical, `${opts.repoName || canonical.metadata?.name || 'crawl'} (crawled)`) }
+      ? { id: registerUploadedPack(canonical, friendlyLabel, friendlyLabel) }
       : null;
     process.stderr.write(`[crawl] ${entries.length} files, ${summary.files.classified} classified, ${Object.keys(evidence).length} evidence, tier=${summary.inferred.tier}, valid=${validationErrors.length === 0}, registered=${registered?.id || '-'}, ${Date.now() - t0}ms\n`);
     res.json({
@@ -1094,6 +1125,218 @@ app.post('/api/crawl', (req, res) => {
   } catch (e) {
     process.stderr.write(`[crawl] error: ${e.message}\n`);
     res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------
+// POST /api/crawl-github — Path A extension. Same crawler, different
+// source: a public GitHub repo URL instead of an uploaded folder.
+//
+// The server fetches the repo's file tree via the GitHub Tree API,
+// downloads just the files the crawler cares about (docker-compose,
+// Prometheus rules, OTel configs, dashboards), and feeds them into
+// the same crawlFiles() pipeline as /api/crawl. Returns the same
+// response shape.
+//
+// Body: {
+//   url:         'https://github.com/owner/repo' | 'owner/repo',
+//   ref?:        'main' | 'develop' | <sha>,   // default: repo default branch
+//   environment?, criticality?, binding?, owners?  // same as /api/crawl
+// }
+//
+// Auth: respects GITHUB_TOKEN env var for higher rate limits + private
+// repos. Without it: public-only, 60 req/hr per IP.
+//
+// Bandwidth guards: max 50 files, max 16 MB total, max 1 MB per file.
+// ----------------------------------------------------------------
+function parseGithubUrl(input) {
+  if (typeof input !== 'string' || !input.trim()) return null;
+  const cleaned = input.trim().replace(/\.git$/, '').replace(/\/$/, '');
+  // owner/repo bare form
+  const bare = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/.exec(cleaned);
+  if (bare) return { owner: bare[1], repo: bare[2] };
+  // Full URL form
+  const url = /github\.com[/:]([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)(?:\/tree\/([A-Za-z0-9._\/-]+))?/.exec(cleaned);
+  if (url) return { owner: url[1], repo: url[2], ref: url[3] };
+  return null;
+}
+
+// Files the crawler will actually look at — keep the network round
+// trips down by filtering BEFORE downloading.
+function isCrawlerFile(path) {
+  if (typeof path !== 'string') return false;
+  const p = path.toLowerCase();
+  if (p.includes('node_modules/') || p.includes('.git/') || p.startsWith('.git/')) return false;
+  return (
+    /(^|\/)docker[-_]compose[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)compose[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /\.rules\.(ya?ml)$/.test(p) ||
+    /(^|\/)prometheus[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)alertmanager[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)otel[a-z0-9._-]*config[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)otelcol[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)collector[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)dashboards?\/.*\.json$/.test(p) ||
+    /(^|\/)grafana\/.*\.json$/.test(p) ||
+    /\.dashboard\.json$/.test(p) ||
+    /(^|\/)kustomization\.(ya?ml)$/.test(p)
+  );
+}
+
+async function ghFetch(path, init = {}) {
+  const headers = {
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': 'tomograph-crawler/1.0',
+    ...(init.headers || {}),
+  };
+  if (process.env.GITHUB_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+  const res = await fetch(`https://api.github.com${path}`, { ...init, headers });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const err = new Error(`GitHub ${res.status} on ${path}: ${body.slice(0, 200)}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res;
+}
+
+app.post('/api/crawl-github', async (req, res) => {
+  const body = req.body || {};
+  const parsed = parseGithubUrl(body.url);
+  if (!parsed) {
+    return res.status(400).json({
+      ok: false,
+      error: 'expected `url` like https://github.com/owner/repo or owner/repo',
+    });
+  }
+  const { owner, repo } = parsed;
+  const explicitRef = (typeof body.ref === 'string' && body.ref.trim()) ? body.ref.trim() : parsed.ref || null;
+  const t0 = Date.now();
+
+  try {
+    // 1. Resolve default branch when no ref given.
+    let ref = explicitRef;
+    if (!ref) {
+      const repoMeta = await ghFetch(`/repos/${owner}/${repo}`).then(r => r.json());
+      ref = repoMeta.default_branch || 'main';
+    }
+
+    // 2. List the full tree at that ref.
+    const treeResp = await ghFetch(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`)
+      .then(r => r.json());
+    if (treeResp.truncated) {
+      process.stderr.write(`[crawl-github] tree truncated for ${owner}/${repo}@${ref}; some files may be missing\n`);
+    }
+
+    // 3. Filter to crawler-relevant blobs.
+    const FILE_CAP_BYTES = 1 * 1024 * 1024;        // 1 MB / file
+    const TOTAL_CAP_BYTES = 16 * 1024 * 1024;      // 16 MB total
+    const MAX_FILES = 50;
+    const candidates = (treeResp.tree || [])
+      .filter(node => node.type === 'blob' && isCrawlerFile(node.path))
+      .filter(node => !node.size || node.size <= FILE_CAP_BYTES)
+      .slice(0, MAX_FILES);
+
+    if (candidates.length === 0) {
+      return res.json({
+        ok: true,
+        canonical: null,
+        canonicalYaml: '',
+        summary: { source: 'github', repo: `${owner}/${repo}`, ref, files: { total: 0, classified: 0 } },
+        validation: { ok: false, errors: ['no crawler-relevant files found in repo'] },
+        registered: null,
+        tookMs: Date.now() - t0,
+        notes: ['Repo had no docker-compose, prometheus rules, otel collector configs, alertmanager configs, or Grafana dashboards.'],
+      });
+    }
+
+    // 4. Download contents in parallel (raw content endpoint).
+    let totalBytes = 0;
+    const files = {};
+    const skipped = [];
+    await Promise.all(candidates.map(async (node) => {
+      try {
+        const contentRes = await ghFetch(`/repos/${owner}/${repo}/contents/${encodeURIComponent(node.path).replace(/%2F/g, '/')}?ref=${encodeURIComponent(ref)}`, {
+          headers: { Accept: 'application/vnd.github.raw+json' },
+        });
+        const text = await contentRes.text();
+        if (text.length > FILE_CAP_BYTES) { skipped.push(`${node.path} (size ${text.length})`); return; }
+        if (totalBytes + text.length > TOTAL_CAP_BYTES) { skipped.push(`${node.path} (total cap)`); return; }
+        files[node.path] = text;
+        totalBytes += text.length;
+      } catch (e) {
+        skipped.push(`${node.path} (${e.message})`);
+      }
+    }));
+
+    if (Object.keys(files).length === 0) {
+      return res.json({
+        ok: true, canonical: null, canonicalYaml: '',
+        summary: { source: 'github', repo: `${owner}/${repo}`, ref, files: { total: candidates.length, classified: 0 } },
+        validation: { ok: false, errors: ['all candidate files were skipped (size caps or download errors)'] },
+        registered: null, tookMs: Date.now() - t0, notes: skipped,
+      });
+    }
+
+    // 5. Run the SAME crawler the upload path uses.
+    // Default the repoName to a Slug-pattern-compliant variant of the
+    // repo path (owner-repo, lowercase, slashes → hyphens, dots
+    // collapsed) so the canonical pack's metadata.name validates against
+    // the spec's `^[a-z][a-z0-9_-]*[a-z0-9]$` pattern.
+    const defaultRepoName = `${owner}-${repo}`
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64);
+    const opts = {
+      repoName: typeof body.repoName === 'string' && body.repoName.trim()
+        ? body.repoName.trim() : defaultRepoName,
+      environment: typeof body.environment === 'string' ? body.environment : undefined,
+      criticality: typeof body.criticality === 'string' ? body.criticality : undefined,
+      binding: typeof body.binding === 'string' ? body.binding : undefined,
+      owners: Array.isArray(body.owners) ? body.owners.map(String) : undefined,
+    };
+    const { yaml, summary, evidence } = crawlToYaml(files, opts);
+    const { canonical } = crawlFiles(files, opts);
+    const validationErrors = validateCanonical(canonical, SCHEMA);
+    const conformance = evaluateConformance(canonical);
+    const friendlyLabel = (typeof body.label === 'string' && body.label.trim())
+      ? body.label.trim()
+      : `${owner}/${repo} (repo scan)`;
+    const registered = validationErrors.length === 0
+      ? { id: registerUploadedPack(canonical, friendlyLabel, friendlyLabel) }
+      : null;
+
+    summary.source = 'github';
+    summary.repo   = `${owner}/${repo}`;
+    summary.ref    = ref;
+    if (skipped.length) summary.skipped = skipped;
+
+    process.stderr.write(`[crawl-github] ${owner}/${repo}@${ref} → ${Object.keys(files).length} files, ${summary.files.classified} classified, valid=${validationErrors.length === 0}, registered=${registered?.id || '-'}, ${Date.now() - t0}ms\n`);
+    res.json({
+      ok: true,
+      canonical,
+      canonicalYaml: yaml,
+      summary,
+      evidence,
+      validation: { ok: validationErrors.length === 0, errors: validationErrors },
+      conformance,
+      registered,
+      tookMs: Date.now() - t0,
+    });
+  } catch (e) {
+    process.stderr.write(`[crawl-github] error: ${e.message}\n`);
+    const status = e.status === 404 ? 404 : (e.status === 403 ? 403 : 500);
+    res.status(status).json({
+      ok: false,
+      error: e.message,
+      hint: e.status === 403
+        ? 'GitHub rate limit. Set GITHUB_TOKEN in the server env for higher quotas.'
+        : e.status === 404 ? 'Repo not found or private. Set GITHUB_TOKEN to access private repos.' : undefined,
+    });
   }
 });
 
@@ -1158,7 +1401,12 @@ export { app };
 export function start({ port = PORT, host = HOST, silent = false } = {}) {
   return new Promise((resolveListen, reject) => {
     const srv = app.listen(port, host, () => {
+      // When bind fails the listening callback can still fire with the
+      // address being null (race between EADDRINUSE and 'listening').
+      // Bail here so the error handler below resolves the promise; the
+      // call site will format a friendly message.
       const addr = srv.address();
+      if (!addr) return;
       if (!silent) process.stdout.write(`[studio] listening on http://${addr.address}:${addr.port}\n`);
       resolveListen(srv);
     });
@@ -1168,5 +1416,18 @@ export function start({ port = PORT, host = HOST, silent = false } = {}) {
 
 const invokedDirectly = resolve(process.argv[1] || '') === resolve(fileURLToPath(import.meta.url));
 if (invokedDirectly) {
-  start().catch(e => { process.stderr.write(`[studio] failed to start: ${e.message}\n`); process.exit(1); });
+  start().catch(e => {
+    // EADDRINUSE is the common case — give a clear, actionable hint
+    // instead of a generic stack trace.
+    if (e && e.code === 'EADDRINUSE') {
+      process.stderr.write(
+        `[studio] port ${PORT} is already in use.\n` +
+        `         Another Tomograph instance is probably running. Stop it, or:\n` +
+        `           PORT=8001 npm run dev\n`
+      );
+    } else {
+      process.stderr.write(`[studio] failed to start: ${e.message}\n`);
+    }
+    process.exit(1);
+  });
 }

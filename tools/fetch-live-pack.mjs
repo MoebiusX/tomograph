@@ -339,6 +339,7 @@ export function buildCanonicalPack({
   unmatchedTools = [],
   capabilities = null,
   liveVersions = {},
+  ruleEvidence = { firingAlerts: [], recordingRuleNames: [] },
   packName = PACK_NAME,
 } = {}) {
   const services = Array.isArray(health.services) ? health.services : [];
@@ -351,10 +352,30 @@ export function buildCanonicalPack({
   const coreCalled = ['system_health','system_topology','anomalies_active','anomalies_baselines'].filter(n => !errors[n]);
   // Probe tool that actually responded (per probe).
   const probeAnswered = Object.entries(probeResults).filter(([_, v]) => v?.tool).map(([k, v]) => v.tool);
-  // Probes attempted (regardless of whether any candidate answered).
+  // Classify each probe by outcome:
+  //   data    — MCP responded with non-empty content (a real answer)
+  //   empty   — MCP responded but the payload was empty (an honest zero)
+  //   failed  — every candidate errored / 503'd (no response at all)
+  // The probe loop now stamps `outcome` directly. For callers that
+  // pre-populate probeResults (the offline fetcher tests do), classify
+  // from the legacy fields: `tool` set means SOMETHING answered, and
+  // a non-empty `adapted` array means it answered with data.
   const probesAttempted = Object.keys(probeResults || {});
-  // Probes that responded successfully.
-  const probesSucceeded = Object.entries(probeResults || {}).filter(([_, v]) => v?.tool).map(([k]) => k);
+  const classify = (v) => {
+    if (!v) return 'failed';
+    if (v.outcome) return v.outcome;
+    if (v.tool && Array.isArray(v.adapted) && v.adapted.length > 0) return 'data';
+    if (v.tool && Array.isArray(v.adapted)) return 'empty';
+    if (v.tool) return 'data';  // non-array adapted shape; preserve legacy behaviour
+    return 'failed';
+  };
+  const probesByOutcome = (target) =>
+    Object.entries(probeResults || {})
+      .filter(([_, v]) => classify(v) === target)
+      .map(([k]) => k);
+  const probesSucceeded = probesByOutcome('data');
+  const probesEmpty     = probesByOutcome('empty');
+  const probesFailed    = probesByOutcome('failed');
 
   const annotations = {
     'mcp.refreshedAt':         refreshedAt,
@@ -363,6 +384,12 @@ export function buildCanonicalPack({
     'mcp.toolsFailed':         Object.keys(errors).join(',') || '',
     'mcp.probesAttempted':     probesAttempted.join(','),
     'mcp.probesSucceeded':     probesSucceeded.join(','),
+    // Honest accounting of probes that ran but came back empty vs probes
+    // that failed outright. The studio's summary reads these to render
+    // "0 found" (empty) distinctly from "probe failed" (failed) — both
+    // distinct from "— not attempted".
+    'mcp.probesEmpty':         probesEmpty.join(','),
+    'mcp.probesFailed':        probesFailed.join(','),
     'mcp.servicesDiscovered':  serviceNames.join(','),
     'mcp.baselinesComputed':   String((baselinesData.baselines || []).length),
     'mcp.activeAnomalies':     String(anomaliesActive?.traceAnomalies?.active?.length || 0),
@@ -374,10 +401,10 @@ export function buildCanonicalPack({
     // the user can name what to wire next.
     'mcp.toolsUnmatched':      unmatchedTools.map(t => t.name).join(','),
   };
-  // Per-probe count annotations, ONLY for probes that responded — so an
-  // engineer reading the pack can see what came back from live state.
+  // Per-probe count annotations — ANY probe with an array result, whether
+  // empty or populated, lands here so the studio can read "0" honestly.
   for (const [k, v] of Object.entries(probeResults || {})) {
-    if (v?.tool && Array.isArray(v.adapted)) {
+    if (Array.isArray(v?.adapted)) {
       annotations[`mcp.discovered.${k}`] = String(v.adapted.length);
     }
   }
@@ -517,15 +544,32 @@ export function buildCanonicalPack({
   // per-product (mcp.versions.grafana) AND with provenance
   // (mcp.versions.grafana.source) so an SRE can see exactly which
   // endpoint attested each number.
+  //
+  // A capture can come in two shapes:
+  //   1. {declared, source, ...}  — a real version string was extracted
+  //      (Grafana 12.4.0, VM v1.113.0, Loki 3.2.1, etc.)
+  //   2. {alive: true, source, ...} — the backend responded to a probe
+  //      (e.g. Jaeger via traces_services) but doesn't expose a
+  //      version-readable endpoint we know about. The studio still
+  //      gets to mark it ● LIVE; just without a number.
   for (const [product, info] of Object.entries(liveVersions || {})) {
-    if (!info?.declared) continue;
-    annotations[`mcp.versions.${product}`] = info.declared;
+    if (!info) continue;
+    if (info.declared) {
+      annotations[`mcp.versions.${product}`] = info.declared;
+    } else if (info.alive) {
+      annotations[`mcp.versions.${product}`] = 'live';
+    } else {
+      continue;
+    }
     if (info.source) annotations[`mcp.versions.${product}.source`] = info.source;
     if (info.commit) annotations[`mcp.versions.${product}.commit`] = info.commit;
     if (info.fullTag && info.fullTag !== info.declared) {
       annotations[`mcp.versions.${product}.fullTag`] = info.fullTag;
     }
     if (info.revision) annotations[`mcp.versions.${product}.revision`] = info.revision;
+    if (info.branch) annotations[`mcp.versions.${product}.branch`] = info.branch;
+    if (info.edition) annotations[`mcp.versions.${product}.edition`] = info.edition;
+    if (info.serviceCount != null) annotations[`mcp.versions.${product}.serviceCount`] = String(info.serviceCount);
     // Per-artefact verification marker pointing at the backend whose
     // version we just attested. The id pattern matches the convention
     // used in pushBackend below (e.g. metrics-victoriametrics).
@@ -653,6 +697,30 @@ export function buildCanonicalPack({
   if (discoveredAlertNames.length) {
     annotations['mcp.discovered.alert_rule_names'] = discoveredAlertNames.slice(0, 64).join(',');
     markVerified('policy.burn_rate_alerts');
+  }
+
+  // Rule-evidence fallback annotations — what we found when the standard
+  // rule-discovery endpoints came back empty but evidence existed
+  // elsewhere. Kept under separate annotation keys so the studio can
+  // surface "0 rule definitions visible · N firing alerts via ALERTS
+  // metric" honestly, without conflating the two sources.
+  if (Array.isArray(ruleEvidence?.firingAlerts) && ruleEvidence.firingAlerts.length) {
+    const names = ruleEvidence.firingAlerts.map(a => a.name).filter(Boolean);
+    const totalFirings = ruleEvidence.firingAlerts.reduce((acc, a) => acc + (a.count || 0), 0);
+    annotations['mcp.discovered.alerts_firing.count'] = String(names.length);
+    annotations['mcp.discovered.alerts_firing.total_firings'] = String(totalFirings);
+    annotations['mcp.discovered.alerts_firing.names'] = names.slice(0, 64).join(',');
+    annotations['mcp.discovered.alerts_firing.source'] = 'metrics_query/ALERTS';
+    markVerified('policy.alerts_firing');
+  }
+  if (Array.isArray(ruleEvidence?.recordingRuleNames) && ruleEvidence.recordingRuleNames.length) {
+    annotations['mcp.discovered.recording_rules_via_inventory.count'] =
+      String(ruleEvidence.recordingRuleNames.length);
+    annotations['mcp.discovered.recording_rules_via_inventory.names'] =
+      ruleEvidence.recordingRuleNames.slice(0, 64).join(',');
+    annotations['mcp.discovered.recording_rules_via_inventory.source'] =
+      'metrics_label_values/__name__ (colon-pattern grep)';
+    markVerified('queries.recording_rules_via_inventory');
   }
 
   // ---- scrape evidence + metric inventory ----
@@ -988,6 +1056,37 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   const candName = (c) => (typeof c === 'string' ? c : c.name);
   const candArgs = (c) => (typeof c === 'string' ? {} : (c.args || {}));
 
+  // Tool-call cache (per fetchMcp run). Keyed by name + JSON-stringified
+  // args. Several probes converge on the same MCP tool — recording_rules
+  // and alert_rules both call `metrics_alerts`; if we let them race in
+  // parallel, one call can 503 while the other gets through, leaving
+  // the studio with a confusing partial picture. Sharing the response
+  // (a) eliminates the race, (b) halves the wire traffic, (c) keeps
+  // the parallel speed-up because the second caller just awaits the
+  // first call's pending promise.
+  const toolCallCache = new Map();
+  const cachedCall = (name, args) => {
+    const key = `${name}::${JSON.stringify(args || {})}`;
+    if (toolCallCache.has(key)) return toolCallCache.get(key);
+    const p = quiet(name, () => callTool(name, args || {}));
+    toolCallCache.set(key, p);
+    return p;
+  };
+
+  // Treat the probe's adapt() output as empty when there's nothing
+  // actionable in it — an empty array, an empty object, or null. An
+  // empty response on the first candidate doesn't mean the whole probe
+  // is unanswerable; the cascade should fall through to the next source.
+  // (Krystaline metrics_alerts returns {groups: []} — genuinely zero
+  // Prometheus rules — but the rules might live in Grafana Unified
+  // Alerting at grafana_alert_rules, so we keep trying.)
+  const isEmptyAdapted = (v) => {
+    if (v == null) return true;
+    if (Array.isArray(v)) return v.length === 0;
+    if (typeof v === 'object') return Object.keys(v).length === 0;
+    return false;
+  };
+
   const probeResults = {};
   await Promise.all(PROBES.map(async (probe) => {
     let candidates;
@@ -1000,6 +1099,7 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
           attempted: probe.candidates.map(candName),
           adapted: null,
           skippedReason: 'no candidate matched tools/list inventory',
+          outcome: 'unsupported',
         };
         return;
       }
@@ -1007,24 +1107,52 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
       candidates = probe.candidates.slice();
     }
     const attempted = [];
+    // Remember the first candidate that responded with a non-null
+    // result, even if that result was empty. If all candidates either
+    // fail outright OR return empty, we fall back to reporting the
+    // FIRST empty-but-successful result so the studio can distinguish
+    // "MCP says: 0 rules" from "MCP didn't respond at all".
+    let firstEmpty = null;
     for (const candidate of candidates) {
       const name = candName(candidate);
+      const args = candArgs(candidate);
       attempted.push(name);
-      const response = await quiet(name, () => callTool(name, candArgs(candidate)));
-      if (response != null) {
-        let adapted;
-        try { adapted = probe.adapt(response); }
-        catch (_) { adapted = null; }
+      const response = await cachedCall(name, args);
+      if (response == null) continue;          // tool errored or returned nothing
+      let adapted;
+      try { adapted = probe.adapt(response); }
+      catch (_) { adapted = null; }
+      if (!isEmptyAdapted(adapted)) {
+        // Real data — cache this candidate as the winner and stop.
         probeResults[probe.name] = {
           tool: name,
           attempted: attempted.slice(),
           adapted,
           rawSize: JSON.stringify(response).length,
+          outcome: 'data',
         };
         return;
       }
+      // Empty result. Remember it but keep looking — another candidate
+      // might carry the data.
+      if (!firstEmpty) {
+        firstEmpty = { tool: name, adapted, rawSize: JSON.stringify(response).length };
+      }
     }
-    probeResults[probe.name] = { tool: null, attempted, adapted: null };
+    if (firstEmpty) {
+      probeResults[probe.name] = {
+        tool: firstEmpty.tool,
+        attempted,
+        adapted: firstEmpty.adapted,
+        rawSize: firstEmpty.rawSize,
+        outcome: 'empty',
+      };
+      return;
+    }
+    probeResults[probe.name] = {
+      tool: null, attempted, adapted: null,
+      outcome: 'failed',
+    };
   }));
 
   // ----------------------------------------------------------------
@@ -1052,38 +1180,180 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     }
   }
 
-  // VictoriaMetrics — query the `vm_app_version` metric; its `short_version`
-  // label is the canonical live version (e.g. "v1.113.0"). For Prometheus
-  // installs the same approach works via `prometheus_build_info` whose
-  // `version` label carries the build version.
+  // Metrics-query-based version probes — each backend that publishes a
+  // `*_build_info` metric (Prometheus convention) gets a probe here. We
+  // run them in parallel since each is independent. The label that
+  // carries the version differs by product:
+  //
+  //   vm_app_version       → labels { short_version, version }
+  //   prometheus_build_info → labels { version, revision, branch }
+  //   loki_build_info       → labels { version, revision }
+  //   alertmanager_build_info → labels { version, revision }
+  //   tempo_build_info      → labels { version, revision }
+  //   cortex_build_info     → labels { version, revision } (Mimir uses the
+  //                              cortex_ prefix from its Cortex heritage)
+  //   grafana_build_info    → labels { version, edition, branch }
+  //                              (we also have grafana_health above; this
+  //                              is the metric fallback for installs that
+  //                              don't expose the health tool)
+  //
+  // For each, the same shape: query the metric, take the first result's
+  // labels, capture { declared, source } plus any provenance labels
+  // (revision, edition, branch). When the result is empty, the backend
+  // either isn't scraped or doesn't publish that metric — both are
+  // legitimate negatives that the studio chip should NOT mark as live.
   if (discoveredToolNames.has('metrics_query')) {
-    const vm = await quiet('metrics_query.vm_app_version',
-      () => callTool('metrics_query', { query: 'vm_app_version' }));
-    const vmSeries = vm?.result?.[0]?.metric;
-    if (vmSeries) {
-      const declared = vmSeries.short_version || vmSeries.version || null;
-      if (declared) {
-        liveVersions.victoriametrics = {
-          declared,
-          fullTag:    vmSeries.version || null,
-          source:     'metrics_query/vm_app_version',
-        };
+    const buildInfoProbes = [
+      // product slug, metric name, version-label (in priority order)
+      { product: 'victoriametrics', metric: 'vm_app_version',           versionLabels: ['short_version', 'version'], extra: ['version'] },
+      { product: 'prometheus',      metric: 'prometheus_build_info',    versionLabels: ['version'],                  extra: ['revision', 'branch'] },
+      { product: 'loki',            metric: 'loki_build_info',          versionLabels: ['version'],                  extra: ['revision', 'branch'] },
+      { product: 'alertmanager',    metric: 'alertmanager_build_info',  versionLabels: ['version'],                  extra: ['revision', 'branch'] },
+      { product: 'tempo',           metric: 'tempo_build_info',         versionLabels: ['version'],                  extra: ['revision', 'branch'] },
+      { product: 'mimir',           metric: 'cortex_build_info',        versionLabels: ['version'],                  extra: ['revision', 'branch'] },
+      // grafana_build_info is a metric fallback for the rare case where
+      // grafana_health isn't exposed; harmless if it duplicates because
+      // grafana_health stamps first and we don't overwrite below.
+      { product: 'grafana',         metric: 'grafana_build_info',       versionLabels: ['version'],                  extra: ['edition', 'branch'] },
+    ];
+
+    await Promise.all(buildInfoProbes.map(async (probe) => {
+      // Skip if a richer source (e.g. grafana_health) already populated this product.
+      if (liveVersions[probe.product]) return;
+      const resp = await quiet(`metrics_query.${probe.metric}`,
+        () => callTool('metrics_query', { query: probe.metric }));
+      const series = resp?.result?.[0]?.metric;
+      if (!series) return;
+      let declared = null;
+      for (const labelKey of probe.versionLabels) {
+        if (typeof series[labelKey] === 'string' && series[labelKey].length) {
+          declared = series[labelKey];
+          break;
+        }
       }
-    } else {
-      // Fall back to Prometheus build info on installs that AREN'T
-      // VictoriaMetrics. The metric has labels `{version, revision,
-      // branch, goversion}` per Prometheus convention.
-      const prom = await quiet('metrics_query.prometheus_build_info',
-        () => callTool('metrics_query', { query: 'prometheus_build_info' }));
-      const promSeries = prom?.result?.[0]?.metric;
-      if (promSeries && typeof promSeries.version === 'string') {
-        liveVersions.prometheus = {
-          declared: promSeries.version,
-          revision: promSeries.revision || null,
-          source:   'metrics_query/prometheus_build_info',
+      if (!declared) return;
+      const info = { declared, source: `metrics_query/${probe.metric}` };
+      for (const x of (probe.extra || [])) {
+        if (typeof series[x] === 'string' && series[x] !== declared) info[x] = series[x];
+      }
+      // For VM, also keep the full goversion-style tag separately so the
+      // chip can still show the clean "v1.113.0" while annotations carry
+      // the long "victoria-metrics-20250307-…-v1.113.0-…" form.
+      if (probe.product === 'victoriametrics' && series.version && series.version !== declared) {
+        info.fullTag = series.version;
+      }
+      liveVersions[probe.product] = info;
+    }));
+  }
+
+  // Traces-availability probe — Jaeger (and others) don't always expose
+  // a server build_info metric. But calling traces_services returns the
+  // service list, which is positive proof the trace backend is
+  // responding live. Mark the corresponding product as alive: true
+  // without a specific version; the studio chip shows ● LIVE without
+  // a number.
+  //
+  // Disambiguation: the capabilities inventory lists every TRACE backend
+  // the MCP CAN speak to (Jaeger, Tempo, Zipkin, SkyWalking) — but the
+  // deployment uses ONE. The services list usually contains the trace
+  // backend's own service name ("jaeger" → it's Jaeger). When the
+  // service list doesn't disambiguate, fall back to the FIRST trace
+  // backend in the capability inventory (typically Jaeger) — never
+  // light up all of them, which would falsely claim Tempo/Zipkin/etc.
+  // are running.
+  if (discoveredToolNames.has('traces_services')) {
+    const tr = await quiet('traces_services', () => callTool('traces_services'));
+    if (tr && Array.isArray(tr.services) && tr.services.length) {
+      const services = tr.services.map(s => String(s).toLowerCase());
+      const tracesBackends = (capabilities?.skills || [])
+        .find(s => s.skill === 'traces')?.backends || [];
+      const productsInScope = tracesBackends
+        .map(b => BACKEND_TO_PRODUCT[b.backend])
+        .filter(Boolean);
+      // Look for a match in the services list — the trace backend
+      // typically reports its own service name as a self-instrumented
+      // span emitter.
+      const matched = productsInScope.find(p => services.includes(p));
+      const winner = matched || productsInScope[0] || null;
+      if (winner && !liveVersions[winner]) {
+        liveVersions[winner] = {
+          alive: true,
+          source: 'traces_services',
+          serviceCount: tr.services.length,
+          disambiguatedBy: matched ? 'service-name-match' : 'capability-inventory-first',
         };
       }
     }
+  }
+
+  // ----------------------------------------------------------------
+  // Rule-evidence fallback (Phase 6) — capture rule existence even when
+  // the standard rule-discovery endpoints come back empty.
+  //
+  // The contract gap: a platform can have alerts actively firing AND
+  // recording rules running, yet have ZERO rule definitions visible
+  // via metrics_alerts (VM /api/v1/rules), grafana_alert_rules, or
+  // alertmanager_alerts. Reasons:
+  //   1. Rules evaluated by VMAlert/Mimir-ruler/custom evaluator that
+  //      doesn't surface a discoverable /api/v1/rules endpoint
+  //   2. Custom services writing ALERTS series directly (Krystaline's
+  //      bayesian-service emits ErrorBudgetExhaustionForecast etc.)
+  //   3. Recording rules running in a different deployment, with only
+  //      their outputs landing in the central VM
+  //
+  // We can still attest the EVIDENCE of rules from data we already have:
+  //   • alerts:    query ALERTS{alertstate="firing"} → firing alertnames
+  //   • recording: grep the metric inventory for the colon convention
+  //                <namespace>:<metric>:<op_window> — Prometheus's
+  //                canonical recording-rule output naming
+  //
+  // We can't capture the rule's expression (it lives wherever it's
+  // evaluated), but we capture identity + observed state, which is
+  // honest evidence. Studio summary distinguishes "0 rule definitions
+  // visible" from "0 — none configured" using these annotations.
+  // ----------------------------------------------------------------
+  const ruleEvidence = { firingAlerts: [], recordingRuleNames: [] };
+
+  // Fallback for alert_rules: only run when the primary probe returned
+  // an empty array AND the MCP exposes metrics_query.
+  const alertProbe = probeResults?.alert_rules;
+  const alertPrimaryEmpty = alertProbe &&
+    (alertProbe.outcome === 'empty' || (Array.isArray(alertProbe.adapted) && alertProbe.adapted.length === 0));
+  if (alertPrimaryEmpty && discoveredToolNames.has('metrics_query')) {
+    const r = await quiet('metrics_query.ALERTS',
+      () => callTool('metrics_query', { query: 'count by (alertname, severity, team, alertgroup) (ALERTS{alertstate="firing"})' }));
+    const series = Array.isArray(r?.result) ? r.result : [];
+    for (const s of series) {
+      const m = s?.metric || {};
+      if (!m.alertname) continue;
+      const count = Number(s.value?.[1] ?? 0);
+      ruleEvidence.firingAlerts.push({
+        name: m.alertname,
+        severity: m.severity || null,
+        team: m.team || null,
+        group: m.alertgroup || null,
+        count: Number.isFinite(count) ? count : null,
+      });
+    }
+  }
+
+  // Fallback for recording_rules: grep the metric inventory captured by
+  // the metric_names probe. Recording rules in Prometheus follow the
+  // <ns>:<metric>:<op>[_<window>] convention — namespace:metric:op,
+  // typically three colon-segments. We accept 2-or-more so platform
+  // shorthand (e.g. `up:rate1m`) is captured too.
+  const recordingProbe = probeResults?.recording_rules;
+  const recordingPrimaryEmpty = recordingProbe &&
+    (recordingProbe.outcome === 'empty' || (Array.isArray(recordingProbe.adapted) && recordingProbe.adapted.length === 0));
+  const metricNames = probeResults?.metric_names?.adapted;
+  if (recordingPrimaryEmpty && Array.isArray(metricNames) && metricNames.length) {
+    const RECORDING_PATTERN = /^[a-z][a-z0-9_-]*(:[a-z][a-z0-9_-]*){1,}$/i;
+    const NOISE_PREFIXES = /^(ALERTS|UP|process_|go_|http_|prometheus_|alertmanager_|grafana_|loki_|vmalert_|jvm_)/i;
+    ruleEvidence.recordingRuleNames = metricNames
+      .filter(n => typeof n === 'string')
+      .filter(n => RECORDING_PATTERN.test(n))
+      .filter(n => !NOISE_PREFIXES.test(n))
+      .slice(0, 200);
   }
 
   // Compute unmatched tool names — tools the MCP advertises that we
@@ -1099,8 +1369,17 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   );
   // Version probes count as "wired" too — surface them so they don't
   // show up as "not yet probed" in the unmatched panel.
-  if (liveVersions.grafana) allMatchedNames.add('grafana_health');
-  if (liveVersions.victoriametrics || liveVersions.prometheus) allMatchedNames.add('metrics_query');
+  if (liveVersions.grafana?.source === 'grafana_health') allMatchedNames.add('grafana_health');
+  // metrics_query gets used for build_info probes across many products
+  // (vm_app_version, loki_build_info, alertmanager_build_info, …).
+  // If ANY of them landed, the tool is "wired."
+  const metricBuiltSourced = Object.values(liveVersions).some(v =>
+    typeof v?.source === 'string' && v.source.startsWith('metrics_query/'));
+  if (metricBuiltSourced) allMatchedNames.add('metrics_query');
+  // traces_services availability probe — wired when any trace product
+  // captured an `alive: true` entry via it.
+  const tracesAlive = Object.values(liveVersions).some(v => v?.source === 'traces_services');
+  if (tracesAlive) allMatchedNames.add('traces_services');
   const unmatchedTools = discoveredTools.filter(t => !allMatchedNames.has(t.name));
 
   return {
@@ -1110,6 +1389,7 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     unmatchedTools,             // tools the MCP exposes that we don't probe yet
     capabilities,               // parsed backend_capabilities inventory (or null)
     liveVersions,               // { <product>: { declared, ...meta } } from authoritative endpoints
+    ruleEvidence,               // { firingAlerts, recordingRuleNames } — fallback evidence
   };
 }
 

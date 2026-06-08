@@ -48,9 +48,35 @@
       <span class="ctrl-key">ENV B</span>
       <select id="env-b-select" aria-label="Select environment B"></select>
     </label>
-    <button id="upload-btn" class="ctrl-btn" type="button" title="Upload a canonical v1.2 pack (.yaml or .json)">upload</button>
+    <div class="upload-popover-wrap">
+      <button id="upload-btn" class="ctrl-btn" type="button" title="Upload a canonical v1.2 pack (.yaml or .json) — or pick a quick-start case" aria-haspopup="true" aria-expanded="false">upload</button>
+      <div id="upload-popover" class="upload-popover" role="menu" hidden>
+        <button class="upload-popover-item" data-action="pick-file" type="button" role="menuitem">
+          <span class="upload-popover-key">▤</span>
+          <span class="upload-popover-body">
+            <span class="upload-popover-label">Pick a file…</span>
+            <span class="upload-popover-sub">canonical v1.2 YAML or JSON manifest</span>
+          </span>
+        </button>
+        <div class="upload-popover-divider"><span>or quick-start with a real case</span></div>
+        <button class="upload-popover-item" data-action="quick-krystaline" type="button" role="menuitem">
+          <span class="upload-popover-key">⟳</span>
+          <span class="upload-popover-body">
+            <span class="upload-popover-label">Krystaline · live MCP draft</span>
+            <span class="upload-popover-sub">fetches from <code>krystaline.io/mcp/public</code> · ~1 s</span>
+          </span>
+        </button>
+        <button class="upload-popover-item" data-action="quick-krystalinex-repo" type="button" role="menuitem">
+          <span class="upload-popover-key">⤴</span>
+          <span class="upload-popover-body">
+            <span class="upload-popover-label">KrystalineX · repo scan</span>
+            <span class="upload-popover-sub">scans <code>github.com/MoebiusX/KrystalineX</code> · ~1 s</span>
+          </span>
+        </button>
+      </div>
+    </div>
     <input id="file-input" type="file" accept=".yaml,.yml,.json,application/json,text/yaml,application/x-yaml" hidden>
-    <button id="crawl-btn" class="ctrl-btn" type="button" title="Draft a pack from a service repo — drag a folder or pick files">new from repo</button>
+    <button id="crawl-btn" class="ctrl-btn" type="button" title="Scan a service repo — drag a folder, pick files, or paste a GitHub URL">scan a repo</button>
     <input id="crawl-file-input" type="file" multiple webkitdirectory hidden>
     <button id="draft-mcp-btn" class="ctrl-btn" type="button" title="Draft a pack from a live MCP server — interrogate it for backends, baselines, anomalies">new from live</button>
     <button id="mcp-btn" class="ctrl-btn mcp-btn" type="button" aria-haspopup="true" aria-expanded="false" title="Refresh production-live from an MCP server">
@@ -286,12 +312,12 @@
 
 <div class="crawl-panel" id="crawl-panel" role="dialog" aria-labelledby="crawl-panel-title" hidden>
   <div class="crawl-panel-head">
-    <div id="crawl-panel-title" class="mcp-panel-title">Draft a pack from a service repo</div>
-    <button id="crawl-panel-close" class="drawer-close" type="button" aria-label="Close crawl panel">esc</button>
+    <div id="crawl-panel-title" class="mcp-panel-title">Scan a service repo</div>
+    <button id="crawl-panel-close" class="drawer-close" type="button" aria-label="Close scanner panel">esc</button>
   </div>
   <div class="crawl-panel-body">
     <p class="crawl-lede">
-      Path A of pack creation. The crawler walks your repo's
+      Path A of pack creation. The scanner walks your repo's
       <code>docker-compose.yml</code>, Prometheus rules, Alertmanager configs,
       OTel Collector configs, and Grafana dashboard JSONs, then emits a
       <em>draft canonical v1.2 pack</em> — a real, valid manifest you can
@@ -318,6 +344,21 @@
       </label>
     </div>
 
+    <div class="crawl-github-row">
+      <label class="crawl-github-label" for="crawl-github-url">
+        <span class="crawl-github-key">From a GitHub repo</span>
+        <span class="crawl-github-sub">Public repos work out of the box. Set <code>GITHUB_TOKEN</code> in the server env for private repos / higher rate limits.</span>
+      </label>
+      <div class="crawl-github-inputs">
+        <input id="crawl-github-url" type="text" placeholder="github.com/owner/repo or owner/repo" autocomplete="off" class="crawl-github-input">
+        <input id="crawl-github-ref" type="text" placeholder="branch (default)" autocomplete="off" class="crawl-github-ref">
+        <button id="crawl-github-go-btn" type="button" class="ctrl-btn crawl-github-go-btn" disabled>scan github</button>
+      </div>
+      <div id="crawl-github-status" class="crawl-github-status"></div>
+    </div>
+
+    <div class="crawl-or-divider"><span>or</span></div>
+
     <div class="crawl-dropzone" id="crawl-dropzone">
       <div class="crawl-dropzone-icon">⬇</div>
       <div class="crawl-dropzone-headline">Drop a folder here</div>
@@ -331,7 +372,7 @@
     </div>
 
     <div class="crawl-panel-actions">
-      <button id="crawl-go-btn" class="mcp-refresh-btn" type="button" disabled>crawl</button>
+      <button id="crawl-go-btn" class="mcp-refresh-btn" type="button" disabled>scan</button>
       <button id="crawl-reset-btn" class="ctrl-btn" type="button">reset</button>
       <span id="crawl-status" class="mcp-refresh-status"></span>
     </div>

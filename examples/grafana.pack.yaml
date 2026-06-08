@@ -104,6 +104,32 @@ spec:
         version: { declared: "2.6", min: "2.5", gating: warn }
         endpoints: [https://tempo.internal:3200]
         auth: { kind: bearer, secretRef: tempo-token }
+      # Grafana itself — the visualisation + unified alerting layer is
+      # both the subject of this reference pack AND the dashboards backend
+      # everything else queries through. Declaring it here makes the
+      # version policy, capabilities, and gating explicit so a live pack
+      # can be benchmarked against it (e.g. live Grafana 12.4.0 vs the
+      # reference's declared min/declared/gating). Without this entry,
+      # the Grafana lens has nothing on the reference side to compare.
+      - id: dashboards-grafana
+        signal: dashboards
+        product: grafana
+        version:
+          declared: "11.6"
+          min: "10.4"
+          gating: warn
+          capabilities:
+            - health
+            - search_dashboards
+            - get_dashboard
+            - list_datasources
+            - list_folders
+            - list_alert_rules
+            - unified_alerting
+            - datasource_proxy
+            - public_dashboards
+        endpoints: [https://grafana.internal:3000]
+        auth: { kind: bearer, secretRef: grafana-sa-token }
 
   # ---------------------------------------------------------------------------
   # Environments

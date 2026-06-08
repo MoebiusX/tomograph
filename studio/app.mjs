@@ -80,10 +80,17 @@ const state = {
   activeCardKeyA: null,        // side-A card highlight (compare view)
   activeCardKeyB: null,        // side-B card highlight (compare view)
   uploadedSource: null,        // set when user uploaded a pack instead of using the catalog
+  diagnoseSub: 'grade',        // DIAGNOSE sub-tab: 'grade' (verdict report) | 'compare' (A-vs-B side-by-side)
   compareBId: null,            // second pack id for the COMPARE view
   compareBEnv: null,
   compareSlice: 'all',         // 'all' | 'onlyA' | 'onlyB' | 'both' | 'a-b' | 'a+b'
   compareSearch: '',           // text filter applied to card id/title
+  compareLens: 'all',          // 'all' | <product-slug>. Filters Compare/Benchmark to
+                               // only artefacts in a product's surface (e.g. 'grafana'
+                               // keeps backends with product=grafana, dashboards whose
+                               // provider.kind=grafana, anything whose mcp.source.<id>
+                               // annotation came from a grafana_* tool, and any artefact
+                               // that refs a surface backend). 'all' disables the filter.
   diff: null,                  // last fetched /api/diff result
   packB: null,                 // B's full layered pack (for atlases)
   atlasVariant: 'strata',      // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit' | 'arbor'
@@ -102,6 +109,10 @@ const state = {
   deployProduct: 'grafana',    // chosen target product
   deployVersion: '12',         // chosen target version (string — matches matrix.versions)
   deployScope: 'both',         // for prometheus-rules: both | recording | alerting
+  // Remediate set-operation: which artefacts to deploy. null → resolves to
+  // 'A-B' when Pack B is loaded (the delta to close), else 'A'.
+  remediateOp: null,           // 'A' | 'B' | 'AUB' | 'A-B'
+  remediateDeselected: null,   // Set<string> of identities the user unchecked
   mcpStatus: null,
 };
 
@@ -181,8 +192,8 @@ const PERSIST_KEY = 'studioState.v1';
 const PERSIST_FIELDS = [
   'selectedPackId', 'selectedEnv',
   'compareBId', 'compareBEnv',
-  'view', 'layerFilter',
-  'compareSlice', 'compareSearch',
+  'view', 'layerFilter', 'diagnoseSub',
+  'compareSlice', 'compareSearch', 'compareLens',
   'viewFocus',
   'atlasVariant', 'arborView',
   'compileGroup', 'compileFlavor', 'compileArtifact',
@@ -235,9 +246,22 @@ async function rehydrateFromPersistence() {
 
   // Restore non-pack UI fields up-front so the first render shows them.
   if (typeof saved.view === 'string')          state.view = saved.view;
+  // Migrate persisted state from prior nav layouts to the three-tab
+  // model (Layers · Compare · Compile). Anything outside those three
+  // routes to either Compare (if it implied a comparison view) or
+  // Layers (everything else) so we never strand the user on a tab
+  // that no longer has a nav entry.
+  // Permitted views: the three workflow tabs + the Advanced deep tools.
+  // Anything else (legacy 'benchmark', the removed 'compare-artefacts')
+  // routes to the compliance report so we never strand the user.
+  const PERMITTED_VIEWS = new Set(['layers', 'compare', 'compile', 'conformance', 'schema', 'otlp', 'traceability', 'atlas']);
+  if (state.view && !PERMITTED_VIEWS.has(state.view)) {
+    state.view = 'compare';
+  }
   if (typeof saved.layerFilter === 'string')   state.layerFilter = saved.layerFilter;
   if (typeof saved.compareSlice === 'string')  state.compareSlice = saved.compareSlice;
   if (typeof saved.compareSearch === 'string') state.compareSearch = saved.compareSearch;
+  if (typeof saved.compareLens === 'string')   state.compareLens = saved.compareLens;
   if (saved.viewFocus === 'a' || saved.viewFocus === 'b') state.viewFocus = saved.viewFocus;
   if (typeof saved.atlasVariant === 'string')  state.atlasVariant = saved.atlasVariant;
   if (typeof saved.arborView === 'string')     state.arborView = saved.arborView;
@@ -311,10 +335,12 @@ function renderPackSelect() {
     const opt = document.createElement('option');
     opt.value = p.id;
     // Uploaded packs lead with a folder glyph so the user can tell
-    // them apart from file-backed catalog entries at a glance.
+    // them apart from file-backed catalog entries at a glance. Tier
+    // is omitted from the option text — it already renders as a
+    // separate badge on the picker chrome.
     const prefix = p.source === 'uploaded' ? '📂 ' : '';
     opt.textContent = p.ok
-      ? `${prefix}${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`
+      ? `${prefix}${p.label} · v${p.version || '?'}`
       : `${p.label} (error)`;
     if (!p.ok) opt.disabled = true;
     sel.appendChild(opt);
@@ -350,7 +376,7 @@ function renderPackBSelect() {
   // Sort by label so the list is stable across re-renders.
   options.sort((a, b) => (a.label || a.id).localeCompare(b.label || b.id));
   sel.innerHTML = '<option value="">— none —</option>'
-    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')} · ${escapeHtml(p.criticality || '?')}</option>`).join('');
+    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')}</option>`).join('');
   sel.value = state.compareBId || '';
   sel.onchange = () => {
     const newId = sel.value || null;
@@ -560,10 +586,17 @@ function layerArtefactCount(layerId) {
 // ============================================================
 
 function renderTabs() {
+  // Keep the OBSERVA chrome's active tab in sync on every re-render.
+  paintObservaActiveTab();
   const tabs = $('#layer-tabs');
   if (!tabs) return;
   tabs.innerHTML = '';
-  tabs.appendChild(renderPrimaryViewNav());
+  // The three H2 journey tabs in the OBSERVA chrome (Discover · Diagnose ·
+  // Remediate) are the SOLE primary nav. The old in-content view-nav row
+  // (Layers · Compare · Compile) duplicated them and was the "mixing" that
+  // broke the journey — it's gone. We keep only the A|B focus toggle (for
+  // the single-pack Advanced views) and the layer filter chips.
+  tabs.appendChild(renderFocusToggle());
   tabs.appendChild(renderLayerFilterChips());
 }
 
@@ -595,57 +628,6 @@ function renderFocusToggle() {
   wrap.appendChild(mkBtn('a', state.pack));
   wrap.appendChild(mkBtn('b', state.packB));
   return wrap;
-}
-
-function renderPrimaryViewNav() {
-  const nav = document.createElement('div');
-  nav.className = 'view-nav';
-
-  // Decide which views are available for the current mode.
-  // View nav adapts to what's loaded — no rigid mode locking.
-  //   Pack A only  → Layers · Conformance · Compile · Schema
-  //   Pack B added → adds Compare + Atlas (cross-pack views)
-  // User toggles Pack B from the header picker; the view nav refreshes.
-  const hasB = !!state.packB;
-  const views = [
-    { id: 'layers',     label: 'Layers',     hint: 'Browse artefacts by layer (L1..GOV).' },
-    { id: 'conformance',label: 'Conformance',hint: 'Maturity rubric per tier with pass/fail.' },
-    { id: 'compile',    label: 'Compile',    hint: 'Per-artefact compilation to native platform format.' },
-    ...(hasB ? [
-      { id: 'compare',     label: 'Compare',     hint: 'Side-by-side per-layer comparison of PACK A vs PACK B.' },
-      { id: 'traceability',label: 'Traceability',hint: 'Repo vs live: aligned / declared-not-verified / verified-not-declared / stale.' },
-    ] : []),
-    // Atlas is available in single-pack mode too — Stratigraphy, Periodic,
-    // Skyline, and Arbor all work on a single pack (Arbor especially is a
-    // dependency-discovery tool that doesn't need a second pack). The
-    // cross-pack variants (Constellation morph, Transit interchanges)
-    // surface in the variant picker only when Pack B is loaded.
-    { id: 'atlas',       label: 'Atlas',       hint: 'Visual atlases — Stratigraphy, Periodic, Skyline, Arbor (single-pack) · Constellation, Transit (cross-pack).' },
-    { id: 'schema',     label: 'Schema',     hint: 'Maturity score + canonical schema view.' },
-  ];
-  const active = state.view || 'layers';
-
-  for (const v of views) {
-    const b = document.createElement('button');
-    b.className = 'view-nav-btn' + (v.id === active ? ' is-active' : '');
-    b.type = 'button';
-    b.title = v.hint;
-    b.textContent = v.label;
-    b.onclick = () => {
-      state.view = v.id;
-      // Mirror to activeLayer for legacy code paths.
-      state.activeLayer = ({ conformance: 'CONF', compile: 'COMPILE', atlas: 'ATLAS', schema: 'CONF', layers: state.layerFilter !== 'all' ? state.layerFilter : 'L1' })[v.id] || 'L1';
-      state.activeCardKey = null;
-      // Header chrome depends on the current view (Compare hides its
-      // pickers because the compare pack-cards have their own).
-      applyModeChrome();
-      renderTabs();
-      renderMainView();
-    };
-    nav.appendChild(b);
-  }
-  nav.appendChild(renderFocusToggle());
-  return nav;
 }
 
 function renderLayerFilterChips() {
@@ -697,24 +679,338 @@ function renderMainView() {
   // hook for the debounced write. Cheap when suspended (boot phase).
   persistence.schedule();
   if (state.mode === 'home') { renderHomeView(); return; }
-  if (!state.pack) { view.innerHTML = '<div class="placeholder">Loading pack…</div>'; return; }
+  if (!state.pack) {
+    // In the workspace but no pack yet. Discover ("what do we have?") is
+    // where you LOAD or GENERATE a pack — so its empty state IS the three
+    // load options, never the marketing hero. Diagnose/Remediate need a
+    // pack first, so they point the user back to Discover.
+    if (state.view === 'layers') { renderDiscoverEmpty(view); return; }
+    renderNeedPackPrompt(view); return;
+  }
 
-  // Mode-free dispatch (Phase 7r): the view nav decides what to render
-  // based on what's loaded. 'compare' and 'atlas' only appear in the
-  // nav when state.packB is truthy, so we can reach them here without
-  // needing a separate 'compare' mode.
+  // Mode-free dispatch. 'compare' IS the Diagnose view — the
+  // diagnostic-grade compliance report ("Can We Trust It?"). The old
+  // artefact-id side-by-side diff is GONE; any stale 'compare-artefacts'
+  // or 'benchmark' state routes to the compliance report.
   switch (state.view) {
-    case 'compare':      renderCompareView(view); return;
-    case 'traceability': renderTraceabilityView(view); return;
-    case 'atlas':        renderAtlasView(view); return;
-    case 'conformance':  view.appendChild(renderConformanceView()); return;
-    case 'compile':      renderCompileView(view); return;
-    case 'schema':       view.appendChild(renderConformanceView()); return;
+    case 'benchmark':                                         // legacy alias
+    case 'compare-artefacts':                                 // removed view → report
+    case 'compare':            renderBenchmarkView(view); return;
+    case 'traceability':       renderTraceabilityView(view); return;
+    case 'atlas':              renderAtlasView(view); return;
+    case 'conformance':        view.appendChild(renderConformanceView()); return;
+    case 'compile':            renderCompileView(view); return;
+    case 'schema':             renderSchemaView(view); return;
+    case 'otlp':               renderOtlpView(view); return;
     case 'layers':
     default:
+      // Discover ("What Do We Have?") IS the real layer inventory —
+      // the actual artefact cards grouped by canonical layer. The
+      // CT-scanner is the LANDING-PAGE hero, not the in-app view.
       renderLayersView(view);
       return;
   }
+}
+
+// ============================================================
+// DISCOVER — the TOMOGRAM SCAN dashboard.
+//
+// Three-column mission-control layout:
+//   LEFT   — pack overview (manifest identity) + pack catalog
+//   CENTER — the scanner centerpiece (hero image, with CSS fallback),
+//            scan status, slice readout, layer index, top issues,
+//            scan provenance
+//   RIGHT  — conformance score, maturity by dimension, reference
+//            check, artefact sourcing legend
+//
+// Every panel is wired to real pack data — meta, conformance,
+// symbol table, catalog. No fabricated trends or activity logs.
+// ============================================================
+// Slab accents only — the layer NAMES come from the canonical
+// LAYER_DEFS (L1 Contract · L2 Telemetry · L2X Extended · L3 Insight ·
+// L4 Action · L5 Validation · GOV Governance). Never invent layer
+// semantics; the spec is the source of truth.
+const DISCO_SLAB_ACCENT = {
+  L1: '#3b82f6', L2: '#06b6d4', L2X: '#0ea5e9', L3: '#10b981',
+  L4: '#f59e0b', L5: '#a855f7', GOV: '#64748b',
+};
+
+function discoGradeLetter(pct) {
+  if (pct >= 97) return 'A+'; if (pct >= 93) return 'A'; if (pct >= 90) return 'A-';
+  if (pct >= 87) return 'B+'; if (pct >= 83) return 'B'; if (pct >= 80) return 'B-';
+  if (pct >= 77) return 'C+'; if (pct >= 73) return 'C'; if (pct >= 70) return 'C-';
+  if (pct >= 60) return 'D';  return 'F';
+}
+function discoGradeWord(pct) {
+  if (pct >= 90) return 'Excellent'; if (pct >= 80) return 'Good';
+  if (pct >= 70) return 'Fair';      if (pct >= 60) return 'Weak';
+  return 'Failing';
+}
+
+function renderDiscoverDashboard(view) {
+  view.innerHTML = '';
+  const pack = state.pack;
+  const meta = pack?.meta || {};
+  const conf = focusedConformance();
+  const sym  = state.symbolTable || buildSymbolTable(pack);
+
+  // ---- reference check (real, from symbol table) ----
+  let refTotal = 0, refBroken = 0;
+  const brokenLines = [];
+  if (sym?.refsFrom) for (const refs of sym.refsFrom.values()) refTotal += refs.length;
+  if (sym?.broken) for (const [key, refs] of sym.broken) {
+    refBroken += refs.length;
+    for (const r of refs) brokenLines.push({ from: key, ref: r });
+  }
+  const refResolved = Math.max(0, refTotal - refBroken);
+
+  // ---- conformance summary (real) ----
+  const scorePct = conf ? conf.scorePercent : 0;
+  const grade = discoGradeLetter(scorePct);
+  const gradeWord = discoGradeWord(scorePct);
+  const mustP  = conf?.must   || { passed: 0, total: 0 };
+  const shouldP = conf?.should || { passed: 0, total: 0 };
+
+  // ---- maturity by dimension (real) ----
+  // Dimension names come straight from the canonical LAYER_DEFS — the
+  // spec layer model, never an invented one.
+  const DIM_NAMES = Object.fromEntries(LAYER_DEFS.map(d => [d.id, d.name]));
+  const dims = [];
+  for (const d of ['L1','L2','L3','L4','L5','GOV']) {
+    const s = conf?.byDimension?.[d];
+    if (!s) continue;
+    const weight = (s.mustTotal || 0) + 0.5 * (s.shouldTotal || 0);
+    const got    = (s.mustPassed || 0) + 0.5 * (s.shouldPassed || 0);
+    const pct = weight > 0 ? Math.round((got / weight) * 100) : null;
+    dims.push({ key: d, name: `${d} ${DIM_NAMES[d] || ''}`.trim(), pct });
+  }
+
+  // ---- top issues (real: failing conformance clauses + broken refs) ----
+  const issues = [];
+  if (conf?.clauses) for (const cl of conf.clauses) {
+    if (cl.applies && !cl.pass) {
+      issues.push({
+        sev: cl.severity === 'MUST' ? 'HIGH' : 'MEDIUM',
+        type: cl.severity === 'MUST' ? 'missing' : 'advisory',
+        ref: cl.id,
+        detail: cl.description,
+      });
+    }
+  }
+  for (const b of brokenLines) {
+    issues.push({ sev: 'HIGH', type: 'broken_ref', ref: b.from.split('::').pop() || b.from, detail: `${b.ref} not found` });
+  }
+  const sevRank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+  issues.sort((a, b) => (sevRank[a.sev] ?? 9) - (sevRank[b.sev] ?? 9));
+
+  // ---- provenance (real, from annotations) ----
+  const ann = meta.annotations || pack?.metadata?.annotations || {};
+  const provRows = [];
+  const src = pack?.source || (ann['mcp.refreshedAt'] ? 'mcp' : 'file');
+  provRows.push(['source', escapeHtml(String(src))]);
+  if (ann['mcp.refreshedAt']) provRows.push(['refreshed', escapeHtml(ann['mcp.refreshedAt'])]);
+  const pa = (ann['mcp.probesAttempted'] || '').split(',').filter(Boolean).length;
+  const ps = (ann['mcp.probesSucceeded'] || '').split(',').filter(Boolean).length;
+  if (pa) provRows.push(['probes', `${ps}/${pa} returned data`]);
+  const tools = (ann['mcp.toolsCalled'] || '').split(',').filter(Boolean).length;
+  if (tools) provRows.push(['mcp tools', `${tools} called`]);
+  provRows.push(['validated', conf ? 'schema v1.2 · conformance scored' : 'schema v1.2']);
+
+  // ---- catalog lists (real) ----
+  const uploaded = (state.catalog || []).filter(p => p.ok && p.id !== undefined);
+  const examples = (state._examplesCache || []).filter(p => p.ok);
+
+  const catRow = (p, withTier) => `
+    <button type="button" class="disco-cat-row${p.id === state.selectedPackId ? ' is-active' : ''}" data-pack-id="${escapeHtml(p.id)}" data-is-example="${withTier ? '1' : '0'}">
+      <span class="disco-cat-dot" data-ok="${p.ok ? '1' : '0'}"></span>
+      <span class="disco-cat-name">${escapeHtml(p.label || p.name || p.id)}</span>
+      <span class="disco-cat-tag">${withTier ? escapeHtml(p.criticality || '') : ('v' + escapeHtml(p.version || '?'))}</span>
+    </button>
+  `;
+
+  // ---- layer index (real artefact counts + ids) ----
+  const layerIndex = LAYER_DEFS.map(def => {
+    const count = layerArtefactCount(def.id);
+    return { id: def.id, name: def.name, count };
+  });
+
+  view.innerHTML = `
+    <div class="disco">
+      <!-- LEFT -->
+      <aside class="disco-left">
+        <section class="disco-panel">
+          <h2 class="disco-panel-title">Pack Overview</h2>
+          <dl class="disco-meta">
+            <dt>name</dt><dd class="disco-meta-strong">${escapeHtml(meta.name || pack?.id || '—')}</dd>
+            <dt>version</dt><dd>${escapeHtml(meta.version || '—')}</dd>
+            <dt>apiVersion</dt><dd>${escapeHtml(meta.apiVersion || '—')}</dd>
+            <dt>kind</dt><dd>${escapeHtml(meta.kind || '—')}</dd>
+            <dt>binding</dt><dd>${escapeHtml(meta.binding || '—')}</dd>
+            <dt>target</dt><dd>${escapeHtml(meta.target || '—')}</dd>
+            <dt>criticality</dt><dd><span class="disco-tier">${escapeHtml(meta.criticality || '—')}</span></dd>
+            <dt>environments</dt><dd>${escapeHtml((meta.environments || []).join(' · ') || '—')}</dd>
+            <dt>owners</dt><dd>${escapeHtml((meta.owners || []).join(' · ') || '—')}</dd>
+          </dl>
+        </section>
+
+        <section class="disco-panel disco-catalog">
+          <h2 class="disco-panel-title">Pack Catalog</h2>
+          <input type="search" class="disco-cat-search" placeholder="Search packs…" aria-label="Search packs">
+          ${uploaded.length ? `<div class="disco-cat-group">Uploaded &amp; drafted</div>${uploaded.map(p => catRow(p, false)).join('')}` : ''}
+          ${examples.length ? `<div class="disco-cat-group">Examples (${examples.length})</div>${examples.map(p => catRow(p, true)).join('')}` : ''}
+        </section>
+      </aside>
+
+      <!-- CENTER -->
+      <main class="disco-center">
+        <section class="disco-panel disco-scanner-panel">
+          <div class="disco-scanner-head">
+            <div>
+              <div class="disco-scanner-title">TOMOGRAM SCAN</div>
+              <div class="disco-scanner-sub">layered observability view</div>
+            </div>
+            <div class="disco-scan-status">
+              <span class="disco-scan-status-key">SCAN</span>
+              <span class="disco-scan-status-val">COMPLETE</span>
+              <span class="disco-scan-status-slice">${layerIndex.reduce((n,l)=>n+l.count,0)} artefacts · ${layerIndex.filter(l=>l.count>0).length}/${layerIndex.length} layers</span>
+            </div>
+          </div>
+
+          <div class="disco-scanner-stage">
+            <img class="disco-scanner-img" src="/assets/tomogram-hero.png" alt="Observability tomogram scan"
+                 onerror="this.classList.add('is-missing')">
+            <div class="disco-scanner-fallback">
+              ${LAYER_DEFS.filter(d => d.id !== 'L2X' || layerArtefactCount('L2X') > 0).map(d => {
+                const cnt = layerArtefactCount(d.id);
+                return `
+                  <div class="disco-slab" style="--slab:${DISCO_SLAB_ACCENT[d.id] || '#64748b'}">
+                    <span class="disco-slab-id">${escapeHtml(d.num)}</span>
+                    <span class="disco-slab-label">${escapeHtml(d.name)}</span>
+                    <span class="disco-slab-count">${cnt}</span>
+                  </div>`;
+              }).join('')}
+            </div>
+          </div>
+
+          <div class="disco-slice">
+            <span class="disco-slice-key">RESOLUTION</span>
+            <span class="disco-slice-track"><span class="disco-slice-fill" style="width:21%"></span></span>
+            <span class="disco-slice-val">deep slice · canonical v1.2</span>
+          </div>
+        </section>
+
+        <div class="disco-center-row">
+          <section class="disco-panel">
+            <h2 class="disco-panel-title">Top Issues <span class="disco-panel-badge">${issues.length}</span></h2>
+            ${issues.length ? `
+              <table class="disco-issues">
+                <thead><tr><th>sev</th><th>type</th><th>reference</th><th>detail</th></tr></thead>
+                <tbody>
+                  ${issues.slice(0, 8).map(i => `
+                    <tr data-sev="${i.sev}">
+                      <td class="di-sev">${i.sev}</td>
+                      <td class="di-type">${escapeHtml(i.type)}</td>
+                      <td class="di-ref">${escapeHtml(i.ref)}</td>
+                      <td class="di-detail">${escapeHtml(i.detail)}</td>
+                    </tr>`).join('')}
+                </tbody>
+              </table>
+              ${issues.length > 8 ? `<div class="disco-issues-more">+${issues.length - 8} more — see Diagnose</div>` : ''}
+            ` : `<div class="disco-empty">No issues found. Pack is clean against its declared tier.</div>`}
+          </section>
+
+          <section class="disco-panel">
+            <h2 class="disco-panel-title">Scan Provenance</h2>
+            <dl class="disco-meta">
+              ${provRows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`).join('')}
+            </dl>
+          </section>
+        </div>
+      </main>
+
+      <!-- RIGHT -->
+      <aside class="disco-right">
+        <section class="disco-panel">
+          <h2 class="disco-panel-title">Conformance Score</h2>
+          <div class="disco-score">
+            <div class="disco-score-grade" data-grade="${grade[0]}">
+              <div class="disco-score-letter">${grade}</div>
+              <div class="disco-score-num">${scorePct} / 100</div>
+              <div class="disco-score-word">${gradeWord}</div>
+            </div>
+            <div class="disco-score-breakdown">
+              <div class="disco-score-line"><span>MUST</span><strong>${mustP.passed}/${mustP.total}</strong><span class="disco-score-pct">${mustP.total ? Math.round(mustP.passed/mustP.total*100) : 0}%</span></div>
+              <div class="disco-score-line"><span>SHOULD</span><strong>${shouldP.passed}/${shouldP.total}</strong><span class="disco-score-pct">${shouldP.total ? Math.round(shouldP.passed/shouldP.total*100) : 0}%</span></div>
+            </div>
+          </div>
+        </section>
+
+        ${dims.length ? `
+        <section class="disco-panel">
+          <h2 class="disco-panel-title">Maturity by Dimension</h2>
+          <div class="disco-dims">
+            ${dims.map(d => `
+              <div class="disco-dim">
+                <span class="disco-dim-name">${escapeHtml(d.name)}</span>
+                <span class="disco-dim-bar"><span class="disco-dim-fill" data-band="${d.pct == null ? 'na' : d.pct >= 80 ? 'hi' : d.pct >= 60 ? 'mid' : 'lo'}" style="width:${d.pct == null ? 0 : d.pct}%"></span></span>
+                <span class="disco-dim-pct">${d.pct == null ? 'n/a' : d.pct + '%'}</span>
+              </div>`).join('')}
+          </div>
+        </section>` : ''}
+
+        <section class="disco-panel">
+          <h2 class="disco-panel-title">Reference Check</h2>
+          <div class="disco-ref-stats">
+            <div class="disco-ref-stat"><div class="disco-ref-num">${refTotal}</div><div class="disco-ref-key">total</div></div>
+            <div class="disco-ref-stat is-ok"><div class="disco-ref-num">${refResolved}</div><div class="disco-ref-key">resolved</div></div>
+            <div class="disco-ref-stat is-bad"><div class="disco-ref-num">${refBroken}</div><div class="disco-ref-key">broken</div></div>
+          </div>
+          ${brokenLines.length ? `
+            <div class="disco-ref-broken-head">Broken references</div>
+            <ul class="disco-ref-broken">
+              ${brokenLines.slice(0, 5).map(b => `<li><span class="disco-ref-from">${escapeHtml((b.from.split('::').pop() || b.from))}</span> → <span class="disco-ref-to">${escapeHtml(b.ref)}</span></li>`).join('')}
+            </ul>
+            ${brokenLines.length > 5 ? `<div class="disco-issues-more">+${brokenLines.length - 5} more</div>` : ''}
+          ` : `<div class="disco-empty">All references resolve.</div>`}
+        </section>
+
+        <section class="disco-panel">
+          <h2 class="disco-panel-title">Artefact Sourcing</h2>
+          <ul class="disco-legend">
+            <li><span class="disco-legend-dot" data-src="declared"></span><span class="disco-legend-name">Declared</span><span class="disco-legend-desc">present in manifest</span></li>
+            <li><span class="disco-legend-dot" data-src="verified"></span><span class="disco-legend-name">Verified</span><span class="disco-legend-desc">MCP attested</span></li>
+            <li><span class="disco-legend-dot" data-src="missing"></span><span class="disco-legend-name">Missing</span><span class="disco-legend-desc">required, not present</span></li>
+          </ul>
+        </section>
+      </aside>
+    </div>
+  `;
+
+  // ---- wire catalog clicks → load as Pack A ----
+  view.querySelectorAll('.disco-cat-row').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.packId;
+      if (!id || id === state.selectedPackId) return;
+      // Ensure the pack is in the catalog (examples live only in cache).
+      if (!state.catalog.find(p => p.id === id)) {
+        const ex = (state._examplesCache || []).find(p => p.id === id);
+        if (ex) state.catalog.push(ex);
+      }
+      state.selectedPackId = id;
+      state.selectedEnv = defaultEnvFor(id);
+      refresh();
+    });
+  });
+
+  // ---- catalog search filter ----
+  const search = view.querySelector('.disco-cat-search');
+  search?.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    view.querySelectorAll('.disco-cat-row').forEach(row => {
+      const name = (row.querySelector('.disco-cat-name')?.textContent || '').toLowerCase();
+      row.style.display = !q || name.includes(q) ? '' : 'none';
+    });
+  });
 }
 
 // Layers view — stacks every layer when filter='all', narrows to one
@@ -865,6 +1161,24 @@ function renderCard(artefact, def, sublayerKey) {
     ? `<span class="ref-indicator" title="${state.symbolTable.broken.get(key).length} unresolved reference(s)">⚠</span>`
     : '';
 
+  // Benchmark CTA — when this backend's `product` matches a catalogue
+  // reference pack (grafana, prometheus, kafka), surface a small action
+  // that loads the reference as Pack B and applies the product lens.
+  // This is the discovery affordance for the user journey: from any
+  // backend card, one click → "how does my X compare to best practice?"
+  let benchmarkCta = '';
+  const backendProduct = artefact.spec?.product || artefact.product || null;
+  const refMatch = backendProduct
+    ? LENS_PRODUCTS.find(lp => lp.slug === backendProduct.toLowerCase())
+    : null;
+  if (refMatch && /^BAK-/.test(artefact.id)) {
+    benchmarkCta = `<button type="button" class="benchmark-cta"
+      data-product="${escapeHtml(refMatch.slug)}"
+      data-ref-pack="${escapeHtml(refMatch.refPackId)}"
+      title="Compare your ${escapeHtml(refMatch.label)} posture against the catalogue reference pack."
+    >⛯ Benchmark vs ${escapeHtml(refMatch.label)} →</button>`;
+  }
+
   btn.innerHTML = `
     <div class="card-head">
       <span class="card-id">${escapeHtml(artefact.id)}</span>
@@ -877,10 +1191,54 @@ function renderCard(artefact, def, sublayerKey) {
     <div class="card-foot">
       ${artefact.tool ? `<span class="tool">${escapeHtml(artefact.tool)}</span>` : ''}
       ${tags}
+      ${benchmarkCta}
     </div>
   `;
-  btn.onclick = () => openDrawer(artefact, def, sublayerKey);
+  btn.onclick = (ev) => {
+    // The Benchmark CTA lives inside the card button. Intercept clicks
+    // on it so the drawer doesn't open.
+    const cta = ev.target.closest('.benchmark-cta');
+    if (cta) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      runBenchmark(cta.dataset.product, cta.dataset.refPack);
+      return;
+    }
+    openDrawer(artefact, def, sublayerKey);
+  };
   return btn;
+}
+
+// Drive the benchmark action — load the reference pack as Pack B,
+// apply the product lens, switch to Compare. Centralised so the
+// Backend CTA and the (future) Benchmark view CTA both use it.
+async function runBenchmark(product, refPackId) {
+  if (!product || !refPackId) return;
+  state.compareLens = product;
+  try {
+    // The Pack B picker handles fetch + render. We dispatch a change
+    // event on it so the existing path (auto-load + render Compare)
+    // runs as if the user had picked it.
+    const bSel = document.querySelector('#pack-b-select');
+    if (bSel) {
+      bSel.value = refPackId;
+      bSel.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      // Fallback: drive state directly if the picker isn't mounted yet.
+      state.compareBId = refPackId;
+      state.view = 'compare';
+      renderTabs(); renderMainView();
+    }
+    // Belt-and-suspenders: the picker's auto-switch lands on Compare,
+    // but a Benchmark CTA should land on the Benchmark view. Override
+    // explicitly here a tick later.
+    setTimeout(() => {
+      state.view = 'compare';
+      renderTabs(); renderMainView();
+    }, 700);
+  } catch (e) {
+    console.warn('[benchmark] failed:', e);
+  }
 }
 
 // ---------- conformance view ----------
@@ -1112,7 +1470,680 @@ function parseCdFilename(cd) {
   return m ? m[1] : null;
 }
 
+// ============================================================
+// Schema view — distinct from Conformance.
+//
+// Conformance answers "how MATURE is this pack?" against the maturity
+// rubric (MUST/SHOULD per tier). The Schema view answers "how does
+// this pack STAND UP against the v1.2 canonical schema?" — the
+// structural question. Three sections:
+//
+//   1. Identity block — apiVersion / kind / metadata fields, the
+//      canonical "what is this pack" header. Reads the same fields
+//      a packlint would key on.
+//   2. Validation status — pulled from the catalog (only validating
+//      packs land in the catalog) plus a link to the schema source.
+//   3. Canonical YAML — the manifest verbatim. Read-only, scrollable,
+//      monospaced. The single source of truth for the pack.
+//
+// Caches the YAML per (pack-id, env) under state._schemaYaml so
+// switching tabs back doesn't re-fetch.
+// ============================================================
+function renderSchemaView(host) {
+  const pack    = focusedPack();
+  const packId  = focusedPackId();
+  const env     = focusedEnv() || pack?.meta?.environment;
+  if (!pack) {
+    host.innerHTML = '<div class="placeholder">No pack loaded.</div>';
+    return;
+  }
+
+  const wrap = document.createElement('section');
+  wrap.className = 'section schema-view';
+  wrap.dataset.layer = 'SCHEMA';
+  wrap.dataset.focus = effectiveFocus();
+  host.appendChild(wrap);
+
+  // ---------- header ----------
+  const focusBadge = state.packB ? ` · pack ${effectiveFocus().toUpperCase()} (${escapeHtml(pack?.id || '')})` : '';
+  const sectionHead = document.createElement('div');
+  sectionHead.className = 'section-head';
+  sectionHead.innerHTML = `
+    <span class="section-num">SCHEMA</span>
+    <span class="section-name">Canonical manifest · ObservabilityPack v1.2${focusBadge}</span>
+    <span class="section-count">${escapeHtml(pack?.meta?.binding || 'unknown binding')}</span>
+  `;
+  wrap.appendChild(sectionHead);
+
+  // ---------- identity block ----------
+  const id = document.createElement('div');
+  id.className = 'schema-identity';
+  const m = pack.meta || {};
+  const rows = [
+    ['apiVersion',  m.apiVersion],
+    ['kind',        m.kind],
+    ['metadata.name', m.name || pack.id || pack.name],
+    ['metadata.version', m.version],
+    ['binding',      m.binding],
+    ['criticality',  m.criticality],
+    ['environment',  m.environment],
+    ['target',       m.target],
+    ['owners',       Array.isArray(m.owners) ? m.owners.join(', ') : m.owners],
+  ];
+  id.innerHTML = `
+    <div class="schema-identity-head">Identity</div>
+    <dl class="schema-identity-list">
+      ${rows.map(([k, v]) => `
+        <div class="schema-identity-row">
+          <dt>${escapeHtml(k)}</dt>
+          <dd>${v ? `<code>${escapeHtml(String(v))}</code>` : '<em>—</em>'}</dd>
+        </div>
+      `).join('')}
+    </dl>
+  `;
+  wrap.appendChild(id);
+
+  // ---------- validation block ----------
+  // Catalog presence = pack passed canonical validation when it was
+  // loaded. We surface that as a green pass; if it ever failed, the
+  // pack wouldn't be in the picker. The link points at the schema
+  // source so a curious engineer can read the rules themselves.
+  const validation = document.createElement('div');
+  validation.className = 'schema-validation';
+  validation.innerHTML = `
+    <div class="schema-validation-head">Validation</div>
+    <div class="schema-validation-status is-pass">
+      <span class="schema-validation-pip">✓</span>
+      <span class="schema-validation-msg">
+        Validates against the canonical
+        <a href="https://github.com/MoebiusX/otel-observability-pack/blob/main/schema/observability-pack.schema.json" target="_blank" rel="noopener">ObservabilityPack v1.2 JSON Schema</a>.
+        Packs that fail validation never appear in the catalog.
+      </span>
+    </div>
+    <div class="schema-validation-meta">
+      Schema source: <code>vendor/observability-pack-spec/v1.2/observability-pack.schema.json</code> ·
+      <a href="https://github.com/MoebiusX/otel-observability-pack/blob/main/spec/ObservabilityPack-Spec.md" target="_blank" rel="noopener">Spec document</a>
+    </div>
+  `;
+  wrap.appendChild(validation);
+
+  // ---------- canonical YAML pane ----------
+  const yamlBox = document.createElement('div');
+  yamlBox.className = 'schema-yaml-box';
+  yamlBox.innerHTML = `
+    <div class="schema-yaml-head">
+      <span class="schema-yaml-title">Canonical YAML</span>
+      <span class="schema-yaml-meta" id="schema-yaml-meta">loading…</span>
+      <button id="schema-yaml-copy" type="button" class="ctrl-btn schema-yaml-copy">copy</button>
+      <a id="schema-yaml-download" class="ctrl-btn schema-yaml-download" download>download</a>
+    </div>
+    <pre class="schema-yaml-body" id="schema-yaml-body" role="region" aria-label="Canonical pack YAML">loading…</pre>
+  `;
+  wrap.appendChild(yamlBox);
+
+  // Lazy-fetch the YAML.
+  const cacheKey = `${packId}::${env || ''}`;
+  state._schemaYaml = state._schemaYaml || {};
+  const apply = (text) => {
+    const body = $('#schema-yaml-body');
+    const meta = $('#schema-yaml-meta');
+    if (!body || !meta) return;
+    body.textContent = text;
+    const bytes = new Blob([text]).size;
+    const lines = text.split('\n').length;
+    meta.textContent = `${lines} lines · ${(bytes / 1024).toFixed(1)} KB`;
+    const dl = $('#schema-yaml-download');
+    if (dl) {
+      const slug = (m.name || pack.id || 'pack').toString().replace(/[^a-z0-9-]+/gi, '-');
+      dl.href = `data:application/x-yaml;charset=utf-8,${encodeURIComponent(text)}`;
+      dl.setAttribute('download', `${slug}.pack.yaml`);
+    }
+    const copy = $('#schema-yaml-copy');
+    if (copy) {
+      copy.onclick = async () => {
+        try { await navigator.clipboard.writeText(text); copy.textContent = 'copied'; setTimeout(() => copy.textContent = 'copy', 1200); }
+        catch (_) { copy.textContent = 'select all'; setTimeout(() => copy.textContent = 'copy', 1200); }
+      };
+    }
+  };
+
+  if (state._schemaYaml[cacheKey]) {
+    apply(state._schemaYaml[cacheKey]);
+    return;
+  }
+
+  const envQ = env ? `?env=${encodeURIComponent(env)}&format=yaml` : '?format=yaml';
+  fetch(`/api/packs/${encodeURIComponent(packId)}/canonical${envQ}`, {
+    headers: { Accept: 'application/x-yaml' },
+  }).then(async r => {
+    const text = await r.text();
+    if (!r.ok) throw new Error(`server ${r.status}: ${text.slice(0, 200)}`);
+    state._schemaYaml[cacheKey] = text;
+    apply(text);
+  }).catch(e => {
+    const body = $('#schema-yaml-body');
+    const meta = $('#schema-yaml-meta');
+    if (body) body.textContent = `# Failed to load canonical YAML: ${e.message}`;
+    if (meta) meta.textContent = 'error';
+  });
+}
+
+// ============================================================
+// OTLP coverage view (spec §3) — answers the question every fintech
+// auditor will ask: "what OTLP-shaped wire does this pack run on?"
+//
+//   ┌────────────────────────────────────────────────────────────┐
+//   │ OTLP · WIRE PROTOCOL COVERAGE                              │
+//   │ grafana-reference · tier-2 · prod                          │
+//   ├────────────────────────────────────────────────────────────┤
+//   │ Receiver                                                    │
+//   │ ✓ otlp receiver declared (spec MUST)                       │
+//   │ Protocols: ● gRPC ● HTTP                                    │
+//   │ Endpoint:  0.0.0.0:4317                                     │
+//   ├────────────────────────────────────────────────────────────┤
+//   │ Per-signal coverage                                         │
+//   │   Signal      Receiver (in)         Exporter (out)         │
+//   │   traces      ● OTLP                ● OTLP → tempo:4317   │
+//   │   metrics     ● OTLP                ○ prometheusremotewrite│
+//   │   logs        ● OTLP                ○ loki native          │
+//   │   profiles    ○ not configured      — (pyroscope native)   │
+//   ├────────────────────────────────────────────────────────────┤
+//   │ SDK contract                                                │
+//   │ Semconv 1.27.0 · propagators: tracecontext, baggage        │
+//   │ Languages: java, node · Sampling: parentbased 0.1          │
+//   │ Resource: service.name, service.namespace, service.version │
+//   ├────────────────────────────────────────────────────────────┤
+//   │ Summary: 3 of 4 signals wired · 1 end-to-end OTLP          │
+//   └────────────────────────────────────────────────────────────┘
+//
+// Reads from the canonical pack (fetched once, cached). The layered
+// display shape doesn't carry pipelines/otel under stable paths.
+// ============================================================
+const OTLP_SIGNALS = ['traces', 'metrics', 'logs', 'profiles'];
+const OTLP_EXPORTER_KINDS = new Set(['otlp', 'otlphttp', 'otlp-grpc', 'otlp-http']);
+
+function renderOtlpView(host) {
+  const pack    = focusedPack();
+  const packId  = focusedPackId();
+  const env     = focusedEnv() || pack?.meta?.environment;
+  if (!pack) {
+    host.innerHTML = '<div class="placeholder">No pack loaded.</div>';
+    return;
+  }
+
+  const wrap = document.createElement('section');
+  wrap.className = 'section otlp-view';
+  wrap.dataset.layer = 'OTLP';
+  wrap.dataset.focus = effectiveFocus();
+  host.appendChild(wrap);
+
+  const focusBadge = state.packB ? ` · pack ${effectiveFocus().toUpperCase()} (${escapeHtml(pack?.id || '')})` : '';
+  const head = document.createElement('div');
+  head.className = 'section-head';
+  head.innerHTML = `
+    <span class="section-num">OTLP</span>
+    <span class="section-name">Wire coverage · OpenTelemetry Protocol${focusBadge}</span>
+    <span class="section-count">${escapeHtml(pack?.meta?.binding || 'unknown binding')}</span>
+  `;
+  wrap.appendChild(head);
+
+  // Loading placeholder while the canonical lands.
+  const body = document.createElement('div');
+  body.className = 'otlp-body';
+  body.innerHTML = '<div class="placeholder">loading canonical manifest…</div>';
+  wrap.appendChild(body);
+
+  const cacheKey = `${packId}::${env || ''}`;
+  state._otlpCanonical = state._otlpCanonical || {};
+  const apply = (canonical) => renderOtlpBody(body, canonical, pack);
+  if (state._otlpCanonical[cacheKey]) { apply(state._otlpCanonical[cacheKey]); return; }
+  const envQ = env ? `?env=${encodeURIComponent(env)}` : '';
+  fetch(`/api/packs/${encodeURIComponent(packId)}/canonical${envQ}`, {
+    headers: { Accept: 'application/json' },
+  }).then(async r => {
+    if (!r.ok) throw new Error(`server ${r.status}`);
+    const c = await r.json();
+    state._otlpCanonical[cacheKey] = c;
+    apply(c);
+  }).catch(e => {
+    body.innerHTML = `<div class="placeholder">Failed to load canonical: ${escapeHtml(e.message)}</div>`;
+  });
+}
+
+function renderOtlpBody(host, canonical, layered) {
+  host.innerHTML = '';
+  const spec = canonical?.spec || {};
+  const pipelines = spec.pipelines || {};
+  const otel = spec.otel || {};
+  const sdk = otel.sdk || {};
+  const ra  = otel.resource_attributes || {};
+
+  // --- Receiver analysis ---
+  const receivers = Array.isArray(pipelines.receivers) ? pipelines.receivers : [];
+  const otlpReceiver = receivers.find(r => /^otlp(http)?$/i.test(r?.name || ''));
+  const hasOtlpReceiver = !!otlpReceiver;
+  const otherReceivers = receivers.filter(r => r !== otlpReceiver).map(r => r?.name).filter(Boolean);
+  const protocols = Array.isArray(otlpReceiver?.protocols) ? otlpReceiver.protocols : [];
+  const hasGrpc = protocols.some(p => /grpc/i.test(p));
+  const hasHttp = protocols.some(p => /http/i.test(p));
+  const endpoint = otlpReceiver?.endpoint || '—';
+
+  // --- Per-signal coverage ---
+  const exporters = pipelines.exporters || {};
+  const signals = OTLP_SIGNALS.map(sig => {
+    const exporter = exporters[sig];
+    const exporterKind = exporter?.kind || (sig === 'profiles' ? null : null);
+    const exporterEndpoint = exporter?.endpoint || null;
+    const exporterIsOtlp = exporter ? OTLP_EXPORTER_KINDS.has(String(exporterKind).toLowerCase()) : false;
+
+    // For profiles we look at spec.profiling — the spec doesn't put
+    // profiles in pipelines.exporters today.
+    let profilingNote = null;
+    if (sig === 'profiles' && spec.profiling) {
+      profilingNote = `${spec.profiling.product || 'profiling backend'} native`;
+    }
+
+    // OTLP receiver in spec carries every signal by default; we mark
+    // "in" as ● when the receiver is present, ○ when it isn't.
+    return {
+      sig,
+      receiverIn: hasOtlpReceiver,
+      exporter,
+      exporterKind: exporterKind || (profilingNote || null),
+      exporterEndpoint,
+      exporterIsOtlp,
+      profilingNote,
+    };
+  });
+  const endToEndOtlpCount = signals.filter(s => s.receiverIn && s.exporterIsOtlp).length;
+  const wiredCount = signals.filter(s => s.exporter || s.profilingNote).length;
+
+  // --- Render ---
+  const sdLangs = Array.isArray(sdk.languages) ? sdk.languages.join(', ') : '—';
+  const sdSampling = sdk.sampling
+    ? `${sdk.sampling.policy || ''} ${sdk.sampling.ratio != null ? `(ratio ${sdk.sampling.ratio})` : ''}`.trim()
+    : '—';
+  const sdProps = Array.isArray(sdk.propagators) ? sdk.propagators.join(', ') : '—';
+  const raReq  = Array.isArray(ra.required) ? ra.required.join(', ') : '—';
+  const raCustom = Array.isArray(ra.custom) ? ra.custom.join(', ') : null;
+
+  host.innerHTML = `
+    <div class="otlp-block otlp-block-receiver">
+      <div class="otlp-block-head">Receiver</div>
+      <div class="otlp-receiver-status ${hasOtlpReceiver ? 'is-pass' : 'is-fail'}">
+        <span class="otlp-pip">${hasOtlpReceiver ? '✓' : '✗'}</span>
+        <span class="otlp-receiver-msg">
+          ${hasOtlpReceiver
+            ? `<strong>otlp</strong> receiver declared <em>(spec MUST)</em>`
+            : `<strong>otlp receiver missing</strong> — spec MUST violation`}
+        </span>
+      </div>
+      <div class="otlp-receiver-grid">
+        <div class="otlp-receiver-row">
+          <span class="otlp-receiver-key">Protocols</span>
+          <span class="otlp-receiver-val">
+            ${hasGrpc ? '<span class="otlp-proto-chip is-on">● gRPC</span>' : '<span class="otlp-proto-chip">○ gRPC</span>'}
+            ${hasHttp ? '<span class="otlp-proto-chip is-on">● HTTP</span>' : '<span class="otlp-proto-chip">○ HTTP</span>'}
+          </span>
+        </div>
+        <div class="otlp-receiver-row">
+          <span class="otlp-receiver-key">Endpoint</span>
+          <span class="otlp-receiver-val"><code>${escapeHtml(String(endpoint))}</code></span>
+        </div>
+        ${otherReceivers.length ? `
+          <div class="otlp-receiver-row">
+            <span class="otlp-receiver-key">Side-channel receivers</span>
+            <span class="otlp-receiver-val">${otherReceivers.map(n => `<code>${escapeHtml(n)}</code>`).join(' · ')}</span>
+          </div>` : ''}
+      </div>
+    </div>
+
+    <div class="otlp-block otlp-block-matrix">
+      <div class="otlp-block-head">Per-signal coverage</div>
+      <table class="otlp-matrix">
+        <thead>
+          <tr>
+            <th>Signal</th>
+            <th>Receiver (in)</th>
+            <th>Exporter (out)</th>
+            <th>End-to-end OTLP</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${signals.map(s => `
+            <tr data-signal="${escapeHtml(s.sig)}">
+              <td class="otlp-sig-name">${escapeHtml(s.sig)}</td>
+              <td>${s.receiverIn ? '<span class="otlp-cell is-otlp">● OTLP</span>' : '<span class="otlp-cell is-off">○ not received</span>'}</td>
+              <td>
+                ${s.exporter
+                  ? `<span class="otlp-cell ${s.exporterIsOtlp ? 'is-otlp' : 'is-native'}">${s.exporterIsOtlp ? '●' : '○'} ${escapeHtml(String(s.exporterKind))}</span>${s.exporterEndpoint ? ` <code class="otlp-endpoint">${escapeHtml(s.exporterEndpoint)}</code>` : ''}`
+                  : s.profilingNote
+                    ? `<span class="otlp-cell is-native">○ ${escapeHtml(s.profilingNote)}</span>`
+                    : '<span class="otlp-cell is-off">— not declared</span>'}
+              </td>
+              <td>${s.receiverIn && s.exporterIsOtlp ? '<span class="otlp-e2e is-pass">✓</span>' : '<span class="otlp-e2e is-warn">○</span>'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      <div class="otlp-matrix-legend">
+        ● OTLP-shaped wire · ○ non-OTLP native or absent · — not declared in spec
+      </div>
+    </div>
+
+    <div class="otlp-block otlp-block-sdk">
+      <div class="otlp-block-head">SDK contract</div>
+      <dl class="otlp-sdk-grid">
+        <div><dt>Semantic conventions</dt><dd><code>${escapeHtml(otel.semconv || '—')}</code></dd></div>
+        <div><dt>Propagators</dt><dd><code>${escapeHtml(sdProps)}</code></dd></div>
+        <div><dt>Languages</dt><dd><code>${escapeHtml(sdLangs)}</code></dd></div>
+        <div><dt>Sampling</dt><dd><code>${escapeHtml(sdSampling)}</code></dd></div>
+        <div><dt>Log ↔ Trace correlation</dt><dd>${otel.log_correlation === true ? '✓' : otel.log_correlation === false ? '✗' : '—'}</dd></div>
+        <div><dt>Resource attrs (required)</dt><dd><code>${escapeHtml(raReq)}</code></dd></div>
+        ${raCustom ? `<div><dt>Resource attrs (custom)</dt><dd><code>${escapeHtml(raCustom)}</code></dd></div>` : ''}
+      </dl>
+    </div>
+
+    <div class="otlp-block otlp-block-summary">
+      <div class="otlp-summary-row">
+        <div class="otlp-summary-key">Signals wired</div>
+        <div class="otlp-summary-val">${wiredCount} of ${OTLP_SIGNALS.length}</div>
+      </div>
+      <div class="otlp-summary-row">
+        <div class="otlp-summary-key">End-to-end OTLP</div>
+        <div class="otlp-summary-val">${endToEndOtlpCount} of ${OTLP_SIGNALS.length}</div>
+      </div>
+      <div class="otlp-summary-row">
+        <div class="otlp-summary-key">Receiver MUST</div>
+        <div class="otlp-summary-val">${hasOtlpReceiver ? 'pass' : 'fail'}</div>
+      </div>
+      <div class="otlp-summary-note">
+        Spec v1.2 §3 — every pack <strong>MUST</strong> declare an <code>otlp</code> receiver.
+        The OTLP-out column is informational: many production stacks intentionally use
+        native protocols downstream (Prometheus remote-write, Loki native, Tempo OTLP)
+        for backend efficiency.
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// REMEDIATION PLAN — the set-operation band that leads Remediate.
+//
+// "Fix the gaps" starts by deciding WHAT to deploy. Four set
+// operations over the two packs' artefacts:
+//
+//   A      — everything in your pack (the default with no Pack B)
+//   B      — everything in the reference / target pack
+//   A ∪ B  — union: your pack plus anything B adds
+//   A − B  — the delta: artefacts in A but not B (the gap to close)
+//
+// A−B is the default when Pack B is loaded because it answers the
+// remediation question directly: "what do I need to push that isn't
+// already there?" The resolved set is shown per-layer with each item
+// selectable; deployable artefacts (the Grafana surface — rules from
+// SLOs, declared recording rules, dashboards) carry a checkbox and a
+// "deploy" affordance, while everything else is flagged "author in
+// pack" (you fix it by editing the manifest, not by pushing).
+// ============================================================
+
+// The active set operation, resolving the null default by Pack-B
+// presence. B / ∪ / − require Pack B; without it we clamp to 'A'.
+function effectiveRemediateOp() {
+  const op = state.remediateOp || (state.packB ? 'A-B' : 'A');
+  if (!state.packB && op !== 'A') return 'A';
+  return op;
+}
+
+// Is this layered artefact part of the deployable Grafana surface, and
+// if so what identity does the deploy manifest key it by? Mirrors
+// tools/lib/compile.mjs::compileCatalog — only SLOs (recording +
+// burn-rate alert rules), author-declared recording rules, and
+// dashboards land through the Grafana deploy path. Returns
+// { deployable, kind, identity } where identity matches the deploy
+// manifest row.id (slo.id / rule name / dashboard id).
+function remediationDeployIdentity(art) {
+  const id = String(art?.id || '').toUpperCase();
+  const defines = String(art?.defines || '');
+  if (/^SLO-/.test(id) || defines.startsWith('slos.')) {
+    return { deployable: true, kind: 'rules', identity: art.title || defines.replace(/^slos\./, '') };
+  }
+  if (/^QRY-/.test(id)) {
+    return { deployable: true, kind: 'rules', identity: art.title || art.id };
+  }
+  if (/^DASH-/.test(id) || defines.startsWith('dashboards.')) {
+    return { deployable: true, kind: 'dashboard', identity: defines.replace(/^dashboards\./, '') || art.title || art.id };
+  }
+  return { deployable: false, kind: null, identity: null };
+}
+
+// Resolve a set operation to a per-layer artefact list. Uses the
+// server-computed diff (state.diff) for B / ∪ / − so the membership
+// matches the Diagnose drill exactly; falls back to whole-pack walks
+// when the diff isn't present (op 'A', or B-ops before the diff loads).
+function resolveRemediationSet(op) {
+  const haveB = !!state.packB;
+  const diff = (state.diff && !state.diff.error && state.diff.layers) ? state.diff : null;
+  const out = { byLayer: {}, total: 0, deployable: 0, author: 0, needsDiff: false };
+
+  for (const L of LAYERS_FOR_DIFF) {
+    let entries = [];
+    if (op === 'A' || !haveB) {
+      entries = layerItemsFor(state.pack, L).map(a => ({ art: a }));
+    } else if (op === 'B') {
+      entries = layerItemsFor(state.packB, L).map(a => ({ art: a }));
+    } else if (op === 'A-B') {
+      if (!diff) { out.needsDiff = true; entries = layerItemsFor(state.pack, L).map(a => ({ art: a })); }
+      else entries = (diff.layers[L]?.onlyInA || []).map(e => ({ art: e.artefact }));
+    } else if (op === 'AUB') {
+      const aItems = layerItemsFor(state.pack, L).map(a => ({ art: a }));
+      let bExtra;
+      if (!diff) { out.needsDiff = true; bExtra = layerItemsFor(state.packB, L).map(a => ({ art: a })); }
+      else bExtra = (diff.layers[L]?.onlyInB || []).map(e => ({ art: e.artefact }));
+      entries = [...aItems, ...bExtra];
+    }
+    const enriched = entries
+      .filter(e => e.art)
+      .map(e => ({ ...e, ...remediationDeployIdentity(e.art) }));
+    if (enriched.length) {
+      out.byLayer[L] = enriched;
+      out.total += enriched.length;
+      out.deployable += enriched.filter(e => e.deployable).length;
+      out.author += enriched.filter(e => !e.deployable).length;
+    }
+  }
+  return out;
+}
+
+// Selected deployable identities = all deployable in the set minus the
+// ones the user unchecked. Drives the deploy hand-off.
+function remediationSelectedIdentities(resolved) {
+  const deselected = state.remediateDeselected || new Set();
+  const ids = new Set();
+  for (const L of LAYERS_FOR_DIFF) {
+    for (const e of (resolved.byLayer[L] || [])) {
+      if (e.deployable && e.identity && !deselected.has(e.identity)) ids.add(e.identity);
+    }
+  }
+  return ids;
+}
+
+const REMEDIATE_OPS = [
+  { id: 'A',   label: 'A', sub: 'your pack',        needsB: false },
+  { id: 'B',   label: 'B', sub: 'reference',        needsB: true  },
+  { id: 'AUB', label: 'A ∪ B', sub: 'union',        needsB: true  },
+  { id: 'A-B', label: 'A − B', sub: 'gap to close', needsB: true  },
+];
+
+const REMEDIATE_LAYER_NAMES = { L1:'Contract', L2:'Telemetry', L2X:'Extended', L3:'Insight', L4:'Action', L5:'Validation', GOV:'Governance' };
+
+// The remediation plan band — leads the Remediate view. Appends to host.
+function renderRemediationPlan(host) {
+  const op = effectiveRemediateOp();
+  const haveB = !!state.packB;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'remediate-plan';
+
+  // ---- Set-operation selector ----
+  const bName = haveB
+    ? (catalogEntryFor(state.compareBId)?.label || state.packB?.meta?.name || state.packB?.id || 'Pack B')
+    : null;
+  const opsHtml = REMEDIATE_OPS.map(o => {
+    const disabled = o.needsB && !haveB;
+    return `<button type="button" class="remediate-op${o.id === op ? ' is-active' : ''}${disabled ? ' is-disabled' : ''}"
+      data-op="${o.id}" ${disabled ? 'disabled title="Load a Pack B from the header to enable"' : ''}>
+      <span class="remediate-op-label">${escapeHtml(o.label)}</span>
+      <span class="remediate-op-sub">${escapeHtml(o.sub)}</span>
+    </button>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="remediate-plan-head">
+      <span class="remediate-plan-eyebrow">PLAN</span>
+      What do we deploy?
+      ${haveB ? `<span class="remediate-plan-vs">A = your pack · B = <strong>${escapeHtml(bName)}</strong></span>`
+              : `<span class="remediate-plan-vs">Load a <strong>Pack B</strong> from the header to unlock B · A∪B · A−B</span>`}
+    </div>
+    <div class="remediate-ops">${opsHtml}</div>
+  `;
+
+  // Wire op buttons.
+  wrap.querySelectorAll('.remediate-op:not(.is-disabled)').forEach(btn => {
+    btn.onclick = () => {
+      state.remediateOp = btn.dataset.op;
+      state.remediateDeselected = new Set();   // reset curation on op change
+      renderMainView();
+    };
+  });
+
+  // ---- Resolve the set ----
+  const resolved = resolveRemediationSet(op);
+
+  // B-ops need the diff; load it lazily, then re-render.
+  if (resolved.needsDiff && haveB && state.compareBId) {
+    const loading = document.createElement('div');
+    loading.className = 'remediate-loading';
+    loading.textContent = 'Computing the set…';
+    wrap.appendChild(loading);
+    host.appendChild(wrap);
+    loadDiff().then(() => renderMainView());
+    return;
+  }
+
+  const selectedIds = remediationSelectedIdentities(resolved);
+
+  // ---- Summary tiles ----
+  const summary = document.createElement('div');
+  summary.className = 'remediate-summary';
+  const opMeaning = {
+    'A':   'Every artefact in your pack.',
+    'B':   `Every artefact in ${escapeHtml(bName || 'Pack B')}.`,
+    'AUB': `Your pack combined with everything ${escapeHtml(bName || 'Pack B')} adds.`,
+    'A-B': `Artefacts in your pack but not in ${escapeHtml(bName || 'Pack B')} — the delta to push.`,
+  };
+  summary.innerHTML = `
+    <div class="remediate-summary-lede">${opMeaning[op] || ''}</div>
+    <div class="remediate-tiles">
+      <div class="remediate-tile is-total"><div class="remediate-tile-n">${resolved.total}</div><div class="remediate-tile-l">in set</div></div>
+      <div class="remediate-tile is-deployable"><div class="remediate-tile-n">${selectedIds.size}</div><div class="remediate-tile-l">selected to deploy</div></div>
+      <div class="remediate-tile is-author"><div class="remediate-tile-n">${resolved.author}</div><div class="remediate-tile-l">to author in pack</div></div>
+    </div>
+  `;
+  wrap.appendChild(summary);
+
+  if (resolved.total === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'remediate-empty';
+    empty.textContent = op === 'A-B'
+      ? 'Nothing to close — your pack has no artefacts beyond Pack B.'
+      : 'This set is empty.';
+    wrap.appendChild(empty);
+    host.appendChild(wrap);
+    return;
+  }
+
+  // ---- Per-layer, per-item checklist ----
+  const list = document.createElement('div');
+  list.className = 'remediate-list';
+  const deselected = state.remediateDeselected || (state.remediateDeselected = new Set());
+  for (const L of LAYERS_FOR_DIFF) {
+    const entries = resolved.byLayer[L];
+    if (!entries || !entries.length) continue;
+    const layerEl = document.createElement('div');
+    layerEl.className = 'remediate-layer';
+    const depCount = entries.filter(e => e.deployable).length;
+    layerEl.innerHTML = `
+      <div class="remediate-layer-head">
+        <span class="remediate-layer-num">${L}</span>
+        <span class="remediate-layer-name">${escapeHtml(REMEDIATE_LAYER_NAMES[L] || L)}</span>
+        <span class="remediate-layer-count">${entries.length}${depCount ? ` · ${depCount} deployable` : ''}</span>
+      </div>
+    `;
+    const ul = document.createElement('ul');
+    ul.className = 'remediate-items';
+    for (const e of entries) {
+      const li = document.createElement('li');
+      const checked = e.deployable && e.identity && !deselected.has(e.identity);
+      li.className = 'remediate-item' + (e.deployable ? '' : ' is-author');
+      const labelText = e.art.title || e.art.id || e.identity || '—';
+      if (e.deployable) {
+        li.innerHTML = `
+          <label class="remediate-item-row">
+            <input type="checkbox" ${checked ? 'checked' : ''}>
+            <span class="remediate-item-name">${escapeHtml(labelText)}</span>
+            <span class="remediate-item-tag is-deploy">${e.kind === 'dashboard' ? 'dashboard' : 'rules'}</span>
+          </label>
+        `;
+        const cb = li.querySelector('input');
+        cb.onchange = () => {
+          if (cb.checked) deselected.delete(e.identity);
+          else deselected.add(e.identity);
+          renderMainView();
+        };
+      } else {
+        li.innerHTML = `
+          <div class="remediate-item-row">
+            <span class="remediate-item-name">${escapeHtml(labelText)}</span>
+            <span class="remediate-item-tag is-author">author in pack</span>
+          </div>
+        `;
+      }
+      ul.appendChild(li);
+    }
+    layerEl.appendChild(ul);
+    list.appendChild(layerEl);
+  }
+  wrap.appendChild(list);
+
+  // ---- Deploy action ----
+  const action = document.createElement('div');
+  action.className = 'remediate-action';
+  const n = selectedIds.size;
+  const deployPackId = (op === 'B') ? state.compareBId : state.selectedPackId;
+  action.innerHTML = `
+    <button type="button" class="remediate-deploy-btn" ${n === 0 ? 'disabled' : ''}>
+      Deploy ${n} selected →
+    </button>
+    <span class="remediate-action-hint">${n === 0
+      ? 'Select at least one deployable artefact, or author the rest in the pack.'
+      : 'Opens the deploy form pre-selected to your choices. Non-deployable artefacts are fixed by editing the pack.'}</span>
+  `;
+  const btn = action.querySelector('.remediate-deploy-btn');
+  if (btn && n > 0) {
+    btn.onclick = () => openDeployModal({ packId: deployPackId, presetIdentities: selectedIds });
+  }
+  wrap.appendChild(action);
+
+  host.appendChild(wrap);
+}
+
 function renderCompileView(host) {
+  // The remediation PLAN leads the view — set-operation (A | B | A∪B |
+  // A−B) → resolved set → per-item select → deploy. The per-artefact
+  // compiler below is the drill-down: inspect/emit one artefact at a time.
+  renderRemediationPlan(host);
+
   const section = document.createElement('section');
   section.className = 'section compile-view';
   section.dataset.layer = 'COMPILE';
@@ -1124,7 +2155,7 @@ function renderCompileView(host) {
   const focusBadge = state.packB ? ` · pack ${effectiveFocus().toUpperCase()}` : '';
   head.innerHTML = `
     <span class="section-num">BLD</span>
-    <span class="section-name">Compile — pack as the source of truth${focusBadge}</span>
+    <span class="section-name">Compile — inspect &amp; emit one artefact${focusBadge}</span>
     <span class="section-count">${escapeHtml(focusedPk?.id || '')}</span>
   `;
   section.appendChild(head);
@@ -1132,7 +2163,7 @@ function renderCompileView(host) {
   const lede = document.createElement('div');
   lede.className = 'compile-lede';
   lede.innerHTML = `
-    Pick an artifact on the left and choose its target flavor. Each leaf compiles individually — one SLO's rules,
+    Drill into a single artifact and choose its target flavor. Each leaf compiles individually — one SLO's rules,
     one dashboard, or the full file. Every output declares its platform explicitly so you know whether you're
     holding a <em>Prometheus / Mimir</em> rules file or a <em>Grafana-managed</em> provisioning YAML.
   `;
@@ -1862,6 +2893,1499 @@ function renderTraceRow(bucketKey, finding, resolvedSet) {
   return row;
 }
 
+// ============================================================
+// Benchmark view (Phase 4)
+//
+// A focused destination — answers "how does PACK A's posture for
+// <product> compare to PACK B as the reference?" Built on the same
+// machinery as Compare (productSurface lens + buildCompareKeySets)
+// but framed as a scorecard rather than a free-form side-by-side.
+//
+//   ┌─────────────────────────────────────────────────────────────┐
+//   │  BENCHMARK: krystaline-live  vs  grafana-reference          │
+//   │  Lens: [Grafana ▼]                                          │
+//   │                                                             │
+//   │   Coverage      Per-layer       Verified by MCP             │
+//   │     14%         L1 0/16         29 backends                 │
+//   │                 L2 1/1          live versions: Grafana 12.4 │
+//   │                 L3 6/31                                     │
+//   │                 L4 0/17                                     │
+//   │                 L5 0/8                                      │
+//   ├─────────────────────────────────────────────────────────────┤
+//   │  Missing from your live pack (top 10)                       │
+//   │   • http_request_success_ratio (SLI)                        │
+//   │   • datasource_proxy_success_ratio (SLI)                    │
+//   │   • burn-rate alert: http_request_success_99_9 (POL)        │
+//   │   • …                                                       │
+//   ├─────────────────────────────────────────────────────────────┤
+//   │  In your live pack but not in the reference (top 5)         │
+//   │   • adz2hpb (custom DASH)                                   │
+//   │   • …                                                       │
+//   ├─────────────────────────────────────────────────────────────┤
+//   │  Side-by-side                                               │
+//   │  [the same lens-scoped compare grid as Compare view]        │
+//   └─────────────────────────────────────────────────────────────┘
+// ============================================================
+// DIAGNOSE sub-tab nav. The three MAIN journey tabs (Discover · Diagnose ·
+// Remediate) are unchanged; this split lives entirely INSIDE Diagnose:
+//   · Diagnostic Grade — the YES/NO verdict + coverage/trust/evidence report
+//   · Compare          — the artefact-level A-vs-B side-by-side diff
+// Switching is local (state.diagnoseSub) and persisted.
+function renderDiagnoseSubnav(active) {
+  const nav = document.createElement('div');
+  nav.className = 'diag-subnav';
+  const tabs = [
+    { id: 'grade',   label: 'Diagnostic Grade', sub: 'is it good enough?' },
+    { id: 'compare', label: 'Compare',          sub: 'A vs B — what differs?' },
+  ];
+  for (const t of tabs) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'diag-subtab' + (t.id === active ? ' is-active' : '');
+    btn.dataset.sub = t.id;
+    btn.innerHTML = `
+      <span class="diag-subtab-label">${escapeHtml(t.label)}</span>
+      <span class="diag-subtab-sub">${escapeHtml(t.sub)}</span>
+    `;
+    btn.addEventListener('click', () => {
+      if (state.diagnoseSub === t.id) return;
+      state.diagnoseSub = t.id;
+      renderMainView();
+    });
+    nav.appendChild(btn);
+  }
+  return nav;
+}
+
+function renderBenchmarkView(view) {
+  // Sub-tabs under DIAGNOSE: Diagnostic Grade (the verdict report) and
+  // Compare (the artefact-level A-vs-B side-by-side). The Compare sub-tab
+  // restores the dedicated side-by-side VS view; the grade report stays
+  // exactly as-is beneath its own sub-tab.
+  const sub = state.diagnoseSub === 'compare' ? 'compare' : 'grade';
+  view.appendChild(renderDiagnoseSubnav(sub));
+  if (sub === 'compare') { renderCompareView(view); return; }
+
+  const scaffold = document.createElement('section');
+  scaffold.className = 'section benchmark-view';
+  scaffold.dataset.layer = 'BENCHMARK';
+  view.appendChild(scaffold);
+
+  // Pack A is guaranteed by the dispatcher. Pack B is OPTIONAL: with A
+  // alone we answer the killer question (diagnostic-grade YES/NO) from
+  // coverage + drift evidence carried in Pack A itself. Loading a Pack B
+  // (via the header picker — we never duplicate it here) unlocks the
+  // A-vs-B comparison for drift-vs-deployed or gap-vs-target analysis.
+  const haveB = !!state.packB;
+
+  // If the user picked a Pack B but it (or the diff) hasn't loaded yet,
+  // fetch them and re-render so the comparison enriches the verdict.
+  if (state.compareBId && (!haveB || (!state.diff && !state.diff?.error))) {
+    const loading = document.createElement('div');
+    loading.className = 'placeholder';
+    loading.textContent = 'Loading comparison pack…';
+    scaffold.appendChild(loading);
+    Promise.all([
+      haveB ? Promise.resolve() : loadPackB(),
+      (state.diff && !state.diff.error) ? Promise.resolve() : loadDiff(),
+    ]).then(() => { renderTabs(); renderMainView(); });
+    return;
+  }
+
+  // Auto-apply the lens when Pack B is a *-reference catalogue pack.
+  // Picking grafana-reference IS choosing the Grafana benchmark; no
+  // reason to make the user explicitly set the Lens dropdown afterward.
+  if (haveB) {
+    const bId = String(state.compareBId || state.packB?.id || '').toLowerCase();
+    const refMatch = /^([a-z][a-z0-9_-]*?)-reference$/.exec(bId);
+    if (refMatch && (state.compareLens === 'all' || !state.compareLens)) {
+      const inferredLens = refMatch[1];
+      if (LENS_PRODUCTS.some(lp => lp.slug === inferredLens)) {
+        state.compareLens = inferredLens;
+      }
+    }
+  }
+  const lens = state.compareLens || 'all';
+
+  // Posture matrix — the coverage substrate (Pack-A-derived). Feeds both
+  // the verdict's "comprehensive" criterion and the drill-down below.
+  const posture = computePostureMatrix(state.pack, state.packB);
+
+  // THE verdict — diagnostic-grade YES/NO from coverage (2A) + trust /
+  // drift (2B), Pack A alone. Always leads the view.
+  const diagnostic = computeDiagnosticGrade(state.pack, state.packB, posture, state.compareBId);
+  const verdict = renderDiagnosticGradeVerdict(diagnostic, lens, state.packB);
+  scaffold.appendChild(verdict);
+
+  // The COMPARE band (A-vs-B drill, or the invite to load a Pack B) sits
+  // DIRECTLY under the verdict summary band — before the deep 2A/2B/
+  // evidence tables — so the side-by-side comparison is the first thing
+  // the user sees, not buried beneath the full compliance report.
+  const verdictHead = verdict.querySelector('.diag-report-head');
+  const placeCompareBand = (el) => {
+    if (!el) return;
+    if (verdictHead && verdictHead.nextSibling) verdict.insertBefore(el, verdictHead.nextSibling);
+    else if (verdictHead) verdict.appendChild(el);
+    else scaffold.appendChild(el);
+  };
+  if (!haveB) {
+    // Pack A only — invite a Pack B; the verdict above is the
+    // coverage-only read, the A-vs-B comparison the optional deepening.
+    placeCompareBand(renderComparePrompt());
+  } else {
+    // Pack B present — render the true side-by-side A-vs-B drill (drift
+    // cells / gap deltas) as the lead evidence beneath the verdict.
+    placeCompareBand(renderDriftDrill(state.diff, state.packB, state.compareBId, lens));
+  }
+
+  // Drill-down — per-layer × per-mechanism coverage map. Pack-A-derived,
+  // so it's the "why" behind the verdict whether or not a Pack B exists.
+  scaffold.appendChild(renderBenchmarkHeadline(posture, lens));
+  scaffold.appendChild(renderPostureMatrix(posture));
+  scaffold.appendChild(renderPostureNarrative(posture));
+  scaffold.appendChild(renderPosturePieRow(posture));
+}
+
+// Affordance shown in Diagnose when only Pack A is loaded. Points the
+// user at the EXISTING header Pack B picker (no duplicate control) and
+// names the two comparison use cases. Selecting nothing here is fine —
+// the diagnostic verdict above already stands on Pack A alone.
+function renderComparePrompt() {
+  const el = document.createElement('div');
+  el.className = 'compare-prompt';
+  el.innerHTML = `
+    <div class="compare-prompt-body">
+      <span class="compare-prompt-key">COMPARE</span>
+      <span class="compare-prompt-text">
+        This verdict reads <strong>Pack A on its own</strong>. Load a
+        <strong>Pack B</strong> from the <em>PACK B</em> picker in the header to
+        compare side-by-side — detect <strong>drift</strong> (declared vs what's
+        deployed) or measure the <strong>gap to a target</strong> posture.
+      </span>
+    </div>
+  `;
+  return el;
+}
+
+// Detect what KIND of comparison Pack B represents so the drill can
+// frame the deltas correctly:
+//   'gap'   — B is a target / reference / contract ("what good looks
+//             like"). onlyInB = the gap to close; onlyInA = beyond target.
+//   'drift' — B is the live / deployed system ("what's actually out
+//             there"). onlyInA = declared but unconfirmed (drift risk);
+//             onlyInB = observed live but undeclared (shadow signal).
+// Ambiguous comparisons default to 'gap' — "what's different / missing"
+// is the more common intent when benchmarking against another pack.
+function compareModeFor(packB, compareBId) {
+  const bId = String(compareBId || packB?.id || '').toLowerCase();
+  const src = inferPackSource(packB);
+  const isLiveLike = /(^|[-_])(live|deployed|prod|runtime)([-_]|$)/.test(bId) || src === 'Live';
+  if (isLiveLike) return 'drift';
+  return 'gap';
+}
+
+// THE A-vs-B drill — the real side-by-side evidence behind the verdict.
+// Consumes state.diff (server-computed set arithmetic on the two packs'
+// artefact keys) and projects it through the active product lens, then
+// frames the three buckets (inBoth / onlyInA / onlyInB) in either drift
+// or gap language. Returns null when no usable diff exists so the caller
+// can simply skip the section.
+function renderDriftDrill(diff, packB, compareBId, lens) {
+  if (!diff || diff.error || !diff.layers) return null;
+
+  const mode = compareModeFor(packB, compareBId);
+  const useLens = lens && lens !== 'all';
+
+  // Project a bucket entry's artefact (shape varies: onlyIn* carry
+  // `.artefact`, inBoth carries `.a`/`.b`). For lens scoping we test
+  // the A-side projection (or B-side for onlyInB) against the surface.
+  const passesLens = (entry, side) => {
+    if (!useLens) return true;
+    const art = side === 'b' ? (entry.artefact || entry.b) : (entry.artefact || entry.a);
+    const pack = side === 'b' ? packB : state.pack;
+    return productSurface(art, lens, pack);
+  };
+
+  // Per-layer filtered buckets + running totals.
+  const layerNames = { L1:'Contract', L2:'Telemetry', L2X:'Extended', L3:'Insight', L4:'Action', L5:'Validation', GOV:'Governance' };
+  let totAligned = 0, totA = 0, totB = 0;
+  const rows = [];
+  for (const L of LAYERS_FOR_DIFF) {
+    const bucket = diff.layers[L] || { onlyInA: [], onlyInB: [], inBoth: [] };
+    const inBoth  = bucket.inBoth.filter(e => passesLens(e, 'a'));
+    const onlyInA = bucket.onlyInA.filter(e => passesLens(e, 'a'));
+    const onlyInB = bucket.onlyInB.filter(e => passesLens(e, 'b'));
+    if (inBoth.length === 0 && onlyInA.length === 0 && onlyInB.length === 0) continue;
+    totAligned += inBoth.length;
+    totA += onlyInA.length;
+    totB += onlyInB.length;
+    rows.push({ L, name: layerNames[L] || L, inBoth, onlyInA, onlyInB });
+  }
+
+  const universe = totAligned + totA + totB;
+  if (universe === 0) return null;
+  const alignedPct = Math.round((totAligned / universe) * 100);
+
+  // Mode-specific framing for the two delta columns.
+  const bName = catalogEntryFor(compareBId)?.label || packB?.meta?.name || packB?.metadata?.name || packB?.id || 'Pack B';
+  const frame = mode === 'drift'
+    ? {
+        eyebrow: 'DRIFT · DECLARED vs LIVE',
+        lede: totA > 0
+          ? `<strong>${totA}</strong> declared artefact${totA === 1 ? '' : 's'} not confirmed in <strong>${escapeHtml(bName)}</strong> — possible drift.`
+          : `Every declared artefact is confirmed live in <strong>${escapeHtml(bName)}</strong>.`,
+        aLabel: 'Declared, not live',
+        aHint: 'in your pack · not seen in the live system → drift risk',
+        aClass: 'is-drift',
+        bLabel: 'Live, not declared',
+        bHint: 'seen live · missing from your pack → shadow signal',
+        bClass: 'is-shadow',
+      }
+    : {
+        eyebrow: 'GAP · CURRENT vs TARGET',
+        lede: totB > 0
+          ? `<strong>${totB}</strong> artefact${totB === 1 ? '' : 's'} in <strong>${escapeHtml(bName)}</strong> you don't have yet — the gap to close.`
+          : `You match or exceed <strong>${escapeHtml(bName)}</strong> on every artefact.`,
+        aLabel: 'Beyond target',
+        aHint: 'in your pack · not in the target → extra coverage',
+        aClass: 'is-extra',
+        bLabel: 'Missing vs target',
+        bHint: 'in the target · not in your pack → gap to close',
+        bClass: 'is-gap',
+      };
+
+  const wrap = document.createElement('div');
+  wrap.className = `benchmark-block drift-drill-block drift-mode-${mode}`;
+
+  // Sample keys for a bucket, prettified (strip the family prefix).
+  const sampleKeys = (entries, max = 4) => {
+    const names = entries.slice(0, max).map(e => {
+      const k = e.key || '';
+      const short = k.includes(':') ? k.slice(k.indexOf(':') + 1) : k;
+      return escapeHtml(short || k);
+    });
+    const more = entries.length > max ? ` +${entries.length - max}` : '';
+    return names.length ? names.join(' · ') + more : '—';
+  };
+
+  const tile = (n, label, hint, cls) => `
+    <div class="drift-tile ${cls}">
+      <div class="drift-tile-n">${n}</div>
+      <div class="drift-tile-label">${escapeHtml(label)}</div>
+      <div class="drift-tile-hint">${escapeHtml(hint)}</div>
+    </div>`;
+
+  const layerRowsHtml = rows.map(r => `
+    <tr class="drift-row">
+      <th class="drift-row-layer"><span class="drift-row-num">${r.L}</span> ${escapeHtml(r.name)}</th>
+      <td class="drift-cell is-aligned">
+        <span class="drift-cell-n">${r.inBoth.length}</span>
+        <span class="drift-cell-keys">${r.inBoth.length ? sampleKeys(r.inBoth) : ''}</span>
+      </td>
+      <td class="drift-cell ${frame.aClass}">
+        <span class="drift-cell-n">${r.onlyInA.length}</span>
+        <span class="drift-cell-keys">${r.onlyInA.length ? sampleKeys(r.onlyInA) : ''}</span>
+      </td>
+      <td class="drift-cell ${frame.bClass}">
+        <span class="drift-cell-n">${r.onlyInB.length}</span>
+        <span class="drift-cell-keys">${r.onlyInB.length ? sampleKeys(r.onlyInB) : ''}</span>
+      </td>
+    </tr>`).join('');
+
+  const lensNote = useLens
+    ? ` <span class="drift-lens-note">· lens: ${escapeHtml(LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens)}</span>`
+    : '';
+
+  wrap.innerHTML = `
+    <div class="benchmark-block-head">
+      <span class="benchmark-block-eyebrow">${frame.eyebrow}</span>
+      ${frame.lede}${lensNote}
+    </div>
+    <div class="drift-tiles">
+      ${tile(alignedPct + '%', 'Aligned', `${totAligned} matched · both A and B agree`, 'is-aligned')}
+      ${tile(totA, frame.aLabel, frame.aHint, frame.aClass)}
+      ${tile(totB, frame.bLabel, frame.bHint, frame.bClass)}
+    </div>
+    <table class="drift-table">
+      <thead>
+        <tr>
+          <th class="drift-th-layer">Layer</th>
+          <th class="drift-th is-aligned">Aligned</th>
+          <th class="drift-th ${frame.aClass}">${escapeHtml(frame.aLabel)}</th>
+          <th class="drift-th ${frame.bClass}">${escapeHtml(frame.bLabel)}</th>
+        </tr>
+      </thead>
+      <tbody>${layerRowsHtml}</tbody>
+    </table>
+  `;
+  return wrap;
+}
+
+// ============================================================
+// Posture matrix — outcome-based observability assessment.
+//
+// The question this answers: "are we monitoring the right things at
+// the right levels with the right mechanisms?" Four layers (Infra /
+// Platform / Application / UX) × eleven mechanisms (instrumentation,
+// metrics, logs, traces, profiles, SLI, SLO, alert, dashboard,
+// runbook, chaos, synthetic). Heuristic classifier on artefact ids,
+// titles, dashboard folders, alert names — overridable via
+// `metadata.annotations.layer.<artefact-id>: infra|platform|app|ux`.
+// ============================================================
+const POSTURE_LAYERS = [
+  { key: 'infra',    label: 'Infrastructure', hint: 'nodes · pods · disk · network' },
+  { key: 'platform', label: 'Platform',       hint: 'db · cache · queue · gateway' },
+  { key: 'app',      label: 'Application',    hint: 'service · API · job · business logic' },
+  { key: 'ux',       label: 'User Experience',hint: 'frontend · journey · business outcome' },
+];
+
+// Layer-specific mechanisms — each has a present/absent verdict per
+// layer based on artefacts classified to that layer.
+const POSTURE_MECHANISMS_PER_LAYER = [
+  { key: 'sli',        label: 'SLI defined',       hint: 'what we measure' },
+  { key: 'slo',        label: 'SLO declared',      hint: 'target reliability' },
+  { key: 'alert',      label: 'Alert wired',       hint: 'fires on threshold or burn-rate' },
+  { key: 'dashboard',  label: 'Dashboard',         hint: 'human-readable view' },
+  { key: 'metric',     label: 'Metrics flowing',   hint: 'scrape job, recording rule, or evidence' },
+  { key: 'log',        label: 'Logs flowing',      hint: 'log scrape / shipper' },
+  { key: 'trace',      label: 'Traces flowing',    hint: 'span emission attested' },
+  { key: 'runbook',    label: 'Runbook linked',    hint: 'oncall response declared' },
+  { key: 'chaos',      label: 'Chaos validated',   hint: 'fault injection tested' },
+  { key: 'synthetic',  label: 'Synthetic check',   hint: 'active uptime probe' },
+];
+
+// Platform-wide mechanisms — single status, doesn't depend on layer.
+const POSTURE_MECHANISMS_GLOBAL = [
+  { key: 'instrumentation', label: 'OTel SDK',     hint: 'instrumentation contract' },
+  { key: 'baselines',       label: 'Baselines',    hint: 'MTTD/MTTR targets' },
+];
+
+// Classifier — returns the layer for an artefact, or null if it's
+// not layer-attributable (e.g., OTel SDK config applies platform-wide).
+// Falls back through: explicit annotation override → pattern match
+// on id/title/folder/refs → unknown (counted but uncategorised).
+//
+// NB: `\b` word-boundaries do NOT match between two word-chars, and
+// `_` is a word-char in JS regex. So `\bavailability\b` would FAIL
+// against `kx_wallet_availability_99`. Patterns below avoid `\b` and
+// rely on substring presence, since these tokens are distinctive
+// enough that false positives are rare.
+function classifyArtefactLayer(art, pack) {
+  if (!art) return null;
+  const ann = pack?.meta?.annotations || pack?.metadata?.annotations || {};
+  const id = String(art.id || '').toLowerCase();
+  const title = String(art.title || '').toLowerCase();
+  const folder = String(art.spec?.folder || art.folder || '').toLowerCase();
+  const refsStr = (Array.isArray(art.refs) ? art.refs : []).join(' ').toLowerCase();
+  // Source URL (dashboards): grafana:///grafana/d/adz2hpb/k8s-dashboard
+  // → adds "k8s-dashboard" to the haystack so dashboards whose title
+  // got dropped at adapter time can still classify.
+  const source = String(art.spec?.source || art.source || '').toLowerCase();
+  const sourceSlug = source.split(/[/\\]/).filter(Boolean).pop() || '';
+  // Spec-side hints we sometimes have on dashboards / backends.
+  const tags = (Array.isArray(art.spec?.tags) ? art.spec.tags : []).join(' ').toLowerCase();
+  const product = String(art.spec?.product || art.product || '').toLowerCase();
+  const signal = String(art.spec?.signal || art.signal || '').toLowerCase();
+
+  // Explicit override: annotations.layer.<artefact-id>
+  const override = ann[`layer.${art.id}`];
+  if (override && ['infra','platform','app','ux'].includes(override)) return override;
+
+  const hay = `${id} ${title} ${folder} ${refsStr} ${sourceSlug} ${tags}`;
+
+  // UX patterns first (most specific, least likely to overlap)
+  if (/(rum|page_load|page-load|conversion|journey|frontend|apdex|lcp|fid|cls|business_outcome|web_vitals|user_satisfaction|customer_)/.test(hay)) return 'ux';
+
+  // INFRA patterns
+  if (/(host_|node_|disk_|cpu_|memory_|pod_|container_|kube_|k8s|cluster_|kubelet|cadvisor|node-exporter|kube-state|kubernetes|oom_|networkinterface|tcp_|conn_track|cert_expiry|containeroom|diskexhaustion)/.test(hay)) return 'infra';
+
+  // PLATFORM patterns
+  if (/(db_|database_|postgres|mysql|mongo|redis|cache_|queue_|kafka|rabbit|consumer_lag|broker_|bucket_|mq_|elasticsearch_|opensearch_|alertmanager|kong|envoy|traefik|gateway_|graylog)/.test(hay)) return 'platform';
+
+  // APPLICATION (intentionally last — broad catch-all for service-level)
+  if (/(availability|success_ratio|error_ratio|latency|p95|p99|p99\.9|request_|http_|api_|service_|endpoint_|error_budget|latency_budget|burn_rate|errorbudget|latencybudget|burnrate|finops|krystalinex)/.test(hay)) return 'app';
+
+  // Backends with a telemetry signal but no layer-specific tokens
+  // (e.g. dashboards-grafana, traces-jaeger) default to APP, since the
+  // OTel SDK they enable primarily instruments application services.
+  // The spec models telemetry backends as cross-cutting infrastructure;
+  // for the posture matrix we attribute them to App by convention so
+  // their mechanism shows up somewhere instead of "unknown".
+  if (/^BAK-/.test(art.id || '') && signal) return 'app';
+  if (id === 'otel-01' || /^OTEL-/.test(art.id || '')) return 'app';
+
+  // SLI/SLO with a service-name pattern in id (e.g. kx_wallet_availability)
+  if (/^sli-|^slo-/.test(id) && /^[a-z][a-z0-9_-]*_/.test(art.title || '')) return 'app';
+
+  return null;  // genuinely uncategorised
+}
+
+// Classifier — returns the mechanism for an artefact (only one most-
+// likely mechanism per artefact). Returns null when the artefact
+// isn't a mechanism-bearing artefact (e.g. OTel SDK config covers
+// 'instrumentation' platform-wide).
+function classifyArtefactMechanism(art) {
+  if (!art) return null;
+  const id = String(art.id || '');
+  if (/^SLI-/.test(id))    return 'sli';
+  if (/^SLO-/.test(id))    return 'slo';
+  if (/^DASH-/.test(id))   return 'dashboard';
+  if (/^POL-/.test(id))    return 'alert';
+  if (/^HEAL-/.test(id))   return 'runbook';
+  if (/^CHAOS-/.test(id))  return 'chaos';
+  if (/^SYN-/.test(id))    return 'synthetic';
+  if (/^QRY-/.test(id) || /^VIEW-/.test(id)) return 'metric';
+  // Backends carry a SIGNAL — telemetry mechanism, not layer-mechanism.
+  if (/^BAK-/.test(id)) {
+    const sig = String(art.spec?.signal || art.signal || '').toLowerCase();
+    if (sig === 'metrics') return 'metric';
+    if (sig === 'logs')    return 'log';
+    if (sig === 'traces')  return 'trace';
+  }
+  return null;
+}
+
+function computePostureMatrix(packA, packB) {
+  // Walk every layer (L1..L5 + GOV) and bucket each artefact into
+  // (layer × mechanism). Build per-cell artefact lists.
+  const cells = {};   // key: `${layer}:${mech}` → [artefacts]
+  const platformWide = { instrumentation: false, baselines: false };
+  const ann = packA?.meta?.annotations || packA?.metadata?.annotations || {};
+
+  // OTel SDK declared anywhere?
+  // Try several heuristics: (a) an OTEL- artefact in L2, (b) a backend
+  // with signal=traces (instrumented), (c) explicit annotation.
+  const L2 = packA?.layers?.L2 || [];
+  if (L2.some(a => /^OTEL-/.test(a.id || '')) ||
+      L2.some(a => /^BAK-/.test(a.id || '') && /traces/.test(String(a.spec?.signal||'').toLowerCase()))) {
+    platformWide.instrumentation = true;
+  }
+
+  // Baselines declared?
+  const L5 = packA?.layers?.L5 || [];
+  if (L5.some(a => /baseline/i.test(a.id || '') || /baseline/i.test(a.title || ''))) {
+    platformWide.baselines = true;
+  }
+
+  const allLayers = ['L1','L2','L2X','L3','L4','L5','GOV'];
+  for (const L of allLayers) {
+    const items = layerItemsFor(packA, L);
+    for (const art of items) {
+      const mech = classifyArtefactMechanism(art);
+      if (!mech) continue;
+      const layer = classifyArtefactLayer(art, packA);
+      // When layer is null, bucket under 'unknown' so the matrix can
+      // still surface the artefact's existence without claiming a
+      // layer. UI shows these in a tiny "unclassified" footer.
+      const key = `${layer || 'unknown'}:${mech}`;
+      if (!cells[key]) cells[key] = [];
+      cells[key].push(art);
+    }
+  }
+
+  // Telemetry mechanism propagation: when the pack declares a backend
+  // with signal=metrics/logs/traces/profiles, that telemetry pipeline
+  // is enabled platform-wide. It primarily instruments the App layer
+  // (services emitting telemetry). Light up App's row for each signal
+  // we have a backend for. Other layers stay evidence-driven (scrape
+  // jobs, recording rules, firing alerts) so we don't overclaim.
+  const signalToMech = { metrics: 'metric', logs: 'log', traces: 'trace', profiles: 'profile' };
+  for (const a of L2) {
+    if (!/^BAK-/.test(a.id || '')) continue;
+    const sig = String(a.spec?.signal || a.signal || '').toLowerCase();
+    const mech = signalToMech[sig];
+    if (!mech) continue;
+    const key = `app:${mech}`;
+    if (!cells[key]) cells[key] = [];
+    cells[key].push(a);
+  }
+
+  // Also consider the firing-alerts evidence — these are layer-bearing
+  // even though they aren't artefacts in the layered shape. The fetcher
+  // stamps them as annotations; we re-derive layer from alertname.
+  const firingNames = (ann['mcp.discovered.alerts_firing.names'] || '').split(',').filter(Boolean);
+  for (const n of firingNames) {
+    const fakeArt = { id: `ALERT-${n}`, title: n };
+    const layer = classifyArtefactLayer(fakeArt, packA);
+    const key = `${layer || 'unknown'}:alert`;
+    if (!cells[key]) cells[key] = [];
+    cells[key].push({ id: `firing/${n}`, title: n, _evidence: true });
+  }
+
+  // Recording-rule outputs from the inventory grep are evidence of
+  // metric mechanism per layer.
+  const recRuleNames = (ann['mcp.discovered.recording_rules_via_inventory.names'] || '').split(',').filter(Boolean);
+  for (const n of recRuleNames) {
+    const fakeArt = { id: `REC-${n}`, title: n };
+    const layer = classifyArtefactLayer(fakeArt, packA);
+    const key = `${layer || 'unknown'}:metric`;
+    if (!cells[key]) cells[key] = [];
+    cells[key].push({ id: `recrule/${n}`, title: n, _evidence: true });
+  }
+
+  // Scrape jobs surfaced via annotations — strong evidence of log/metric
+  // flow at the inferred layer (node-exporter → infra, postgres → platform, etc.)
+  const scrapeJobs = (ann['mcp.discovered.scrape_jobs'] || '').split(',').filter(Boolean);
+  for (const job of scrapeJobs) {
+    const fakeArt = { id: `JOB-${job}`, title: job };
+    const layer = classifyArtefactLayer(fakeArt, packA);
+    // Most scrape jobs evidence metrics; some specifically evidence logs
+    // (promtail, fluentbit). Default to metric.
+    const mech = /promtail|fluent|loki|log/i.test(job) ? 'log' : 'metric';
+    const key = `${layer || 'unknown'}:${mech}`;
+    if (!cells[key]) cells[key] = [];
+    cells[key].push({ id: `scrape/${job}`, title: job, _evidence: true });
+  }
+
+  return { cells, platformWide };
+}
+
+function renderPostureMatrix(posture) {
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-block posture-matrix-block';
+  const cellVal = (layer, mech) => {
+    const arr = posture.cells[`${layer}:${mech}`];
+    return arr && arr.length ? arr : null;
+  };
+  const cellHtml = (layer, mech) => {
+    const arr = cellVal(layer, mech);
+    if (!arr) return `<td class="posture-cell is-absent" title="No ${mech} attested for ${layer}">✗</td>`;
+    const evidenceOnly = arr.every(a => a._evidence);
+    const cls = evidenceOnly ? 'is-evidence' : 'is-present';
+    const sample = arr.slice(0, 3).map(a => escapeHtml(a.title || a.id)).join(' · ');
+    const more = arr.length > 3 ? ` · +${arr.length - 3} more` : '';
+    return `<td class="posture-cell ${cls}" title="${escapeHtml(sample + more)}">
+      <span class="posture-pip">${evidenceOnly ? '○' : '✓'}</span>
+      <span class="posture-count">${arr.length}</span>
+    </td>`;
+  };
+
+  const headRow = `<tr>
+    <th class="posture-mech-col">Mechanism</th>
+    ${POSTURE_LAYERS.map(l => `<th class="posture-layer-col">
+      <div class="posture-layer-label">${escapeHtml(l.label)}</div>
+      <div class="posture-layer-hint">${escapeHtml(l.hint)}</div>
+    </th>`).join('')}
+  </tr>`;
+  const bodyRows = POSTURE_MECHANISMS_PER_LAYER.map(m => `<tr>
+    <th class="posture-mech-cell">
+      <span class="posture-mech-label">${escapeHtml(m.label)}</span>
+      <span class="posture-mech-hint">${escapeHtml(m.hint)}</span>
+    </th>
+    ${POSTURE_LAYERS.map(l => cellHtml(l.key, m.key)).join('')}
+  </tr>`).join('');
+  const platformRows = POSTURE_MECHANISMS_GLOBAL.map(m => {
+    const pass = !!posture.platformWide[m.key];
+    return `<tr class="is-platform-wide">
+      <th class="posture-mech-cell">
+        <span class="posture-mech-label">${escapeHtml(m.label)}</span>
+        <span class="posture-mech-hint">${escapeHtml(m.hint)}</span>
+      </th>
+      <td class="posture-cell-span" colspan="${POSTURE_LAYERS.length}">
+        <span class="posture-pip">${pass ? '✓' : '✗'}</span>
+        <span class="posture-platform-msg">${pass ? 'declared at the pack level (applies to all layers)' : 'not declared'}</span>
+      </td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="benchmark-block-head">
+      <span class="benchmark-block-eyebrow">POSTURE</span>
+      Are we monitoring the right things at the right levels?
+    </div>
+    <table class="posture-matrix">
+      <thead>${headRow}</thead>
+      <tbody>${bodyRows}${platformRows}</tbody>
+    </table>
+    <div class="posture-matrix-legend">
+      ✓ artefact declared in the pack · ○ evidence-only (firing alert, scrape job, recording rule output — declaration missing) · ✗ absent
+    </div>
+  `;
+  return wrap;
+}
+
+function renderPostureNarrative(posture) {
+  // Template-driven (no LLM). For each layer, count how many of the
+  // 10 layer-specific mechanisms are present (declared OR evidence),
+  // then map to a sentence.
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-block posture-narrative-block';
+
+  const layerScore = (layer) => {
+    let present = 0;
+    let evidenceOnly = 0;
+    let missing = [];
+    for (const m of POSTURE_MECHANISMS_PER_LAYER) {
+      const arr = posture.cells[`${layer}:${m.key}`];
+      if (arr && arr.length) {
+        present++;
+        if (arr.every(a => a._evidence)) evidenceOnly++;
+      } else {
+        missing.push(m.label);
+      }
+    }
+    return { present, evidenceOnly, missing, total: POSTURE_MECHANISMS_PER_LAYER.length };
+  };
+
+  const sentences = POSTURE_LAYERS.map(l => {
+    const s = layerScore(l.key);
+    let verdict, body;
+    const pct = Math.round((s.present / s.total) * 100);
+    if (s.present === 0) {
+      verdict = 'is-dark';
+      body = `<strong>${escapeHtml(l.label)}</strong> is dark — no coverage detected across any mechanism.`;
+    } else if (s.present <= 3) {
+      verdict = 'is-thin';
+      body = `<strong>${escapeHtml(l.label)}</strong> is thinly covered (${s.present}/${s.total} mechanisms) — missing ${s.missing.slice(0, 4).map(x => `<em>${escapeHtml(x.toLowerCase())}</em>`).join(', ')}${s.missing.length > 4 ? ', and more' : ''}.`;
+    } else if (s.present <= 6) {
+      verdict = 'is-partial';
+      body = `<strong>${escapeHtml(l.label)}</strong> is partially covered (${s.present}/${s.total}, ${pct}%) — gaps in ${s.missing.slice(0, 3).map(x => `<em>${escapeHtml(x.toLowerCase())}</em>`).join(', ')}.`;
+    } else if (s.present <= 8) {
+      verdict = 'is-strong';
+      body = `<strong>${escapeHtml(l.label)}</strong> is well-covered (${s.present}/${s.total}, ${pct}%)${s.missing.length ? ` — still missing ${s.missing.slice(0, 2).map(x => `<em>${escapeHtml(x.toLowerCase())}</em>`).join(', ')}` : ''}.`;
+    } else {
+      verdict = 'is-complete';
+      body = `<strong>${escapeHtml(l.label)}</strong> is comprehensively covered (${s.present}/${s.total}, ${pct}%)${s.missing.length ? `, only missing ${s.missing.map(x => `<em>${escapeHtml(x.toLowerCase())}</em>`).join(', ')}` : ''}.`;
+    }
+    if (s.evidenceOnly > 0 && s.evidenceOnly === s.present) {
+      body += ` <span class="posture-narr-caveat">All evidence is observational, not declared in the pack — consider authoring explicit SLI/SLO/alert/dashboard artefacts.</span>`;
+    } else if (s.evidenceOnly > 0) {
+      body += ` <span class="posture-narr-caveat">${s.evidenceOnly} of the ${s.present} mechanisms are evidence-only (firing alert, scrape job, recording-rule output) — declaration in the pack is still missing.</span>`;
+    }
+    return `<li class="${verdict}">${body}</li>`;
+  }).join('');
+
+  // Cross-layer findings — runbook coverage, chaos coverage, sli/slo balance.
+  const allRunbookCells = POSTURE_LAYERS.map(l => posture.cells[`${l.key}:runbook`]?.length || 0);
+  const totalRunbooks = allRunbookCells.reduce((a, b) => a + b, 0);
+  const allChaosCells = POSTURE_LAYERS.map(l => posture.cells[`${l.key}:chaos`]?.length || 0);
+  const totalChaos = allChaosCells.reduce((a, b) => a + b, 0);
+  const sliCount = POSTURE_LAYERS.map(l => posture.cells[`${l.key}:sli`]?.length || 0).reduce((a, b) => a + b, 0);
+  const sloCount = POSTURE_LAYERS.map(l => posture.cells[`${l.key}:slo`]?.length || 0).reduce((a, b) => a + b, 0);
+
+  const crossFindings = [];
+  if (totalRunbooks === 0) crossFindings.push(`<li>⚠ <strong>Zero runbooks linked</strong> across any layer — your biggest operational risk. When an alert fires, oncall has no scripted response path.</li>`);
+  if (totalChaos === 0) crossFindings.push(`<li>⚠ <strong>No chaos experiments declared</strong> — recovery procedures haven't been validated against actual fault injection.</li>`);
+  if (sliCount > 0 && sloCount === 0) crossFindings.push(`<li>⚠ ${sliCount} SLI${sliCount === 1 ? '' : 's'} defined but <strong>no matching SLO</strong> — measurement without a target.</li>`);
+  if (sliCount > sloCount && sloCount > 0) crossFindings.push(`<li>${sliCount} SLIs vs ${sloCount} SLOs — ${sliCount - sloCount} SLI${sliCount - sloCount === 1 ? '' : 's'} unbound to a target.</li>`);
+  if (!posture.platformWide.baselines) crossFindings.push(`<li>No <strong>MTTD/MTTR baselines</strong> declared — without targets, incident response can't be benchmarked.</li>`);
+
+  wrap.innerHTML = `
+    <div class="benchmark-block-head">
+      <span class="benchmark-block-eyebrow">BRIEFING</span>
+      Per-layer narrative — what's covered, what's missing
+    </div>
+    <ul class="posture-narrative">${sentences}</ul>
+    ${crossFindings.length ? `
+      <div class="posture-cross">
+        <div class="posture-cross-head">Cross-layer findings</div>
+        <ul class="posture-cross-list">${crossFindings.join('')}</ul>
+      </div>` : ''}
+  `;
+  return wrap;
+}
+
+// ============================================================
+// The Benchmark headline — frames the WHOLE view as a question
+// the audience can answer. Leads the view; everything beneath
+// answers it.
+// ============================================================
+// ============================================================
+// Diagnostic-grade verdict — the CEO question, made answerable.
+//
+// "Is our observability diagnostic-grade?" answered as eight pass/fail
+// criteria split into two equally-weighted halves:
+//
+//   2A — COVERAGE (vs Observability Contract)
+//        "Are we observing the right signals?"
+//        Five criteria evaluated on Pack A against Pack B (the
+//        contract / "what good looks like"):
+//          1. Multi-modal    — metrics + logs + traces flowing
+//          2. Correlated     — tracecontext + log_correlation
+//          3. Calibrated     — baselines + SLOs w/ numeric objectives
+//          4. Comprehensive  — posture matrix ≥ 50% across layers
+//          5. Actionable     — remediation runbooks declared
+//
+//   2B — TRUST (signal integrity)
+//        "Can we trust what the signals show?"
+//        Three criteria evaluated on Pack A's live evidence:
+//          6. Chaos-validated — chaos experiments declared
+//          7. Drift-free      — declared artefacts match live state
+//                               (MCP probe success / total ratio)
+//          8. Fresh           — mcp.refreshedAt within staleness window
+//
+// Overall score (out of 8) → verdict word:
+//   7-8 → Diagnostic-grade
+//   5-6 → Almost diagnostic-grade
+//   3-4 → Not yet diagnostic-grade
+//   0-2 → Far from diagnostic-grade
+// ============================================================
+
+// "Observability Contract" mode is on when Pack B is the
+// hand-authored aspirational/contract reference. The internal label
+// is OLA; the user-facing label is "Observability Contract".
+//
+// Detection runs three ways (any one suffices):
+//   1. The pack itself carries `metadata.annotations.studio.role: contract`
+//      (canonical signal — the contract pack declares its role).
+//   2. The catalog id (the dropdown slot, not pack.metadata.name) is a
+//      known contract slot — covers target-advanced even before the
+//      annotation is added, and any future *-contract slot.
+//   3. The pack's id or metadata.name carries a `contract` or `ola` token.
+const CONTRACT_PACK_IDS = new Set(['target-advanced']);
+function isObservabilityContractPack(pack, catalogId) {
+  if (!pack) return false;
+  const role = pack.meta?.annotations?.['studio.role'] || pack.metadata?.annotations?.['studio.role'];
+  if (String(role || '').toLowerCase() === 'contract') return true;
+  const slot = String(catalogId || '').toLowerCase();
+  if (slot && CONTRACT_PACK_IDS.has(slot)) return true;
+  if (slot && /(^|-)contract($|-)/i.test(slot)) return true;
+  if (slot && /(^|-)ola($|-)/i.test(slot))      return true;
+  const id = String(pack.id || pack.meta?.id || pack.metadata?.name || '').toLowerCase();
+  if (CONTRACT_PACK_IDS.has(id)) return true;
+  if (/(^|-)contract($|-)/i.test(id)) return true;
+  if (/(^|-)ola($|-)/i.test(id))      return true;
+  return false;
+}
+function contractLabelFor(packB, catalogId) {
+  if (!packB) return null;
+  if (isObservabilityContractPack(packB, catalogId)) return 'Observability Contract';
+  return packB?.meta?.name || packB?.metadata?.name || packB?.id || 'reference pack';
+}
+
+// Staleness window for the freshness criterion. 24h is the demo
+// default — daily refresh is the lowest bar for a "live" pack.
+const FRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Drift tolerance: how many probes can come back empty/failed and
+// still pass. 0.3 = up to 30% of attempted probes can be empty/failed
+// without flunking. Empty AND failed both count as drift signal —
+// the live system didn't confirm what the pack declares.
+const DRIFT_FAIL_TOLERANCE = 0.30;
+
+function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
+  // ===== Coverage criteria (2A) =====
+  const meta = packA?.meta || {};
+  const ann = meta?.annotations || packA?.metadata?.annotations || {};
+  const L1 = packA?.layers?.L1 || [];
+  const L2 = packA?.layers?.L2 || [];
+  const L4 = packA?.layers?.L4 || {};
+  const L5 = packA?.layers?.L5 || [];
+
+  // ---- 1. Multi-modal ----
+  const signalsPresent = new Set();
+  for (const b of L2) {
+    const sig = String(b.spec?.signal || b.signal || '').toLowerCase();
+    if (['metrics','logs','traces','profiles'].includes(sig)) signalsPresent.add(sig);
+  }
+  const allSignals = ['metrics','logs','traces','profiles'];
+  const signalsCount = signalsPresent.size;
+  const multiModal = signalsCount >= 3;
+
+  // ---- 2. Correlated ----
+  const otel = L2.find(a => /^OTEL-/.test(a.id || ''));
+  const propagators = otel?.spec?.sdk?.propagators || otel?.sdk?.propagators || [];
+  const hasTraceContext = (Array.isArray(propagators) ? propagators : [])
+    .some(p => /tracecontext/i.test(String(p)));
+  const logCorrelationDeclared = !!(otel?.spec?.log_correlation === true || otel?.log_correlation === true);
+  const correlated = hasTraceContext && (logCorrelationDeclared || signalsPresent.has('logs'));
+
+  // ---- 3. Calibrated ----
+  const hasBaselines = L5.some(a => /baseline/i.test(a.id || '') || /baseline/i.test(a.title || ''));
+  const slos = L1.filter(a => /^SLO-/.test(a.id || ''));
+  const slosWithObjective = slos.filter(a => {
+    const obj = a.spec?.objective ?? a.objective;
+    return typeof obj === 'number' && obj > 0 && obj <= 1;
+  });
+  const calibrated = hasBaselines && slosWithObjective.length > 0;
+
+  // ---- 4. Comprehensive ----
+  let totalObserved = 0;
+  for (const l of POSTURE_LAYERS) {
+    let present = 0, evidence = 0;
+    for (const m of POSTURE_MECHANISMS_PER_LAYER) {
+      const arr = posture.cells[`${l.key}:${m.key}`];
+      if (arr && arr.length) {
+        if (arr.every(a => a._evidence)) evidence++;
+        else present++;
+      }
+    }
+    totalObserved += (present + evidence) / POSTURE_MECHANISMS_PER_LAYER.length;
+  }
+  const avgObservedPct = Math.round((totalObserved / POSTURE_LAYERS.length) * 100);
+  const comprehensive = avgObservedPct >= 50;
+
+  // ---- 5. Actionable ----
+  const healings = (L4.healing || []).concat(
+    Array.isArray(L4) ? L4.filter(a => /^HEAL-/.test(a.id || '')) : []
+  );
+  const actionableCount = healings.length;
+  const actionable = actionableCount > 0;
+
+  const coverageCriteria = [
+    { key: 'multi-modal',   label: 'Multi-modal',   sub: 'metrics + logs + traces + profiles',
+      pass: multiModal,
+      detail: `${signalsCount} of ${allSignals.length} signals declared as backends` +
+              (signalsCount > 0 ? ' (' + [...signalsPresent].join(', ') + ')' : ''),
+    },
+    { key: 'correlated',    label: 'Correlated',    sub: 'signals linked at evidence-level',
+      pass: correlated,
+      detail: hasTraceContext
+        ? (logCorrelationDeclared ? 'tracecontext propagator + log_correlation: true' : 'tracecontext propagator declared')
+        : 'tracecontext propagator missing — logs/traces can\'t be joined',
+    },
+    { key: 'calibrated',    label: 'Calibrated',    sub: 'normal defined with numbers',
+      pass: calibrated,
+      detail: hasBaselines
+        ? (slosWithObjective.length
+            ? `MTTD/MTTR baselines + ${slosWithObjective.length} SLO${slosWithObjective.length === 1 ? '' : 's'} with explicit objective`
+            : 'baselines declared but no SLOs have explicit objectives')
+        : 'no MTTD/MTTR baselines declared',
+    },
+    { key: 'comprehensive', label: 'Comprehensive', sub: 'coverage spans all layers',
+      pass: comprehensive,
+      detail: `${avgObservedPct}% average observed across infra · platform · app · ux`,
+    },
+    { key: 'actionable',    label: 'Actionable',    sub: 'alerts lead to a response path',
+      pass: actionable,
+      detail: actionableCount > 0
+        ? `${actionableCount} remediation runbook${actionableCount === 1 ? '' : 's'} declared`
+        : 'no runbooks linked — when an alert fires, oncall has no scripted response',
+    },
+  ];
+
+  // ===== Trust criteria (2B) =====
+
+  // ---- 6. Chaos-validated ----
+  const chaosCount = L5.filter(a => /^CHAOS-/.test(a.id || '')).length;
+  const chaosValidated = chaosCount > 0;
+
+  // ---- 7. Drift-free ----
+  // Live signal integrity: did the declarations the pack makes about
+  // the world match what the MCP actually observed? Read directly off
+  // the probe-outcome annotations stamped by the fetcher.
+  const probesAttempted = (ann['mcp.probesAttempted']  || '').split(',').filter(Boolean);
+  const probesSucceeded = (ann['mcp.probesSucceeded']  || '').split(',').filter(Boolean);
+  const probesEmpty     = (ann['mcp.probesEmpty']      || '').split(',').filter(Boolean);
+  const probesFailed    = (ann['mcp.probesFailed']     || '').split(',').filter(Boolean);
+  const hasMcpSource = probesAttempted.length > 0 || !!ann['mcp.refreshedAt'];
+  let driftFree, driftDetail;
+  if (!hasMcpSource) {
+    driftFree = false;
+    driftDetail = 'declared-only — no live signal to verify against (connect MCP or scan live)';
+  } else if (probesAttempted.length === 0) {
+    // Pack has refreshedAt but no probe table — can't compute ratio.
+    driftFree = true;
+    driftDetail = 'live source connected — probe table not recorded';
+  } else {
+    const driftCount = probesEmpty.length + probesFailed.length;
+    const driftRatio = driftCount / probesAttempted.length;
+    driftFree = driftRatio <= DRIFT_FAIL_TOLERANCE;
+    const pct = Math.round(driftRatio * 100);
+    driftDetail = driftFree
+      ? `${probesSucceeded.length}/${probesAttempted.length} probes confirmed (${pct}% empty or failed, within ${Math.round(DRIFT_FAIL_TOLERANCE * 100)}% tolerance)`
+      : `${driftCount}/${probesAttempted.length} probes empty or failed (${pct}%) — declared surface exceeds what live attests`;
+  }
+
+  // ---- 8. Fresh ----
+  const refreshedAtStr = ann['mcp.refreshedAt'];
+  let fresh, freshDetail;
+  if (!refreshedAtStr) {
+    fresh = false;
+    freshDetail = 'no mcp.refreshedAt annotation — pack has never been verified against live state';
+  } else {
+    const refreshedAtMs = Date.parse(refreshedAtStr);
+    if (!Number.isFinite(refreshedAtMs)) {
+      fresh = false;
+      freshDetail = `mcp.refreshedAt is unparseable (${refreshedAtStr})`;
+    } else {
+      const ageMs = Date.now() - refreshedAtMs;
+      const ageHrs = Math.round(ageMs / 3600000);
+      fresh = ageMs <= FRESH_WINDOW_MS;
+      freshDetail = fresh
+        ? `last refreshed ${ageHrs}h ago — within 24h staleness window`
+        : `last refreshed ${ageHrs}h ago — exceeds 24h staleness window, signals may have drifted`;
+    }
+  }
+
+  const trustCriteria = [
+    { key: 'chaos-validated', label: 'Chaos-validated', sub: 'recovery proven by fault injection',
+      pass: chaosValidated,
+      detail: chaosCount > 0
+        ? `${chaosCount} chaos experiment${chaosCount === 1 ? '' : 's'} declared`
+        : 'no chaos experiments — recovery procedures are theoretical',
+    },
+    { key: 'drift-free',      label: 'Drift-free',      sub: 'declarations match live state',
+      pass: driftFree,
+      detail: driftDetail,
+    },
+    { key: 'fresh',           label: 'Fresh',           sub: 'recently verified against live',
+      pass: fresh,
+      detail: freshDetail,
+    },
+  ];
+
+  // ===== Overall verdict (equal-weighted) =====
+  const coveragePassed = coverageCriteria.filter(c => c.pass).length;
+  const trustPassed = trustCriteria.filter(c => c.pass).length;
+  const overallPassed = coveragePassed + trustPassed;
+  const overallTotal = coverageCriteria.length + trustCriteria.length;   // 5 + 3 = 8
+  const verdict =
+    overallPassed >= 7 ? { word: 'Diagnostic-grade',          level: 'is-grade' } :
+    overallPassed >= 5 ? { word: 'Almost diagnostic-grade',   level: 'is-almost' } :
+    overallPassed >= 3 ? { word: 'Not yet diagnostic-grade',  level: 'is-not-yet' } :
+                         { word: 'Far from diagnostic-grade', level: 'is-far' };
+
+  return {
+    coverage: {
+      criteria: coverageCriteria,
+      passed:   coveragePassed,
+      total:    coverageCriteria.length,
+      contractLabel: contractLabelFor(packB, catalogBId),
+      contractMode:  isObservabilityContractPack(packB, catalogBId),
+    },
+    trust: {
+      criteria: trustCriteria,
+      passed:   trustPassed,
+      total:    trustCriteria.length,
+      hasMcpSource,
+    },
+    overall: {
+      passed: overallPassed,
+      total:  overallTotal,
+      verdict,
+    },
+  };
+}
+
+// Diagnose view — rendered as a compliance report, not a pitch deck.
+// Density and evidence are the design language; every row encodes
+// observed vs expected. No giant typography, no decorative tiles.
+// Reads like an audit findings document because that's what it IS.
+function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
+  const wrap = document.createElement('div');
+  wrap.className = 'diag-report';
+
+  const cov = diagnostic.coverage;
+  const trust = diagnostic.trust;
+  const overall = diagnostic.overall;
+
+  const pct = (passed, total) => total === 0 ? 0 : Math.round((passed / total) * 100);
+  const overallPct = pct(overall.passed, overall.total);
+  const covPct   = pct(cov.passed, cov.total);
+  const trustPct = pct(trust.passed, trust.total);
+
+  // Single binary verdict in audit terms. No "Almost diagnostic-grade",
+  // no "Critical" — just PASS or FAIL with the threshold stated.
+  const PASS_THRESHOLD = 7; // 7 of 8 to pass — graded against contract
+  const passes = overall.passed >= PASS_THRESHOLD;
+  const status = passes ? 'PASS' : 'FAIL';
+
+  // Coverage-only when no Pack B is loaded: the coverage criteria are
+  // still graded against the built-in Observability Contract, so the
+  // verdict stands on Pack A alone — we just frame the header honestly.
+  const coverageOnly = !packB;
+  const contractName = packB?.meta?.name || packB?.metadata?.name || packB?.id || '—';
+  const contractMode = cov.contractMode;
+
+  // Compact mono row builder for the summary block.
+  const summaryRow = (label, value, hint, state) => `
+    <tr class="diag-summary-row ${state || ''}">
+      <td class="diag-summary-key">${escapeHtml(label)}</td>
+      <td class="diag-summary-val">${value}</td>
+      <td class="diag-summary-hint">${hint || ''}</td>
+    </tr>
+  `;
+
+  // Bar chip for percentage fields.
+  const bar = (p) => `
+    <span class="diag-bar"><span class="diag-bar-fill" style="width:${Math.max(0,Math.min(100,p))}%"></span></span>
+  `;
+
+  // ---------- Criterion table (2A or 2B) ----------
+  // One row per criterion. Tight. Pip · name · observed · expected.
+  const critTable = (criteria) => `
+    <table class="diag-crit-table">
+      <thead>
+        <tr>
+          <th class="c-pip"></th>
+          <th class="c-name">Criterion</th>
+          <th class="c-obs">Observed</th>
+          <th class="c-exp">Expected</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${criteria.map(c => `
+          <tr class="diag-crit ${c.pass ? 'is-pass' : 'is-fail'}" data-key="${escapeHtml(c.key)}">
+            <td class="c-pip">${c.pass ? '✓' : '✗'}</td>
+            <td class="c-name">${escapeHtml(c.label)}</td>
+            <td class="c-obs">${escapeHtml(c.detail)}</td>
+            <td class="c-exp">${escapeHtml(c.sub)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+
+  // ---------- Evidence ledger — the "where the data came from" audit trail ----------
+  // Every claim above is backed by a specific pack field; this table
+  // names the field, what we expected, what we observed, and the verdict.
+  // For an audit tool this is the most important section, not the least.
+  const evidenceRows = [];
+  // Collect from criteria themselves — each criterion encodes an evidence assertion.
+  const C = (key, label) => cov.criteria.find(c => c.key === key) || trust.criteria.find(c => c.key === key);
+  const rowFor = (field, exp, obs, pass) => ({
+    field, exp, obs, pass,
+  });
+  evidenceRows.push(rowFor(
+    'spec.telemetry.backends[].signal',
+    'metrics + logs + traces (≥ 3 of 4)',
+    C('multi-modal')?.detail || '—',
+    C('multi-modal')?.pass));
+  evidenceRows.push(rowFor(
+    'spec.otel.sdk.propagators',
+    'includes tracecontext',
+    C('correlated')?.detail || '—',
+    C('correlated')?.pass));
+  evidenceRows.push(rowFor(
+    'spec.slos[].objective + spec.baselines',
+    '≥ 1 SLO with numeric objective · MTTD/MTTR baselines declared',
+    C('calibrated')?.detail || '—',
+    C('calibrated')?.pass));
+  evidenceRows.push(rowFor(
+    'posture matrix · 4 layers × 10 mechanisms',
+    'average ≥ 50% observed',
+    C('comprehensive')?.detail || '—',
+    C('comprehensive')?.pass));
+  evidenceRows.push(rowFor(
+    'spec.remediation[]',
+    '≥ 1 remediation runbook declared',
+    C('actionable')?.detail || '—',
+    C('actionable')?.pass));
+  evidenceRows.push(rowFor(
+    'spec.validation.chaos_experiments[]',
+    '≥ 1 chaos experiment declared',
+    C('chaos-validated')?.detail || '—',
+    C('chaos-validated')?.pass));
+  evidenceRows.push(rowFor(
+    'metadata.annotations.mcp.probesSucceeded',
+    '≥ 70% of attempted probes return data',
+    C('drift-free')?.detail || '—',
+    C('drift-free')?.pass));
+  evidenceRows.push(rowFor(
+    'metadata.annotations.mcp.refreshedAt',
+    'within last 24h',
+    C('fresh')?.detail || '—',
+    C('fresh')?.pass));
+
+  const evidenceTable = `
+    <table class="diag-evidence-table">
+      <thead>
+        <tr>
+          <th class="e-field">Field</th>
+          <th class="e-exp">Expected</th>
+          <th class="e-obs">Observed</th>
+          <th class="e-status">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${evidenceRows.map(r => `
+          <tr class="${r.pass ? 'is-pass' : 'is-fail'}">
+            <td class="e-field">${escapeHtml(r.field)}</td>
+            <td class="e-exp">${escapeHtml(r.exp)}</td>
+            <td class="e-obs">${escapeHtml(r.obs)}</td>
+            <td class="e-status">${r.pass ? 'PASS' : 'FAIL'}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+
+  wrap.innerHTML = `
+    <header class="diag-report-head">
+      <div class="diag-report-head-line">
+        <span class="diag-report-eyebrow">DIAGNOSTIC GRADE</span>
+        <span class="diag-report-vs">
+          ${coverageOnly
+            ? 'vs <strong>Observability Contract</strong> <span class="diag-report-mode">· coverage only</span>'
+            : (contractMode
+                ? 'vs <strong>Observability Contract</strong>' + (contractName && contractName !== '—' ? ' (' + escapeHtml(contractName) + ')' : '')
+                : 'vs <strong>' + escapeHtml(contractName) + '</strong>')}
+        </span>
+        <span class="diag-report-status diag-${passes ? 'pass' : 'fail'}">${status}</span>
+      </div>
+      <table class="diag-summary">
+        <colgroup><col><col><col></colgroup>
+        <tbody>
+          ${summaryRow('Score',    `<span class="diag-pct">${overallPct}%</span> <span class="diag-frac">${overall.passed}/${overall.total}</span>`, bar(overallPct))}
+          ${summaryRow('Coverage', `<span class="diag-pct">${covPct}%</span> <span class="diag-frac">${cov.passed}/${cov.total}</span>`,       bar(covPct))}
+          ${summaryRow('Trust',    `<span class="diag-pct">${trustPct}%</span> <span class="diag-frac">${trust.passed}/${trust.total}</span>`, bar(trustPct))}
+          ${summaryRow('Verified', trust.hasMcpSource ? '<span class="diag-yes">YES</span>' : '<span class="diag-no">NO</span>',
+                       trust.hasMcpSource ? 'live signal present' : 'connect MCP or scan live to verify',
+                       trust.hasMcpSource ? '' : 'is-warn')}
+        </tbody>
+      </table>
+    </header>
+
+    <section class="diag-section">
+      <header class="diag-section-head">
+        <span class="diag-section-num">2A</span>
+        <span class="diag-section-title">Coverage — are we observing the right signals?</span>
+        <span class="diag-section-meta">${cov.passed}/${cov.total} met · ${covPct}%</span>
+      </header>
+      ${critTable(cov.criteria)}
+    </section>
+
+    <section class="diag-section">
+      <header class="diag-section-head">
+        <span class="diag-section-num">2B</span>
+        <span class="diag-section-title">Trust — can we trust what the signals show?</span>
+        <span class="diag-section-meta">${trust.passed}/${trust.total} met · ${trustPct}%</span>
+      </header>
+      ${!trust.hasMcpSource ? `
+        <div class="diag-banner">
+          <span class="diag-banner-key">WARN</span>
+          Pack A carries no live signal. Drift &amp; freshness require an MCP-drafted or live-refreshed pack to verify.
+        </div>
+      ` : ''}
+      ${critTable(trust.criteria)}
+    </section>
+
+    <section class="diag-section">
+      <header class="diag-section-head">
+        <span class="diag-section-num">⊜</span>
+        <span class="diag-section-title">Evidence — expected vs observed</span>
+        <span class="diag-section-meta">${evidenceRows.filter(r => r.pass).length}/${evidenceRows.length} confirmed</span>
+      </header>
+      ${evidenceTable}
+    </section>
+  `;
+  return wrap;
+}
+
+function renderBenchmarkHeadline(posture, lens) {
+  const head = document.createElement('div');
+  head.className = 'benchmark-head';
+
+  // Drill-down summary — sits BENEATH the main diagnostic-grade
+  // verdict. It frames the matrix below as "the why behind the
+  // verdict": coverage / observation breakdown that answers, at the
+  // mechanism level, where the diagnostic-grade gaps live.
+  let present = 0, evidence = 0, absent = 0;
+  for (const l of POSTURE_LAYERS) {
+    for (const m of POSTURE_MECHANISMS_PER_LAYER) {
+      const arr = posture.cells[`${l.key}:${m.key}`];
+      if (!arr || arr.length === 0) absent++;
+      else if (arr.every(a => a._evidence)) evidence++;
+      else present++;
+    }
+  }
+  const total = POSTURE_LAYERS.length * POSTURE_MECHANISMS_PER_LAYER.length;
+  const observedPct = Math.round(((present + evidence) / total) * 100);
+
+  const verdictWord = observedPct >= 70 ? 'Strong' : observedPct >= 40 ? 'Partial' : observedPct >= 20 ? 'Thin' : 'Critical gap';
+  const verdictClass = observedPct >= 70 ? 'is-strong' : observedPct >= 40 ? 'is-partial' : observedPct >= 20 ? 'is-thin' : 'is-critical';
+
+  // When the user has a product lens selected, the drill becomes
+  // about that product specifically. Otherwise it's pack-wide.
+  const lensLabel = lens === 'all' ? null : (LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens);
+  const drillFraming = lensLabel
+    ? `<strong>Drill</strong> · ${escapeHtml(lensLabel)} surface — where the diagnostic-grade gaps live in ${escapeHtml(lensLabel)}'s area`
+    : `<strong>Drill</strong> · per-layer × per-mechanism — where the diagnostic-grade gaps live`;
+
+  head.innerHTML = `
+    <div class="benchmark-headline-eyebrow">${drillFraming}</div>
+    <div class="benchmark-headline-meta">
+      <div class="benchmark-headline-verdict ${verdictClass}">
+        <div class="benchmark-headline-verdict-word">${verdictWord}</div>
+        <div class="benchmark-headline-verdict-sub">${present}/${total} declared · ${present + evidence}/${total} observed</div>
+      </div>
+      <div class="benchmark-headline-tally">
+        <div class="benchmark-headline-tally-row"><span class="benchmark-headline-tally-pip is-present">✓</span> ${present} declared</div>
+        <div class="benchmark-headline-tally-row"><span class="benchmark-headline-tally-pip is-evidence">○</span> ${evidence} evidence-only</div>
+        <div class="benchmark-headline-tally-row"><span class="benchmark-headline-tally-pip is-absent">✗</span> ${absent} absent</div>
+      </div>
+    </div>
+  `;
+  return head;
+}
+
+// ============================================================
+// Pie chart row — one SVG donut per layer, sized by mechanism
+// coverage. Three concentric slices: declared / evidence / absent.
+// Glanceable summary the audience reads in 2 seconds.
+// ============================================================
+function renderPosturePieRow(posture) {
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-block posture-pie-row-block';
+
+  const pies = POSTURE_LAYERS.map(layer => {
+    let present = 0, evidence = 0, absent = 0;
+    const declaredMechs = [];
+    const evidenceMechs = [];
+    const missingMechs = [];
+    for (const m of POSTURE_MECHANISMS_PER_LAYER) {
+      const arr = posture.cells[`${layer.key}:${m.key}`];
+      if (!arr || arr.length === 0) { absent++; missingMechs.push(m.label); }
+      else if (arr.every(a => a._evidence)) { evidence++; evidenceMechs.push(m.label); }
+      else { present++; declaredMechs.push(m.label); }
+    }
+    const total = POSTURE_MECHANISMS_PER_LAYER.length;
+    const declaredPct = Math.round((present / total) * 100);
+    const obsPct = Math.round(((present + evidence) / total) * 100);
+    const verdict = obsPct >= 70 ? 'strong' : obsPct >= 40 ? 'partial' : obsPct >= 20 ? 'thin' : 'dark';
+
+    // Build a stacked donut: each slice's arc-length proportional to count.
+    // r=42 inside a 110×110 viewBox; circumference C = 2πr ≈ 263.9.
+    const R = 42, C = 2 * Math.PI * R;
+    const seg = (count) => (count / total) * C;
+    const sPres = seg(present), sEvi = seg(evidence), sAbs = seg(absent);
+    // Start at top (-90deg), stroke segments end-to-end.
+    return `
+      <div class="posture-pie" data-verdict="${verdict}" title="${escapeHtml(`Declared: ${declaredMechs.join(', ') || 'none'}\nEvidence-only: ${evidenceMechs.join(', ') || 'none'}\nMissing: ${missingMechs.join(', ') || 'none'}`)}">
+        <svg viewBox="0 0 110 110" class="posture-pie-svg" role="img" aria-label="${escapeHtml(layer.label + ' coverage ' + obsPct + '%')}">
+          <circle cx="55" cy="55" r="${R}" fill="none" stroke="rgba(178,34,34,0.2)" stroke-width="14"/>
+          ${present > 0 ? `<circle cx="55" cy="55" r="${R}" fill="none" stroke="rgb(46,110,50)"  stroke-width="14"
+            stroke-dasharray="${sPres} ${C - sPres}" stroke-dashoffset="${C / 4}" transform="rotate(-90 55 55)"/>` : ''}
+          ${evidence > 0 ? `<circle cx="55" cy="55" r="${R}" fill="none" stroke="rgb(217,119,6)" stroke-width="14"
+            stroke-dasharray="${sEvi} ${C - sEvi}" stroke-dashoffset="${C / 4 - sPres}" transform="rotate(-90 55 55)"/>` : ''}
+          <text x="55" y="58" text-anchor="middle" class="posture-pie-pct">${obsPct}%</text>
+          <text x="55" y="74" text-anchor="middle" class="posture-pie-sub">${present + evidence}/${total}</text>
+        </svg>
+        <div class="posture-pie-label">${escapeHtml(layer.label)}</div>
+        <div class="posture-pie-verdict">${verdict}</div>
+      </div>
+    `;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="benchmark-block-head">
+      <span class="benchmark-block-eyebrow">AT A GLANCE</span>
+      Coverage per layer — observed (declared + evidence) over total mechanisms
+    </div>
+    <div class="posture-pie-row">${pies}</div>
+    <div class="posture-pie-legend">
+      <span class="posture-pie-legend-pip" style="background:rgb(46,110,50)"></span> declared in pack
+      <span class="posture-pie-legend-pip" style="background:rgb(217,119,6)"></span> evidence-only
+      <span class="posture-pie-legend-pip" style="background:rgba(178,34,34,0.4)"></span> missing
+    </div>
+  `;
+  return wrap;
+}
+
+// ============================================================
+// Footprint accordion — collapses the artefact-identity scorecard
+// that used to lead the view. Default closed. For power users who
+// want the raw N/M counts vs the reference's artefact set.
+// ============================================================
+function renderFootprintAccordion(score) {
+  const wrap = document.createElement('details');
+  wrap.className = 'benchmark-footprint-accordion';
+  const overall = score.overall;
+  const pct = overall.bTotal === 0 ? 0 : Math.round((overall.matched / overall.bTotal) * 100);
+  const layerRows = score.byLayer.map(L => `
+    <div class="benchmark-footprint-row">
+      <span class="benchmark-footprint-layer">${escapeHtml(L.layer)}</span>
+      <span class="benchmark-footprint-counts">${L.aTotal} / ${L.bTotal}</span>
+      <span class="benchmark-footprint-pct">${L.bTotal === 0 ? '—' : Math.round((L.matched / L.bTotal) * 100) + '%'}</span>
+    </div>
+  `).join('');
+  wrap.innerHTML = `
+    <summary class="benchmark-footprint-summary">
+      <span class="benchmark-footprint-eyebrow">FOOTPRINT</span>
+      Raw artefact-identity comparison · ${overall.matched}/${overall.bTotal} reference IDs matched (${pct}%)
+      <span class="benchmark-footprint-chevron">▾</span>
+    </summary>
+    <div class="benchmark-footprint-body">
+      <div class="benchmark-footprint-caveat">
+        Identity-match comparison: counts artefacts whose IDs appear in BOTH packs. Useful for spotting drift against a curated baseline, NOT for assessing posture (see matrix above).
+      </div>
+      <div class="benchmark-footprint-layers">${layerRows}</div>
+    </div>
+  `;
+  return wrap;
+}
+
+function renderBenchmarkHeader(score, lens) {
+  const head = document.createElement('div');
+  head.className = 'benchmark-head';
+  const lensLabel = lens === 'all' ? 'All artefacts' : (LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens);
+  head.innerHTML = `
+    <div class="benchmark-head-eyebrow">BENCHMARK</div>
+    <div class="benchmark-head-title">
+      <span class="benchmark-head-pack benchmark-head-pack-a">${escapeHtml(state.pack?.name || state.pack?.id || 'Pack A')}</span>
+      <span class="benchmark-head-vs">vs</span>
+      <span class="benchmark-head-pack benchmark-head-pack-b">${escapeHtml(state.packB?.name || state.packB?.id || 'Pack B')}</span>
+    </div>
+    <div class="benchmark-head-meta">
+      Lens · <strong>${escapeHtml(lensLabel)}</strong>
+      ${lens === 'all'
+        ? '<span class="benchmark-head-hint">Tip: pick a product lens for an apples-to-apples scorecard.</span>'
+        : `<span class="benchmark-head-hint">Scoring only artefacts in ${escapeHtml(lensLabel)}'s surface.</span>`}
+    </div>
+  `;
+  return head;
+}
+
+function renderBenchmarkScorecard(score) {
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-scorecard';
+  const overall = score.overall;
+  const pct = overall.bTotal === 0 ? 0 : Math.round((overall.matched / overall.bTotal) * 100);
+  const pctClass = pct >= 75 ? 'is-good' : pct >= 40 ? 'is-warn' : 'is-poor';
+
+  // Per-layer rows: each shows A/B counts + a tiny coverage bar
+  const layerRows = score.byLayer.map(L => {
+    const lpct = L.bTotal === 0 ? null : Math.round((L.matched / L.bTotal) * 100);
+    const bar = lpct === null ? '<span class="benchmark-layer-bar benchmark-layer-bar-empty"></span>' :
+      `<span class="benchmark-layer-bar">
+         <span class="benchmark-layer-bar-fill" style="width:${lpct}%"></span>
+       </span>`;
+    return `
+      <div class="benchmark-layer-row">
+        <span class="benchmark-layer-num">${escapeHtml(L.layer)}</span>
+        <span class="benchmark-layer-counts">
+          <span class="benchmark-layer-a">${L.aTotal}</span>
+          <span class="benchmark-layer-sep">/</span>
+          <span class="benchmark-layer-b">${L.bTotal}</span>
+        </span>
+        ${bar}
+        <span class="benchmark-layer-pct">${lpct === null ? '—' : lpct + '%'}</span>
+      </div>
+    `;
+  }).join('');
+
+  // Live version sidebar — pulled from mcp.versions.* annotations
+  // so the demo narrative ("the platform is running Grafana 12.4.0,
+  // declared in the live pack") sits right next to the scorecard.
+  const ann = state.pack?.meta?.annotations || state.pack?.metadata?.annotations || {};
+  const liveVersions = [];
+  for (const [k, v] of Object.entries(ann)) {
+    const m = /^mcp\.versions\.([a-z0-9_-]+)$/.exec(k);
+    if (m) liveVersions.push({ product: m[1], version: v });
+  }
+  const liveVersionsHtml = liveVersions.length
+    ? `<div class="benchmark-meta-sub-head">Live versions</div>` +
+      liveVersions.map(lv =>
+        `<div class="benchmark-meta-live-row"><strong>${escapeHtml(lv.product)}</strong><span>${escapeHtml(lv.version)}</span></div>`
+      ).join('')
+    : '<div class="benchmark-meta-empty"><em>No live versions captured</em></div>';
+
+  wrap.innerHTML = `
+    <div class="benchmark-scorecard-grid">
+      <div class="benchmark-card benchmark-card-overall">
+        <div class="benchmark-card-key">Coverage</div>
+        <div class="benchmark-card-pct ${pctClass}">${pct}%</div>
+        <div class="benchmark-card-sub">${overall.matched} of ${overall.bTotal} reference artefacts present in your live pack</div>
+      </div>
+      <div class="benchmark-card benchmark-card-layers">
+        <div class="benchmark-card-key">Per-layer (live / ref)</div>
+        ${layerRows}
+      </div>
+      <div class="benchmark-card benchmark-card-meta">
+        <div class="benchmark-card-key">Evidence</div>
+        <div class="benchmark-meta-line"><strong>${score.verifiedCount}</strong> artefacts verified by MCP</div>
+        ${liveVersionsHtml}
+      </div>
+    </div>
+  `;
+  return wrap;
+}
+
+function renderBenchmarkMissing(score) {
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-callout benchmark-callout-missing';
+  const top = score.missing.slice(0, 10);
+  wrap.innerHTML = `
+    <div class="benchmark-callout-head">
+      <span class="benchmark-callout-eyebrow">MISSING</span>
+      Items the reference recommends, not present in your live pack
+      <span class="benchmark-callout-count">${score.missing.length}</span>
+    </div>
+    ${top.length === 0
+      ? '<div class="benchmark-callout-empty">Nothing missing — your live pack covers everything the reference recommends. 🎯</div>'
+      : '<ul class="benchmark-callout-list">' + top.map(m => `
+          <li>
+            <span class="benchmark-callout-layer">${escapeHtml(m.layer)}</span>
+            <span class="benchmark-callout-title">${escapeHtml(m.title)}</span>
+            ${m.id ? `<span class="benchmark-callout-id">${escapeHtml(m.id)}</span>` : ''}
+          </li>
+        `).join('') + '</ul>'}
+    ${score.missing.length > 10 ? `<div class="benchmark-callout-more">+ ${score.missing.length - 10} more</div>` : ''}
+  `;
+  return wrap;
+}
+
+function renderBenchmarkExtras(score) {
+  const wrap = document.createElement('div');
+  wrap.className = 'benchmark-callout benchmark-callout-extras';
+  const top = score.extras.slice(0, 5);
+  wrap.innerHTML = `
+    <div class="benchmark-callout-head">
+      <span class="benchmark-callout-eyebrow">EXTRAS</span>
+      In your live pack, not in the reference
+      <span class="benchmark-callout-count">${score.extras.length}</span>
+    </div>
+    ${top.length === 0
+      ? '<div class="benchmark-callout-empty">No extras in scope.</div>'
+      : '<ul class="benchmark-callout-list">' + top.map(m => `
+          <li>
+            <span class="benchmark-callout-layer">${escapeHtml(m.layer)}</span>
+            <span class="benchmark-callout-title">${escapeHtml(m.title)}</span>
+            ${m.id ? `<span class="benchmark-callout-id">${escapeHtml(m.id)}</span>` : ''}
+          </li>
+        `).join('') + '</ul>'}
+    ${score.extras.length > 5 ? `<div class="benchmark-callout-more">+ ${score.extras.length - 5} more</div>` : ''}
+  `;
+  return wrap;
+}
+
+// Pure: walks both packs under the lens, returns scorecard data.
+function computeBenchmarkScorecard(packA, packB, lens) {
+  const byLayer = [];
+  const missing = [];   // in B, not in A
+  const extras  = [];   // in A, not in B
+  let overallA = 0, overallB = 0, overallMatched = 0, verifiedCount = 0;
+  const sets = buildCompareKeySets();
+
+  // Walk B's annotations to count "verified by MCP" markers (any
+  // artefact whose mcp.verified.<sym> stamp is present).
+  const annA = packA?.meta?.annotations || packA?.metadata?.annotations || {};
+  for (const k of Object.keys(annA)) {
+    if (/^mcp\.verified\./.test(k)) verifiedCount++;
+  }
+
+  for (const L of LAYERS_FOR_DIFF) {
+    const aItems = layerItemsFor(packA, L).filter(a => productSurface(a, lens, packA));
+    const bItems = layerItemsFor(packB, L).filter(a => productSurface(a, lens, packB));
+    const aKeys = new Set(aItems.map(a => compareKeyOf(a)));
+    const bKeys = new Set(bItems.map(a => compareKeyOf(a)));
+
+    let matched = 0;
+    for (const b of bItems) {
+      const k = compareKeyOf(b);
+      if (aKeys.has(k)) matched++;
+      else missing.push({ layer: L, key: k, id: b.id || '', title: b.title || k });
+    }
+    for (const a of aItems) {
+      const k = compareKeyOf(a);
+      if (!bKeys.has(k)) extras.push({ layer: L, key: k, id: a.id || '', title: a.title || k });
+    }
+
+    byLayer.push({ layer: L, aTotal: aItems.length, bTotal: bItems.length, matched });
+    overallA += aItems.length;
+    overallB += bItems.length;
+    overallMatched += matched;
+  }
+
+  return {
+    overall: { aTotal: overallA, bTotal: overallB, matched: overallMatched },
+    byLayer,
+    missing,
+    extras,
+    verifiedCount,
+  };
+}
+
 function renderCompareView(view) {
   if (!state.compareBId) state.compareBId = defaultCompareB();
   if (!state.compareBEnv) state.compareBEnv = defaultEnvFor(state.compareBId);
@@ -2339,6 +4863,39 @@ function renderCompareFilters() {
     b.onclick = () => { state.compareSlice = s.id; renderMainView(); };
     wrap.appendChild(b);
   }
+  // Lens — scopes the comparison to one product's surface. When the user
+  // picks "Grafana", both packs are filtered to just their Grafana-surface
+  // artefacts (backends, dashboards, refs, source-tool evidence). Lets a
+  // multi-backend live pack be benchmarked against a single-product
+  // reference without the noise of every other backend.
+  const lensWrap = document.createElement('div');
+  lensWrap.className = 'compare-lens-wrap';
+  const lensLabel = document.createElement('span');
+  lensLabel.className = 'compare-lens-label';
+  lensLabel.textContent = 'Lens';
+  lensWrap.appendChild(lensLabel);
+  const lensSel = document.createElement('select');
+  lensSel.className = 'compare-lens-select';
+  lensSel.title = "Scope to one product's surface — for benchmarking against a reference pack.";
+  const optAll = document.createElement('option');
+  optAll.value = 'all'; optAll.textContent = 'All artefacts';
+  lensSel.appendChild(optAll);
+  for (const lp of LENS_PRODUCTS) {
+    const o = document.createElement('option');
+    o.value = lp.slug;
+    o.textContent = lp.label;
+    lensSel.appendChild(o);
+  }
+  lensSel.value = state.compareLens || 'all';
+  lensSel.dataset.lens = lensSel.value;
+  lensSel.onchange = () => {
+    state.compareLens = lensSel.value;
+    lensSel.dataset.lens = lensSel.value;
+    renderMainView();
+  };
+  lensWrap.appendChild(lensSel);
+  wrap.appendChild(lensWrap);
+
   const search = document.createElement('input');
   search.type = 'search';
   search.className = 'compare-search-input';
@@ -2407,11 +4964,133 @@ function layerItemsFor(pack, L) {
   return pack.layers[L] || [];
 }
 
-// Apply slice + text search to a side's items.
+// Product-surface lens — answers "does this artefact belong to <product>'s
+// surface?" Used by the Compare view's lens dropdown and by the
+// Benchmark view to scope a comparison to one product (e.g. just Grafana).
+//
+// An artefact is in <product>'s surface if ANY of these hold:
+//
+//   1. STRUCTURAL — the artefact IS a backend whose `product` slug matches,
+//      or IS a dashboard whose `provider.kind` matches.
+//   2. REFERENTIAL — the artefact `refs` a backend that's in the surface
+//      (e.g. an SLI that queries metrics from `dashboards-grafana`).
+//   3. SOURCE — the pack carries an `mcp.source.<artefact-id>` annotation
+//      whose value starts with `<product>_` (Phase 2 fetcher stamp).
+//   4. REFERENCE-PACK SHORTCUT — when the pack's metadata.name matches
+//      `<product>-reference`, every artefact in it is in scope by design.
+//
+// Returns true/false. Falls through to true when the lens is 'all'
+// or when no product is specified.
+function productSurface(art, product, pack) {
+  if (!product || product === 'all') return true;
+  if (!art) return false;
+  const p = product.toLowerCase();
+  const idLower = typeof art.id === 'string' ? art.id.toLowerCase() : '';
+
+  // 0. Cross-cutting infrastructure (OTel SDK, pipelines, storage,
+  //    governance imports) is NEVER in a single product's surface unless
+  //    it explicitly refs a backend in the surface (handled in rule 4).
+  //    These artefacts have ids like OTEL-01, PIP-RCV-01, PIP-PRC-01,
+  //    PIP-EXP-MET, STO-MET-01, IMP-01.
+  const isInfra = /^(otel|pip|sto|imp)[-_]/i.test(art.id || '');
+
+  if (!isInfra) {
+    // 1. Structural — backend with matching product slug
+    if (art.spec?.product === p) return true;
+    if (art.product === p) return true;
+
+    // 1b. Structural — dashboard whose provider.kind matches
+    if (art.spec?.provider?.kind === p) return true;
+    if (art.provider?.kind === p) return true;
+
+    // 1c. Backend id pattern — `<signal>-<product>` (e.g. dashboards-grafana,
+    //     metrics-victoriametrics). The fetcher mints ids in this shape.
+    if (idLower.endsWith(`-${p}`) || idLower === p) return true;
+
+    // 2. Backend artefact for a DIFFERENT product — exclude.
+    //    Reference packs declare monitoring backends (e.g. grafana-reference
+    //    pulls in metrics-prom + metrics-mimir to monitor Grafana). Those
+    //    are instrumentation, not Grafana — the Grafana lens shouldn't
+    //    surface them. This rule lives BEFORE the reference-pack shortcut
+    //    so the shortcut can't override it.
+    const otherBackendProduct = (art.spec?.product || art.product || '').toLowerCase();
+    if (otherBackendProduct && otherBackendProduct !== p) return false;
+    // Same logic for dashboards: a non-matching provider.kind is excluded.
+    const otherDashKind = (art.spec?.provider?.kind || art.provider?.kind || '').toLowerCase();
+    if (otherDashKind && otherDashKind !== p) return false;
+
+    // 3. Reference-pack shortcut — when this pack IS the product reference,
+    //    the remaining artefacts (SLIs, SLOs, dashboards without a kind,
+    //    alerts, chaos, governance imports) are by construction about
+    //    that product. The backend exclusion above guards against
+    //    instrumentation backends leaking in. Excludes infra artefacts
+    //    via the isInfra branch wrapping this block.
+    const packName = (pack?.meta?.name || pack?.id || '').toLowerCase();
+    if (packName === `${p}-reference` || packName === `${p}`) return true;
+  }
+
+  // 4. Referential — refs a backend in the product surface.
+  //    Applies to BOTH infra and non-infra artefacts: a STO-MET-01 that
+  //    refs `backend: ref:metrics-victoriametrics` IS in the VM surface.
+  const refs = Array.isArray(art.refs) ? art.refs : [];
+  const surfaceBackendIds = collectSurfaceBackendIds(pack, p);
+  for (const r of refs) {
+    if (typeof r !== 'string') continue;
+    const last = r.split('.').pop().replace(/^ref:/, '').toLowerCase();
+    if (surfaceBackendIds.has(last)) return true;
+  }
+
+  // 5. Source — annotation says the artefact came from a <product>_* tool.
+  const ann = pack?.meta?.annotations || pack?.metadata?.annotations || {};
+  const idForAnn = art.id || art.title;
+  if (idForAnn) {
+    const src = ann[`mcp.source.${idForAnn}`];
+    if (typeof src === 'string' && src.toLowerCase().startsWith(`${p}_`)) return true;
+  }
+
+  return false;
+}
+
+// Build (and cache per-render) the set of backend ids whose `product`
+// matches the lens — used by productSurface() to follow `refs` back to
+// the originating backend.
+const _surfaceCache = new WeakMap();
+function collectSurfaceBackendIds(pack, product) {
+  if (!pack || !product) return new Set();
+  let perPack = _surfaceCache.get(pack);
+  if (!perPack) { perPack = new Map(); _surfaceCache.set(pack, perPack); }
+  if (perPack.has(product)) return perPack.get(product);
+  const ids = new Set();
+  const L2 = (pack.layers?.L2 || []);
+  for (const b of L2) {
+    const bProd = (b.spec?.product || b.product || '').toLowerCase();
+    if (bProd === product && typeof b.id === 'string') {
+      ids.add(b.id.toLowerCase());
+      ids.add(b.id.toLowerCase().split('-').pop());  // last segment (e.g. "grafana")
+    }
+  }
+  perPack.set(product, ids);
+  return ids;
+}
+
+// Catalogue of products that have a matching reference pack. Drives the
+// Lens dropdown and the per-backend "Benchmark vs <product>-reference"
+// CTA. Keep in sync with EXAMPLE_PACKS in server/index.mjs (anything with
+// catalogue: true that maps cleanly to a product slug).
+const LENS_PRODUCTS = [
+  { slug: 'grafana',    label: 'Grafana',    refPackId: 'grafana-reference' },
+  { slug: 'prometheus', label: 'Prometheus', refPackId: 'prometheus-reference' },
+  { slug: 'kafka',      label: 'Kafka',      refPackId: 'kafka-reference' },
+];
+
+// Apply slice + text search + lens to a side's items.
 function filterCompareItems(items, L, side, sets) {
   const slice = state.compareSlice || 'all';
   const search = (state.compareSearch || '').trim().toLowerCase();
+  const lens = state.compareLens || 'all';
+  const sidePack = side === 'a' ? state.pack : state.packB;
   return items.filter(art => {
+    if (lens !== 'all' && !productSurface(art, lens, sidePack)) return false;
     const k = compareKeyOf(art);
     const inBoth = sets.keysInBoth[L]?.has(k);
     const onlySide = side === 'a' ? sets.keysOnlyInA[L]?.has(k) : sets.keysOnlyInB[L]?.has(k);
@@ -2610,7 +5289,7 @@ function renderComparePicker() {
     if (!p.ok) continue;
     const opt = document.createElement('option');
     opt.value = p.id;
-    opt.textContent = `${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`;
+    opt.textContent = `${p.label} · v${p.version || '?'}`;
     bSel.appendChild(opt);
   }
   bSel.value = state.compareBId;
@@ -3500,7 +6179,83 @@ async function handleFile(file) {
 function setupUpload() {
   const fileInput = $('#file-input');
   const btn = $('#upload-btn');
-  btn.onclick = () => fileInput.click();
+  const popover = $('#upload-popover');
+
+  // Upload button now opens a small popover offering three paths:
+  // (a) pick a local file (the original behaviour), (b) load Krystaline
+  // from the live MCP, (c) scan the KrystalineX OSS repo. Click-outside
+  // and Esc close it. The popover lets the demo feel organic — the
+  // presenter clicks Upload like any user, sees one of the quick-start
+  // cases listed, and loads it in one click. Same flows the rest of
+  // the studio already uses (no demo-mode codepath).
+  const closePopover = () => {
+    if (!popover) return;
+    popover.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+  };
+  const openPopover = () => {
+    if (!popover) return;
+    popover.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+  };
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    if (!popover) { fileInput.click(); return; }
+    popover.hidden ? openPopover() : closePopover();
+  };
+  document.addEventListener('click', (ev) => {
+    if (!popover || popover.hidden) return;
+    if (ev.target.closest('.upload-popover-wrap')) return;
+    closePopover();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && popover && !popover.hidden) closePopover();
+  });
+  if (popover) {
+    popover.addEventListener('click', async (ev) => {
+      const item = ev.target.closest('.upload-popover-item');
+      if (!item) return;
+      const action = item.dataset.action;
+      closePopover();
+      if (action === 'pick-file') {
+        fileInput.click();
+        return;
+      }
+      if (action === 'quick-krystaline') {
+        // Same flow as the home's MCP connect → adopt path, just driven
+        // programmatically. We pre-fill the URL and trigger the same
+        // doHomeMcpConnect that the home button calls. The friendly
+        // label is held on the panel via a data-attribute so the
+        // adopt handler can pass it through to the API.
+        window._tomographQuickLabel = 'Krystaline (live MCP draft)';
+        const newFromLive = document.getElementById('draft-mcp-btn');
+        if (newFromLive) newFromLive.click();
+        setTimeout(() => {
+          const panelUrl = document.getElementById('draft-mcp-url');
+          if (panelUrl) panelUrl.value = 'https://www.krystaline.io/mcp/public';
+          const goBtn = document.getElementById('draft-mcp-go-btn');
+          if (goBtn) goBtn.click();
+        }, 60);
+        return;
+      }
+      if (action === 'quick-krystalinex-repo') {
+        // Open the scan-a-repo panel and pre-fill the GitHub URL field.
+        window._tomographQuickLabel = 'KrystalineX (repo scan)';
+        const scanBtn = document.getElementById('crawl-btn');
+        if (scanBtn) scanBtn.click();
+        setTimeout(() => {
+          const ghUrl = document.getElementById('crawl-github-url');
+          if (ghUrl) {
+            ghUrl.value = 'MoebiusX/KrystalineX';
+            ghUrl.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          const ghGo = document.getElementById('crawl-github-go-btn');
+          if (ghGo && !ghGo.disabled) ghGo.click();
+        }, 60);
+        return;
+      }
+    });
+  }
   fileInput.onchange = () => { if (fileInput.files?.[0]) handleFile(fileInput.files[0]); fileInput.value = ''; };
 
   let dragDepth = 0;
@@ -3550,7 +6305,220 @@ async function refresh() {
   }
 }
 
+// ============================================================
+// OBSERVA chrome — the three-tab top bar from the demo mockup.
+//
+// Replaces the legacy header (Tomograph logo + dense pack-picker row +
+// meta strip + view-nav + layer chips) with a single clean chrome:
+//
+//   ┌──────────────────────────────────────────────────────────────────┐
+//   │ [logo] TOMOGRAPH    ① Layers       ② Comparison    ③ ObsOps     │
+//   │                       What's in...   Is it good...   Compile &  │
+//   │                                                                  │
+//   │                                          Projects · Alerts · AD  │
+//   └──────────────────────────────────────────────────────────────────┘
+//
+// The legacy chrome stays in the DOM but hidden — every existing event
+// handler that references #pack-select, #upload-btn, etc. keeps working.
+// A small "⚙ controls" button reveals the legacy controls row on demand
+// for pack switching / upload / scan / theme until those move into the
+// tab content in later phases.
+// ============================================================
+// Question-oriented chrome: the tab title IS the user's mental
+// question, the small workflow word beneath identifies the act the
+// product takes to answer it. This is the load-bearing framing —
+// most observability tools organize around data types or products;
+// Tomograph organizes around three questions that map onto a workflow
+// people already understand from medicine:
+//
+//     Discover  →  Diagnose  →  Remediate
+//      (CT scan)    (Diagnosis)   (Treatment)
+//
+// The technical names (Layers / Comparison / ObsOps) move into the
+// tooltip — discoverable but not load-bearing on the chrome.
+const OBSERVA_TABS = [
+  {
+    id: 'layers',
+    n: '1',
+    label: 'What Do We Have?',
+    sub: 'Discover',
+    techName: 'Layers',
+    tagline: 'the Observability Tomogram',
+    accent: 'tab-blue',
+  },
+  {
+    id: 'compare',
+    n: '2',
+    label: 'Can We Trust It?',
+    sub: 'Diagnose',
+    techName: 'Comparison',
+    tagline: 'Coverage & Fidelity',
+    accent: 'tab-magenta',
+  },
+  {
+    id: 'compile',
+    n: '3',
+    label: 'Fix The Gaps',
+    sub: 'Remediate',
+    techName: 'ObsOps',
+    tagline: 'Compile & Deploy',
+    accent: 'tab-emerald',
+  },
+];
+
+// "Advanced / Alien Observability" — the deep, specialised tools that
+// sit OFF the three-step workflow. A first-time user never needs these;
+// an expert reaches for them. They live behind a single right-side
+// chrome button (styled like the old action cluster) that opens a menu.
+// Each routes to a view that already exists in the dispatcher.
+const OBSERVA_ADV = [
+  { id: 'conformance',  label: 'Conformance',  sub: 'maturity rubric · MUST/SHOULD per tier' },
+  { id: 'schema',       label: 'Schema',       sub: 'canonical YAML + v1.2 validation' },
+  { id: 'otlp',         label: 'OTLP Coverage', sub: 'receiver protocols · per-signal exporters' },
+  { id: 'traceability', label: 'Traceability', sub: 'repo vs live · declared / verified / stale' },
+  { id: 'atlas',        label: 'Atlas',        sub: 'visual atlases · strata · periodic · skyline' },
+];
+const OBSERVA_ADV_VIEWS = new Set(OBSERVA_ADV.map(a => a.id));
+
+function installObservaChrome() {
+  if (document.querySelector('.observa-hdr')) return;
+  document.body.classList.add('chrome-observa');
+
+  const hdr = document.createElement('header');
+  hdr.className = 'observa-hdr';
+  hdr.innerHTML = `
+    <div class="observa-hdr-inner">
+      <a class="observa-brand" href="/" aria-label="Tomograph home">
+        <span class="observa-logo" aria-hidden="true">
+          <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="observaLogoG" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%"  stop-color="#3b82f6"/>
+                <stop offset="50%" stop-color="#a855f7"/>
+                <stop offset="100%" stop-color="#10b981"/>
+              </linearGradient>
+            </defs>
+            <path d="M18 3 L31 11 L31 25 L18 33 L5 25 L5 11 Z" stroke="url(#observaLogoG)" stroke-width="2" fill="none"/>
+            <path d="M18 11 L25 15 L25 22 L18 26 L11 22 L11 15 Z" stroke="url(#observaLogoG)" stroke-width="1.4" fill="rgba(168,85,247,0.12)"/>
+            <circle cx="18" cy="18" r="2.4" fill="url(#observaLogoG)"/>
+          </svg>
+        </span>
+        <span class="observa-brand-text">
+          <span class="observa-wordmark">TOMO<strong>GRAPH</strong></span>
+          <span class="observa-tagline">
+            <span class="observa-tagline-step">Discover</span>
+            <span class="observa-tagline-dot">·</span>
+            <span class="observa-tagline-step">Diagnose</span>
+            <span class="observa-tagline-dot">·</span>
+            <span class="observa-tagline-step">Remediate</span>
+          </span>
+        </span>
+      </a>
+
+      <nav class="observa-tabs" role="tablist" aria-label="Primary">
+        ${OBSERVA_TABS.map(t => `
+          <button type="button" role="tab" class="observa-tab ${t.accent}" data-view="${t.id}"
+                  aria-selected="false" title="${escapeHtml(t.techName + ' — ' + t.tagline)}">
+            <span class="observa-tab-num">${t.n}</span>
+            <span class="observa-tab-text">
+              <span class="observa-tab-eyebrow">${escapeHtml(t.sub)}</span>
+              <span class="observa-tab-title">${escapeHtml(t.label)}</span>
+              <span class="observa-tab-tagline">${escapeHtml(t.tagline)}</span>
+            </span>
+          </button>
+        `).join('')}
+      </nav>
+
+      <div class="observa-actions" aria-label="Advanced tools">
+        <div class="observa-adv-wrap">
+          <button type="button" class="observa-action observa-adv-toggle"
+                  aria-haspopup="true" aria-expanded="false"
+                  title="Advanced — deep observability tools">
+            <span class="observa-action-glyph">⬡</span>
+            <span class="observa-action-label">Advanced</span>
+            <span class="observa-adv-caret">▾</span>
+          </button>
+          <div class="observa-adv-menu" role="menu" hidden>
+            <div class="observa-adv-menu-head">Alien Observability · deep tools</div>
+            ${OBSERVA_ADV.map(a => `
+              <button type="button" class="observa-adv-item" role="menuitem" data-view="${a.id}">
+                <span class="observa-adv-item-label">${escapeHtml(a.label)}</span>
+                <span class="observa-adv-item-sub">${escapeHtml(a.sub)}</span>
+              </button>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertBefore(hdr, document.body.firstChild);
+
+  // Wire tab clicks → route to the existing view dispatcher.
+  const routeTo = (id) => {
+    if (!id) return;
+    // Clicking any tab leaves the landing/reset hero and enters the
+    // workspace. Without this the no-pack state stays mode='home' and
+    // every tab would keep rendering the landing hero (the bug behind
+    // "why is Discover like the landing hero page?"). The pack is still
+    // null until the user loads one — Discover's empty state handles that.
+    if (state.mode === 'home') state.mode = 'single';
+    state.view = id;
+    state.activeCardKey = null;
+    state.activeLayer = ({ compile: 'COMPILE', conformance: 'CONF', schema: 'CONF', atlas: 'ATLAS', layers: state.layerFilter !== 'all' ? state.layerFilter : 'L1' })[id] || 'L1';
+    applyModeChrome();
+    paintObservaActiveTab();
+    renderTabs();
+    renderMainView();
+  };
+  for (const btn of hdr.querySelectorAll('.observa-tab')) {
+    btn.addEventListener('click', () => routeTo(btn.dataset.view));
+  }
+
+  // Wire the Advanced menu — deep tools off the main workflow.
+  const advToggle = hdr.querySelector('.observa-adv-toggle');
+  const advMenu   = hdr.querySelector('.observa-adv-menu');
+  const closeAdv = () => { if (advMenu) { advMenu.hidden = true; advToggle?.setAttribute('aria-expanded', 'false'); } };
+  advToggle?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const willOpen = advMenu.hidden;
+    advMenu.hidden = !willOpen;
+    advToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+  });
+  hdr.querySelectorAll('.observa-adv-item').forEach(item => {
+    item.addEventListener('click', () => { closeAdv(); routeTo(item.dataset.view); });
+  });
+  // Close the menu on any outside click / Escape.
+  document.addEventListener('click', (e) => {
+    if (advMenu && !advMenu.hidden && !e.target.closest('.observa-adv-wrap')) closeAdv();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAdv(); });
+
+  paintObservaActiveTab();
+}
+
+function paintObservaActiveTab() {
+  const v = state.view || 'layers';
+  const active = (v === 'benchmark' || v === 'compare-artefacts') ? 'compare' : v;
+  const advActive = OBSERVA_ADV_VIEWS.has(v);
+  // The landing/reset hero is NOT a tab — it's the pre-workspace start
+  // screen. Clearing the active marker there is what keeps Discover from
+  // "being" the landing hero: you only light a tab once you're working.
+  const onLanding = state.mode === 'home';
+  for (const btn of document.querySelectorAll('.observa-tab')) {
+    // A workflow tab is active only when we're NOT in an advanced view
+    // and NOT on the landing screen.
+    const isActive = !onLanding && !advActive && btn.dataset.view === active;
+    btn.classList.toggle('is-active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  }
+  const advToggle = document.querySelector('.observa-adv-toggle');
+  if (advToggle) advToggle.classList.toggle('is-active', advActive);
+}
+
 async function boot() {
+  // Mount the new chrome FIRST so the user sees the demo shape even
+  // while the catalog loads.
+  installObservaChrome();
   try { await loadCatalog(); }
   catch (e) {
     document.body.innerHTML = `<pre class="json" style="margin:48px;max-width:800px">Failed to reach Tomograph's API.\n\n${escapeHtml(e.message)}\n\nMake sure the server is running: \`node server/index.mjs\` or \`npm run serve\`.</pre>`;
@@ -3676,13 +6644,13 @@ function enterCompareMode(aId, aEnv, bId, bEnv) {
 // new pack.
 function applyModeChrome() {
   const isHome = state.mode === 'home';
-  // On Compare view the pack-A / pack-B cards inside the comparison
-  // already carry their own pickers, env selectors, swap button, and
-  // metadata chips. Showing the header pickers above is pure
-  // duplication — the same two controls fifty pixels higher. Hide them.
-  // Every other view needs the header pickers as the only way to swap
-  // packs.
-  const onCompare = state.view === 'compare';
+  // Under the OBSERVA chrome the pack/env selectors are PINNED as a
+  // permanent master row — they are the user's primary controls and
+  // must never be hidden by view. Only the legacy (non-chrome) layout
+  // hides them on the artefact-id side-by-side view, where the inline
+  // pack cards carry their own pickers.
+  const observa = document.body.classList.contains('chrome-observa');
+  const onCompare = !observa && state.view === 'compare-artefacts';
   document.body.dataset.mode = state.mode;
   document.body.dataset.view = state.view || '';
   const packSel = $('#pack-select')?.parentElement;
@@ -3715,7 +6683,7 @@ function setupResetButton() {
   btn.onclick = async () => {
     const ok = confirm('Reset Tomograph?\n\n' +
       'This will:\n' +
-      '  • drop every uploaded / crawled / drafted pack from the server\n' +
+      '  • drop every uploaded / scanned / drafted pack from the server\n' +
       '  • clear saved view + filter + focus + trace preferences from localStorage\n' +
       '  • reload the page to the empty home screen\n\n' +
       'Catalog-shipped example packs are unaffected (they live on disk).');
@@ -3758,6 +6726,126 @@ function setupHomeAffordance() {
 // their own configured endpoint. To rebrand for a different anchor MCP,
 // change this constant — the rest of the home is data-driven.
 const DEFAULT_MCP_URL = 'https://www.krystaline.io/mcp/public';
+
+// Packs available to inspect right now: anything uploaded/drafted this
+// session plus the archived /api/examples set (cached at boot), de-duped.
+function availablePickerPacks() {
+  return [
+    ...((state.catalog || []).filter(p => p.ok && p.id)),
+    ...((state._examplesCache || []).filter(p => p.ok)),
+  ].filter((p, i, arr) => arr.findIndex(q => q.id === p.id) === i);
+}
+
+// Wire a list of .home-pick-row buttons → load the chosen pack as Pack A
+// and draw it. Examples live only in the cache, so promote the selected
+// one into the catalog before entering analyze mode.
+function wirePackPickerRows(scope) {
+  scope.querySelectorAll('.home-pick-row').forEach(row => {
+    row.onclick = () => {
+      const id = row.dataset.packId;
+      if (!id) return;
+      if (!(state.catalog || []).find(p => p.id === id)) {
+        const ex = (state._examplesCache || []).find(p => p.id === id);
+        if (ex) (state.catalog = state.catalog || []).push(ex);
+      }
+      enterAnalyzeMode(id, defaultEnvFor(id));
+    };
+  });
+}
+
+function packPickerRowsHtml() {
+  return availablePickerPacks().map(p => `
+    <button type="button" class="home-pick-row" data-pack-id="${escapeHtml(p.id)}">
+      <span class="home-pick-name">${escapeHtml(p.label || p.name || p.id)}</span>
+      <span class="home-pick-meta">
+        ${p.criticality ? `<span class="home-pick-tier">${escapeHtml(p.criticality)}</span>` : ''}
+        <span class="home-pick-ver">v${escapeHtml(p.version || '1.2')}</span>
+      </span>
+      <span class="home-pick-go" aria-hidden="true">→</span>
+    </button>
+  `).join('');
+}
+
+// ============================================================
+// DISCOVER — empty state. The Discover tab answers "what do we have?",
+// and the FLOW is: load-or-generate a pack first, THEN see its inventory.
+// So with no pack this renders the three ways to GET a pack — crawl a
+// repo, generate live from an MCP server, or upload a manifest — plus a
+// quick picker of packs already on hand. This is deliberately NOT the
+// marketing hero (no giant headline, no Möbius loop); that hero is the
+// separate landing/reset screen.
+// ============================================================
+function renderDiscoverEmpty(view) {
+  const pickerRows = packPickerRowsHtml();
+  view.innerHTML = `
+    <section class="discover-empty">
+      <header class="discover-empty-head">
+        <h2 class="discover-empty-title">What do we have?</h2>
+        <p class="discover-empty-lede">
+          Load or generate an ObservabilityPack to draw its tomogram — the
+          per-layer inventory of every contract, signal, dashboard, alert
+          and check that makes up this service's observability posture.
+        </p>
+      </header>
+
+      <div class="discover-load">
+        <button type="button" class="discover-load-card" data-load="crawl">
+          <span class="discover-load-glyph" aria-hidden="true">↻</span>
+          <span class="discover-load-label">Crawl a repository</span>
+          <span class="discover-load-sub">walk Prom / OTel / Grafana / Alertmanager configs — local folder or a GitHub URL</span>
+        </button>
+        <button type="button" class="discover-load-card" data-load="mcp">
+          <span class="discover-load-glyph" aria-hidden="true">⟳</span>
+          <span class="discover-load-label">Generate live from MCP</span>
+          <span class="discover-load-sub">interrogate a live OpenTelemetry MCP server for backends, baselines and anomalies</span>
+        </button>
+        <button type="button" class="discover-load-card" data-load="upload">
+          <span class="discover-load-glyph" aria-hidden="true">▤</span>
+          <span class="discover-load-label">Upload a pack</span>
+          <span class="discover-load-sub">an existing canonical v1.2 YAML or JSON manifest</span>
+        </button>
+      </div>
+
+      ${pickerRows ? `
+      <div class="home-picker discover-empty-picker">
+        <div class="home-picker-head"><span>or inspect a pack already on hand</span></div>
+        <div class="home-picker-list">${pickerRows}</div>
+      </div>` : ''}
+    </section>
+  `;
+
+  // The three load cards proxy the proven header entry points so there's
+  // a single implementation of crawl / draft-from-mcp / upload.
+  const proxy = { crawl: '#crawl-btn', mcp: '#draft-mcp-btn', upload: '#upload-btn' };
+  view.querySelectorAll('.discover-load-card').forEach(card => {
+    card.onclick = () => $(proxy[card.dataset.load])?.click();
+  });
+  wirePackPickerRows(view);
+}
+
+// Diagnose / Remediate with no pack loaded — both need a pack from
+// Discover first. Point the user there rather than showing an empty grid.
+function renderNeedPackPrompt(view) {
+  const what = state.view === 'compile' ? 'compile and deploy' : 'diagnose';
+  view.innerHTML = `
+    <section class="need-pack">
+      <h2 class="need-pack-title">Load a pack first</h2>
+      <p class="need-pack-lede">There's nothing to ${escapeHtml(what)} yet. Head to
+        <strong>Discover</strong> to crawl a repo, generate from a live MCP server, or
+        upload a manifest — then come back here.</p>
+      <button type="button" class="need-pack-btn" id="need-pack-goto-discover">
+        <span>Go to Discover</span><span aria-hidden="true">→</span>
+      </button>
+    </section>
+  `;
+  $('#need-pack-goto-discover').onclick = () => {
+    state.view = 'layers';
+    applyModeChrome();
+    paintObservaActiveTab();
+    renderTabs();
+    renderMainView();
+  };
+}
 
 function renderHomeView() {
   const view = $('#layer-view');
@@ -3828,8 +6916,8 @@ function renderHomeView() {
           </button>
           <button id="home-shortcut-crawl" type="button" class="home-alt-btn">
             <span class="home-alt-key" aria-hidden="true">↻</span>
-            <span class="home-alt-label">Crawl a service repo</span>
-            <span class="home-alt-sub">walks Prom / OTel / Grafana / AM configs</span>
+            <span class="home-alt-label">Scan a service repo</span>
+            <span class="home-alt-sub">walks Prom / OTel / Grafana / AM configs · or a GitHub URL</span>
           </button>
         </div>
       </div>
@@ -3959,8 +7047,17 @@ async function doHomeMcpConnect() {
     const r = await fetch('/api/draft-from-mcp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
+      body: JSON.stringify({
+        mcpUrl: url,
+        mcpAuth: auth || undefined,
+        // Forward the quick-start friendly label when the user came
+        // through the Upload popover. window._tomographQuickLabel is
+        // cleared after consumption so manual draft-from-mcp from the
+        // panel keeps the auto-generated label.
+        label: window._tomographQuickLabel || undefined,
+      }),
     });
+    if (window._tomographQuickLabel) window._tomographQuickLabel = null;
     const ct = r.headers.get('content-type') || '';
     if (!ct.includes('application/json')) {
       throw new Error(`server returned ${r.status} ${ct || 'no content-type'}`);
@@ -4132,11 +7229,23 @@ function renderCapabilitiesPanel(capabilities, liveVersions = {}) {
     const backends = grouped.get(skill);
     const chips = backends.map(b => {
       const product = b.product || b.backend;
+      // `liveVersions[product]` carries either a real version string
+      // (e.g. "12.4.0") OR the sentinel "live" when the backend
+      // responded to a probe but doesn't expose a readable version
+      // (Jaeger via traces_services). Both flip the chip to live mode.
       const live = liveVersions[product];
       const policyVer = (b.versions?.must || [])[0] || '';
       const isLive = !!live;
-      const ver = isLive ? live : policyVer;
-      const liveTooltip = isLive ? ` · live=${live}` : '';
+      // When the capture has a real version, show it. When it's the
+      // "live" sentinel, keep showing the policy version (jaeger 2.x)
+      // because that's the only number we have — but still mark it
+      // ● LIVE so the user knows the backend itself is responding.
+      const isAliveSentinel = isLive && live === 'live';
+      const ver = isAliveSentinel ? policyVer : (isLive ? live : policyVer);
+      const liveTooltip = !isLive ? '' :
+        (isAliveSentinel
+          ? ` · live=responding (version not exposed)`
+          : ` · live=${live}`);
       return `<span class="home-mcp-skill-chip${isLive ? ' is-live' : ''}" title="${escapeHtml(b.backend)} · must=${escapeHtml((b.versions?.must||[]).join(','))}${liveTooltip}">
         <strong>${escapeHtml(product)}</strong>${ver ? ` <em>${escapeHtml(ver)}</em>` : ''}${isLive ? `<span class="home-mcp-skill-chip-live" aria-label="live version">●&nbsp;LIVE</span>` : ''}
       </span>`;
@@ -4462,6 +7571,25 @@ function setupCrawlPanel() {
 
   goBtn.onclick = () => doCrawl();
   adoptBtn.onclick = () => adoptCrawlResult();
+
+  // GitHub URL crawl — same modal, different source. Enables the
+  // "crawl github" button as soon as the URL field has text matching
+  // the owner/repo or full-URL shape.
+  const githubUrl = $('#crawl-github-url');
+  const githubRef = $('#crawl-github-ref');
+  const githubGo  = $('#crawl-github-go-btn');
+  if (githubUrl && githubGo) {
+    const updateGhEnabled = () => {
+      const v = (githubUrl.value || '').trim();
+      githubGo.disabled = !/^([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+|https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)/.test(v);
+    };
+    githubUrl.addEventListener('input', updateGhEnabled);
+    githubUrl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !githubGo.disabled) { e.preventDefault(); doCrawlFromGithub(); }
+    });
+    githubGo.onclick = () => doCrawlFromGithub();
+    updateGhEnabled();
+  }
 }
 
 // Read a single FileSystemEntry recursively into the staged map.
@@ -4603,7 +7731,7 @@ async function doCrawl() {
     statusEl.className = 'mcp-refresh-status' + (kind ? ' is-' + kind : '');
   };
   if (crawlState.classified.size === 0) {
-    if (crawlState.files.size > 0) setStatus('no observability artefacts in the staged set; nothing to crawl', 'error');
+    if (crawlState.files.size > 0) setStatus('no observability artefacts in the staged set; nothing to scan', 'error');
     else setStatus('drop a folder or pick files first', 'error');
     return;
   }
@@ -4626,7 +7754,7 @@ async function doCrawl() {
 
   const goBtn = $('#crawl-go-btn');
   goBtn.disabled = true;
-  setStatus(`crawling ${crawlState.classified.size} artefact${crawlState.classified.size === 1 ? '' : 's'}…`);
+  setStatus(`scanning ${crawlState.classified.size} artefact${crawlState.classified.size === 1 ? '' : 's'}…`);
 
   try {
     const r = await fetch('/api/crawl', {
@@ -4647,6 +7775,68 @@ async function doCrawl() {
     setStatus(`done in ${out.tookMs}ms · ${out.summary.files.classified}/${out.summary.files.scanned} files classified`, 'ok');
   } catch (e) {
     setStatus(`error: ${e.message}`, 'error');
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+// GitHub URL variant of doCrawl(). Posts to /api/crawl-github which
+// downloads the relevant files server-side and feeds them into the
+// same crawler pipeline.
+async function doCrawlFromGithub() {
+  const ghStatus = $('#crawl-github-status');
+  const setGhStatus = (msg, kind) => {
+    if (!ghStatus) return;
+    ghStatus.textContent = msg;
+    ghStatus.className = 'crawl-github-status' + (kind ? ' is-' + kind : '');
+  };
+  const url = $('#crawl-github-url')?.value?.trim();
+  if (!url) return setGhStatus('paste a github URL first', 'error');
+
+  const ref = $('#crawl-github-ref')?.value?.trim() || undefined;
+  const body = {
+    url,
+    ref,
+    repoName:   $('#crawl-name').value.trim() || undefined,  // server falls back to owner/repo
+    environment:$('#crawl-env').value.trim() || 'prod',
+    // Quick-start cases pass a friendly label via the global so the
+    // picker doesn't read "moebiusx-krystalinex" but the human name.
+    label:      window._tomographQuickLabel || undefined,
+  };
+  if (window._tomographQuickLabel) window._tomographQuickLabel = null;
+  const crit = $('#crawl-criticality').value;
+  if (crit) body.criticality = crit;
+
+  const goBtn = $('#crawl-github-go-btn');
+  goBtn.disabled = true;
+  setGhStatus(`fetching ${url}…`);
+  try {
+    const r = await fetch('/api/crawl-github', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+    if (!ct.includes('application/json')) {
+      setGhStatus(`server returned ${r.status} ${ct || 'no content-type'} — restart \`npm run dev\` if you just changed server code`, 'error');
+      return;
+    }
+    const out = JSON.parse(raw);
+    if (!out.ok) {
+      const hint = out.hint ? ` · ${out.hint}` : '';
+      setGhStatus(`error: ${out.error || 'unknown'}${hint}`, 'error');
+      return;
+    }
+    crawlState.lastResult = out;
+    renderCrawlResult(out);
+    if (out.canonical) {
+      setGhStatus(`done in ${out.tookMs}ms · ${out.summary?.files?.classified ?? 0} files classified from ${out.summary?.repo}@${out.summary?.ref}`, 'ok');
+    } else {
+      setGhStatus(`done in ${out.tookMs}ms · no observability artefacts found in this repo`, 'warn');
+    }
+  } catch (e) {
+    setGhStatus(`error: ${e.message}`, 'error');
   } finally {
     goBtn.disabled = false;
   }
@@ -4723,7 +7913,7 @@ async function adoptCrawlResult() {
     state.pack = res.adapted;
     state.conformance = res.conformance;
     state.symbolTable = buildSymbolTable(res.adapted);
-    state.uploadedSource = `${out.canonical.metadata.name} (crawled draft)`;
+    state.uploadedSource = `${out.canonical.metadata.name} (scanned draft)`;
     state.activeLayer = 'L1';
     state.activeCardKey = null;
     state.mode = 'single';
@@ -4740,7 +7930,7 @@ async function adoptCrawlResult() {
     renderTabs();
     renderMainView();
     $('#crawl-panel').hidden = true;
-    toast(`Loaded crawled draft for ${out.canonical.metadata.name}`);
+    toast(`Loaded scanned draft for ${out.canonical.metadata.name}`);
   } catch (e) {
     toast(`Adopt failed: ${e.message}`, 'error');
   }
@@ -4777,6 +7967,7 @@ const deployModalState = {
   manifest: null,        // [{id, type, name, group, flavor, artifact, dashboardId, scope}]
   packId: null,
   selected: new Set(),
+  presetIdentities: null,  // Set<string> from Remediate plan, or null
   inflight: false,
 };
 
@@ -4813,9 +8004,13 @@ function setupDeployModal() {
   modal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDeployModal(); });
 }
 
-function openDeployModal({ packId, packLabel } = {}) {
+function openDeployModal({ packId, packLabel, presetIdentities } = {}) {
   const modal = $('#deploy-modal');
   if (!modal) return;
+  // Optional preset: when the Remediate plan hands off a curated set, pre-
+  // select only the matching manifest rows (by row.id). Cleared otherwise
+  // so a direct open defaults to all-deployable.
+  deployModalState.presetIdentities = (presetIdentities && presetIdentities.size) ? presetIdentities : null;
   if (!state.deployMatrix) loadDeployMatrix().then(() => populateDeployTargetSelects());
   else populateDeployTargetSelects();
   populateDeploySourcePackSelect(packId || state.selectedPackId);
@@ -4851,7 +8046,7 @@ function populateDeploySourcePackSelect(activeId) {
     if (!p.ok) continue;
     const opt = document.createElement('option');
     opt.value = p.id;
-    opt.textContent = `${p.label} · v${p.version || '?'} · ${p.criticality || '?'}`;
+    opt.textContent = `${p.label} · v${p.version || '?'}`;
     sel.appendChild(opt);
   }
   sel.value = activeId || state.selectedPackId;
@@ -4931,9 +8126,25 @@ async function loadDeployManifest(packId) {
     if (state.selectedEnv) params.set('env', state.selectedEnv);
     const cat = await api(`/api/packs/${encodeURIComponent(packId)}/compile-catalog?${params}`);
     deployModalState.manifest = catalogToManifest(cat);
-    // Default-select all deployable rows.
+    // Default-select: when a preset (from the Remediate plan) is present,
+    // select only deployable rows whose id matches a preset identity; fall
+    // back to all-deployable if nothing matched (safe — never deploys
+    // something the user didn't intend, never silently empties the form).
+    const preset = deployModalState.presetIdentities;
+    let presetMatched = 0;
     for (const row of deployModalState.manifest) {
-      if (row.deployable) deployModalState.selected.add(row.key);
+      if (!row.deployable) continue;
+      if (preset) {
+        if (preset.has(row.id)) { deployModalState.selected.add(row.key); presetMatched++; }
+      } else {
+        deployModalState.selected.add(row.key);
+      }
+    }
+    if (preset && presetMatched === 0) {
+      // No id overlap (keyspace mismatch) — fall back to all-deployable.
+      for (const row of deployModalState.manifest) {
+        if (row.deployable) deployModalState.selected.add(row.key);
+      }
     }
     renderDeployManifestTable();
   } catch (e) {
@@ -5240,12 +8451,47 @@ function renderDraftMcpResult(out) {
     `<tr${dim ? ' class="is-dim"' : ''}><td>${escapeHtml(label)}</td><td>${typeof value === 'number' ? value : escapeHtml(String(value))}</td></tr>`;
   const probesA = new Set(d.probesAttempted || []);
   const probesS = new Set(d.probesSucceeded || []);
+  const probesE = new Set(d.probesEmpty || []);
+  const probesF = new Set(d.probesFailed || []);
+  // Three distinct outcomes when a probe was attempted:
+  //   data     — MCP responded with real content → show count
+  //   empty    — MCP responded with empty payload → "0 (none configured)"
+  //              honest zero, e.g. Krystaline has no Prometheus rules
+  //   failed   — every candidate errored / 503'd → "— probe failed"
+  //              transient or systemic, not the same as zero
   const probeRow = (label, key, value) => {
     if (!probesA.has(key)) return '';
-    const succeeded = probesS.has(key);
-    if (!succeeded) return row(label, '— probed, none found', true);
-    return row(label, value || 0);
+    if (probesS.has(key))  return row(label, value || 0);
+    if (probesE.has(key))  return row(label, `0 — none configured`, true);
+    if (probesF.has(key))  return row(label, '— probe failed', true);
+    // Older packs (pre-Phase 5) don't have probesEmpty/probesFailed
+    // annotations; fall back to the original behaviour.
+    return row(label, '— probed, none found', true);
   };
+  // Rule-evidence fallback rows — only shown when the primary probe
+  // came back empty (or failed) but the fallback found evidence. Reads
+  // directly from the annotations the fetcher stamped.
+  const ann = out.annotations || {};
+  const alertsFiringNames = (ann['mcp.discovered.alerts_firing.names'] || '').split(',').filter(Boolean);
+  const alertsFiringCount = Number(ann['mcp.discovered.alerts_firing.count'] || 0);
+  const alertsTotalFirings = Number(ann['mcp.discovered.alerts_firing.total_firings'] || 0);
+  const recordingFallbackCount = Number(ann['mcp.discovered.recording_rules_via_inventory.count'] || 0);
+  const evidenceRow = (label, value, hint) =>
+    `<tr class="is-evidence"><td>${escapeHtml(label)}<span class="row-evidence-hint">${escapeHtml(hint)}</span></td><td>${escapeHtml(String(value))}</td></tr>`;
+  const alertEvidenceRow = alertsFiringCount > 0
+    ? evidenceRow(
+        'alerts firing',
+        `${alertsFiringCount} alertname${alertsFiringCount === 1 ? '' : 's'} · ${alertsTotalFirings} total`,
+        `via ALERTS metric — rule definitions hidden, firing state visible`,
+      )
+    : '';
+  const recordingEvidenceRow = recordingFallbackCount > 0
+    ? evidenceRow(
+        'recording rule outputs',
+        `${recordingFallbackCount}`,
+        `via colon-pattern grep over metric inventory`,
+      )
+    : '';
   $('#draft-mcp-result-summary').innerHTML = `
     <h4>what the MCP attested</h4>
     <table class="crawl-summary-table">
@@ -5253,11 +8499,21 @@ function renderDraftMcpResult(out) {
       ${row('backends', d.backends)}
       ${row('active anomalies', d.activeAnomalies)}
       ${probeRow('recording rules', 'recording_rules', d.recordingRules)}
+      ${recordingEvidenceRow}
       ${probeRow('alert rules',     'alert_rules',     d.alertRules)}
+      ${alertEvidenceRow}
       ${probeRow('dashboards',      'dashboards',      d.dashboards)}
       ${probeRow('scrape jobs',     'scrape_configs',  (d.scrapeJobs || []).length)}
       ${probeRow('metric names',    'metric_names',    d.metricNamesCount)}
     </table>
+    ${alertsFiringCount > 0 || recordingFallbackCount > 0 ? `
+      <div class="crawl-evidence-note">
+        Rows in italic = fallback evidence. The standard rule endpoints came back empty,
+        but Tomograph found evidence in metric data: firing alerts via the
+        <code>ALERTS</code> series, recording rules via metric names following the
+        <code>&lt;ns&gt;:&lt;metric&gt;:&lt;op&gt;</code> convention.
+      </div>
+    ` : ''}
     <div class="crawl-inferred">
       <em>refreshed</em>: ${escapeHtml(out.summary.refreshedAt)}
     </div>

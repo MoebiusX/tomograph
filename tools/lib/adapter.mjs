@@ -85,6 +85,7 @@ export function adapt(canonical, opts = {}) {
     meta: {
       apiVersion: canonical.apiVersion,
       kind: canonical.kind,
+      name: canonical.metadata?.name,
       binding: canonical.metadata?.binding,
       version: canonical.metadata?.version,
       owners: canonical.metadata?.owners ?? [],
@@ -93,6 +94,11 @@ export function adapt(canonical, opts = {}) {
       environments: envs,
       target: effective.target || metaBindings.default_target,
       backendWiring: effective.backendWiring,
+      // Annotations carry the per-artefact verification stamps
+      // (mcp.verified.<sym>), live version captures (mcp.versions.<product>),
+      // capability inventory, and probe provenance. The studio's Benchmark
+      // view + lens rely on them to score and source-tag artefacts.
+      annotations: { ...annotations },
     },
     layers: {
       L1: [...adaptSLIs(ctx), ...adaptSLOs(ctx)],
