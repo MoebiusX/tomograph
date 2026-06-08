@@ -27,6 +27,17 @@ const L4_SUBGROUPS = [
   { key: 'healing',  label: 'Self-healing' },
 ];
 
+// Discover resolution knob — global level-of-detail for the layers view.
+// Each stop maps to the existing per-layer `expand` flags so the default
+// (Overview) hides the inventory and surfaces only what produces/consumes
+// telemetry; raising resolution drills down top→bottom: few dashboards →
+// many panels → most metrics.
+const RESOLUTION_STOPS = [
+  { label: 'Overview', hint: 'exporters · scrape jobs · dashboards', expandL2: false, expandL3: false },
+  { label: 'Panels',   hint: '+ dashboard panels',                   expandL2: false, expandL3: true  },
+  { label: 'Metrics',  hint: '+ discovered metric inventory',        expandL2: true,  expandL3: true  },
+];
+
 const CONFORMANCE_TAB = { id: 'CONF',    num: 'CONF', name: 'Conformance' };
 const COMPILE_TAB     = { id: 'COMPILE', num: 'BLD',  name: 'Compile' };
 const COMPARE_TAB     = { id: 'COMPARE', num: 'CMP',  name: 'Compare' };
@@ -70,6 +81,17 @@ const state = {
   // bindings. Persisted so the user's choice survives refresh.
   expandL2: false,
   expandL3: false,
+  // Discover resolution knob — a single global level-of-detail control for
+  // the layers view that replaces the old per-section click-to-expand.
+  // 0 = Overview (only what produces/consumes telemetry: exporters, scrape
+  // jobs, backends, dashboards), 1 = + dashboard panels, 2 = + discovered
+  // metric inventory. We hide complexity by default and let the user drill
+  // down top→bottom (few dashboards → many panels → most metrics). Drives
+  // expandL2/expandL3 above.
+  resolution: 0,
+  // Discover content filters (only active on view='layers').
+  layersSearch: '',            // free-text over card id/title/desc/tags/tool
+  layersDomain: 'all',         // facet over artefact tool/system
   // Secondary layer filter chips (only visible on view='layers').
   // 'all' stacks every layer; the layer ids narrow to one.
   layerFilter: 'all',
@@ -200,6 +222,7 @@ const PERSIST_FIELDS = [
   'compileGroupB', 'compileFlavorB', 'compileArtifactB',
   'tracePrefs',
   'expandL2', 'expandL3',
+  'resolution', 'layersSearch', 'layersDomain',
 ];
 const persistence = {
   _suspended: true,  // boot-phase guard — flipped to false once rehydrate finishes
@@ -279,6 +302,15 @@ async function rehydrateFromPersistence() {
   }
   if (typeof saved.expandL2 === 'boolean') state.expandL2 = saved.expandL2;
   if (typeof saved.expandL3 === 'boolean') state.expandL3 = saved.expandL3;
+  // Resolution knob — restore it, or derive from the legacy expand flags
+  // for sessions saved before the knob existed (back-compat).
+  if (typeof saved.resolution === 'number') {
+    applyResolution(saved.resolution);
+  } else if (typeof saved.expandL2 === 'boolean' || typeof saved.expandL3 === 'boolean') {
+    applyResolution(state.expandL2 ? 2 : (state.expandL3 ? 1 : 0));
+  }
+  if (typeof saved.layersSearch === 'string') state.layersSearch = saved.layersSearch;
+  if (typeof saved.layersDomain === 'string') state.layersDomain = saved.layersDomain;
 
   // Make sure the picker can label an archived example by pushing the
   // catalog-entry shape into state.catalog (same trick renderPackBSelect uses).
@@ -1024,6 +1056,131 @@ function renderDiscoverDashboard(view) {
 // Layers view — stacks every layer when filter='all', narrows to one
 // otherwise. Replaces the old per-layer-tab navigation.
 function renderLayersView(view) {
+  // The Discover layers view is a toolbar (resolution knob + filters) over
+  // a body of layer sections. Toolbar and body are separate containers so
+  // typing in the search box re-renders only the sections — the input keeps
+  // focus and the slider keeps its thumb position.
+  const body = document.createElement('div');
+  body.className = 'layers-body';
+  const rerender = () => { persistence.schedule(); renderLayersBody(body); };
+  view.appendChild(renderLayersToolbar(rerender));
+  view.appendChild(body);
+  renderLayersBody(body);
+}
+
+// Apply a resolution stop: set the knob position and derive the per-layer
+// expand flags from it. Clamped so out-of-range persisted values are safe.
+function applyResolution(idx) {
+  const i = Math.max(0, Math.min(RESOLUTION_STOPS.length - 1, idx | 0));
+  state.resolution = i;
+  state.expandL2 = RESOLUTION_STOPS[i].expandL2;
+  state.expandL3 = RESOLUTION_STOPS[i].expandL3;
+}
+
+// Domain facet for an artefact — the tool/system that owns it. Used by the
+// Discover DOMAIN filter. Falls back to a dash when unknown.
+function artefactDomain(a) {
+  return (a.tool || '').trim() || '—';
+}
+
+// Every artefact across the loaded pack's layers (L4 is grouped). Used to
+// populate the DOMAIN dropdown.
+function allLayerArtefacts() {
+  const out = [];
+  const layers = state.pack?.layers || {};
+  for (const def of LAYER_DEFS) {
+    if (def.id === 'L4') {
+      const l4 = layers.L4 || {};
+      for (const sg of L4_SUBGROUPS) for (const a of (l4[sg.key] || [])) out.push(a);
+    } else {
+      for (const a of (layers[def.id] || [])) out.push(a);
+    }
+  }
+  return out;
+}
+
+// Discover content filter predicate — DOMAIN dropdown + search box.
+function passesLayersFilter(a) {
+  const dom = state.layersDomain || 'all';
+  if (dom !== 'all' && artefactDomain(a) !== dom) return false;
+  const q = (state.layersSearch || '').trim().toLowerCase();
+  if (q) {
+    const hay = [a.id, a.title, a.desc, a.tool, ...(a.tags || [])]
+      .filter(Boolean).join(' ').toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
+// Toolbar for the Discover layers view: resolution knob, DOMAIN filter
+// (only when 2+ domains exist), and a search box. `rerender` rebuilds just
+// the sections body so inputs keep focus.
+function renderLayersToolbar(rerender) {
+  const wrap = document.createElement('div');
+  wrap.className = 'layers-toolbar';
+
+  // --- Resolution knob ---
+  const res = state.resolution ?? 0;
+  const stop = RESOLUTION_STOPS[res] || RESOLUTION_STOPS[0];
+  const knob = document.createElement('div');
+  knob.className = 'res-knob';
+  knob.innerHTML = `
+    <span class="res-knob-key">RESOLUTION</span>
+    <input type="range" class="res-knob-range" min="0" max="${RESOLUTION_STOPS.length - 1}"
+           step="1" value="${res}" aria-label="Detail resolution">
+    <span class="res-knob-cap"><strong class="res-knob-label">${escapeHtml(stop.label)}</strong> <span class="res-knob-hint">${escapeHtml(stop.hint)}</span></span>
+  `;
+  const range = knob.querySelector('.res-knob-range');
+  const capLabel = knob.querySelector('.res-knob-label');
+  const capHint = knob.querySelector('.res-knob-hint');
+  // Live caption while dragging; commit (re-render sections) on release.
+  range.addEventListener('input', () => {
+    const s = RESOLUTION_STOPS[+range.value] || RESOLUTION_STOPS[0];
+    capLabel.textContent = s.label;
+    capHint.textContent = s.hint;
+  });
+  range.addEventListener('change', () => {
+    applyResolution(+range.value);
+    rerender();
+  });
+  wrap.appendChild(knob);
+
+  // --- DOMAIN filter (only when there's something to choose between) ---
+  const domains = [...new Set(allLayerArtefacts().map(artefactDomain))]
+    .filter(d => d && d !== '—').sort();
+  if (domains.length >= 2) {
+    const cur = state.layersDomain || 'all';
+    const dwrap = document.createElement('label');
+    dwrap.className = 'layers-domain';
+    dwrap.innerHTML = `<span class="layers-filter-key">DOMAIN</span>`;
+    const sel = document.createElement('select');
+    sel.className = 'layers-domain-select';
+    sel.innerHTML = `<option value="all">all</option>`
+      + domains.map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('');
+    sel.value = cur;
+    sel.onchange = () => { state.layersDomain = sel.value; rerender(); };
+    dwrap.appendChild(sel);
+    wrap.appendChild(dwrap);
+  }
+
+  // --- Search ---
+  const swrap = document.createElement('div');
+  swrap.className = 'layers-search';
+  const sin = document.createElement('input');
+  sin.type = 'search';
+  sin.className = 'layers-search-input';
+  sin.placeholder = 'Search artefacts…';
+  sin.setAttribute('aria-label', 'Search artefacts');
+  sin.value = state.layersSearch || '';
+  sin.addEventListener('input', () => { state.layersSearch = sin.value; rerender(); });
+  swrap.appendChild(sin);
+  wrap.appendChild(swrap);
+
+  return wrap;
+}
+
+function renderLayersBody(body) {
+  body.innerHTML = '';
   const filter = state.layerFilter || 'all';
   const layersToShow = (filter === 'all')
     ? LAYER_DEFS
@@ -1034,15 +1191,15 @@ function renderLayersView(view) {
     // Skip L2X if empty (it's optional per spec v1.2).
     if (def.id === 'L2X' && layerArtefactCount('L2X') === 0) continue;
     if (def.id === 'L4') {
-      renderLayer4(view);
+      renderLayer4(body);
     } else {
       const items = state.pack.layers[def.id] || [];
-      view.appendChild(renderSection(def, items));
+      body.appendChild(renderSection(def, items));
     }
     rendered++;
   }
   if (rendered === 0) {
-    view.innerHTML = '<div class="placeholder">No artefacts on this layer.</div>';
+    body.innerHTML = '<div class="placeholder">No artefacts on this layer.</div>';
   }
 }
 
@@ -1051,49 +1208,41 @@ function renderSection(def, items, opts = {}) {
   section.className = 'section';
   section.dataset.layer = def.id;
 
-  // Expand toggle: L2 and L3 layers carry "expand-level" artefacts
-  // (metric inventory, dashboard panels) which the user prior prototype
-  // surfaced behind a checkbox. Default-collapsed so the high-level
-  // surface stays readable; flip to see everything.
+  // Apply the Discover content filters (DOMAIN + search) first so counts
+  // and expand logic operate on the filtered set.
+  const filtered = items.filter(passesLayersFilter);
+  const searching = !!(state.layersSearch || '').trim();
+
+  // L2 and L3 carry "expand-level" artefacts (metric inventory, dashboard
+  // panels) gated by the global resolution knob (state.expandL2/expandL3).
+  // An active search overrides the knob so matches are never hidden.
   const expandableLayer = (def.id === 'L2' || def.id === 'L3');
   const expandKey = def.id === 'L2' ? 'expandL2' : (def.id === 'L3' ? 'expandL3' : null);
   const expandOn = expandKey ? !!state[expandKey] : false;
-  const expandItems = items.filter(a => a.expand);
-  const baseItems   = items.filter(a => !a.expand);
-  const visible = (expandableLayer && !expandOn) ? baseItems : items;
+  const expandItems = filtered.filter(a => a.expand);
+  const baseItems   = filtered.filter(a => !a.expand);
+  const visible = (expandableLayer && !expandOn && !searching) ? baseItems : filtered;
 
   const head = document.createElement('div');
   head.className = 'section-head';
   const countLabel = expandableLayer && expandItems.length
-    ? `${visible.length} of ${items.length} artefact${items.length === 1 ? '' : 's'}`
-    : `${items.length} artefact${items.length === 1 ? '' : 's'}`;
+    ? `${visible.length} of ${filtered.length} artefact${filtered.length === 1 ? '' : 's'}`
+    : `${filtered.length} artefact${filtered.length === 1 ? '' : 's'}`;
   head.innerHTML = `
     <span class="section-num">${def.num}</span>
     <span class="section-name">${escapeHtml(opts.subtitle || def.name)}</span>
     <span class="section-count">${countLabel}</span>
   `;
-  if (expandableLayer && expandItems.length) {
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'section-expand-toggle' + (expandOn ? ' is-on' : '');
-    toggle.title = def.id === 'L2'
-      ? `Toggle the metric inventory — ${expandItems.length} discovered metric${expandItems.length === 1 ? '' : 's'} from live MCP`
-      : `Toggle dashboard panels — ${expandItems.length} panel binding${expandItems.length === 1 ? '' : 's'}`;
-    toggle.innerHTML = `<span class="section-expand-glyph" aria-hidden="true">${expandOn ? '⊟' : '⊞'}</span> ${expandOn ? 'Collapse' : 'Expand'} <span class="section-expand-count">+${expandItems.length}</span>`;
-    toggle.onclick = () => {
-      state[expandKey] = !state[expandKey];
-      renderMainView();
-    };
-    head.appendChild(toggle);
-  }
   section.appendChild(head);
 
   if (!visible.length) {
     const empty = document.createElement('div');
     empty.className = 'empty';
-    empty.textContent = expandableLayer && expandItems.length
-      ? 'collapsed — click Expand to reveal'
-      : 'no artefacts declared in this section';
+    empty.textContent = (searching || (state.layersDomain && state.layersDomain !== 'all'))
+      ? 'no artefacts match the current filter'
+      : (expandableLayer && expandItems.length
+          ? 'collapsed — raise resolution to reveal'
+          : 'no artefacts declared in this section');
     section.appendChild(empty);
     return section;
   }
@@ -1109,17 +1258,21 @@ function renderLayer4(view) {
   const head = document.createElement('div');
   head.className = 'section';
   head.dataset.layer = 'L4';
+  // Count L4 after applying the Discover content filters so the header
+  // matches the (filtered) subgroups below it.
+  const l4Count = L4_SUBGROUPS.reduce(
+    (n, sg) => n + (state.pack.layers.L4?.[sg.key] || []).filter(passesLayersFilter).length, 0);
   head.innerHTML = `
     <div class="section-head">
       <span class="section-num">L4</span>
       <span class="section-name">Action — policy · alerting · self-healing</span>
-      <span class="section-count">${layerArtefactCount('L4')} artefacts</span>
+      <span class="section-count">${l4Count} artefact${l4Count === 1 ? '' : 's'}</span>
     </div>
   `;
   view.appendChild(head);
 
   for (const sg of L4_SUBGROUPS) {
-    const items = state.pack.layers.L4?.[sg.key] || [];
+    const items = (state.pack.layers.L4?.[sg.key] || []).filter(passesLayersFilter);
     const wrapper = document.createElement('div');
     wrapper.className = 'subgroup';
     const h = document.createElement('h4');
