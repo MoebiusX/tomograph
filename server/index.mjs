@@ -39,6 +39,7 @@ import { crawlFiles, crawlToYaml } from '../tools/lib/crawler.mjs';
 import { fetchMcp, buildCanonicalPack, createMcpClient } from '../tools/fetch-live-pack.mjs';
 import { diffPacks } from '../tools/lib/diff.mjs';
 import { compile, listTargets, compileCatalog, compileArtifact } from '../tools/lib/compile.mjs';
+import { makeZip } from '../tools/lib/zip.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -488,6 +489,43 @@ app.get('/api/packs/:id/compile-artifact', (req, res) => {
     res.send(out.content);
   } catch (e) {
     res.status(500).type('application/json').send(JSON.stringify({ ok: false, error: e.message }));
+  }
+});
+
+// GET /api/packs/:id/export.zip — the whole pack as one download: the
+// canonical pack.yaml plus every compiled artefact (the 'all' bundle of each
+// compile group × flavor) under artefacts/. Hand-rolled ZIP, no zip dep.
+app.get('/api/packs/:id/export.zip', (req, res) => {
+  const meta = findPackMeta(req.params.id);
+  if (!meta) return res.status(404).json({ error: `unknown pack: ${req.params.id}` });
+  try {
+    const canonical = loadPackCanonical(meta);
+    const env = readEnv(req.query);
+    const { canonical: overlaid } = overlaidCanonical(canonical, env);
+    const name = slugify(overlaid?.metadata?.name || meta.id || 'pack');
+
+    // The source of truth first, then the compiled outputs beside it.
+    const files = [{ name: `${name}.pack.yaml`, data: emitYaml(overlaid) }];
+
+    const catalog = compileCatalog(overlaid);
+    for (const g of catalog.groups || []) {
+      const flavors = g.flavors?.length ? g.flavors : [{ id: undefined }];
+      for (const fl of flavors) {
+        try {
+          const out = compileArtifact(overlaid, { group: g.id, flavor: fl.id, artifact: 'all' });
+          files.push({ name: `artefacts/${g.id}/${out.filename}`, data: out.content });
+        } catch (_) { /* a flavor that can't compile for this pack — skip it */ }
+      }
+    }
+
+    const zip = makeZip(files);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}.bundle.zip"`);
+    res.setHeader('X-Pack-Source', `${meta.id}@${overlaid?.metadata?.version || '?'}`);
+    res.setHeader('X-Bundle-Files', String(files.length));
+    res.send(Buffer.from(zip));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 

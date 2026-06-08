@@ -257,6 +257,34 @@ try {
   const badPack = await fetch(`${base}/api/packs/does-not-exist/compile/prometheus-rules`);
   assert(badPack.status === 404, 'unknown pack on compile → 404');
 
+  // /api/packs/:id/export.zip — whole-pack bundle: the canonical pack.yaml
+  // plus every compiled artefact, zipped (hand-rolled, no zip dep).
+  const exportRes = await fetch(`${base}/api/packs/payment-service/export.zip`);
+  assert(exportRes.status === 200, 'export.zip → 200');
+  assert((exportRes.headers.get('content-type') || '').includes('application/zip'),
+         'export.zip content-type is application/zip');
+  assert((exportRes.headers.get('content-disposition') || '').includes('attachment'),
+         'export.zip is an attachment download');
+  assert((exportRes.headers.get('content-disposition') || '').includes('.bundle.zip'),
+         'export.zip filename ends with .bundle.zip');
+  const bundleCount = Number(exportRes.headers.get('x-bundle-files') || 0);
+  assert(bundleCount >= 2, 'export bundle has the pack.yaml plus ≥1 artefact', bundleCount, '>=2');
+  const zipBuf = new Uint8Array(await exportRes.arrayBuffer());
+  assert(zipBuf[0] === 0x50 && zipBuf[1] === 0x4b && zipBuf[2] === 0x03 && zipBuf[3] === 0x04,
+         'export.zip body starts with a PK\\x03\\x04 local header');
+  const tail = zipBuf.subarray(zipBuf.length - 22);
+  assert(tail[0] === 0x50 && tail[1] === 0x4b && tail[2] === 0x05 && tail[3] === 0x06,
+         'export.zip body ends with a PK\\x05\\x06 EOCD record');
+  // STORE method → entry names + content sit in the buffer as plaintext.
+  const zipText = new TextDecoder('latin1').decode(zipBuf);
+  assert(zipText.includes('.pack.yaml'), 'bundle contains the canonical pack.yaml');
+  assert(zipText.includes('artefacts/rules/'), 'bundle contains compiled rules under artefacts/');
+  assert(zipText.includes('groups:'), 'bundle embeds the compiled rules content (groups:)');
+
+  // export.zip on an unknown pack → 404
+  const exportBadPack = await fetch(`${base}/api/packs/does-not-exist/export.zip`);
+  assert(exportBadPack.status === 404, 'export.zip unknown pack → 404');
+
   // POST /api/packs/:id/deploy/:target — missing mcpUrl → 400
   const deployNoUrl = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
     method: 'POST',

@@ -6697,6 +6697,7 @@ async function boot() {
   setupUpload();
   setupTheme();
   setupResetButton();
+  setupExportButton();
   // Eagerly fetch /api/examples so the Pack B picker has the archived
   // reference packs available even before the user visits the home
   // examples disclosure. AWAITED so the persistence rehydrate below can
@@ -6841,6 +6842,10 @@ function applyModeChrome() {
   if (clearB) clearB.hidden = !state.packB || onCompare;
   const meta = $('#meta');   if (meta) meta.hidden = isHome;
   const tabs = $('#layer-tabs'); if (tabs) tabs.hidden = isHome;
+  // Export is only meaningful once a pack is loaded (it bundles the focused
+  // pack's manifest + compiled artefacts).
+  const exportBtn = $('#export-btn');
+  if (exportBtn) exportBtn.hidden = isHome || !focusedPackId();
 }
 
 // RESET button — clears EVERYTHING (server uploads + client persistence)
@@ -6878,6 +6883,26 @@ function setupResetButton() {
     //    plain reload() picks up server changes since the navigation
     //    bypasses the disk cache for HTML.
     location.reload();
+  };
+}
+
+// Export button — download the focused pack as one ZIP: its canonical
+// pack.yaml plus every compiled artefact. The server builds the bundle
+// (GET /api/packs/:id/export.zip); here we just trigger the download.
+function setupExportButton() {
+  const btn = $('#export-btn');
+  if (!btn) return;
+  btn.onclick = () => {
+    const id = focusedPackId();
+    if (!id) { toast('Load a pack first', 'error'); return; }
+    const env = focusedEnv();
+    const qs = env ? `?env=${encodeURIComponent(env)}` : '';
+    const a = document.createElement('a');
+    a.href = `/api/packs/${encodeURIComponent(id)}/export.zip${qs}`;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   };
 }
 
