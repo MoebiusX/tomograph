@@ -34,10 +34,20 @@
 // reconstruction of the same artefact: deployment coordinates and presentation,
 // not the contract. Stripped before comparison so "aligned" reflects the
 // SEMANTIC definition, not whether the URLs or prose happen to agree.
+//
+// `folder` and `provider` are dashboard placement/deployment coordinates: which
+// Grafana folder a dashboard files under, and which provisioning provider (and
+// its version/schemaVersion) renders it. Two packs that file the same dashboard
+// in different folders, or reconstruct it under a different provider version,
+// describe the SAME dashboard — the contract is its panels/bindings, not where
+// it's filed. The compiler still reads `provider.version` straight from the raw
+// pack for emission fidelity, so dropping it here only affects EQUALITY, never
+// what gets compiled.
 const VOLATILE_SPEC_KEYS = new Set([
   'endpoints', 'endpoint', 'url', 'address', 'host', 'auth',
   'description', 'desc', 'title', 'summary', 'annotations',
   'source', 'evidence', 'mcp', 'default',
+  'folder', 'provider',
 ]);
 
 // Spec fields that carry an executable expression. Whitespace and surrounding

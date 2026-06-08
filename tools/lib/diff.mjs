@@ -14,17 +14,19 @@
 //   behaviour; `behaviorEqual` / `deltasOf` decide aligned vs drifted.
 //
 // SET OPS
-//   For each layer we produce three buckets:
+//   For each layer we produce these buckets:
 //     - onlyInA  artefacts present in A but not B
-//     - onlyInB  artefacts present in B but not A
+//     - onlyInB  artefacts present in B but not A, in a family A also declares
 //     - inBoth   matched pairs, with both A's and B's projection so the
 //                  caller can show spec differences side-by-side
+//     - outOfScope  present in B, in a family A declares NOTHING of — the rest
+//                  of the platform's inventory, kept out of the drift headline
 //
 //   The classic operations follow:
 //     A ∪ B  = onlyInA ∪ inBoth ∪ onlyInB
 //     A ∩ B  = inBoth
 //     A − B  = onlyInA
-//     B − A  = onlyInB
+//     B − A  = onlyInB ∪ outOfScope
 
 import {
   identityKeyOf,
@@ -78,7 +80,7 @@ export function diffPacks(aLayered, bLayered) {
   if (!aLayered || !bLayered) throw new Error('diffPacks: both packs required');
 
   const layers = {};
-  let onlyInA = 0, onlyInB = 0, inBoth = 0, aligned = 0, drifted = 0;
+  let onlyInA = 0, onlyInB = 0, inBoth = 0, aligned = 0, drifted = 0, outOfScope = 0;
 
   for (const layerId of LAYER_ORDER) {
     const aItems = layerArtefacts(aLayered, layerId);
@@ -89,7 +91,18 @@ export function diffPacks(aLayered, bLayered) {
     for (const a of aItems) aByKey.set(keyOf(a), a);
     for (const b of bItems) bByKey.set(keyOf(b), b);
 
-    const bucket = { onlyInA: [], onlyInB: [], inBoth: [] };
+    // Kinds (artefact families) the declared side (A) actually participates in
+    // for this layer. The behavioural key is `${kind}::${identity}`, so the
+    // prefix is the family. When A contributes ZERO artefacts of a family, B's
+    // artefacts of that family are out of the declared pack's SCOPE, not
+    // actionable drift: comparing one service's declaration against a
+    // whole-platform live inventory would otherwise flood "live, not declared"
+    // with the entire fleet. Declare even one artefact of a family and the rest
+    // of that family's live members become in-scope (genuine shadow signal).
+    const aKinds = new Set();
+    for (const k of aByKey.keys()) aKinds.add(k.slice(0, k.indexOf('::')));
+
+    const bucket = { onlyInA: [], onlyInB: [], inBoth: [], outOfScope: [] };
 
     for (const [k, a] of aByKey) {
       if (bByKey.has(k)) {
@@ -106,7 +119,10 @@ export function diffPacks(aLayered, bLayered) {
       }
     }
     for (const [k, b] of bByKey) {
-      if (!aByKey.has(k)) bucket.onlyInB.push({ key: k, artefact: b });
+      if (aByKey.has(k)) continue;
+      const kind = k.slice(0, k.indexOf('::'));
+      if (aKinds.has(kind)) bucket.onlyInB.push({ key: k, artefact: b });
+      else bucket.outOfScope.push({ key: k, artefact: b });
     }
 
     // Stable order — alphabetical by key — so the UI doesn't reshuffle on
@@ -114,6 +130,7 @@ export function diffPacks(aLayered, bLayered) {
     bucket.onlyInA.sort((x, y) => x.key.localeCompare(y.key));
     bucket.onlyInB.sort((x, y) => x.key.localeCompare(y.key));
     bucket.inBoth.sort ((x, y) => x.key.localeCompare(y.key));
+    bucket.outOfScope.sort((x, y) => x.key.localeCompare(y.key));
 
     // Per-layer aligned/drifted split of the matched pairs.
     bucket.aligned = bucket.inBoth.filter((e) => e.match === 'aligned').length;
@@ -125,6 +142,7 @@ export function diffPacks(aLayered, bLayered) {
     inBoth  += bucket.inBoth.length;
     aligned += bucket.aligned;
     drifted += bucket.drifted;
+    outOfScope += bucket.outOfScope.length;
   }
 
   return {
@@ -136,6 +154,10 @@ export function diffPacks(aLayered, bLayered) {
       inBoth,
       aligned,
       drifted,
+      // Live artefacts whose whole family the declared pack never mentions —
+      // surfaced separately so the headline drift count isn't dominated by the
+      // rest of the platform's inventory.
+      outOfScope,
       union: onlyInA + onlyInB + inBoth,
       aTotal: onlyInA + inBoth,
       bTotal: onlyInB + inBoth,
