@@ -2,7 +2,7 @@ apiVersion: observability.platform/v1
 kind: ObservabilityPack
 metadata:
   name: production-live
-  version: 0.29682700.0
+  version: 0.29683264.0
   owners:
     - mcp-fetcher
   bindings:
@@ -11,55 +11,55 @@ metadata:
       - prod
     criticality: tier-2
   annotations:
-    mcp.refreshedAt: 2026-06-08T23:40:01.954Z
+    mcp.refreshedAt: 2026-06-09T09:04:42.810Z
     mcp.url: https://www.krystaline.io/mcp/public
-    mcp.toolsCalled: system_health,system_topology,anomalies_active,anomalies_baselines,metrics_targets,vmalert_rules,vmalert_rules,grafana_dashboards_search,grafana_dashboard_get,metrics_label_values
+    mcp.toolsCalled: system_health,system_topology,anomalies_active,anomalies_baselines,grafana_dashboards_search,grafana_dashboard_get,vmalert_rules,vmalert_rules,metrics_label_values,metrics_targets
     mcp.toolsFailed: ''
-    mcp.probesAttempted: scrape_configs,recording_rules,alert_rules,dashboards,metric_names
-    mcp.probesSucceeded: scrape_configs,recording_rules,alert_rules,dashboards,metric_names
+    mcp.probesAttempted: dashboards,recording_rules,alert_rules,metric_names,scrape_configs
+    mcp.probesSucceeded: dashboards,recording_rules,alert_rules,metric_names,scrape_configs
     mcp.probesEmpty: ''
     mcp.probesFailed: ''
     mcp.servicesDiscovered: kx-wallet,kx-exchange,kx-matcher
     mcp.baselinesComputed: "45"
-    mcp.activeAnomalies: "2"
+    mcp.activeAnomalies: "4"
     mcp.toolsExposed: traces_search,trace_get,traces_services,traces_operations,traces_dependencies,metrics_query,metrics_query_range,metrics_targets,metrics_alerts,metrics_metadata,metrics_label_values,alertmanager_alerts,alertmanager_silences,alertmanager_groups,alertmanager_status,vmalert_rules,vmalert_alerts,vmalert_groups,vmalert_rule_health,grafana_health,grafana_datasources,grafana_datasource_health,grafana_datasource_query,grafana_dashboards_search,grafana_dashboard_get,grafana_folders,grafana_alert_rules,grafana_alerts,grafana_contact_points,zk_proof_get,zk_proof_verify,zk_solvency,zk_stats,anomalies_active,anomalies_baselines,system_health,system_topology,backend_capabilities,exchange_status,total_volume,recent_trades,transparency_metrics,verify_trace
     mcp.toolsExposedCount: "43"
     mcp.toolsUnmatched: traces_search,trace_get,traces_operations,traces_dependencies,metrics_query_range,metrics_alerts,metrics_metadata,alertmanager_alerts,alertmanager_silences,alertmanager_groups,alertmanager_status,vmalert_alerts,vmalert_groups,vmalert_rule_health,grafana_datasources,grafana_datasource_health,grafana_datasource_query,grafana_folders,grafana_alert_rules,grafana_alerts,grafana_contact_points,zk_proof_get,zk_proof_verify,zk_solvency,zk_stats,backend_capabilities,exchange_status,total_volume,recent_trades,transparency_metrics,verify_trace
-    mcp.discovered.scrape_configs: "20"
+    mcp.discovered.dashboards: "6"
     mcp.discovered.recording_rules: "43"
     mcp.discovered.alert_rules: "55"
-    mcp.discovered.dashboards: "6"
     mcp.discovered.metric_names: "2711"
-    mcp.verified.otel: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.alerting-alertmanager: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.network-cilium: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.logs-clickhouse: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.mesh-consul: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.logs-elasticsearch: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.logs-opensearch: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.mesh-envoy: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.dashboards-grafana: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.logs-graylog: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.metrics-influxdb: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.gateway-kong: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.logs-loki: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.metrics-prometheus: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.metrics-mimir: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.metrics-thanos: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.metrics-victoriametrics: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.metrics-cortex: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.policy-opa: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.metrics-opentsdb: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.collection-fluentbit: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.collection-beats: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.collection-vector: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.collection-alloy: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.profiles-pyroscope: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.traces-jaeger: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.traces-tempo: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.traces-zipkin: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.traces-skywalking: 2026-06-08T23:40:01.954Z
-    mcp.verified.telemetry.backends.gateway-traefik: 2026-06-08T23:40:01.954Z
+    mcp.discovered.scrape_configs: "20"
+    mcp.verified.otel: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.alerting-alertmanager: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.network-cilium: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.logs-clickhouse: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.mesh-consul: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.logs-elasticsearch: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.logs-opensearch: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.mesh-envoy: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.dashboards-grafana: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.logs-graylog: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.metrics-influxdb: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.gateway-kong: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.logs-loki: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.metrics-prometheus: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.metrics-mimir: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.metrics-thanos: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.metrics-victoriametrics: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.metrics-cortex: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.policy-opa: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.metrics-opentsdb: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.collection-fluentbit: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.collection-beats: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.collection-vector: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.collection-alloy: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.profiles-pyroscope: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.traces-jaeger: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.traces-tempo: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.traces-zipkin: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.traces-skywalking: 2026-06-09T09:04:42.810Z
+    mcp.verified.telemetry.backends.gateway-traefik: 2026-06-09T09:04:42.810Z
     mcp.capabilities.gatingMode: warn
     mcp.capabilities.protocolModel: capability → product → protocol-adapter
     mcp.capabilities.skillCount: "25"
@@ -69,51 +69,59 @@ metadata:
     mcp.versions.grafana: 12.4.0
     mcp.versions.grafana.source: grafana_health
     mcp.versions.grafana.commit: d1729c53a7f44e2e58947eb44eb896c2fb1c30b3
-    mcp.verified.telemetry.backends.versions.grafana: 2026-06-08T23:40:01.954Z
-    mcp.versions.victoriametrics: v1.113.0
-    mcp.versions.victoriametrics.source: metrics_query/vm_app_version
-    mcp.versions.victoriametrics.fullTag: victoria-metrics-20250307-151627-tags-v1.113.0-0-ga7d0a75f4c
-    mcp.verified.telemetry.backends.versions.victoriametrics: 2026-06-08T23:40:01.954Z
+    mcp.verified.telemetry.backends.versions.grafana: 2026-06-09T09:04:42.810Z
     mcp.versions.loki: 3.0.0
     mcp.versions.loki.source: metrics_query/loki_build_info
     mcp.versions.loki.revision: b4f7181c7a
     mcp.versions.loki.branch: HEAD
-    mcp.verified.telemetry.backends.versions.loki: 2026-06-08T23:40:01.954Z
-    mcp.versions.alertmanager: 0.27.0
-    mcp.versions.alertmanager.source: metrics_query/alertmanager_build_info
-    mcp.versions.alertmanager.revision: 0aa3c2aad14cff039931923ab16b26b7481783b5
-    mcp.versions.alertmanager.branch: HEAD
-    mcp.verified.telemetry.backends.versions.alertmanager: 2026-06-08T23:40:01.954Z
+    mcp.verified.telemetry.backends.versions.loki: 2026-06-09T09:04:42.810Z
+    mcp.versions.victoriametrics: v1.113.0
+    mcp.versions.victoriametrics.source: metrics_query/vm_app_version
+    mcp.versions.victoriametrics.fullTag: victoria-metrics-20250307-151627-tags-v1.113.0-0-ga7d0a75f4c
+    mcp.verified.telemetry.backends.versions.victoriametrics: 2026-06-09T09:04:42.810Z
     mcp.versions.jaeger: live
     mcp.versions.jaeger.source: traces_services
     mcp.versions.jaeger.serviceCount: "6"
-    mcp.verified.telemetry.backends.versions.jaeger: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.finops_cpu: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.finops_memory: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.finops_kong: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.finops_requests: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.finops_errors: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.finops_spans: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.finops_logs: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.finops_cost: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.slo_availability: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.slo_latency: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.slo_http_requests: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.slo_http_request_duration: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.slo_server: 2026-06-08T23:40:01.954Z
-    mcp.verified.slis.slo_settlement_latency: 2026-06-08T23:40:01.954Z
-    mcp.verified.queries.recording_rules: 2026-06-08T23:40:01.954Z
+    mcp.verified.telemetry.backends.versions.jaeger: 2026-06-09T09:04:42.810Z
+    mcp.verified.profiling: 2026-06-09T09:04:42.810Z
+    mcp.verified.network: 2026-06-09T09:04:42.810Z
+    mcp.verified.policy_engine: 2026-06-09T09:04:42.810Z
+    mcp.verified.mesh[0]: 2026-06-09T09:04:42.810Z
+    mcp.verified.mesh[1]: 2026-06-09T09:04:42.810Z
+    mcp.verified.mesh[2]: 2026-06-09T09:04:42.810Z
+    mcp.verified.mesh[3]: 2026-06-09T09:04:42.810Z
+    mcp.verified.collection[0]: 2026-06-09T09:04:42.810Z
+    mcp.verified.collection[1]: 2026-06-09T09:04:42.810Z
+    mcp.verified.collection[2]: 2026-06-09T09:04:42.810Z
+    mcp.verified.collection[3]: 2026-06-09T09:04:42.810Z
+    mcp.discovered.extended_surfaces: "11"
+    mcp.discovered.extended_surface_refs: profiling:profiles-pyroscope,network:network-cilium,policy_engine:policy-opa,mesh[0]:mesh-consul,mesh[1]:mesh-envoy,mesh[2]:gateway-kong,mesh[3]:gateway-traefik,collection[0]:collection-fluentbit,collection[1]:collection-beats,collection[2]:collection-vector,collection[3]:collection-alloy
+    mcp.verified.slis.finops_cpu: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.finops_memory: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.finops_kong: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.finops_requests: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.finops_errors: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.finops_spans: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.finops_logs: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.finops_cost: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.slo_availability: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.slo_latency: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.slo_http_requests: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.slo_http_request_duration: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.slo_server: 2026-06-09T09:04:42.810Z
+    mcp.verified.slis.slo_settlement_latency: 2026-06-09T09:04:42.810Z
+    mcp.verified.queries.recording_rules: 2026-06-09T09:04:42.810Z
     mcp.discovered.dashboard_panels: "280"
     mcp.discovered.dashboard_raw_json: "6"
-    mcp.verified.dashboards: 2026-06-08T23:40:01.954Z
+    mcp.verified.dashboards: 2026-06-09T09:04:42.810Z
     mcp.discovered.alert_rule_names: HighErrorRate,HighLatencyP99,HighLatencyP99Critical,ServiceDown,NoTraffic,ContainerCrashLooping,ContainerOOMKilled,PodNotReady,DeploymentReplicasMismatch,PostgreSQLDown,DatabaseConnectionsHigh,DatabaseConnectionsCritical,SlowQueries,ErrorBudgetExhaustionForecast,LatencyBudgetExhaustionForecast,DiskExhaustionForecast,MemoryExhaustionForecast,LatencyDegradationTrend,ErrorRateTrendUp,RabbitMQDown,RabbitMQHighMemory,RabbitMQNoConsumers,RabbitMQConsumerLag,RedisDown,RedisMemoryHigh,RedisConnectedClientsHigh,RedisKeyEviction,CircuitBreakerOpen,CircuitBreakerHalfOpen,AuthenticationFailures,RateLimitExceeded,BruteForceAttack,CredentialStuffingAttack,TwoFactorAuthBypass,RateLimitAbuse,AuthEndpointAbuse,SensitiveOperationAbuse,TokenEnumerationAttack,HighSeveritySecurityEvents,SLOAvailabilityBurnRateCritical,SLOAvailabilityBurnRateHigh,SLOAvailabilityBurnRateElevated,SLOLatencyBurnRateCritical,SLOLatencyBurnRateHigh,OrderProcessingFailures,OrderQueueBackup,OrderQueueCritical,SettlementLatencyHigh,SettlementLatencyCritical,SettlementLatencyBudgetExhausted,PriceFeedUnavailable,TrafficSpike,SustainedHighTraffic,TrafficFlood,UnusualErrorSpike
-    mcp.verified.policy.burn_rate_alerts: 2026-06-08T23:40:01.954Z
+    mcp.verified.policy.burn_rate_alerts: 2026-06-09T09:04:42.810Z
     mcp.discovered.scrape_jobs: promtail,node-exporter,alertmanager,bayesian-service,grafana,jaeger,kong,kube-state-metrics,loki,mcp-public,ollama,otel-collector,otel-mcp-server,payment-processor,postgres-exporter,pushgateway,rabbitmq,redis,krystalinex-server,victoriametrics
-    mcp.verified.telemetry.scrape: 2026-06-08T23:40:01.954Z
+    mcp.verified.telemetry.scrape: 2026-06-09T09:04:42.810Z
     mcp.discovered.metric_names_count: "2711"
     mcp.discovered.metric_names_sample: ALERTS,ALERTS_FOR_STATE,alertmanager_alerts,alertmanager_alerts_invalid_total,alertmanager_alerts_received_total,alertmanager_build_info,alertmanager_cluster_alive_messages_total,alertmanager_cluster_enabled,alertmanager_cluster_failed_peers,alertmanager_cluster_health_score,alertmanager_cluster_members,alertmanager_cluster_messages_pruned_total,alertmanager_cluster_messages_queued,alertmanager_cluster_messages_received_size_total,alertmanager_cluster_messages_received_total,alertmanager_cluster_messages_sent_size_total,alertmanager_cluster_messages_sent_total,alertmanager_cluster_peer_info,alertmanager_cluster_peers_joined_total,alertmanager_cluster_peers_left_total,alertmanager_cluster_peers_update_total,alertmanager_cluster_reconnections_failed_total,alertmanager_cluster_reconnections_total,alertmanager_cluster_refresh_join_failed_total,alertmanager_cluster_refresh_join_total,alertmanager_config_hash,alertmanager_config_last_reload_success_timestamp_seconds,alertmanager_config_last_reload_successful,alertmanager_dispatcher_aggregation_groups,alertmanager_dispatcher_alert_processing_duration_seconds_count,alertmanager_dispatcher_alert_processing_duration_seconds_sum,alertmanager_http_concurrency_limit_exceeded_total,alertmanager_http_request_duration_seconds_bucket,alertmanager_http_request_duration_seconds_count,alertmanager_http_request_duration_seconds_sum,alertmanager_http_requests_in_flight,alertmanager_http_response_size_bytes_bucket,alertmanager_http_response_size_bytes_count,alertmanager_http_response_size_bytes_sum,alertmanager_inhibition_rules,alertmanager_integrations,alertmanager_marked_alerts,alertmanager_nflog_gc_duration_seconds_count,alertmanager_nflog_gc_duration_seconds_sum,alertmanager_nflog_gossip_messages_propagated_total,alertmanager_nflog_maintenance_errors_total,alertmanager_nflog_maintenance_total,alertmanager_nflog_queries_total,alertmanager_nflog_query_duration_seconds_bucket,alertmanager_nflog_query_duration_seconds_count,alertmanager_nflog_query_duration_seconds_sum,alertmanager_nflog_query_errors_total,alertmanager_nflog_snapshot_duration_seconds_count,alertmanager_nflog_snapshot_duration_seconds_sum,alertmanager_nflog_snapshot_size_bytes,alertmanager_notification_latency_seconds_bucket,alertmanager_notification_latency_seconds_count,alertmanager_notification_latency_seconds_sum,alertmanager_notification_requests_failed_total,alertmanager_notification_requests_total,alertmanager_notifications_failed_total,alertmanager_notifications_suppressed_total,alertmanager_notifications_total,alertmanager_oversize_gossip_message_duration_seconds_bucket,alertmanager_oversize_gossip_message_duration_seconds_count,alertmanager_oversize_gossip_message_duration_seconds_sum,alertmanager_oversized_gossip_message_dropped_total,alertmanager_oversized_gossip_message_failure_total,alertmanager_oversized_gossip_message_sent_total,alertmanager_peer_position,alertmanager_receivers,alertmanager_silences,alertmanager_silences_gc_duration_seconds_count,alertmanager_silences_gc_duration_seconds_sum,alertmanager_silences_gossip_messages_propagated_total,alertmanager_silences_maintenance_errors_total,alertmanager_silences_maintenance_total,alertmanager_silences_queries_total,alertmanager_silences_query_duration_seconds_bucket,alertmanager_silences_query_duration_seconds_count,alertmanager_silences_query_duration_seconds_sum,alertmanager_silences_query_errors_total,alertmanager_silences_snapshot_duration_seconds_count,alertmanager_silences_snapshot_duration_seconds_sum,alertmanager_silences_snapshot_size_bytes,anomalies_detected_total,bayesian_alert_incidents_learned,bayesian_alert_infer_requests_created,bayesian_alert_infer_requests_total,bayesian_alert_train_requests_created,bayesian_alert_train_requests_total,bayesian_infer_duration_seconds_bucket,bayesian_infer_duration_seconds_count,bayesian_infer_duration_seconds_created,bayesian_infer_duration_seconds_sum,bayesian_infer_errors_created,bayesian_infer_errors_total,bayesian_infer_requests_created,bayesian_infer_requests_total,bayesian_model_trained,bayesian_poll_cycles_total,bayesian_poll_errors_total,bayesian_services_tracked,bayesian_train_duration_seconds_bucket,bayesian_train_duration_seconds_count,bayesian_train_duration_seconds_created,bayesian_train_duration_seconds_sum,bayesian_train_errors_created,bayesian_train_errors_total,bayesian_train_requests_created,bayesian_train_requests_total,circuit_breaker_state,circuit_breaker_trips_total,deprecated_flags_inuse_total,erlang_mnesia_committed_transactions,erlang_mnesia_failed_transactions,erlang_mnesia_held_locks,erlang_mnesia_lock_queue,erlang_mnesia_logged_transactions,erlang_mnesia_memory_usage_bytes,erlang_mnesia_restarted_transactions,erlang_mnesia_tablewise_memory_usage_bytes,erlang_mnesia_tablewise_size,erlang_mnesia_transaction_coordinators,erlang_mnesia_transaction_participants,erlang_vm_allocators,erlang_vm_atom_count,erlang_vm_atom_limit,erlang_vm_dirty_cpu_schedulers,erlang_vm_dirty_cpu_schedulers_online,erlang_vm_dirty_io_schedulers,erlang_vm_ets_limit,erlang_vm_logical_processors,erlang_vm_logical_processors_available,erlang_vm_logical_processors_online,erlang_vm_memory_atom_bytes_total,erlang_vm_memory_bytes_total,erlang_vm_memory_dets_tables,erlang_vm_memory_ets_tables,erlang_vm_memory_processes_bytes_total,erlang_vm_memory_system_bytes_total,erlang_vm_msacc_alloc_seconds_total,erlang_vm_msacc_aux_seconds_total,erlang_vm_msacc_bif_seconds_total,erlang_vm_msacc_busy_wait_seconds_total,erlang_vm_msacc_check_io_seconds_total,erlang_vm_msacc_emulator_seconds_total,erlang_vm_msacc_ets_seconds_total,erlang_vm_msacc_gc_full_seconds_total,erlang_vm_msacc_gc_seconds_total,erlang_vm_msacc_nif_seconds_total,erlang_vm_msacc_other_seconds_total,erlang_vm_msacc_port_seconds_total,erlang_vm_msacc_send_seconds_total,erlang_vm_msacc_sleep_seconds_total,erlang_vm_msacc_timers_seconds_total,erlang_vm_port_count,erlang_vm_port_limit,erlang_vm_process_count,erlang_vm_process_limit,erlang_vm_schedulers,erlang_vm_schedulers_online,erlang_vm_smp_support,erlang_vm_statistics_bytes_output_total,erlang_vm_statistics_bytes_received_total,erlang_vm_statistics_context_switches,erlang_vm_statistics_dirty_cpu_run_queue_length,erlang_vm_statistics_dirty_io_run_queue_length,erlang_vm_statistics_garbage_collection_bytes_reclaimed,erlang_vm_statistics_garbage_collection_number_of_gcs,erlang_vm_statistics_garbage_collection_words_reclaimed,erlang_vm_statistics_reductions_total,erlang_vm_statistics_run_queues_length,erlang_vm_statistics_runtime_milliseconds,erlang_vm_statistics_wallclock_time_milliseconds,erlang_vm_thread_pool_size,erlang_vm_threads,erlang_vm_time_correction,erlang_vm_wordsize_bytes,finops:cost:request_units_per_service_1h,finops:cost:telemetry_index_1h,finops:errors:rate_per_service_5m,finops:kong:overhead_seconds,finops:logs:bytes_rate_per_component_5m,finops:requests:rate_per_service_5m,finops:spans:exported_rate_5m,finops:spans:sampling_ratio,flag,gen_ai_client_operation_duration_seconds_bucket,gen_ai_client_operation_duration_seconds_count,gen_ai_client_operation_duration_seconds_sum,gen_ai_client_operation_time_per_output_chunk_seconds_bucket,gen_ai_client_operation_time_per_output_chunk_seconds_count,gen_ai_client_operation_time_per_output_chunk_seconds_sum,gen_ai_client_operation_time_to_first_chunk_seconds_bucket,gen_ai_client_operation_time_to_first_chunk_seconds_count,gen_ai_client_operation_time_to_first_chunk_seconds_sum,gen_ai_client_operations_total,gen_ai_client_token_usage_bucket,gen_ai_client_token_usage_count
-    mcp.verified.otel.metrics: 2026-06-08T23:40:01.954Z
-    mcp.verified.baselines: 2026-06-08T23:40:01.954Z
+    mcp.verified.otel.metrics: 2026-06-09T09:04:42.810Z
+    mcp.verified.baselines: 2026-06-09T09:04:42.810Z
 spec:
   otel:
     semconv: 1.27.0
@@ -134,7 +142,7 @@ spec:
         signal: alerting
         product: alertmanager
         version:
-          declared: 0.27.0
+          declared: "0.28"
           min: "0.27"
           gating: warn
           capabilities:
@@ -792,6 +800,151 @@ spec:
             - routers
             - services
             - middlewares
+  profiling:
+    backend: profiles-pyroscope
+    product: pyroscope
+    version:
+      declared: 1.x
+      min: 1.x
+      gating: warn
+      capabilities:
+        - profile_by_app
+        - label_selector
+        - time_range
+        - flamegraph
+        - profile_types
+        - render_json
+        - flamebearer
+        - label_names
+        - label_values
+    profile_types:
+      - cpu
+  network:
+    backend: network-cilium
+    product: cilium
+    version:
+      declared: "1.17"
+      min: "1.16"
+      gating: warn
+      capabilities:
+        - health
+        - endpoints
+        - policy
+        - status
+    observe:
+      - endpoints
+      - policy
+      - services
+      - flows
+  policy_engine:
+    backend: policy-opa
+    product: opa
+    version:
+      declared: 1.x
+      min: 1.x
+      gating: warn
+      capabilities:
+        - query_data
+        - post_data_input
+        - list_policies
+        - get_policy
+        - health
+        - metrics
+  mesh:
+    - product: consul
+      role: service-discovery
+      backend: mesh-consul
+      version:
+        declared: "1.20"
+        min: "1.19"
+        gating: warn
+        capabilities:
+          - health
+          - services
+          - nodes
+          - kv
+          - catalog
+    - product: envoy
+      role: proxy
+      backend: mesh-envoy
+      version:
+        declared: "1.33"
+        min: "1.32"
+        gating: warn
+        capabilities:
+          - server_info
+          - stats
+          - clusters
+          - config_dump
+    - product: kong
+      role: gateway
+      backend: gateway-kong
+      version:
+        declared: "3.8"
+        min: "3.7"
+        gating: warn
+        capabilities:
+          - status
+          - services
+          - routes
+          - plugins
+    - product: traefik
+      role: gateway
+      backend: gateway-traefik
+      version:
+        declared: 3.x
+        min: 3.x
+        gating: warn
+        capabilities:
+          - overview
+          - routers
+          - services
+          - middlewares
+  collection:
+    - product: fluentbit
+      role: agent
+      backend: collection-fluentbit
+      version:
+        declared: 3.x
+        min: 3.x
+        gating: warn
+        capabilities:
+          - uptime
+          - metrics
+          - health
+    - product: beats
+      role: agent
+      backend: collection-beats
+      version:
+        declared: 9.x
+        min: 8.x
+        gating: warn
+        capabilities:
+          - stats
+          - state
+          - info
+    - product: vector
+      role: aggregator
+      backend: collection-vector
+      version:
+        declared: 0.4x
+        min: 0.4x
+        gating: warn
+        capabilities:
+          - health
+          - components
+          - metrics
+    - product: alloy
+      role: agent
+      backend: collection-alloy
+      version:
+        declared: 1.x
+        min: 1.x
+        gating: warn
+        capabilities:
+          - ready
+          - components
+          - metrics
   slis:
     - id: finops_cpu
       description: Inferred from recording rule finops:cpu:usage_per_pod_5m.
