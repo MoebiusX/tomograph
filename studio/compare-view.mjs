@@ -38,6 +38,7 @@ export async function loadDiff() {
   const params = new URLSearchParams({ a: state.selectedPackId, b: state.compareBId });
   if (state.selectedEnv) params.set('aEnv', state.selectedEnv);
   if (state.compareBEnv) params.set('bEnv', state.compareBEnv);
+  params.set('scopeMode', activeDiffScopeMode());
   try {
     const result = await api(`/api/diff?${params}`);
     // Sanity-check the shape so a stale server returning some other JSON
@@ -49,6 +50,17 @@ export async function loadDiff() {
   } catch (e) {
     state.diff = { error: e.message };
   }
+}
+
+function activeDiffScopeMode() {
+  return normalizeDiffScopeMode(state.diffScopeMode || state.pack?.meta?.diffScopeMode);
+}
+
+function normalizeDiffScopeMode(value) {
+  const raw = String(value || 'service').trim().toLowerCase();
+  if (raw === 'family' || raw === 'legacy' || raw === 'off') return 'family';
+  if (raw === 'all' || raw === 'none' || raw === 'strict') return 'all';
+  return 'service';
 }
 
 export async function refreshDiff() {
@@ -677,6 +689,7 @@ export function renderBenchmarkView(view) {
     // Pack B present — render the true side-by-side A-vs-B drill (drift
     // cells / gap deltas) as the lead evidence beneath the verdict.
     placeCompareBand(renderDriftDrill(state.diff, state.packB, state.compareBId, lens));
+    placeCompareBand(renderLiveScopeControl({ standalone: true }));
   }
 
   // Drill-down — per-layer × per-mechanism coverage map. Pack-A-derived,
@@ -1593,42 +1606,54 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff) {
   let driftFree, driftDetail, driftScore = 0;
   const hasLiveDiff = !!diff?.layers && compareModeFor(packB, catalogBId) === 'drift';
   if (hasLiveDiff) {
-    let alignedLive = 0;
-    let declaredMissing = 0;
-    let behaviorDrifted = 0;
-    let liveShadow = 0;
-    let scaffoldExcluded = 0;
-    const driftedEntries = [];
-    for (const bucket of Object.values(diff.layers || {})) {
-      const concreteOnlyInA = (bucket.onlyInA || []).filter(e => !isScaffoldDiffEntry(e));
-      const concreteOnlyInB = (bucket.onlyInB || []).filter(e => !isScaffoldDiffEntry(e));
-      const concreteInBoth = (bucket.inBoth || []).filter(e => !isScaffoldDiffEntry(e));
-      scaffoldExcluded += (bucket.onlyInA || []).filter(e => isScaffoldDiffEntry(e)).length
-        + (bucket.onlyInB || []).filter(e => isScaffoldDiffEntry(e)).length
-        + (bucket.inBoth || []).filter(e => isScaffoldDiffEntry(e)).length;
-      declaredMissing += concreteOnlyInA.length;
-      const bucketDrifted = concreteInBoth.filter(e => e.match === 'drifted');
-      behaviorDrifted += bucketDrifted.length;
-      driftedEntries.push(...bucketDrifted);
-      alignedLive += concreteInBoth.filter(e => e.match !== 'drifted').length;
-      liveShadow += concreteOnlyInB.length;
+    const branchRollup = diff.traceabilityGraph?.rollup;
+    if (branchRollup && branchRollup.declaredTotal > 0) {
+      driftScore = Math.max(0, Math.min(1, branchRollup.integrityMean ?? 0));
+      driftFree = driftScore >= DRIFT_FIDELITY_TRUST_THRESHOLD;
+      const confidence = (diff.traceabilityGraph?.branches || []).some(b => b.confidence === 'inferred')
+        ? 'some inferred edges'
+        : 'declared edges';
+      driftDetail = driftFree
+        ? `requirement-chain integrity ${branchRollup.integrityPct}% — ${branchRollup.intact}/${branchRollup.declaredTotal} declared commitment${branchRollup.declaredTotal === 1 ? '' : 's'} intact; ${branchRollup.partial} partial, ${branchRollup.broken} broken, ${branchRollup.undeclared} live-only; ${confidence}`
+        : `requirement-chain integrity ${branchRollup.integrityPct}% (<${DRIFT_HEALTH_PASS_PCT}% trust threshold) — ${branchRollup.intact}/${branchRollup.declaredTotal} declared commitment${branchRollup.declaredTotal === 1 ? '' : 's'} intact; ${branchRollup.partial} partial, ${branchRollup.broken} broken, ${branchRollup.undeclared} live-only; ${confidence}`;
+    } else {
+      let alignedLive = 0;
+      let declaredMissing = 0;
+      let behaviorDrifted = 0;
+      let liveShadow = 0;
+      let scaffoldExcluded = 0;
+      const driftedEntries = [];
+      for (const bucket of Object.values(diff.layers || {})) {
+        const concreteOnlyInA = (bucket.onlyInA || []).filter(e => !isScaffoldDiffEntry(e));
+        const concreteOnlyInB = (bucket.onlyInB || []).filter(e => !isScaffoldDiffEntry(e));
+        const concreteInBoth = (bucket.inBoth || []).filter(e => !isScaffoldDiffEntry(e));
+        scaffoldExcluded += (bucket.onlyInA || []).filter(e => isScaffoldDiffEntry(e)).length
+          + (bucket.onlyInB || []).filter(e => isScaffoldDiffEntry(e)).length
+          + (bucket.inBoth || []).filter(e => isScaffoldDiffEntry(e)).length;
+        declaredMissing += concreteOnlyInA.length;
+        const bucketDrifted = concreteInBoth.filter(e => e.match === 'drifted');
+        behaviorDrifted += bucketDrifted.length;
+        driftedEntries.push(...bucketDrifted);
+        alignedLive += concreteInBoth.filter(e => e.match !== 'drifted').length;
+        liveShadow += concreteOnlyInB.length;
+      }
+      const weighted = computeWeightedDeltaRisk({
+        mode: 'drift',
+        aligned: alignedLive,
+        driftedEntries,
+        drifted: behaviorDrifted,
+        onlyInA: declaredMissing,
+        onlyInB: liveShadow,
+      });
+      driftScore = Math.max(0, Math.min(1, weighted.health));
+      driftFree = weighted.health >= DRIFT_FIDELITY_TRUST_THRESHOLD;
+      const fmtUnits = (n) => Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, '');
+      const driftBreakdown = `${weighted.driftedBreakdown.decision} decision-bearing, ${weighted.driftedBreakdown.default} default, ${weighted.driftedBreakdown.cosmetic} cosmetic`;
+      const scaffoldNote = scaffoldExcluded ? `; ${scaffoldExcluded} scaffold excluded` : '';
+      driftDetail = driftFree
+        ? `weighted live-fidelity ${weighted.healthPct}% — declared-not-live ${declaredMissing}×1.0, drifted ${behaviorDrifted} (${driftBreakdown}), live-not-declared ${liveShadow}×0.15; ${fmtUnits(weighted.totalBadness)} badness units${scaffoldNote}`
+        : `weighted live-fidelity ${weighted.healthPct}% (<${DRIFT_HEALTH_PASS_PCT}% trust threshold); declared-not-live ${declaredMissing}×1.0, drifted ${behaviorDrifted} (${driftBreakdown}), live-not-declared ${liveShadow}×0.15; ${fmtUnits(weighted.totalBadness)} badness units${scaffoldNote}`;
     }
-    const weighted = computeWeightedDeltaRisk({
-      mode: 'drift',
-      aligned: alignedLive,
-      driftedEntries,
-      drifted: behaviorDrifted,
-      onlyInA: declaredMissing,
-      onlyInB: liveShadow,
-    });
-    driftScore = Math.max(0, Math.min(1, weighted.health));
-    driftFree = weighted.health >= DRIFT_FIDELITY_TRUST_THRESHOLD;
-    const fmtUnits = (n) => Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, '');
-    const driftBreakdown = `${weighted.driftedBreakdown.decision} decision-bearing, ${weighted.driftedBreakdown.default} default, ${weighted.driftedBreakdown.cosmetic} cosmetic`;
-    const scaffoldNote = scaffoldExcluded ? `; ${scaffoldExcluded} scaffold excluded` : '';
-    driftDetail = driftFree
-      ? `weighted live-fidelity ${weighted.healthPct}% — declared-not-live ${declaredMissing}×1.0, drifted ${behaviorDrifted} (${driftBreakdown}), live-not-declared ${liveShadow}×0.15; ${fmtUnits(weighted.totalBadness)} badness units${scaffoldNote}`
-      : `weighted live-fidelity ${weighted.healthPct}% (<${DRIFT_HEALTH_PASS_PCT}% trust threshold); declared-not-live ${declaredMissing}×1.0, drifted ${behaviorDrifted} (${driftBreakdown}), live-not-declared ${liveShadow}×0.15; ${fmtUnits(weighted.totalBadness)} badness units${scaffoldNote}`;
   } else if (!hasMcpSource) {
     driftFree = false;
     driftScore = 0;
@@ -1721,6 +1746,7 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff) {
       verdict,
       liveDriftFree: driftFree,
     },
+    traceabilityGraph: diff?.traceabilityGraph || null,
   };
 }
 
@@ -1745,6 +1771,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const overallPct = pct(overall.passed, overall.total);
   const covPct   = pct(cov.passed, cov.total);
   const trustPct = pct(trust.passed, trust.total);
+  const chainBlock = renderDiagnosticTraceabilityGraph(diagnostic.traceabilityGraph);
 
   // Single binary verdict in audit terms: PASS when the score is >85%.
   // Individual failed criteria still render below as evidence and gaps.
@@ -1833,8 +1860,8 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
     C('chaos-validated')?.detail || '—',
     C('chaos-validated')?.pass));
   evidenceRows.push(rowFor(
-    'repo-vs-live diff · fallback metadata.annotations.mcp.probesSucceeded',
-    'declared artefacts active in live; fallback ≥70% probes when no live pack is loaded',
+    'requirement derivation graph · fallback repo-vs-live diff / mcp probes',
+    'declared SLO/SLI chains active in live; fallback ≥70% probes when no live pack is loaded',
     C('drift-free')?.detail || '—',
     C('drift-free')?.pass,
     C('drift-free')?.score));
@@ -1910,6 +1937,8 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       ${critTable(trust.criteria)}
     </section>
 
+    ${chainBlock}
+
     <section class="diag-section">
       <header class="diag-section-head">
         <span class="diag-section-num">⊜</span>
@@ -1920,6 +1949,68 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
     </section>
   `;
   return wrap;
+}
+
+function renderDiagnosticTraceabilityGraph(graph) {
+  const branches = Array.isArray(graph?.branches) ? graph.branches : [];
+  const rollup = graph?.rollup;
+  if (!rollup || !branches.length) return '';
+  const fmtPct = (n) => `${Math.round((Number(n) || 0) * 100)}%`;
+  const fmtStatus = (status) => ({
+    intact: 'Intact',
+    partial: 'Partial',
+    broken: 'Broken',
+    undeclared: 'Live-only',
+  }[status] || status || 'Unknown');
+  const evidenceFor = (branch) => {
+    const interesting = (branch.nodes || []).filter((node) =>
+      ['declared_only', 'drifted', 'unverifiable', 'live_only'].includes(node.status)
+    );
+    if (!interesting.length && branch.missingRoles?.length) {
+      return branch.missingRoles.map((role) => `${role.role}: ${role.detail}`).join(' · ');
+    }
+    if (!interesting.length) return 'all load-bearing nodes aligned';
+    return interesting.slice(0, 5).map((node) => {
+      const status = {
+        declared_only: 'missing live',
+        drifted: 'drifted',
+        unverifiable: 'unverifiable',
+        live_only: 'live-only',
+      }[node.status] || node.status;
+      const fields = node.deltas?.length ? ` (${node.deltas.map(d => d.field).slice(0, 3).join(', ')})` : '';
+      return `${node.kind}: ${node.label} · ${status}${fields}`;
+    }).join(' · ') + (interesting.length > 5 ? ` · +${interesting.length - 5}` : '');
+  };
+  const cards = branches.map((branch) => `
+    <article class="diag-chain-card diag-chain-${escapeHtml(branch.verdict)}">
+      <div class="diag-chain-head">
+        <span class="diag-chain-title">${escapeHtml(branch.title || branch.rootKey || 'requirement')}</span>
+        <span class="diag-chain-status">${escapeHtml(fmtStatus(branch.verdict))}</span>
+      </div>
+      <div class="diag-chain-meta">
+        <span>${escapeHtml(String(branch.integrityPct ?? Math.round((branch.integrity || 0) * 100)))}% integrity</span>
+        <span>${escapeHtml(branch.confidence === 'inferred' ? 'inferred edges' : 'declared edges')}</span>
+        <span>${escapeHtml(`${branch.counts?.aligned || 0} aligned`)}</span>
+      </div>
+      <div class="diag-chain-evidence">${escapeHtml(evidenceFor(branch))}</div>
+    </article>
+  `).join('');
+  return `
+    <section class="diag-section diag-chain-section">
+      <header class="diag-section-head">
+        <span class="diag-section-num">2B.G</span>
+        <span class="diag-section-title">Requirement Chains — SLO/SLI derivation integrity</span>
+        <span class="diag-section-meta">${rollup.intact}/${rollup.declaredTotal} intact · ${escapeHtml(fmtPct(rollup.integrityMean))}</span>
+      </header>
+      <div class="diag-chain-rollup">
+        <span class="diag-chain-rollup-cell is-intact"><strong>${rollup.intact}</strong> intact</span>
+        <span class="diag-chain-rollup-cell is-partial"><strong>${rollup.partial}</strong> partial</span>
+        <span class="diag-chain-rollup-cell is-broken"><strong>${rollup.broken}</strong> broken</span>
+        <span class="diag-chain-rollup-cell is-undeclared"><strong>${rollup.undeclared}</strong> live-only</span>
+      </div>
+      <div class="diag-chain-grid">${cards}</div>
+    </section>
+  `;
 }
 
 function renderBenchmarkHeadline(posture, lens) {
@@ -2769,6 +2860,7 @@ function renderCompareFilters() {
   };
   lensWrap.appendChild(lensSel);
   wrap.appendChild(lensWrap);
+  wrap.appendChild(renderLiveScopeControl());
 
   const search = document.createElement('input');
   search.type = 'search';
@@ -2788,6 +2880,64 @@ function renderCompareFilters() {
     });
   });
   wrap.appendChild(search);
+  return wrap;
+}
+
+function renderLiveScopeControl({ standalone = false } = {}) {
+  const modes = [
+    {
+      id: 'service',
+      label: 'Service scope',
+      hint: 'Multitenant mode: live-only artefacts outside Pack A service are out of scope.',
+    },
+    {
+      id: 'family',
+      label: 'Family only',
+      hint: 'Single-tenant mode: all live-only artefacts in families Pack A declares are counted.',
+    },
+    {
+      id: 'all',
+      label: 'All live',
+      hint: 'Strict inventory mode: every unmatched live artefact is counted.',
+    },
+  ];
+  const active = activeDiffScopeMode();
+  const wrap = document.createElement('div');
+  wrap.className = 'compare-scope-wrap' + (standalone ? ' compare-scope-standalone' : '');
+  const label = document.createElement('span');
+  label.className = 'compare-scope-label';
+  label.textContent = 'Live scope';
+  wrap.appendChild(label);
+  const sel = document.createElement('select');
+  sel.className = 'compare-scope-select';
+  sel.title = 'Choose how live-only artefacts are classified.';
+  for (const mode of modes) {
+    const opt = document.createElement('option');
+    opt.value = mode.id;
+    opt.textContent = mode.label;
+    opt.title = mode.hint;
+    sel.appendChild(opt);
+  }
+  sel.value = active;
+  sel.dataset.scopeMode = active;
+  sel.onchange = () => {
+    const next = normalizeDiffScopeMode(sel.value);
+    if (activeDiffScopeMode() === next) return;
+    state.diffScopeMode = next;
+    state.diff = null;
+    sel.dataset.scopeMode = next;
+    refreshDiff();
+  };
+  wrap.appendChild(sel);
+  const meta = state.diff?.scope;
+  if (standalone && meta?.mode) {
+    const note = document.createElement('span');
+    note.className = 'compare-scope-note';
+    const tokenCount = Array.isArray(meta.serviceTokens) ? meta.serviceTokens.length : 0;
+    const prefixCount = Array.isArray(meta.metricPrefixes) ? meta.metricPrefixes.length : 0;
+    note.textContent = `${meta.mode} · ${tokenCount} service token${tokenCount === 1 ? '' : 's'} · ${prefixCount} metric prefix${prefixCount === 1 ? '' : 'es'}`;
+    wrap.appendChild(note);
+  }
   return wrap;
 }
 

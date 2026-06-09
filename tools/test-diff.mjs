@@ -134,14 +134,21 @@ function artefactCount(layered) {
     + l.GOV.length;
 }
 
+function flatComparableCount(layered) {
+  const l = layered.layers;
+  return artefactCount(layered) - l.L3.filter(a => (a.id || '').startsWith('PANEL-')).length;
+}
+
 process.stdout.write('\n--- collision preservation ---\n');
 const declared = adapt(collisionPack);
-const total = artefactCount(declared);
+const total = flatComparableCount(declared);
 const self = diffPacks(declared, adapt(clone(collisionPack)));
 
 assert(self.summary.inBoth === total,
-       'self-diff preserves every artefact, including duplicate identity keys',
+       'self-diff preserves every flat-comparable artefact, including duplicate identity keys',
        self.summary.inBoth, total);
+assert(!self.layers.L3.inBoth.some(x => x.key.startsWith('panel::')),
+       'dashboard panels stay out of flat drift arithmetic');
 assert(self.summary.onlyInA === 0 && self.summary.onlyInB === 0,
        'self-diff has no missing artefacts');
 assert(self.summary.alignment === 1,
@@ -159,9 +166,9 @@ const thin = diffPacks(declared, adapt(thinPack));
 assert(thin.summary.aTotal === total,
        'declared-side total still counts every artefact when live is thinner',
        thin.summary.aTotal, total);
-assert(thin.summary.onlyInA === 5,
+assert(thin.summary.onlyInA === 4,
        'surplus duplicate controls are reported as onlyInA, not dropped',
-       thin.summary.onlyInA, 5);
+       thin.summary.onlyInA, 4);
 assert(thin.layers.L4.onlyInA.filter(x => x.key.startsWith('alert_route::')).length === 2,
        'two missing SEV2 routes are visible as drift');
 
@@ -178,6 +185,243 @@ const absentArray = {
 };
 assert(deltasOf(emptyArray, absentArray).length === 0,
        'empty arrays normalise like absent fields');
+
+const sourceMetric = {
+  id: 'METRIC-SRC-01',
+  spec: {
+    name: 'checkout_requests_total',
+    type: 'counter',
+    origin_kind: 'source-code',
+    query: 'checkout_requests_total',
+    references: [{ kind: 'recording-rule', name: 'checkout:availability:ratio_5m' }],
+    used_by: ['recording:checkout:availability:ratio_5m'],
+  },
+};
+const liveMetricInventory = {
+  id: 'METRIC-01',
+  spec: { name: 'checkout_requests_total' },
+};
+assert(deltasOf(sourceMetric, liveMetricInventory).length === 0,
+       'source metric provenance does not drift against live metric-name inventory');
+
+const declaredRuleExpr = {
+  id: 'QRY-01',
+  spec: {
+    name: 'checkout:availability:ratio_5m',
+    expr: 'sum(rate(checkout_requests_total{code!~"5.."}[5m])) / sum(rate(checkout_requests_total[5m]))',
+  },
+};
+const liveRuleNameStub = {
+  id: 'QRY-02',
+  spec: {
+    name: 'checkout:availability:ratio_5m',
+    expr: 'checkout:availability:ratio_5m',
+  },
+};
+assert(deltasOf(declaredRuleExpr, liveRuleNameStub).length === 0,
+       'recording-rule name stubs are treated as partial evidence, not expression drift');
+
+const liveRuleDifferentExpr = {
+  id: 'QRY-02',
+  spec: {
+    name: 'checkout:availability:ratio_5m',
+    expr: 'sum(rate(checkout_errors_total[5m]))',
+  },
+};
+assert(deltasOf(declaredRuleExpr, liveRuleDifferentExpr).some(d => d.field === 'expr'),
+       'two executable recording-rule expressions still drift when they differ');
+
+const declaredSliExpr = {
+  id: 'SLI-01',
+  defines: 'slis.checkout_availability',
+  spec: {
+    id: 'checkout_availability',
+    type: 'ratio',
+    good: 'sum(rate(checkout_requests_total{code!~"5.."}[5m]))',
+    total: 'sum(rate(checkout_requests_total[5m]))',
+  },
+};
+const liveSliRuleRef = {
+  id: 'SLI-01',
+  defines: 'slis.checkout_availability',
+  spec: {
+    id: 'checkout_availability',
+    type: 'ratio',
+    good: 'checkout:availability:ratio_5m',
+    total: '1',
+  },
+};
+assert(deltasOf(declaredSliExpr, liveSliRuleRef).length === 0,
+       'SLI raw PromQL and live recording-rule references are equivalent evidence levels');
+
+const liveSliDifferentThreshold = clone(liveSliRuleRef);
+liveSliDifferentThreshold.spec.type = 'threshold';
+assert(deltasOf(declaredSliExpr, liveSliDifferentThreshold).some(d => d.field === 'type'),
+       'decision-bearing SLI fields still drift');
+
+const repoDashboardShell = {
+  id: 'DSH-01',
+  defines: 'dashboards.checkout',
+  spec: {
+    id: 'checkout',
+    provider: { kind: 'grafana', version: '7' },
+    folder: 'repo',
+    panel_bindings: [{ panel: 'Availability', binds_to: 'slis.checkout_availability' }],
+  },
+};
+const liveDashboardDetails = {
+  id: 'DSH-01',
+  defines: 'dashboards.checkout',
+  spec: {
+    id: 'checkout',
+    provider: { kind: 'grafana', version: '12' },
+    folder: 'prod',
+    panel_bindings: [{ panel: 'Availability', binds_to: 'slis.checkout_availability' }],
+    params: { returnedPanels: 42, panels: [{ id: 1, type: 'timeseries' }] },
+  },
+};
+assert(deltasOf(repoDashboardShell, liveDashboardDetails).length === 0,
+       'dashboard fetch-detail params do not drift the dashboard shell');
+
+const sourceScrape = {
+  id: 'SCRAPE-SRC-01',
+  spec: {
+    type: 'TelemetrySource',
+    job: 'checkout-api',
+    metrics_path: '/metrics',
+    interval: '10s',
+    targets: ['checkout-api:8080'],
+    exports: ['checkout_requests_total'],
+  },
+};
+const liveScrape = {
+  id: 'SCRAPE-01',
+  spec: {
+    job: 'checkout-api',
+    source: 'mcp.discovered.scrape_jobs',
+  },
+};
+assert(deltasOf(sourceScrape, liveScrape).length === 0,
+       'scrape-job detail richness does not drift against live scrape-job evidence');
+
+const otelRepo = {
+  id: 'OTEL-01',
+  spec: {
+    semconv: '1.26.0',
+    sdk: { sampling: { policy: 'parentbased_traceidratio', ratio: 0.1 } },
+  },
+};
+const otelLiveSameBehavior = {
+  id: 'OTEL-01',
+  spec: {
+    semconv: '1.27.0',
+    sdk: { sampling: { policy: 'parentbased_traceidratio', ratio: 0.1 } },
+  },
+};
+assert(deltasOf(otelRepo, otelLiveSameBehavior).length === 0,
+       'SemConv version alone is compatibility metadata, not live drift');
+
+const otelLiveDifferentSampling = clone(otelLiveSameBehavior);
+otelLiveDifferentSampling.spec.sdk.sampling.ratio = 1;
+assert(deltasOf(otelRepo, otelLiveDifferentSampling).some(d => d.field === 'sdk'),
+       'OTel sampling behavior still drifts');
+
+process.stdout.write('\n--- multitenant live scope ---\n');
+const scopedRepoPack = {
+  apiVersion: 'observability.platform/v1',
+  kind: 'ObservabilityPack',
+  metadata: {
+    name: 'checkout',
+    version: '0.1.0',
+    owners: ['team-checkout'],
+    bindings: { service: 'checkout', environments: ['prod'], criticality: 'tier-2' },
+    annotations: {
+      'crawler.discovered.metric_names': JSON.stringify(['checkout_requests_total', 'alerts']),
+      'crawler.discovered.metric_names_count': '2',
+      'crawler.discovered.metric_origins': JSON.stringify({
+        checkout_requests_total: { file: 'src/metrics.ts', service: 'checkout-api', type: 'counter' },
+        alerts: { file: 'src/alerts.ts', service: 'checkout-api', type: 'gauge' },
+      }),
+    },
+  },
+  spec: {
+    telemetry: { backends: [{ id: 'metrics', signal: 'metrics', product: 'prometheus' }] },
+    slis: [{
+      id: 'checkout_availability',
+      type: 'ratio',
+      good: 'sum(rate(checkout_requests_total{code!~"5.."}[5m]))',
+      total: 'sum(rate(checkout_requests_total[5m]))',
+    }],
+    slos: [{ id: 'checkout_availability_99', sli: 'checkout_availability', objective: 0.99, window: '30d' }],
+    queries: { recording_rules: [{ name: 'checkout:availability:ratio_5m', expr: 'ref:slis.checkout_availability' }] },
+    dashboards: [{
+      id: 'checkout-overview',
+      provider: { kind: 'grafana' },
+      panel_bindings: [{ panel: 'Checkout availability', binds_to: 'slis.checkout_availability' }],
+    }],
+    policy: { burn_rate_alerts: [{ slo: 'checkout_availability_99', windows: [{ short: '5m', long: '1h', factor: 14, severity: 'SEV1' }] }] },
+    baselines: { mttd_target_p50: '5m', mttr_target_p50: '30m' },
+  },
+};
+const scopedLivePack = clone(scopedRepoPack);
+scopedLivePack.metadata = {
+  name: 'production-live',
+  version: '0.1.0',
+  owners: ['mcp-fetcher'],
+  bindings: { service: 'production-live', environments: ['prod'], criticality: 'tier-2' },
+  annotations: {
+    'mcp.refreshedAt': '2026-06-09T00:00:00.000Z',
+    'mcp.discovered.metric_names': JSON.stringify([
+      'checkout_requests_total',
+      'checkout_shadow_total',
+      'alertmanager_alerts_total',
+      'solace_messages_total',
+      'node_cpu_seconds_total',
+    ]),
+    'mcp.discovered.metric_names_count': '5',
+  },
+};
+scopedLivePack.spec.dashboards = [
+  ...scopedLivePack.spec.dashboards,
+  { id: 'checkout-debug', provider: { kind: 'grafana' }, panel_bindings: [{ panel: 'Checkout shadow', binds_to: 'slis.checkout_availability' }] },
+  { id: 'solace-clients', provider: { kind: 'grafana' }, panel_bindings: [{ panel: 'Solace clients', binds_to: 'slis.solace_availability' }] },
+];
+const scopedDiff = diffPacks(adapt(scopedRepoPack), adapt(scopedLivePack));
+const l2OnlyInBKeys = scopedDiff.layers.L2.onlyInB.map(x => x.key);
+const l2OutOfScopeKeys = scopedDiff.layers.L2.outOfScope.map(x => x.key);
+const l3OnlyInBKeys = scopedDiff.layers.L3.onlyInB.map(x => x.key);
+const l3OutOfScopeKeys = scopedDiff.layers.L3.outOfScope.map(x => x.key);
+assert(l2OnlyInBKeys.some(k => k.includes('checkout_shadow_total')),
+       'service-scoped live metric remains live-not-declared');
+assert(l2OutOfScopeKeys.some(k => k.includes('solace_messages_total')),
+       'foreign tenant live metric is out-of-scope');
+assert(l2OutOfScopeKeys.some(k => k.includes('node_cpu_seconds_total')),
+       'shared platform live metric is out-of-scope');
+assert(l2OutOfScopeKeys.some(k => k.includes('alertmanager_alerts_total')),
+       'platform metric containing a declared short metric token is out-of-scope');
+assert(l3OnlyInBKeys.some(k => k.includes('checkout-debug')),
+       'service-scoped live dashboard remains live-not-declared');
+assert(l3OutOfScopeKeys.some(k => k.includes('solace-clients')),
+       'foreign tenant live dashboard is out-of-scope');
+assert(scopedDiff.scope?.mode === 'service',
+       'default diff scope mode is service');
+
+const familyDiff = diffPacks(adapt(scopedRepoPack), adapt(scopedLivePack), { scopeMode: 'family' });
+const familyL2OnlyInBKeys = familyDiff.layers.L2.onlyInB.map(x => x.key);
+const familyL3OnlyInBKeys = familyDiff.layers.L3.onlyInB.map(x => x.key);
+assert(familyDiff.scope?.mode === 'family',
+       'family-only scope mode is reported');
+assert(familyL2OnlyInBKeys.some(k => k.includes('solace_messages_total')),
+       'family-only mode counts foreign live metric in a declared family');
+assert(familyL3OnlyInBKeys.some(k => k.includes('solace-clients')),
+       'family-only mode counts foreign live dashboard in a declared family');
+
+const allLiveDiff = diffPacks(adapt(scopedRepoPack), adapt(scopedLivePack), { scopeMode: 'all' });
+assert(allLiveDiff.scope?.mode === 'all',
+       'all-live scope mode is reported');
+assert(allLiveDiff.summary.outOfScope === 0,
+       'all-live mode counts every unmatched live artefact as live-not-declared',
+       allLiveDiff.summary.outOfScope, 0);
 
 if (failures.length) {
   process.stderr.write(`\n${failures.length} diff assertion(s) failed.\n`);

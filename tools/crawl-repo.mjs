@@ -14,8 +14,13 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, relative, basename } from 'node:path';
 import { crawlToYaml } from './lib/crawler.mjs';
 
-const SCAN_EXT = /\.(ya?ml|json)$/i;
+const SCAN_EXT = /\.(ya?ml|json|cjs|mjs|js|jsx|ts|tsx|py|go|java|kt|rs|cs)$/i;
 const IGNORE_DIRS = new Set(['.git', 'node_modules', 'vendor', 'dist', 'build', '.cache', '.next', '.terraform']);
+const DIFF_SCOPE_TOKENS = new Set(['service', 'family', 'legacy', 'off', 'all', 'none', 'strict']);
+
+function argValue(a, prefix) {
+  return a.startsWith(`${prefix}=`) ? a.slice(prefix.length + 1) : null;
+}
 
 async function walk(root) {
   const out = new Map();
@@ -64,6 +69,8 @@ v1.2 manifest by introspecting common observability artefacts.
     --binding <name>     metadata.binding (default: otel-elastic-prometheus-grafana)
     --owners a,b,c       comma-separated metadata.owners list
                          (default: team-platform)
+    --diff-scope <mode>  live-drift comparison lens: service | family | all
+                         (default: service)
     -h, --help           print this message
 
   Output:
@@ -88,18 +95,27 @@ function parseArgs(argv) {
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-h' || a === '--help') { out.help = true; continue; }
+    if (a === '--') continue;
     if (!a.startsWith('--') && !out.repoPath) { out.repoPath = a; continue; }
+    if (!a.startsWith('--') && out.repoPath && !out.diffScopeMode && DIFF_SCOPE_TOKENS.has(a.toLowerCase())) {
+      out.diffScopeMode = a;
+      continue;
+    }
+    const diffScopeEquals = argValue(a, '--diff-scope') ?? argValue(a, '--live-scope');
+    if (diffScopeEquals !== null) { out.diffScopeMode = diffScopeEquals; continue; }
     if (a === '--name')        out.repoName = argv[++i];
     else if (a === '--env')         out.environment = argv[++i];
     else if (a === '--criticality') out.criticality = argv[++i];
     else if (a === '--binding')     out.binding = argv[++i];
     else if (a === '--owners')      out.owners = argv[++i].split(',');
+    else if (a === '--diff-scope' || a === '--live-scope') out.diffScopeMode = argv[++i];
   }
   return out;
 }
 
 async function main() {
   const opts = parseArgs(process.argv);
+  if (!opts.diffScopeMode && process.env.TOMOGRAPH_DIFF_SCOPE) opts.diffScopeMode = process.env.TOMOGRAPH_DIFF_SCOPE;
   if (opts.help) { process.stdout.write(USAGE); process.exit(0); }
   if (!opts.repoPath) {
     process.stderr.write(USAGE);
@@ -124,11 +140,14 @@ async function main() {
     `#   files scanned    : ${summary.files.scanned}`,
     `#   files included   : ${summary.files.included}`,
     `#   env scope        : ${summary.environment.profile || 'none'}${summary.environment.scoped ? ` (${summary.files.excludedByEnvironment} excluded)` : ''}`,
+    `#   diff scope       : ${summary.comparison?.diffScopeMode || 'service'}`,
     `#   files classified : ${summary.files.classified}`,
     `#   by kind          : ${JSON.stringify(summary.files.byKind)}`,
     `#   backends         : ${summary.discovered.backends}`,
     `#   recording rules  : ${summary.discovered.recordingRules}`,
     `#   burn-rate alerts : ${summary.discovered.burnRateAlerts}`,
+    `#   metric definitions: ${summary.discovered.metricDefinitions}`,
+    `#   scrape jobs       : ${summary.discovered.scrapeJobs}`,
     `#   dashboards       : ${summary.discovered.dashboards}`,
     `#   alerting routes  : ${summary.discovered.alertingRoutes}`,
     `#   pipelines        : ${summary.discovered.pipelines}`,

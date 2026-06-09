@@ -88,6 +88,7 @@ async function rehydrateFromPersistence() {
   if (typeof saved.compareSlice === 'string')  state.compareSlice = saved.compareSlice;
   if (typeof saved.compareSearch === 'string') state.compareSearch = saved.compareSearch;
   if (typeof saved.compareLens === 'string')   state.compareLens = saved.compareLens;
+  if (typeof saved.diffScopeMode === 'string') state.diffScopeMode = saved.diffScopeMode;
   if (saved.viewFocus === 'a' || saved.viewFocus === 'b') state.viewFocus = saved.viewFocus;
   if (typeof saved.atlasVariant === 'string')  state.atlasVariant = saved.atlasVariant;
   if (typeof saved.arborView === 'string')     state.arborView = saved.arborView;
@@ -1351,9 +1352,7 @@ function packPickerRowsHtml() {
 // and the FLOW is: load-or-generate a pack first, THEN see its inventory.
 // So with no pack this renders the three ways to GET a pack — crawl a
 // repo, generate live from an MCP server, or upload a manifest — plus a
-// quick picker of packs already on hand. This is deliberately NOT the
-// marketing hero (no giant headline, no Möbius loop); that hero is the
-// separate landing/reset screen.
+// quick picker of packs already on hand.
 // ============================================================
 function renderDiscoverEmpty(view) {
   const pickerRows = packPickerRowsHtml();
@@ -1524,87 +1523,6 @@ function renderHomeView() {
             <span class="home-alt-sub">walks Prom / OTel / Grafana / AM configs · or a GitHub URL</span>
           </button>
         </div>
-      </div>
-
-      <div class="home-cycle">
-        <svg class="home-cycle-svg" viewBox="0 0 960 640" xmlns="http://www.w3.org/2000/svg" role="img" font-family="'IBM Plex Sans', system-ui, sans-serif">
-          <title>The Möbius Loop — Tomograph's continuous assurance cycle</title>
-          <desc>Four stages — Declare, Compile, Observe, Verify — arranged as a closed loop around a single twisted Möbius ribbon, signifying one continuous surface with no first or last step.</desc>
-
-          <defs>
-            <pattern id="cyc-dots" width="24" height="24" patternUnits="userSpaceOnUse">
-              <circle cx="2" cy="2" r="1" fill="#1e2a3b" opacity="0.55"/>
-            </pattern>
-            <linearGradient id="cyc-mobius-grad" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#5dcaa5"/>
-              <stop offset="0.34" stop-color="#54b3d4"/>
-              <stop offset="0.67" stop-color="#8f86e8"/>
-              <stop offset="1" stop-color="#e0703f"/>
-            </linearGradient>
-            <marker id="cyc-ah" markerWidth="9" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="userSpaceOnUse">
-              <path d="M0,0 L8,3 L0,6 Z" fill="#5a6b82"/>
-            </marker>
-          </defs>
-
-          <!-- panel -->
-          <rect x="12" y="12" width="936" height="616" rx="18" fill="#0e1622" stroke="#21314a" stroke-width="1.5"/>
-          <rect x="12" y="12" width="936" height="616" rx="18" fill="url(#cyc-dots)"/>
-
-          <!-- header -->
-          <line x1="330" y1="50" x2="392" y2="50" stroke="#33485f" stroke-width="1"/>
-          <text x="480" y="55" text-anchor="middle" font-size="13" letter-spacing="4" font-weight="600" fill="#7fa9a0">THE MÖBIUS LOOP</text>
-          <line x1="568" y1="50" x2="630" y2="50" stroke="#33485f" stroke-width="1"/>
-
-          <!-- intro -->
-          <g font-family="'Newsreader', Georgia, serif" fill="#aab4c2" font-size="15.5" text-anchor="middle">
-            <text x="480" y="94">Declare once. Compile the platform. Observe it live. Verify the image still matches the system —</text>
-            <text x="480" y="118">then begin again. Like the strip it's named for, the loop is one continuous surface:</text>
-            <text x="480" y="142">no first step, no last, and nowhere for drift to hide.</text>
-          </g>
-
-          <!-- central Möbius ribbon (lemniscate) -->
-          <path d="M 480 399 C 540 329 630 329 630 399 C 630 469 540 469 480 399 C 420 329 330 329 330 399 C 330 469 420 469 480 399 Z"
-                fill="none" stroke="url(#cyc-mobius-grad)" stroke-width="16" stroke-linecap="round" opacity="0.85"/>
-          <path d="M 480 399 C 540 329 630 329 630 399 C 630 469 540 469 480 399 C 420 329 330 329 330 399 C 330 469 420 469 480 399 Z"
-                fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.10"/>
-
-          <!-- connectors (clockwise) — mirror-symmetric about x=480.
-               All four arrows attach to nodes at the same 51px inset
-               from the corner: x=706 on COMPILE (left side), x=254 on
-               VERIFY (right side), and the matching offsets on
-               DECLARE + OBSERVE for the corner-exit arrows. -->
-          <path d="M 588 276 Q 690 300 706 358" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
-          <path d="M 706 442 Q 690 502 590 522" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
-          <path d="M 370 522 Q 270 502 254 442" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
-          <!-- closing arc: dashed return = "and again" -->
-          <path d="M 254 358 Q 270 300 372 276" fill="none" stroke="#4a5b72" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#cyc-ah)"/>
-          <text x="207" y="312" font-size="15" fill="#7fa9a0">↺</text>
-          <text x="192" y="300" font-family="'Newsreader', Georgia, serif" font-size="11" font-style="italic" fill="#6f7d90">begin again</text>
-
-          <!-- node: DECLARE (green) -->
-          <rect x="375" y="212" width="210" height="76" rx="12" fill="#141d2c" stroke="#5dcaa5" stroke-width="2"/>
-          <text x="480" y="242" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">DECLARE</text>
-          <text x="480" y="261" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">generate the pack</text>
-          <text x="480" y="277" text-anchor="middle" font-size="10.5" fill="#6f7d90">one service · one contract</text>
-
-          <!-- node: COMPILE (purple) -->
-          <rect x="655" y="362" width="210" height="76" rx="12" fill="#141d2c" stroke="#8f86e8" stroke-width="2"/>
-          <text x="760" y="392" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">COMPILE</text>
-          <text x="760" y="411" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">packc → every backend</text>
-          <text x="760" y="427" text-anchor="middle" font-size="10.5" fill="#6f7d90">Prom · Grafana · OTel · AM</text>
-
-          <!-- node: OBSERVE (cyan) -->
-          <rect x="375" y="510" width="210" height="76" rx="12" fill="#141d2c" stroke="#54b3d4" stroke-width="2"/>
-          <text x="480" y="540" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">OBSERVE</text>
-          <text x="480" y="559" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">live signal via MCP</text>
-          <text x="480" y="575" text-anchor="middle" font-size="10.5" fill="#6f7d90">"declared" becomes "verified"</text>
-
-          <!-- node: VERIFY (amber) -->
-          <rect x="95" y="362" width="210" height="76" rx="12" fill="#141d2c" stroke="#e0703f" stroke-width="2"/>
-          <text x="200" y="392" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">VERIFY</text>
-          <text x="200" y="411" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">scan · score · attest</text>
-          <text x="200" y="427" text-anchor="middle" font-size="10.5" fill="#6f7d90">does the image still hold?</text>
-        </svg>
       </div>
     </section>
   `;
@@ -2074,7 +1992,7 @@ function setRefreshStatus(msg, kind = '') {
 // loads into the active session just like any other pack.
 // ============================================================
 
-const CRAWL_SCAN_EXT = /\.(ya?ml|json)$/i;
+const CRAWL_SCAN_EXT = /\.(ya?ml|json|cjs|mjs|js|jsx|ts|tsx|py|go|java|kt|rs|cs)$/i;
 const CRAWL_IGNORE_DIRS = new Set([
   '.git', '.github', '.gitlab', '.circleci',     // CI and version control
   'node_modules', 'vendor', 'venv', '.venv',
@@ -2133,7 +2051,7 @@ function setupCrawlPanel() {
       multiInput = document.createElement('input');
       multiInput.type = 'file';
       multiInput.multiple = true;
-      multiInput.accept = '.yaml,.yml,.json';
+      multiInput.accept = '.yaml,.yml,.json,.cjs,.mjs,.js,.jsx,.ts,.tsx,.py,.go,.java,.kt,.rs,.cs';
       multiInput.style.display = 'none';
       multiInput.addEventListener('change', () => {
         if (multiInput.files?.length) stageFileList(multiInput.files, null);
@@ -2353,6 +2271,7 @@ async function doCrawl() {
     files,
     repoName:   $('#crawl-name').value.trim() || crawlState.rootName || 'crawled-service',
     environment:$('#crawl-env').value.trim() || 'prod',
+    diffScopeMode: $('#crawl-diff-scope')?.value || 'service',
   };
   const crit = $('#crawl-criticality').value;
   if (crit) body.criticality = crit;
@@ -2404,6 +2323,7 @@ async function doCrawlFromGithub() {
     ref,
     repoName:   $('#crawl-name').value.trim() || undefined,  // server falls back to owner/repo
     environment:$('#crawl-env').value.trim() || 'prod',
+    diffScopeMode: $('#crawl-diff-scope')?.value || 'service',
     // Quick-start cases pass a friendly label via the global so the
     // picker doesn't read "moebiusx-krystalinex" but the human name.
     label:      window._tomographQuickLabel || undefined,
@@ -2469,12 +2389,16 @@ function renderCrawlResult(out) {
   const s = out.summary.discovered;
   const f = out.summary.files || {};
   const env = out.summary.environment || {};
+  const comparison = out.summary.comparison || {};
   $('#crawl-result-summary').innerHTML = `
     <h4>what we found</h4>
     <table class="crawl-summary-table">
       <tr><td>environment scope</td><td>${escapeHtml(env.profile || 'none')}${env.scoped ? ` · ${f.excludedByEnvironment || 0} excluded` : ''}</td></tr>
+      <tr><td>live scope</td><td>${escapeHtml(comparison.diffScopeMode || 'service')}</td></tr>
       <tr><td>files used</td><td>${f.included ?? f.scanned ?? 0} / ${f.scanned ?? 0}</td></tr>
       <tr><td>backends</td><td>${s.backends}</td></tr>
+      <tr><td>metric definitions</td><td>${s.metricDefinitions || 0}</td></tr>
+      <tr><td>telemetry sources</td><td>${s.scrapeJobs || 0}</td></tr>
       <tr><td>recording rules</td><td>${s.recordingRules}</td></tr>
       <tr><td>burn-rate alerts</td><td>${s.burnRateAlerts}</td></tr>
       <tr><td>dashboards</td><td>${s.dashboards}</td></tr>

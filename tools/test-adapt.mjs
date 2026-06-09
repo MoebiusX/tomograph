@@ -31,6 +31,10 @@ function assert(cond, label, got, want) {
   process.stdout.write(`✗ ${label}${detail}\n`);
 }
 
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 const text = readFileSync(FIXTURE, 'utf8');
 const canonical = parseYaml(text);
 const envs = listEnvironments(canonical);
@@ -128,8 +132,15 @@ const traceFixture = {
     version: '0.1.0',
     binding: 'otel-prometheus-grafana',
     annotations: {
+      'crawler.discovered.metric_names': '["checkout_latency_seconds_bucket","checkout_latency_seconds_count"]',
+      'crawler.discovered.metric_names_count': '2',
+      'crawler.discovered.metric_origins': '{"checkout_latency_seconds_bucket":{"file":"src/metrics.ts","service":"checkout-api","type":"histogram","help":"checkout latency","labels":["route"]},"checkout_latency_seconds_count":{"file":"src/metrics.ts","service":"checkout-api","type":"histogram","help":"checkout latency","labels":["route"]}}',
+      'crawler.discovered.scrape_jobs': '["checkout-api"]',
+      'crawler.discovered.scrape_jobs_count': '1',
+      'crawler.discovered.scrape_job_origins': '{"checkout-api":{"file":"prometheus/scrape.yml","metrics_path":"/metrics","interval":"10s","targets":["checkout-api:8080"]}}',
       'mcp.discovered.scrape_jobs': 'checkout-api,node-exporter',
-      'mcp.discovered.metric_names_count': '3',
+      'mcp.discovered.metric_names': '2712',
+      'mcp.discovered.metric_names_count': '2712',
       'mcp.discovered.metric_names_sample': 'checkout_latency_seconds_bucket,checkout_latency_seconds_count,process_cpu_seconds_total',
       'mcp.discovered.alert_rule_names': 'CheckoutLatencyBudgetBurn,NodeDown',
       'mcp.refreshedAt': '2026-06-09T00:00:00.000Z',
@@ -183,8 +194,26 @@ const traceFixture = {
 };
 
 const traced = adapt(traceFixture);
+const sourceMetric = traced.layers.L2.find(a => a.id.startsWith('METRIC-SRC-') && a.spec.name === 'checkout_latency_seconds_bucket');
+const sourceScrape = traced.layers.L2.find(a => a.id.startsWith('SCRAPE-SRC-') && a.spec.job === 'checkout-api');
 const scrape = traced.layers.L2.find(a => a.id === 'SCRAPE-01');
+const metricInventory = traced.layers.L2.filter(a => (a.id || '').startsWith('METRIC-') && !(a.id || '').startsWith('METRIC-SRC-'));
+assert(sourceMetric?.spec?.origin_file === 'src/metrics.ts',
+       'L2 projects source metric origin from crawler annotations',
+       sourceMetric?.spec?.origin_file, 'src/metrics.ts');
+assert(sourceScrape?.spec?.origin_file === 'prometheus/scrape.yml',
+       'L2 projects source scrape origin from crawler annotations',
+       sourceScrape?.spec?.origin_file, 'prometheus/scrape.yml');
+assert(sourceScrape?.spec?.exports?.includes('checkout_latency_seconds_bucket'),
+       'source telemetry source lists exported metric series',
+       sourceScrape?.spec?.exports, ['checkout_latency_seconds_bucket']);
 assert(scrape?.spec?.job === 'checkout-api', 'L2 projects live scrape jobs from annotations', scrape?.spec?.job, 'checkout-api');
+assert(metricInventory.length === 3,
+       'legacy count-shaped metric_names falls back to metric_names_sample',
+       metricInventory.length, 3);
+assert(metricInventory[0]?._meta?.totalCount === 2712,
+       'metric inventory preserves discovered total count',
+       metricInventory[0]?._meta?.totalCount, 2712);
 assert(traced.traceability?.summary?.requirements === 1, 'traceability summary counts one requirement',
        traced.traceability?.summary?.requirements, 1);
 const chain = traced.traceability?.chains?.[0];
@@ -194,6 +223,8 @@ assert(chain?.sli?.id === 'slo_checkout_latency', 'traceability chain binds SLI'
        chain?.sli?.id, 'slo_checkout_latency');
 assert(chain?.metrics?.some(m => m.name === 'checkout_latency_seconds_bucket' && m.verified),
        'traceability extracts and verifies SLI metric');
+assert(chain?.metrics?.some(m => m.name === 'checkout_latency_seconds_bucket' && m.declared && m.origin?.file === 'src/metrics.ts'),
+       'traceability preserves declared metric origin separately from live verification');
 assert(chain?.recordingRules?.some(r => r.name === 'slo:checkout_latency:ratio_below_2s_5m'),
        'traceability links recording rule');
 assert(chain?.exporters?.some(e => e.id === 'PIP-EXP-MET'),
@@ -205,6 +236,28 @@ assert(chain?.dashboards?.some(d => d.id === 'checkout-slo' && d.panels?.some(p 
 assert(chain?.alerts?.some(a => a.name === 'CheckoutLatencyBudgetBurn'),
        'traceability links live alert rule by requirement tokens');
 assert(chain?.gaps?.length === 0, 'traceability chain is complete', chain?.gaps, []);
+
+const fullMetricFixture = clone(traceFixture);
+fullMetricFixture.metadata.annotations['mcp.discovered.metric_names'] =
+  '["checkout_latency_seconds_bucket","checkout_latency_seconds_count","process_cpu_seconds_total"]';
+fullMetricFixture.metadata.annotations['mcp.discovered.metric_names_count'] = '3';
+fullMetricFixture.metadata.annotations['mcp.discovered.metric_names_sample'] = '';
+const fullMetricTraced = adapt(fullMetricFixture);
+assert(fullMetricTraced.layers.L2.filter(a => (a.id || '').startsWith('METRIC-') && !(a.id || '').startsWith('METRIC-SRC-')).length === 3,
+       'metric_names JSON array projects full metric inventory');
+assert(fullMetricTraced.traceability?.chains?.[0]?.metrics?.some(m => m.name === 'checkout_latency_seconds_bucket' && m.verified),
+       'traceability verifies metrics from full metric_names annotation');
+
+const declaredOnlyMetricFixture = clone(traceFixture);
+delete declaredOnlyMetricFixture.metadata.annotations['mcp.discovered.metric_names'];
+delete declaredOnlyMetricFixture.metadata.annotations['mcp.discovered.metric_names_count'];
+delete declaredOnlyMetricFixture.metadata.annotations['mcp.discovered.metric_names_sample'];
+const declaredOnlyMetricTraced = adapt(declaredOnlyMetricFixture);
+const declaredOnlyMetric = declaredOnlyMetricTraced.traceability?.chains?.[0]?.metrics?.find(m => m.name === 'checkout_latency_seconds_bucket');
+assert(declaredOnlyMetric?.declared === true && declaredOnlyMetric?.verified === false,
+       'crawler-declared metric does not count as live-verified without MCP inventory',
+       { declared: declaredOnlyMetric?.declared, verified: declaredOnlyMetric?.verified },
+       { declared: true, verified: false });
 
 // ---------- summary ----------
 

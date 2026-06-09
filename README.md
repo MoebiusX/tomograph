@@ -69,6 +69,8 @@ The Discover view renders the observability tomogram across the layered model:
 - L5 Validation: baselines, synthetics, chaos, release checks
 - GOV: ownership and governance metadata
 
+![Tomograph Discover view showing the layered observability inventory](docs/img/xray-discover.png)
+
 ### 2. Diagnose - Can We Trust It?
 
 Load the declared repo pack as **Pack A** and the live production pack as
@@ -101,6 +103,8 @@ The drift drill shows:
 Traceability shows requirement chains from SLO to SLI, metrics, recording
 rules, exporters, scrape evidence, dashboards, alerts, and runbooks.
 
+![Tomograph Diagnose view showing Diagnostic Grade and live drift buckets](docs/img/xray-diagnose-drift.png)
+
 ### 3. Remediate - Fix The Gaps
 
 Tomograph compiles the pack delta into native backend artifacts:
@@ -114,6 +118,8 @@ Tomograph compiles the pack delta into native backend artifacts:
 Deployable artifacts can be pushed through an MCP write target. Non-deployable
 or inferred artifacts remain visible as manual follow-up, not silent production
 changes.
+
+![Tomograph Remediate view showing the Pack A minus Pack B deploy delta](docs/img/xray-remediate.png)
 
 ## Quickstart
 

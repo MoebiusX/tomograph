@@ -74,6 +74,9 @@ export const state = {
                                // provider.kind=grafana, anything whose mcp.source.<id>
                                // annotation came from a grafana_* tool, and any artefact
                                // that refs a surface backend). 'all' disables the filter.
+  diffScopeMode: '',           // '' means use Pack A's tomograph.diff.scopeMode annotation
+                               // or the service-scoped default. Otherwise:
+                               // 'service' | 'family' | 'all'.
   diff: null,                  // last fetched /api/diff result
   packB: null,                 // B's full layered pack (for atlases)
   atlasVariant: 'strata',      // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit' | 'arbor'
@@ -112,7 +115,7 @@ const PERSIST_FIELDS = [
   'selectedPackId', 'selectedEnv',
   'compareBId', 'compareBEnv',
   'view', 'layerFilter', 'diagnoseSub',
-  'compareSlice', 'compareSearch', 'compareLens',
+  'compareSlice', 'compareSearch', 'compareLens', 'diffScopeMode',
   'viewFocus',
   'atlasVariant', 'arborView',
   'compileGroup', 'compileFlavor', 'compileArtifact',

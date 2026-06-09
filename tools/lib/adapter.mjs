@@ -10,7 +10,7 @@
 //   listEnvironments(canonicalPack)     -> string[]
 //   applyEnvironmentOverlay(spec, env)  -> { spec, effective }
 
-import { buildRequirementTraceability } from './traceability.mjs';
+import { annotationList, buildRequirementTraceability } from './traceability.mjs';
 //
 // LAYERED DISPLAY OBJECT shape:
 //   {
@@ -89,6 +89,7 @@ export function adapt(canonical, opts = {}) {
       ...adaptBackends(ctx),
       ...adaptPipelines(ctx),
       ...adaptStorage(ctx),
+      ...adaptSourceMetricDefinitions(ctx),
       ...adaptScrapeJobs(ctx),
       ...adaptMetricInventory(ctx),
     ],
@@ -135,6 +136,8 @@ export function adapt(canonical, opts = {}) {
       binding: canonical.metadata?.binding,
       version: canonical.metadata?.version,
       owners: canonical.metadata?.owners ?? [],
+      service: metaBindings.service,
+      diffScopeMode: annotations['tomograph.diff.scopeMode'],
       criticality: effective.criticality || metaBindings.criticality,
       environment: envName,
       environments: envs,
@@ -330,28 +333,120 @@ function adaptStorage(ctx) {
   return out;
 }
 
-// L2 EXPAND: live scrape jobs projected from metadata annotations. The
-// canonical v1.2 schema does not have a first-class scrape_jobs field, so the
-// MCP fetcher stores them in annotations. Projecting them here makes scrape
-// evidence visible and comparable without changing the pack schema.
+// L2 EXPAND: source-side metric definitions projected from crawler
+// annotations. These are not runtime evidence; they are first-class declared
+// metric artefacts with origin metadata, so the graph can link an SLI series
+// back to the file/service that emits it.
+function adaptSourceMetricDefinitions(ctx) {
+  const ann = ctx.canonical?.metadata?.annotations || {};
+  const names = annotationList(
+    ann['crawler.discovered.metric_names'],
+    ann['crawler.discovered.metric_names_count'],
+    ann['crawler.discovered.metric_names_sample'],
+  );
+  if (!names.length) return [];
+  const origins = parseAnnotationObject(ann['crawler.discovered.metric_origins']);
+  return names.map((name, i) => {
+    const origin = origins[name] || {};
+    return {
+      id: `METRIC-SRC-${pad(i + 1)}`,
+      title: name,
+      desc: origin.file ? `declared in ${origin.file}` : 'declared metric',
+      tool: origin.type ? `Prometheus ${origin.type}` : 'Prometheus metric',
+      tags: ['metric', 'declared', origin.service, origin.type, origin.origin_kind].filter(Boolean),
+      source: 'Declared',
+      expand: true,
+      parent: 'telemetry.metric_inventory',
+      spec: {
+        name,
+        source: 'crawler.discovered',
+        source_name: origin.source_name || null,
+        origin_kind: origin.origin_kind || null,
+        origin_file: origin.file || null,
+        origin_service: origin.service || null,
+        metric_type: origin.type || null,
+        confidence: origin.confidence || null,
+        candidate: Boolean(origin.candidate),
+        help: origin.help || null,
+        origin_labels: origin.labels || [],
+        origin_query: name,
+        query: origin.query || null,
+        used_by: origin.used_by || [],
+        references: origin.references || [],
+      },
+    };
+  });
+}
+
+// L2 EXPAND: scrape jobs projected from repo crawler annotations and live MCP
+// annotations. The canonical v1.2 schema does not have a first-class
+// scrape_jobs field, so both paths store them in annotations. Projecting them
+// here makes scrape evidence visible and comparable without changing the pack
+// schema.
 function adaptScrapeJobs(ctx) {
   const ann = ctx.canonical?.metadata?.annotations || {};
-  const jobs = (ann['mcp.discovered.scrape_jobs'] || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-  return jobs.map((job, i) => ({
+  const out = [];
+  const sourceOrigins = parseAnnotationObject(ann['crawler.discovered.scrape_job_origins']);
+  const metricOrigins = parseAnnotationObject(ann['crawler.discovered.metric_origins']);
+  const sourceJobs = annotationList(
+    ann['crawler.discovered.scrape_jobs'],
+    ann['crawler.discovered.scrape_jobs_count'],
+  );
+  sourceJobs.forEach((job, i) => {
+    const origin = sourceOrigins[job] || {};
+    const exports = metricExportsForJob(metricOrigins, job);
+    out.push({
+      id: `SCRAPE-SRC-${pad(i + 1)}`,
+      title: job,
+      desc: `TelemetrySource${origin.file ? ` · ${origin.file}` : ''}`,
+      tool: 'Prometheus / OTel Collector',
+      tags: ['telemetry-source', 'scrape', 'target', 'declared'],
+      source: 'Declared',
+      expand: true,
+      parent: 'telemetry.scrape',
+      spec: {
+        type: 'TelemetrySource',
+        job,
+        source: 'crawler.discovered.scrape_jobs',
+        origin_file: origin.file || null,
+        file: origin.file || null,
+        scrape_query: origin.metrics_path || '/metrics',
+        metrics_path: origin.metrics_path || null,
+        interval: origin.interval || null,
+        targets: origin.targets || [],
+        exports,
+      },
+    });
+  });
+
+  const liveJobs = annotationList(ann['mcp.discovered.scrape_jobs']);
+  liveJobs.forEach((job, i) => out.push({
     id: `SCRAPE-${pad(i + 1)}`,
     title: `scrape: ${job}`,
     desc: 'live scrape job (MCP)',
     tool: 'Prometheus scrape',
-    tags: ['scrape', 'target'],
+    tags: ['scrape', 'target', 'verified'],
     source: 'Verified',
     expand: true,
     parent: 'telemetry.scrape',
     spec: { job, source: 'mcp.discovered.scrape_jobs' },
     mcp: { tool: 'scrape_configs', when: ann['mcp.refreshedAt'] },
   }));
+  return out;
+}
+
+function metricExportsForJob(metricOrigins, job) {
+  return Object.entries(metricOrigins || {})
+    .filter(([_, origin]) => metricSourceMatchesJob(origin, job))
+    .map(([name]) => name)
+    .sort();
+}
+
+function metricSourceMatchesJob(origin, job) {
+  const svc = compact(origin?.service || '');
+  const j = compact(job || '');
+  if (!svc || !j) return false;
+  return svc.includes(j) || j.includes(svc);
 }
 
 function adaptProfiling(ctx) {
@@ -480,12 +575,30 @@ function adaptDashboardPanels(ctx) {
   const out = [];
   let n = 0;
   for (const d of (ctx.spec.dashboards || [])) {
+    const bindings = new Map();
     for (const b of (d.panel_bindings || [])) {
+      bindings.set(compact(b.panel), b.binds_to);
+    }
+    const panels = [];
+    for (const p of (d.params?.panels || [])) {
+      if (!p || typeof p !== 'object') continue;
+      const panel = p.panel || p.title || `panel-${panels.length + 1}`;
+      panels.push({
+        ...p,
+        panel,
+        binds_to: p.binds_to || bindings.get(compact(panel)) || null,
+      });
+    }
+    for (const b of (d.panel_bindings || [])) {
+      if (panels.some(p => compact(p.panel) === compact(b.panel))) continue;
+      panels.push({ panel: b.panel, title: b.panel, binds_to: b.binds_to });
+    }
+    for (const b of panels) {
       n++;
       out.push({
         id: `PANEL-${pad(n)}`,
         title: b.panel || `panel-${n}`,
-        desc: b.binds_to ? `binds: ${b.binds_to}` : '(unbound)',
+        desc: b.binds_to ? `binds: ${b.binds_to}` : (b.expr ? 'query panel · unbound' : '(unbound)'),
         tool: 'dashboard panel',
         tags: ['panel', d.provider?.kind].filter(Boolean),
         source: ctx.sourceOf(`dashboards.${d.id}.panels.${b.panel}`),
@@ -500,16 +613,18 @@ function adaptDashboardPanels(ctx) {
 }
 
 // L2 EXPAND: metric inventory projected from
-// metadata.annotations.mcp.discovered.metric_names_sample. When the MCP
-// returns the metric inventory (via metrics_metadata / metrics_label_values
-// or any compatible tool), the fetcher writes the names into an annotation;
-// here we project them as expand-level artefacts so the layer view can
-// display them behind a toggle.
+// metadata.annotations.mcp.discovered.metric_names. When the MCP returns the
+// metric inventory (via metrics_metadata / metrics_label_values or any
+// compatible tool), the fetcher writes the full list into an annotation and a
+// compact sample for previews; here we prefer the full list and fall back to
+// the sample for older live packs.
 function adaptMetricInventory(ctx) {
   const ann = ctx.canonical?.metadata?.annotations || {};
-  const sample = ann['mcp.discovered.metric_names_sample'] || '';
-  if (!sample) return [];
-  const names = sample.split(',').map(s => s.trim()).filter(Boolean);
+  const names = annotationList(
+    ann['mcp.discovered.metric_names'],
+    ann['mcp.discovered.metric_names_count'],
+    ann['mcp.discovered.metric_names_sample'],
+  );
   if (!names.length) return [];
   const totalCount = parseInt(ann['mcp.discovered.metric_names_count'] || String(names.length), 10);
   return names.map((name, i) => ({
@@ -689,6 +804,20 @@ function extractRefs(expr) {
     if (!seen.has(m[1])) { refs.push(m[1]); seen.add(m[1]); }
   }
   return refs;
+}
+
+function parseAnnotationObject(value) {
+  if (!value || typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function compact(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
 function deepClone(x) {
