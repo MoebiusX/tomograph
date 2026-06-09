@@ -2228,6 +2228,20 @@ export function catalogEntryFor(packId) {
   return (state.catalog || []).find(p => p.id === packId) || null;
 }
 
+function uploadedSourceHint(p) {
+  if (p?.source !== 'uploaded') return '';
+  const m = String(p.description || '').match(/^Uploaded pack\s+—\s+(.+)$/);
+  const source = (m?.[1] || '').trim();
+  if (!source || source === p.label || source === p.name) return '';
+  return source;
+}
+
+function packOptionLabel(p) {
+  const version = p.version || '?';
+  const source = uploadedSourceHint(p);
+  return `${p.label || p.id} · v${version}${source ? ` · from ${source}` : ''}`;
+}
+
 function renderComparePackHeader(side, pack, diffMeta) {
   const card = document.createElement('div');
   card.className = `compare-pack-card compare-pack-card-${side}`;
@@ -2257,7 +2271,7 @@ function renderComparePackHeader(side, pack, diffMeta) {
   // Build the pack + env picker options from the live catalog.
   const packOptionsHtml = (state.catalog || [])
     .filter(p => p.ok)
-    .map(p => `<option value="${escapeHtml(p.id)}" ${p.id === activeId ? 'selected' : ''}>${escapeHtml(p.label)}</option>`)
+    .map(p => `<option value="${escapeHtml(p.id)}" ${p.id === activeId ? 'selected' : ''}>${escapeHtml(packOptionLabel(p))}</option>`)
     .join('');
   const envOptionsHtml = (envOptions.length ? envOptions : (activeEnv ? [activeEnv] : []))
     .map(e => `<option value="${escapeHtml(e)}" ${e === activeEnv ? 'selected' : ''}>${escapeHtml(e)}</option>`)

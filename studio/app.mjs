@@ -148,6 +148,21 @@ async function loadPack(id, env) {
 
 // ---------- selectors ----------
 
+function uploadedSourceHint(p) {
+  if (p?.source !== 'uploaded') return '';
+  const m = String(p.description || '').match(/^Uploaded pack\s+—\s+(.+)$/);
+  const source = (m?.[1] || '').trim();
+  if (!source || source === p.label || source === p.name) return '';
+  return source;
+}
+
+function packSelectLabel(p, { prefixUploaded = false } = {}) {
+  const prefix = prefixUploaded && p.source === 'uploaded' ? '📂 ' : '';
+  const version = p.version || '?';
+  const source = uploadedSourceHint(p);
+  return `${prefix}${p.label} · v${version}${source ? ` · from ${source}` : ''}`;
+}
+
 function renderPackSelect() {
   const sel = $('#pack-select');
   sel.innerHTML = '';
@@ -158,9 +173,8 @@ function renderPackSelect() {
     // them apart from file-backed catalog entries at a glance. Tier
     // is omitted from the option text — it already renders as a
     // separate badge on the picker chrome.
-    const prefix = p.source === 'uploaded' ? '📂 ' : '';
     opt.textContent = p.ok
-      ? `${prefix}${p.label} · v${p.version || '?'}`
+      ? packSelectLabel(p, { prefixUploaded: true })
       : `${p.label} (error)`;
     if (!p.ok) opt.disabled = true;
     sel.appendChild(opt);
@@ -199,7 +213,7 @@ function renderPackBSelect() {
   // Sort by label so the list is stable across re-renders.
   options.sort((a, b) => (a.label || a.id).localeCompare(b.label || b.id));
   sel.innerHTML = '<option value="">— none —</option>'
-    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')}</option>`).join('');
+    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(packSelectLabel(p))}</option>`).join('');
   sel.value = state.compareBId || '';
   sel.onchange = () => {
     const newId = sel.value || null;
