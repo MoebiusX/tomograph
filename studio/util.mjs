@@ -24,6 +24,25 @@ export function toast(message, kind = '') {
   toast._t = setTimeout(() => { el.hidden = true; }, 4000);
 }
 
+// Keep keyboard focus inside the topmost open dialog. Installed once at
+// boot; covers every [role="dialog"] panel without per-dialog wiring.
+export function installDialogFocusTrap() {
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const open = document.querySelectorAll('[role="dialog"]:not([hidden])');
+    const dialog = open[open.length - 1];
+    if (!dialog) return;
+    const focusables = [...dialog.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )].filter(el => el.offsetParent !== null);
+    if (!focusables.length) { e.preventDefault(); dialog.focus?.(); return; }
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (!dialog.contains(document.activeElement)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return; }
+    if (!e.shiftKey && document.activeElement === last)       { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first)  { e.preventDefault(); last.focus(); }
+  });
+}
+
 // "5s ago" / "12m ago" / "3h ago" / "2d ago" from an ISO timestamp.
 export function fmtRelative(iso) {
   if (!iso) return '';

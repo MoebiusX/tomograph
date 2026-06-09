@@ -1959,7 +1959,11 @@ function renderCompareView(view) {
     Promise.all([
       haveB    ? Promise.resolve() : loadPackB(),
       haveDiff ? Promise.resolve() : loadDiff(),
-    ]).then(() => { renderTabs(); renderMainView(); });
+    ]).then(() => { renderTabs(); renderMainView(); })
+      .catch((e) => {
+        loading.className = 'error';
+        loading.textContent = `Failed to load packs: ${e.message}`;
+      });
     return;
   }
 

@@ -25,7 +25,7 @@ import {
   focusedCompileFlavor, setFocusedCompileFlavor,
   focusedCompileArtifact, setFocusedCompileArtifact,
 } from './focus.mjs';
-import { escapeHtml, toast, fmtRelative } from './util.mjs';
+import { escapeHtml, toast, fmtRelative, installDialogFocusTrap } from './util.mjs';
 import { renderSchemaView } from './schema-view.mjs';
 import { renderConformanceView } from './conformance-view.mjs';
 import { renderOtlpView } from './otlp-view.mjs';
@@ -129,6 +129,13 @@ async function rehydrateFromPersistence() {
       applyModeChrome();
       renderPackBSelect();
       renderEnvBSelect();
+      renderTabs();
+      renderMainView();
+    }).catch((e) => {
+      // Pack B restore is best-effort: keep the session usable on Pack A.
+      state.compareBId = null;
+      state.packB = null;
+      toast(`Couldn't restore Pack B: ${e.message}`, 'error');
       renderTabs();
       renderMainView();
     });
@@ -1271,6 +1278,7 @@ async function boot() {
   setupCrawlPanel();
   setupDraftFromMcpPanel();
   setupDeployModal();
+  installDialogFocusTrap();
   setupHomeAffordance();   // logo click returns home
 
   // Initial live-status load + 60s soft-refresh of the badge so "3m ago"
