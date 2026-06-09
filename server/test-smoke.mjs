@@ -110,6 +110,10 @@ try {
   assert(!!example, 'examples include payment-service');
   assert(example?.criticality === 'tier-1', 'payment-service criticality');
   assert(example?.environments?.length === 2, 'payment-service environments count');
+  assert(typeof example?.service === 'string' && example.service.length > 0,
+         'example catalog entries expose service workspace metadata');
+  assert(Array.isArray(example?.services) && example.services.length >= 1,
+         'example catalog entries expose service aliases');
 
   // /api/references — the catalogue reference packs (Advanced → References)
   const references = await getJson(base, '/api/references');
@@ -190,6 +194,8 @@ try {
   assert(Array.isArray(diff.layers?.L4?.inBoth),  'diff.layers.L4.inBoth array (sub-layers flattened)');
   const familyDiff = await getJson(base, '/api/diff?a=target-advanced&b=production-curated&scopeMode=family');
   assert(familyDiff.scope?.mode === 'family', 'diff accepts scopeMode=family');
+  const serviceDiff = await getJson(base, '/api/diff?a=target-advanced&b=production-curated&service=platform-edge');
+  assert(serviceDiff.scope?.service === 'platform-edge', 'diff accepts service workspace override');
   // missing args
   const badDiff = await fetch(`${base}/api/diff?a=target-advanced`);
   assert(badDiff.status === 400, 'diff with missing b → 400');

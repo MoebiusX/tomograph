@@ -405,6 +405,14 @@ assert(l3OutOfScopeKeys.some(k => k.includes('solace-clients')),
        'foreign tenant live dashboard is out-of-scope');
 assert(scopedDiff.scope?.mode === 'service',
        'default diff scope mode is service');
+assert(scopedDiff.scope?.service === 'checkout',
+       'default service scope is derived from Pack A');
+
+const overriddenServiceDiff = diffPacks(adapt(scopedRepoPack), adapt(scopedLivePack), { service: 'solace' });
+assert(overriddenServiceDiff.scope?.service === 'solace',
+       'selected service override is reported in diff scope');
+assert(overriddenServiceDiff.layers.L2.onlyInB.some(x => x.key.includes('solace_messages_total')),
+       'selected service override brings matching live metric into scope');
 
 const familyDiff = diffPacks(adapt(scopedRepoPack), adapt(scopedLivePack), { scopeMode: 'family' });
 const familyL2OnlyInBKeys = familyDiff.layers.L2.onlyInB.map(x => x.key);
