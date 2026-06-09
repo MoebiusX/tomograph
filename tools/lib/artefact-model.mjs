@@ -134,6 +134,7 @@ export function classify(artefact) {
   if (id === 'STO-MET-01')       return 'storage_metrics';
   if (id === 'STO-LOG-01')       return 'storage_logs';
   if (id === 'STO-TRC-01')       return 'storage_traces';
+  if (id.startsWith('SCRAPE-'))  return 'scrape_job';
   if (id.startsWith('METRIC-'))  return 'metric';
   if (id === 'PROF-01')          return 'profiling';
   if (id === 'NET-01')           return 'network';
@@ -186,6 +187,8 @@ const IDENTITY = {
   storage_metrics: (s) => ({ signal: 'metrics', backend: low(s.backend) }),
   storage_logs:    (s) => ({ signal: 'logs',    backend: low(s.backend) }),
   storage_traces:  (s) => ({ signal: 'traces',  backend: low(s.backend) }),
+
+  scrape_job:   (s) => ({ job: low(s.job) }),
 
   // A metric IS its series name — that's the handle every query targets.
   // Never the positional METRIC-NN index.

@@ -448,16 +448,16 @@ function renderLayersBody(body) {
 
 // Detail-level artefacts a section hides by default behind its own Expand
 // toggle(s) — the prototype's per-section model. L2 hides the discovered
-// metric inventory behind one toggle (so only producers/consumers — exporters,
-// scrape jobs — show by default). L3 hides dashboard panels and queries behind
+// metric inventory and live scrape evidence behind one toggle. L3 hides
+// dashboard panels and queries behind
 // their own toggles, leaving just the dashboards. Classified by tag so no
 // adapter change is needed.
 function expandBucketsFor(def, filtered) {
   if (def.id === 'L2') {
-    const metrics = filtered.filter(a => a.expand);
-    return metrics.length
-      ? [{ key: 'expandL2', label: 'Metrics', items: metrics,
-           title: `Toggle the metric inventory — ${metrics.length} discovered metric${metrics.length === 1 ? '' : 's'} (vs the exporters / scrape jobs that produce them)` }]
+    const evidence = filtered.filter(a => a.expand);
+    return evidence.length
+      ? [{ key: 'expandL2', label: 'Evidence', items: evidence,
+           title: `Toggle discovered metric inventory and scrape evidence — ${evidence.length} live evidence artefact${evidence.length === 1 ? '' : 's'}` }]
       : [];
   }
   if (def.id === 'L3') {

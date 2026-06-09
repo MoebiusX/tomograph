@@ -41,7 +41,7 @@
     "validate": "node tools/validate-pack.mjs vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml",
     "lint:fetcher": "node --check tools/fetch-live-pack.mjs",
     "test:fetch": "node tools/test-fetch-live.mjs",
-    "lint:adapter": "node --check tools/adapt-spec-pack.mjs && node --check tools/lib/adapter.mjs && node --check tools/lib/mini-yaml.mjs",
+    "lint:adapter": "node --check tools/adapt-spec-pack.mjs && node --check tools/lib/adapter.mjs && node --check tools/lib/mini-yaml.mjs && node --check tools/lib/traceability.mjs",
     "lint:crawler": "node --check tools/crawl-repo.mjs && node --check tools/lib/crawler.mjs",
     "lint:server": "node --check server/index.mjs",
     "lint:studio": "node --check studio/app.mjs",

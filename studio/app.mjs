@@ -148,6 +148,21 @@ async function loadPack(id, env) {
 
 // ---------- selectors ----------
 
+function uploadedSourceHint(p) {
+  if (p?.source !== 'uploaded') return '';
+  const m = String(p.description || '').match(/^Uploaded pack\s+—\s+(.+)$/);
+  const source = (m?.[1] || '').trim();
+  if (!source || source === p.label || source === p.name) return '';
+  return source;
+}
+
+function packSelectLabel(p, { prefixUploaded = false } = {}) {
+  const prefix = prefixUploaded && p.source === 'uploaded' ? '📂 ' : '';
+  const version = p.version || '?';
+  const source = uploadedSourceHint(p);
+  return `${prefix}${p.label} · v${version}${source ? ` · from ${source}` : ''}`;
+}
+
 function renderPackSelect() {
   const sel = $('#pack-select');
   sel.innerHTML = '';
@@ -158,9 +173,8 @@ function renderPackSelect() {
     // them apart from file-backed catalog entries at a glance. Tier
     // is omitted from the option text — it already renders as a
     // separate badge on the picker chrome.
-    const prefix = p.source === 'uploaded' ? '📂 ' : '';
     opt.textContent = p.ok
-      ? `${prefix}${p.label} · v${p.version || '?'}`
+      ? packSelectLabel(p, { prefixUploaded: true })
       : `${p.label} (error)`;
     if (!p.ok) opt.disabled = true;
     sel.appendChild(opt);
@@ -199,7 +213,7 @@ function renderPackBSelect() {
   // Sort by label so the list is stable across re-renders.
   options.sort((a, b) => (a.label || a.id).localeCompare(b.label || b.id));
   sel.innerHTML = '<option value="">— none —</option>'
-    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')}</option>`).join('');
+    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(packSelectLabel(p))}</option>`).join('');
   sel.value = state.compareBId || '';
   sel.onchange = () => {
     const newId = sel.value || null;
@@ -996,12 +1010,32 @@ function installObservaChrome() {
   const advToggle = hdr.querySelector('.observa-adv-toggle');
   const advMenu   = hdr.querySelector('.observa-adv-menu');
   const closeAdv = () => { if (advMenu) { advMenu.hidden = true; advToggle?.setAttribute('aria-expanded', 'false'); } };
+  const positionAdv = () => {
+    if (!advToggle || !advMenu) return;
+    const gap = 10;
+    const pad = 12;
+    const rect = advToggle.getBoundingClientRect();
+    const width = Math.min(280, Math.max(180, window.innerWidth - pad * 2));
+    const left = Math.min(
+      Math.max(pad, rect.right - width),
+      Math.max(pad, window.innerWidth - width - pad),
+    );
+    const top = Math.min(
+      rect.bottom + gap,
+      Math.max(pad, window.innerHeight - pad - advMenu.offsetHeight),
+    );
+    advMenu.style.width = `${width}px`;
+    advMenu.style.left = `${left}px`;
+    advMenu.style.top = `${top}px`;
+  };
   advToggle?.addEventListener('click', (e) => {
     e.stopPropagation();
     const willOpen = advMenu.hidden;
     advMenu.hidden = !willOpen;
     advToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    if (willOpen) positionAdv();
   });
+  window.addEventListener('resize', () => { if (advMenu && !advMenu.hidden) positionAdv(); });
   hdr.querySelectorAll('.observa-adv-item').forEach(item => {
     item.addEventListener('click', () => { closeAdv(); routeTo(item.dataset.view); });
   });

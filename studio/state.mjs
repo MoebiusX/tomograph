@@ -43,10 +43,10 @@ export const state = {
   tracePrefs: { suppressed: [], resolved: [] },
   traceOpen: { aligned: false, declaredNotVerified: true, verifiedNotDeclared: true, stale: true },
   // Per-section Expand toggles — each L2/L3 section hides its detail-level
-  // artefacts by default and reveals them on demand. L2: metric inventory
-  // (METRIC-NN) vs the exporters / scrape jobs that produce it. L3: dashboard
-  // panels (PANEL-NN) and queries (recording rules / derived views) vs the
-  // dashboards. Persisted so the user's choice survives refresh.
+  // artefacts by default and reveals them on demand. L2: live evidence
+  // inventory (METRIC-NN + SCRAPE-NN). L3: dashboard panels (PANEL-NN) and
+  // queries (recording rules / derived views) vs the dashboards. Persisted so
+  // the user's choice survives refresh.
   expandL2: false,
   expandL3Panels: false,
   expandL3Queries: false,

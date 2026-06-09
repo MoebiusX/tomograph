@@ -8,7 +8,7 @@ The adapter (`tools/lib/adapter.mjs`) projects a canonical ObservabilityPack v1.
 import { adapt, listEnvironments, applyEnvironmentOverlay } from './tools/lib/adapter.mjs';
 
 const layered = adapt(canonical, { environment: 'staging' });
-// layered = { id, name, badge, description, meta, layers: { L1, L2, L2X, L3, L4: {policy,alerting,healing}, L5, GOV } }
+// layered = { id, name, badge, description, meta, layers: { L1, L2, L2X, L3, L4: {policy,alerting,healing}, L5, GOV }, traceability }
 
 const envs = listEnvironments(canonical);
 // e.g. ['prod', 'staging']
@@ -41,6 +41,10 @@ const { spec, effective } = applyEnvironmentOverlay(canonical.spec, 'staging');
     L4: { policy: artefact[], alerting: artefact[], healing: artefact[] },
     L5: artefact[],
     GOV: artefact[],
+  },
+  traceability: {
+    summary: object,
+    chains: requirementTrace[],
   },
 }
 ```
@@ -77,6 +81,8 @@ The adapter walks each top-level spec section into a deterministic family of lay
 | `spec.pipelines.exporters.{metrics\|logs\|traces}` | L2 | `PIP-EXP-{MET\|LOG\|TRC}` | |
 | `spec.storage.{metrics\|logs\|traces}` | L2 | `STO-{MET\|LOG\|TRC}-01` | |
 | `spec.profiling` | **L2X** | `PROF-01` | Extended surface from spec §5.12.4 |
+| `metadata.annotations.mcp.discovered.scrape_jobs` | L2 | `SCRAPE-{NN}` | Expand-level live scrape evidence |
+| `metadata.annotations.mcp.discovered.metric_names_sample` | L2 | `METRIC-{NN}` | Expand-level live metric inventory |
 | `spec.network` | **L2X** | `NET-01` | |
 | `spec.policy_engine` | **L2X** | `POE-01` | |
 | `spec.mesh[]` | **L2X** | `MESH-{NN}` | |
@@ -103,6 +109,19 @@ The client builds a symbol table from every artefact's `defines`. Each artefact'
 
 `ref-link`s in drawer panels are clickable — clicking jumps to the defining artefact's drawer (switches active layer tab, opens it, scrolls into view).
 
+## Requirement traceability
+
+The adapter also attaches `traceability` to the layered pack. Each chain starts
+from an SLO, follows its SLI, extracts metric names from PromQL expressions,
+links related recording rules, metrics exporters, live scrape evidence,
+dashboard panels, and burn-rate/live alert names. The chain intentionally keeps
+scrape evidence honest: when the MCP confirms scrape jobs but the pack cannot
+map a specific metric back to a job, the chain records the observed job count
+and a `scrape_jobs_observed_but_not_metric_specific` note instead of inventing
+a dependency.
+
+This powers the studio Traceability tab and the SLI/SLO drawer panel.
+
 ## Environment overlay
 
 When `spec.environments` is non-empty, `applyEnvironmentOverlay(spec, envName)`:
@@ -123,6 +142,9 @@ Outputs the layered JSON to stdout. Same module that the server and the studio u
 
 ## Regression suite
 
-`tools/test-adapt.mjs` exercises 41 assertions against the vendored canonical example — layer counts, `defines`/`refs` shape, gating tags, env overlay, adapter purity (no mutation across calls).
+`tools/test-adapt.mjs` exercises the vendored canonical example plus a focused
+requirements-traceability fixture — layer counts, `defines`/`refs` shape,
+gating tags, env overlay, adapter purity (no mutation across calls), and the
+SLO -> SLI -> metrics -> exporter/scrape -> dashboard -> alert chain.
 
 `tools/test-packs.mjs` runs the adapter against every `packs/*.pack.yaml`, validates schema + asserts pack-specific conformance bands.

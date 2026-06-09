@@ -3,7 +3,7 @@
 The conformance scorer (`tools/lib/conformance.mjs`) evaluates a canonical
 pack against a hand-curated subset of the maturity rubric from
 [spec §5 + §7](../vendor/observability-pack-spec/v1.2/spec.md). The studio
-exposes the scoring in the conformance view and via
+exposes the scoring under **Advanced -> Conformance** and via
 `GET /api/packs/:id/conformance?env=<name>`.
 
 ## Rubric
@@ -72,7 +72,7 @@ conformant     = must.passed === must.total   (per spec §8 definition)
 | `target-advanced.pack.yaml` | tier-1 | 25/25 (100%) | 5/5 (100%) | yes |
 | `payment-service.pack.yaml` (canonical example) | tier-1 | 21/25 (84%) | 5/5 (100%) | no — 4 orphan SLOs |
 
-The canonical example itself fails 4 MUSTs (`L3.MUST.recording_rule_per_slo`, `L4.MUST.multi_window_burn_rate`, `L5.MUST.tier1_chaos_for_each_slo`, `L5.MUST.tier1_weekly_prod_chaos`) because two of its five SLOs (`api_latency_99_p99_500ms`, `consumer_success_99_95`) aren't covered by a recording rule, burn-rate alert, or chaos experiment. The studio surfaces these as red-X items in the conformance view — visible drift the spec's own reference example carries.
+The canonical example itself fails 4 MUSTs (`L3.MUST.recording_rule_per_slo`, `L4.MUST.multi_window_burn_rate`, `L5.MUST.tier1_chaos_for_each_slo`, `L5.MUST.tier1_weekly_prod_chaos`) because two of its five SLOs (`api_latency_99_p99_500ms`, `consumer_success_99_95`) aren't covered by a recording rule, burn-rate alert, or chaos experiment. The studio surfaces these as red-X items in Advanced -> Conformance: visible drift the spec's own reference example carries.
 
 ## Extending the rubric
 
