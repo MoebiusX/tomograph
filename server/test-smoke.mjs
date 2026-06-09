@@ -174,15 +174,22 @@ try {
   assert(diff.b?.id === 'production-curated',  'diff.b.id = production-curated metadata.name');
   assert(diff.a?.criticality === 'tier-1', 'diff.a carries criticality');
   assert(diff.b?.criticality === 'tier-2', 'diff.b carries criticality');
+  assert(diff.scope?.mode === 'service', 'diff defaults to service scope mode');
   assert(typeof diff.summary?.onlyInA === 'number', 'diff.summary.onlyInA present');
   assert(typeof diff.summary?.inBoth  === 'number', 'diff.summary.inBoth present');
   assert(typeof diff.summary?.jaccard === 'number', 'diff.summary.jaccard present');
+  assert(typeof diff.traceabilityGraph?.rollup?.integrityMean === 'number',
+         'diff.traceabilityGraph.rollup.integrityMean present');
+  assert(Array.isArray(diff.traceabilityGraph?.branches),
+         'diff.traceabilityGraph.branches array present');
   assert(diff.summary.aTotal > diff.summary.bTotal,
          'target-advanced has more artefacts than production-curated',
          { aTotal: diff.summary.aTotal, bTotal: diff.summary.bTotal },
          'aTotal > bTotal');
   assert(Array.isArray(diff.layers?.L1?.onlyInA), 'diff.layers.L1.onlyInA array');
   assert(Array.isArray(diff.layers?.L4?.inBoth),  'diff.layers.L4.inBoth array (sub-layers flattened)');
+  const familyDiff = await getJson(base, '/api/diff?a=target-advanced&b=production-curated&scopeMode=family');
+  assert(familyDiff.scope?.mode === 'family', 'diff accepts scopeMode=family');
   // missing args
   const badDiff = await fetch(`${base}/api/diff?a=target-advanced`);
   assert(badDiff.status === 400, 'diff with missing b → 400');
@@ -525,6 +532,7 @@ try {
   // canonical schema and surface evidence pointers.
   const crawlBody = {
     repoName: 'smoke-crawl',
+    diffScopeMode: 'family',
     files: {
       'docker-compose.yml': `version: '3.8'\nservices:\n  prometheus:\n    image: prom/prometheus:v2.51.0\n    ports: ["9090:9090"]\n  grafana:\n    image: grafana/grafana:12.0.0\n    ports: ["3000:3000"]\n`,
       'rules.yml': `groups:\n  - name: g\n    rules:\n      - record: smoke:availability:ratio\n        expr: sum(rate(req_total[5m]))\n`,
@@ -542,6 +550,10 @@ try {
   assert(crawlOut.ok === true, 'crawl ok');
   assert(crawlOut.canonical?.apiVersion === 'observability.platform/v1', 'crawl emits canonical v1');
   assert(crawlOut.canonical?.metadata?.name === 'smoke-crawl', 'crawl honors repoName');
+  assert(crawlOut.canonical?.metadata?.annotations?.['tomograph.diff.scopeMode'] === 'family',
+         'crawl honors requested live-drift scope mode');
+  assert(crawlOut.summary?.comparison?.diffScopeMode === 'family',
+         'crawl summary echoes requested live-drift scope mode');
   assert(Array.isArray(crawlOut.canonical?.spec?.telemetry?.backends), 'crawl emits telemetry.backends');
   assert(crawlOut.canonical.spec.telemetry.backends.some(b => b.product === 'prometheus'),
          'crawl discovers prometheus backend from docker-compose');
@@ -576,6 +588,7 @@ try {
   const shell = await getText(base, '/');
   assert(shell.includes('id="crawl-panel"'), 'shell includes #crawl-panel');
   assert(shell.includes('id="crawl-dropzone"'), 'shell includes the dropzone');
+  assert(shell.includes('id="crawl-diff-scope"'), 'shell includes the crawler live-scope selector');
   assert(shell.includes('id="crawl-btn"'), 'shell includes the "new from repo" button');
 
   // Shell carries the Path B "new from live" surface (Phase 7n)

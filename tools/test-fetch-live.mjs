@@ -258,6 +258,8 @@ assert(probed.metadata.annotations['mcp.discovered.scrape_jobs'] === 'checkout,p
        'scrape jobs annotated');
 assert(probed.metadata.annotations['mcp.discovered.metric_names_count'] === '3',
        'metric inventory count annotated');
+assert(probed.metadata.annotations['mcp.discovered.metric_names']?.includes('http_requests_total'),
+       'full metric inventory annotated');
 assert(probed.metadata.annotations['mcp.discovered.metric_names_sample']?.includes('http_requests_total'),
        'metric inventory sample annotated');
 
@@ -276,6 +278,8 @@ assert(typeof probed.metadata.annotations['mcp.verified.telemetry.scrape'] === '
        'scrape evidence verified by MCP');
 assert(typeof probed.metadata.annotations['mcp.verified.otel.metrics'] === 'string',
        'metric inventory verified by MCP');
+assert(typeof probed.metadata.annotations['mcp.verified.pipelines.exporters.metrics'] === 'string',
+       'metrics exporter path verified when scrape/metric inventory is observed');
 
 // ---------- case 4: probes attempted but came back empty — honest gap ----------
 //

@@ -39,20 +39,28 @@
 // its version/schemaVersion) renders it. Two packs that file the same dashboard
 // in different folders, or reconstruct it under a different provider version,
 // describe the SAME dashboard — the contract is its panels/bindings, not where
-// it's filed. The compiler still reads `provider.version` straight from the raw
-// pack for emission fidelity, so dropping it here only affects EQUALITY, never
-// what gets compiled.
+// it's filed. Likewise, base observability infrastructure versions are inventory
+// evidence for compile/deploy compatibility, not live-drift proof for an
+// SLO/SLI requirement chain. The compiler still reads versions straight from the
+// raw pack for emission fidelity, so dropping them here only affects EQUALITY,
+// never what gets compiled.
 const VOLATILE_SPEC_KEYS = new Set([
   'endpoints', 'endpoint', 'url', 'address', 'host', 'auth',
   'description', 'desc', 'title', 'summary', 'annotations',
   'source', 'evidence', 'mcp', 'default',
-  'folder', 'provider',
+  'semconv',
+  'origin', 'origin_kind', 'origin_file', 'origin_service', 'metric_type', 'help', 'origin_labels', 'origin_query',
+  'measurement_source',
+  'file', 'exports', 'scrape_query', 'metrics_path', 'interval', 'targets',
+  'references', 'used_by',
+  'folder', 'provider', 'version', 'params', 'panel_bindings',
 ]);
 
 // Spec fields that carry an executable expression. Whitespace and surrounding
 // blanks are cosmetic — `rate(x[5m])` and `rate( x[5m] )` deploy identically —
 // so they're collapsed before comparison.
 const EXPR_KEYS = new Set(['expr', 'query', 'promql', 'expression']);
+const SLI_EXPR_KEYS = new Set(['good', 'total', 'query']);
 
 function normalizeExpr(s) {
   return String(s).replace(/\s+/g, ' ').trim();
@@ -80,9 +88,6 @@ export function canonicalize(value, keyName) {
     return out.length ? out : undefined;
   }
   if (value && typeof value === 'object') {
-    if (keyName === 'version') {
-      return value.declared !== undefined ? { declared: value.declared } : sortedObject(value);
-    }
     const out = {};
     for (const k of Object.keys(value).sort()) {
       if (VOLATILE_SPEC_KEYS.has(k)) continue;
@@ -203,9 +208,15 @@ const IDENTITY = {
   // A recording rule's deployed contract is the output series it produces.
   recording_rule: (s) => ({ record: low(s.name) }),
 
-  // A panel's behaviour is what it visualises — the binding target, scoped to
-  // its dashboard. Never the positional PANEL-NN index.
-  panel:        (s, a) => ({ parent: a.parent || '', binds_to: low(s.binds_to) }),
+  // A bound panel's behaviour is what it visualises, scoped to its dashboard.
+  // Unbound crawler-discovered panels still need a stable identity so a
+  // dashboard's 37 query panels don't collapse into one "empty binding".
+  panel:        (s, a) => ({
+    parent: a.parent || '',
+    binds_to: low(s.binds_to),
+    panel: s.binds_to ? undefined : low(s.panel || s.title),
+    query: s.binds_to ? undefined : normalizeExpr(s.expr || s.query || ''),
+  }),
 
   burn_rate:    (s) => ({ slo: stripRef(s.slo) }),
   forecast:     (s) => ({ slo: stripRef(s.slo) }),
@@ -238,8 +249,18 @@ export function modelOf(artefact) {
   const kind = classify(artefact);
   const idFn = IDENTITY[kind] || IDENTITY.unknown;
   const identity = idFn(artefact?.spec || {}, artefact || {});
-  const behavior = canonicalize(artefact?.spec ?? {});
+  const behavior = behaviorFor(kind, artefact?.spec ?? {});
   return { kind, identity, behavior };
+}
+
+function behaviorFor(kind, spec) {
+  if (kind === 'metric') {
+    return canonicalize({ name: spec.name });
+  }
+  if (kind === 'scrape_job') {
+    return canonicalize({ job: spec.job });
+  }
+  return canonicalize(spec);
 }
 
 // Stable primitive key for pairing. A Map needs a string key, so we serialise
@@ -260,6 +281,7 @@ export function behaviorOf(artefact) {
 // Top-level behavioural fields whose values differ between two matched
 // artefacts. Empty array ⇒ identical deployed behaviour (aligned).
 export function deltasOf(a, b) {
+  const kind = sharedKind(a, b);
   const ba = behaviorOf(a);
   const bb = behaviorOf(b);
   const fields = new Set([...Object.keys(ba), ...Object.keys(bb)]);
@@ -267,9 +289,36 @@ export function deltasOf(a, b) {
   for (const f of [...fields].sort()) {
     const sa = JSON.stringify(ba[f] ?? null);
     const sb = JSON.stringify(bb[f] ?? null);
+    if (sa !== sb && isPartialEvidenceExpressionDelta(kind, f, ba[f], bb[f])) continue;
     if (sa !== sb) deltas.push({ field: f, a: ba[f] ?? null, b: bb[f] ?? null });
   }
   return deltas;
+}
+
+function sharedKind(a, b) {
+  const ka = classify(a);
+  const kb = classify(b);
+  return ka === kb ? ka : 'unknown';
+}
+
+function isPartialEvidenceExpressionDelta(kind, field, aValue, bValue) {
+  const expressionField =
+    EXPR_KEYS.has(field)
+    || (kind === 'sli' && SLI_EXPR_KEYS.has(field));
+  if (!expressionField) return false;
+  if (!['sli', 'recording_rule', 'derived_view'].includes(kind)) return false;
+  const aRef = isExpressionReferenceOnly(aValue);
+  const bRef = isExpressionReferenceOnly(bValue);
+  return aRef !== bRef;
+}
+
+function isExpressionReferenceOnly(value) {
+  const s = normalizeExpr(value ?? '');
+  if (!s) return true;
+  if (/^ref:[a-z0-9_.:-]+$/i.test(s)) return true;
+  if (/^[a-z_:][a-z0-9_:]*(\{[^{}]*\})?$/i.test(s)) return true;
+  if (/^(?:\d+(?:\.\d+)?|true|false)$/i.test(s)) return true;
+  return false;
 }
 
 // True when two artefacts deploy to identical behaviour.

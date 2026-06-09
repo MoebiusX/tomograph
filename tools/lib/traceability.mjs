@@ -9,20 +9,10 @@
 // Pure ESM, browser-safe. The adapter attaches the resulting object to the
 // layered pack so both Node-side tests and the studio can read the same model.
 
-const PROMQL_STOP_WORDS = new Set([
-  'abs', 'absent', 'absent_over_time', 'avg', 'avg_over_time',
-  'bool', 'bottomk', 'by', 'ceil', 'changes', 'clamp', 'clamp_max', 'clamp_min',
-  'count', 'count_over_time', 'count_values', 'day_of_month', 'day_of_week',
-  'days_in_month', 'delta', 'deriv', 'exp', 'floor', 'group_left',
-  'group_right', 'histogram_avg', 'histogram_count', 'histogram_fraction',
-  'histogram_quantile', 'histogram_sum', 'holt_winters', 'hour', 'idelta',
-  'ignoring', 'increase', 'irate', 'label_join', 'label_replace', 'last_over_time',
-  'ln', 'log10', 'log2', 'max', 'max_over_time', 'min', 'min_over_time',
-  'minute', 'month', 'offset', 'on', 'or', 'and', 'unless', 'predict_linear',
-  'present_over_time', 'quantile', 'quantile_over_time', 'rate', 'resets',
-  'round', 'scalar', 'sgn', 'sort', 'sort_desc', 'sqrt', 'stddev',
-  'stddev_over_time', 'stdvar', 'stdvar_over_time', 'sum', 'sum_over_time',
-  'time', 'timestamp', 'topk', 'vector', 'without', 'year',
+import { PROMQL_KEYWORDS, extractPromqlMetricNames } from './promql.mjs';
+
+const TRACE_STOP_WORDS = new Set([
+  ...PROMQL_KEYWORDS,
   // Common label names that appear in grouping clauses.
   'app', 'code', 'cluster', 'container', 'endpoint', 'env', 'instance', 'job',
   'le', 'method', 'namespace', 'pod', 'route', 'service', 'status',
@@ -49,14 +39,32 @@ export function buildRequirementTraceability({ spec = {}, annotations = {}, laye
   const burnRateAlerts = Array.isArray(spec.policy?.burn_rate_alerts)
     ? spec.policy.burn_rate_alerts
     : [];
-  const liveAlertNames = csv(annotations['mcp.discovered.alert_rule_names']);
-  const liveMetricNames = new Set([
-    ...csv(annotations['mcp.discovered.metric_names_sample']),
+  const liveAlertNames = annotationList(annotations['mcp.discovered.alert_rule_names']);
+  const declaredMetricOrigins = parseAnnotationObject(annotations['crawler.discovered.metric_origins']);
+  const declaredMetricNames = new Set([
+    ...annotationList(
+      annotations['crawler.discovered.metric_names'],
+      annotations['crawler.discovered.metric_names_count'],
+      annotations['crawler.discovered.metric_names_sample'],
+    ),
     ...flat
-      .filter(a => (a?.id || '').startsWith('METRIC-') && a.spec?.name)
+      .filter(a => (a?.id || '').startsWith('METRIC-SRC-') && a.spec?.name)
       .map(a => a.spec.name),
   ]);
-  const scrapeJobs = csv(annotations['mcp.discovered.scrape_jobs']);
+  const liveMetricNames = new Set([
+    ...annotationList(
+      annotations['mcp.discovered.metric_names'],
+      annotations['mcp.discovered.metric_names_count'],
+      annotations['mcp.discovered.metric_names_sample'],
+    ),
+    ...flat
+      .filter(a => (a?.id || '').startsWith('METRIC-') && a.source === 'Verified' && a.spec?.name)
+      .map(a => a.spec.name),
+  ]);
+  const scrapeJobs = [
+    ...annotationList(annotations['crawler.discovered.scrape_jobs'], annotations['crawler.discovered.scrape_jobs_count']),
+    ...annotationList(annotations['mcp.discovered.scrape_jobs']),
+  ];
 
   const chains = [];
   for (const slo of slos) {
@@ -72,6 +80,8 @@ export function buildRequirementTraceability({ spec = {}, annotations = {}, laye
       burnRateAlerts,
       liveAlertNames,
       liveMetricNames,
+      declaredMetricNames,
+      declaredMetricOrigins,
       scrapeJobs,
       flat,
       byDefines,
@@ -90,6 +100,8 @@ export function buildRequirementTraceability({ spec = {}, annotations = {}, laye
       burnRateAlerts,
       liveAlertNames,
       liveMetricNames,
+      declaredMetricNames,
+      declaredMetricOrigins,
       scrapeJobs,
       flat,
       byDefines,
@@ -120,6 +132,8 @@ function buildChain({
   burnRateAlerts,
   liveAlertNames,
   liveMetricNames,
+  declaredMetricNames,
+  declaredMetricOrigins,
   scrapeJobs,
   flat,
   byDefines,
@@ -151,7 +165,9 @@ function buildChain({
 
   const metrics = [...metricMap.values()].map(m => ({
     ...m,
+    declared: declaredMetricNames.has(m.name),
     verified: liveMetricNames.has(m.name),
+    origin: declaredMetricOrigins[m.name] || null,
   }));
 
   const ruleNames = relatedRules.map(r => r.name).filter(Boolean);
@@ -341,40 +357,7 @@ function alertTrace({ slo, burnRateAlerts, liveAlertNames, needles }) {
 }
 
 export function extractMetricNames(value) {
-  const raw = Array.isArray(value) ? value.filter(Boolean).join(' ') : String(value || '');
-  if (!raw.trim()) return [];
-
-  // Keep the series name before a label matcher, but remove the label body so
-  // label keys do not become false metric names.
-  let text = raw.replace(/([A-Za-z_:][A-Za-z0-9_:]*)\s*\{[^{}]*\}/g, '$1 ');
-  text = text
-    .replace(/\{[^{}]*\}/g, ' ')
-    .replace(/"([^"\\]|\\.)*"/g, ' ')
-    .replace(/'([^'\\]|\\.)*'/g, ' ')
-    .replace(/`([^`\\]|\\.)*`/g, ' ');
-
-  const names = [];
-  const seen = new Set();
-  const re = /(?:^|[^A-Za-z0-9_:])([A-Za-z_:][A-Za-z0-9_:]*)(?=\s*(?:\{|\[|$|[+\-*/%,)]|==|!=|=~|!~|>=|<=|>|<))/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const name = m[1];
-    const low = name.toLowerCase();
-    if (!metricish(name) || PROMQL_STOP_WORDS.has(low)) continue;
-    if (seen.has(name)) continue;
-    seen.add(name);
-    names.push(name);
-  }
-  return names;
-}
-
-function metricish(name) {
-  if (typeof name !== 'string') return false;
-  if (!/^[A-Za-z_:][A-Za-z0-9_:]*$/.test(name)) return false;
-  if (/^[A-Z][a-z]+(?:[A-Z][a-z]+)+$/.test(name)) return false; // likely alert title
-  const low = name.toLowerCase();
-  if (PROMQL_STOP_WORDS.has(low)) return false;
-  return name.includes('_') || name.includes(':') || /^[A-Z0-9_]+$/.test(name) || name === 'up';
+  return extractPromqlMetricNames(value);
 }
 
 function dashboardPanels(dashboard) {
@@ -435,8 +418,12 @@ function matchesNeedle(text, needle) {
   const hc = compact(hay);
   const nc = compact(n);
   if (nc && hc.includes(nc)) return true;
-  const ws = words(n).filter(w => w.length >= 5 && !PROMQL_STOP_WORDS.has(w));
+  const ws = words(n).filter(w => w.length >= 5 && !TRACE_STOP_WORDS.has(w));
   return ws.length >= 2 && ws.every(w => hay.includes(w) || hc.includes(compact(w)));
+}
+
+function metricish(name) {
+  return typeof name === 'string' && /^[A-Za-z_:][A-Za-z0-9_:]*$/.test(name);
 }
 
 function matchesMetricPrefix(job, metric) {
@@ -472,11 +459,62 @@ function stripSymbol(ref, defaultPrefix) {
   return s;
 }
 
-function csv(value) {
-  return String(value || '')
-    .split(',')
+export function annotationList(value, countValue = null, fallbackValue = null) {
+  const count = Number.parseInt(String(countValue ?? ''), 10);
+  const primary = listFromValue(value);
+  const primaryIsLegacyCount =
+    primary.length === 1 &&
+    /^\d+$/.test(primary[0]) &&
+    Number.isFinite(count) &&
+    Number(primary[0]) === count;
+  const chosen = primary.length && !primaryIsLegacyCount
+    ? primary
+    : listFromValue(fallbackValue);
+  return dedupeStrings(chosen);
+}
+
+function parseAnnotationObject(value) {
+  if (!value || typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function listFromValue(value) {
+  if (value === null || value === undefined) return [];
+  if (Array.isArray(value)) {
+    return value.map(v => String(v).trim()).filter(Boolean);
+  }
+  const raw = String(value).trim();
+  if (!raw) return [];
+  if (raw.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map(v => String(v).trim()).filter(Boolean);
+      }
+    } catch {
+      // Fall through to delimiter parsing.
+    }
+  }
+  return raw
+    .split(/[,\r\n]+/)
     .map(s => s.trim())
     .filter(Boolean);
+}
+
+function dedupeStrings(items) {
+  const out = [];
+  const seen = new Set();
+  for (const item of items || []) {
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
 }
 
 function words(value) {

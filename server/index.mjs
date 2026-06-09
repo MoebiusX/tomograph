@@ -38,6 +38,7 @@ import { evaluateConformance, RUBRIC } from '../tools/lib/conformance.mjs';
 import { crawlFiles, crawlToYaml } from '../tools/lib/crawler.mjs';
 import { fetchMcp, buildCanonicalPack, createMcpClient } from '../tools/fetch-live-pack.mjs';
 import { diffPacks } from '../tools/lib/diff.mjs';
+import { comparePackBranches } from '../tools/lib/traceability-graph.mjs';
 import { compile, listTargets, compileCatalog, compileArtifact } from '../tools/lib/compile.mjs';
 import { makeZip } from '../tools/lib/zip.mjs';
 
@@ -417,12 +418,18 @@ app.get('/api/diff', (req, res) => {
   if (!bMeta) return res.status(404).json({ error: `unknown pack: ${bId}` });
   const aEnv = typeof req.query.aEnv === 'string' && req.query.aEnv ? req.query.aEnv : null;
   const bEnv = typeof req.query.bEnv === 'string' && req.query.bEnv ? req.query.bEnv : null;
+  const requestedScopeMode = typeof req.query.scopeMode === 'string' ? req.query.scopeMode : undefined;
   try {
     const aCanonical = loadPackCanonical(aMeta);
     const bCanonical = loadPackCanonical(bMeta);
+    const annotatedScopeMode = aCanonical.metadata?.annotations?.['tomograph.diff.scopeMode'];
+    const scopeMode = requestedScopeMode || annotatedScopeMode;
     const aLayered = adapt(aCanonical, { environment: aEnv });
     const bLayered = adapt(bCanonical, { environment: bEnv });
-    res.json(diffPacks(aLayered, bLayered));
+    res.json({
+      ...diffPacks(aLayered, bLayered, { scopeMode }),
+      traceabilityGraph: comparePackBranches(aLayered, bLayered),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1311,6 +1318,7 @@ app.post('/api/crawl', (req, res) => {
   const opts = {
     repoName: typeof body.repoName === 'string' ? body.repoName : undefined,
     environment: typeof body.environment === 'string' ? body.environment : undefined,
+    diffScopeMode: typeof body.diffScopeMode === 'string' ? body.diffScopeMode : undefined,
     criticality: typeof body.criticality === 'string' ? body.criticality : undefined,
     binding: typeof body.binding === 'string' ? body.binding : undefined,
     owners: Array.isArray(body.owners) ? body.owners.map(String) : undefined,
@@ -1387,7 +1395,13 @@ function isCrawlerFile(path) {
   if (typeof path !== 'string') return false;
   const p = path.toLowerCase();
   if (p.includes('node_modules/') || p.includes('.git/') || p.startsWith('.git/')) return false;
+  const sourceMetricCandidate =
+    /\.(cjs|mjs|js|jsx|ts|tsx|py|go|java|kt|rs|cs)$/.test(p) &&
+    !/(\.test\.|\.spec\.|\.d\.ts$|package-lock|yarn\.lock|pnpm-lock|tokenizer\.json)/.test(p) &&
+    /(metrics?|prometheus|observability|telemetry|instrumentation|monitor|otel|mcp|bayesian|processor)/.test(p);
   return (
+    sourceMetricCandidate ||
+    /(^|\/)(application|bootstrap)[\w.-]*\.ya?ml$/.test(p) ||
     /(^|\/)docker[-_]compose[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
     /(^|\/)compose[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
     /\.rules\.(ya?ml)$/.test(p) ||
@@ -1519,6 +1533,7 @@ app.post('/api/crawl-github', async (req, res) => {
       repoName: typeof body.repoName === 'string' && body.repoName.trim()
         ? body.repoName.trim() : defaultRepoName,
       environment: typeof body.environment === 'string' ? body.environment : undefined,
+      diffScopeMode: typeof body.diffScopeMode === 'string' ? body.diffScopeMode : undefined,
       criticality: typeof body.criticality === 'string' ? body.criticality : undefined,
       binding: typeof body.binding === 'string' ? body.binding : undefined,
       owners: Array.isArray(body.owners) ? body.owners.map(String) : undefined,

@@ -51,6 +51,14 @@ const PACK_NAME        = (process.env.PACK_NAME || 'production-live').toLowerCas
 const GRAFANA_DASHBOARD_SEARCH_LIMIT = Math.min(Number(process.env.TOMOGRAPH_GRAFANA_DASHBOARD_LIMIT || 100) || 100, 500);
 const GRAFANA_DASHBOARD_PANEL_LIMIT  = Math.min(Number(process.env.TOMOGRAPH_GRAFANA_PANEL_LIMIT || 500) || 500, 500);
 const GRAFANA_DASHBOARD_INCLUDE_JSON = !/^(0|false|no|off)$/i.test(process.env.TOMOGRAPH_GRAFANA_INCLUDE_JSON || 'true');
+const JSON_ANNOTATION_BLOCK_LENGTH = 4096;
+
+function annotationJson(value) {
+  const compact = JSON.stringify(value);
+  return compact.length > JSON_ANNOTATION_BLOCK_LENGTH
+    ? JSON.stringify(value, null, 2)
+    : compact;
+}
 
 // ============================================================
 // MCP client — same wire protocol as before. Parameterised by
@@ -840,14 +848,17 @@ export function buildCanonicalPack({
   if (Array.isArray(scrapeJobs) && scrapeJobs.length) {
     annotations['mcp.discovered.scrape_jobs'] = scrapeJobs.slice(0, 64).join(',');
     markVerified('telemetry.scrape');
+    markVerified('pipelines.exporters.metrics');
   }
   const metricNames = probeResults?.metric_names?.adapted;
   if (Array.isArray(metricNames) && metricNames.length) {
-    // Cap to 200 names to keep annotation bytes sane; full inventory is
-    // a probe call away when the engineer needs it.
+    // Keep the full metric inventory for diagnostic-grade branch matching.
+    // The sample remains for compact UI/log previews.
+    annotations['mcp.discovered.metric_names'] = annotationJson(metricNames);
     annotations['mcp.discovered.metric_names_count'] = String(metricNames.length);
     annotations['mcp.discovered.metric_names_sample'] = metricNames.slice(0, 200).join(',');
     markVerified('otel.metrics');
+    markVerified('pipelines.exporters.metrics');
   }
 
   // ---- spec.alerting ----
