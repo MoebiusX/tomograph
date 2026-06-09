@@ -142,6 +142,22 @@ npm run lint:fetcher
 npm run test
 ```
 
+### Run In Docker Or Kubernetes
+
+The whole app is one Express process, so the container story is one image:
+
+```bash
+docker build -t tomograph:0.3.0 .
+docker run --rm -p 8000:8000 tomograph:0.3.0
+```
+
+Kubernetes manifests (Deployment + Service + Ingress, applied with Kustomize)
+live in [`deploy/k8s/`](deploy/k8s/README.md):
+
+```bash
+kubectl apply -k deploy/k8s
+```
+
 ## Common Operations
 
 ### Scan A Repo
@@ -256,6 +272,9 @@ reference-packs/
   kafka.pack.yaml
   prometheus.pack.yaml
   grafana.pack.yaml
+
+deploy/k8s/
+  kustomization.yaml       Kustomize entry point (see deploy/k8s/README.md)
 ```
 
 ## Key Docs

@@ -1,25 +1,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# observabilitypack-studio — in-cluster nginx + MCP fetcher sidecar.
+# Tomograph studio + API — one Express container (server/index.mjs).
 #
-# Layout served at the document root:
-#   /studio/observabilitypack-studio.html   (the SPA)
-#   /packs/production-curated.json          (embedded, read-only ConfigMap)
-#   /packs/target-advanced.json             (embedded, read-only ConfigMap)
-#   /packs/demo-skeleton.json               (embedded, read-only ConfigMap)
-#   /packs/production-live.json             (refreshed by sidecar, emptyDir)
-#   /schema/pack.schema.json                (embedded, read-only ConfigMap)
+# v0.3 replaced the old nginx + ConfigMap-statics + fetcher-sidecar layout:
+# the server renders nothing statically embeddable — the studio shell needs
+# the /api/* routes (validate, adapt, conformance, compile, deploy) that run
+# in the same process. Live MCP drafting is interactive (POST
+# /api/draft-from-mcp); the MCP URL and auth key are supplied by the user in
+# the studio UI per request, so there is no fetcher sidecar, no MCP secret,
+# and no refresh CronJob in this deploy.
 #
-# The Studio HTML fetches `../packs/production-live.json` (relative to /studio/),
-# so the docroot must merge ConfigMap-mounted statics with the sidecar's output
-# directory.  We achieve this by:
-#   1. initContainer copies ConfigMap-mounted files into the shared emptyDir.
-#   2. fetcher container writes /data/packs/production-live.json to the same
-#      emptyDir on a fixed cadence.
-#   3. nginx serves the emptyDir as its docroot.
-#
-# Tradeoff vs. a CronJob: simpler (no PVC, no ServiceAccount + RBAC), but the
-# live pack only refreshes while the pod is running.  See cronjob-fetch-live-pack.yaml
-# for an alternative split-deployment pattern.
+# Image: built from the repo-root Dockerfile (see kustomization.yaml).
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
@@ -41,128 +31,39 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
-        runAsUser: 101            # nginx user in nginxinc/nginx-unprivileged
-        runAsGroup: 101
-        fsGroup: 101
-      initContainers:
-        # Copy ConfigMap-mounted statics into the shared emptyDir so nginx and
-        # the fetcher can both write/read it without ConfigMap read-only-mount
-        # constraints.
-        - name: hydrate-statics
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - |
-              set -eu
-              mkdir -p /data/studio /data/packs /data/schema
-              cp /src/studio/* /data/studio/
-              cp /src/packs/* /data/packs/
-              cp /src/schema/* /data/schema/
-              # Seed production-live.json with the curated snapshot so the
-              # Studio has something to render before the first fetcher tick.
-              if [ ! -f /data/packs/production-live.json ]; then
-                cp /data/packs/production-curated.json /data/packs/production-live.json
-              fi
-              ls -la /data /data/studio /data/packs /data/schema
-          volumeMounts:
-            - name: docroot
-              mountPath: /data
-            - name: studio-static
-              mountPath: /src/studio
-            - name: packs-static
-              mountPath: /src/packs
-            - name: schema-static
-              mountPath: /src/schema
-          securityContext:
-            runAsUser: 0           # busybox cp needs root to chown into fsGroup
-            allowPrivilegeEscalation: false
-
+        runAsUser: 1000           # `node` user in the official node image
+        runAsGroup: 1000
       containers:
-        # ── nginx: serves docroot at /:8080 ──────────────────────────────────
-        - name: nginx
-          image: nginxinc/nginx-unprivileged:1.27-alpine
+        - name: studio
+          image: tomograph:0.3.0
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: 8080
-          volumeMounts:
-            - name: docroot
-              mountPath: /usr/share/nginx/html
-              readOnly: true
-            - name: nginx-conf
-              mountPath: /etc/nginx/conf.d
-              readOnly: true
+              containerPort: 8000
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8000"
+            # Optional: raises GitHub API rate limits and enables private
+            # repos for POST /api/crawl-github.
+            # - name: GITHUB_TOKEN
+            #   valueFrom:
+            #     secretKeyRef: { name: studio-github-token, key: token }
           livenessProbe:
-            httpGet: { path: /studio/observabilitypack-studio.html, port: http }
+            httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 5
             periodSeconds: 30
           readinessProbe:
-            httpGet: { path: /studio/observabilitypack-studio.html, port: http }
+            httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 2
             periodSeconds: 10
           resources:
-            requests: { cpu: 10m,  memory: 32Mi }
-            limits:   { cpu: 200m, memory: 128Mi }
+            requests: { cpu: 25m,  memory: 96Mi }
+            limits:   { cpu: 500m, memory: 384Mi }
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }
-
-        # ── fetcher: loops fetch-live-pack.mjs on REFRESH_INTERVAL_SECONDS ───
-        - name: fetcher
-          image: node:20-alpine
-          command:
-            - sh
-            - -c
-            - |
-              set -eu
-              cd /opt/app
-              echo "[fetcher] starting; interval=${REFRESH_INTERVAL_SECONDS}s url=${MCP_URL}"
-              while true; do
-                if node tools/fetch-live-pack.mjs; then
-                  echo "[fetcher] tick ok @ $(date -Iseconds)"
-                else
-                  echo "[fetcher] tick FAILED @ $(date -Iseconds) — keeping previous JSON"
-                fi
-                sleep "${REFRESH_INTERVAL_SECONDS}"
-              done
-          env:
-            - name: MCP_URL
-              valueFrom:
-                configMapKeyRef: { name: studio-fetcher-config, key: MCP_URL }
-            - name: REFRESH_INTERVAL_SECONDS
-              valueFrom:
-                configMapKeyRef: { name: studio-fetcher-config, key: REFRESH_INTERVAL_SECONDS }
-            - name: OUTPUT
-              value: /data/packs/production-live.json
-            - name: MCP_AUTH
-              valueFrom:
-                secretKeyRef:
-                  name: studio-mcp-auth
-                  key: token
-                  optional: true   # public MCP / local dev needs no token
-          volumeMounts:
-            - name: docroot
-              mountPath: /data
-            - name: fetcher-script
-              mountPath: /opt/app/tools
-              readOnly: true
-          resources:
-            requests: { cpu: 10m, memory: 48Mi }
-            limits:   { cpu: 200m, memory: 256Mi }
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities: { drop: ["ALL"] }
-
-      volumes:
-        - name: docroot
-          emptyDir: { sizeLimit: 16Mi }
-        - name: studio-static
-          configMap: { name: studio-html }
-        - name: packs-static
-          configMap: { name: studio-packs }
-        - name: schema-static
-          configMap: { name: studio-schema }
-        - name: nginx-conf
-          configMap: { name: studio-nginx-conf }
-        - name: fetcher-script
-          configMap: { name: studio-fetcher-script }
+            # NOT readOnlyRootFilesystem: POST /api/refresh-live writes
+            # examples/production-live.pack.yaml inside the container.
+            # The file is ephemeral by design (pod restart clears it).
