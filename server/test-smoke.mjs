@@ -348,6 +348,47 @@ try {
   const deployBody = await deployNoUrl.json();
   assert(/mcpUrl/.test(deployBody.error || ''), 'deploy 400 mentions mcpUrl');
 
+  // SSRF guard — non-http(s) mcpUrl schemes are rejected with 400 before
+  // any fetch happens, on every endpoint that takes an mcpUrl.
+  const postJson = (path, body) => fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  for (const [path, body] of [
+    ['/api/packs/payment-service/deploy/prometheus-rules', { mcpUrl: 'file:///etc/passwd' }],
+    ['/api/packs/payment-service/deploy-bulk', { mcpUrl: 'ftp://mcp.example/x', items: [{ group: 'rules' }] }],
+    ['/api/draft-from-mcp', { mcpUrl: 'gopher://127.0.0.1:70/mcp' }],
+    ['/api/refresh-live', { mcpUrl: 'file://C:/secrets' }],
+  ]) {
+    const r = await postJson(path, body);
+    assert(r.status === 400, `${path} rejects non-http(s) mcpUrl scheme → 400`, r.status, 400);
+    const rBody = await r.json();
+    assert(/http/.test(rBody.error || ''), `${path} scheme rejection names http(s)`, rBody.error);
+  }
+
+  // SSRF guard — unparseable mcpUrl → 400, with any embedded credentials
+  // redacted from the echoed error.
+  const badUrl = await postJson('/api/refresh-live', { mcpUrl: 'http://user:hunter2@' });
+  assert(badUrl.status === 400, 'unparseable mcpUrl → 400');
+  const badUrlBody = await badUrl.json();
+  assert(!/hunter2/.test(badUrlBody.error || ''), 'unparseable-mcpUrl error redacts credentials', badUrlBody.error);
+
+  // SSRF guard — local/private addresses are allowed by default (the fake-MCP
+  // tests below depend on that) but refused when TOMOGRAPH_ALLOW_LOCAL_MCP=0.
+  // The server runs in-process, so flipping process.env takes effect live.
+  process.env.TOMOGRAPH_ALLOW_LOCAL_MCP = '0';
+  try {
+    for (const blocked of ['http://127.0.0.1:9999/mcp', 'http://localhost:9999/mcp',
+                           'http://169.254.169.254/latest/meta-data/', 'http://[::1]:9999/mcp',
+                           'http://0x7f000001:9999/mcp']) {
+      const r = await postJson('/api/draft-from-mcp', { mcpUrl: blocked });
+      assert(r.status === 400, `ALLOW_LOCAL_MCP=0 blocks ${blocked} → 400`, r.status, 400);
+    }
+  } finally {
+    delete process.env.TOMOGRAPH_ALLOW_LOCAL_MCP;
+  }
+
   // POST /api/packs/:id/deploy/:target — unknown pack → 404
   const deployBadPack = await fetch(`${base}/api/packs/does-not-exist/deploy/prometheus-rules`, {
     method: 'POST',

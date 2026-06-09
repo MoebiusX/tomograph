@@ -267,6 +267,67 @@ function readEnv(query) {
   return typeof query.env === 'string' && query.env ? query.env : null;
 }
 
+// ---------- MCP URL validation (SSRF guard) ----------
+//
+// Every deploy / draft / refresh endpoint fetches a caller-supplied mcpUrl
+// server-side, which is a server-side request forgery vector if the URL is
+// taken on faith. validateMcpUrl() is the single gate:
+//   - only http(s) is accepted (no file:, ftp:, gopher:, ...);
+//   - localhost / private / link-local addresses are allowed by default
+//     (a local MCP server is the normal dev setup) but logged per use;
+//     set TOMOGRAPH_ALLOW_LOCAL_MCP=0 to turn them into 400s when the
+//     studio is exposed beyond the developer's own machine;
+//   - the returned safeUrl has credentials stripped — stderr logs must use
+//     it (or redactCredentials), never the raw URL.
+// Hostnames that RESOLVE to private addresses are not caught (no DNS
+// lookup here); the literal-IP check covers hex/decimal/octal IPv4 forms
+// because the WHATWG URL parser normalises those to dotted-decimal.
+
+const PRIVATE_V4 = [
+  /^127\./, /^10\./, /^192\.168\./, /^169\.254\./, /^0\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+];
+
+function isLocalOrPrivateHost(hostname) {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (PRIVATE_V4.some(re => re.test(host))) return true;
+  // IPv6: loopback/unspecified, unique-local fc00::/7, link-local fe80::/10,
+  // and IPv4-mapped forms of any of the above.
+  if (host === '::1' || host === '::') return true;
+  if (/^f[cd]/.test(host) || /^fe[89ab]/.test(host)) return true;
+  if (host.startsWith('::ffff:')) return isLocalOrPrivateHost(host.slice(7));
+  return false;
+}
+
+function redactCredentials(text) {
+  return String(text).replace(/\/\/[^/\s@]+@/g, '//***@');
+}
+
+// Returns { safeUrl } when the URL is fetchable, { error } when it must be
+// rejected with a 400. safeUrl is the parsed URL with credentials removed.
+function validateMcpUrl(raw) {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { error: `mcpUrl is not a valid URL: ${redactCredentials(raw)}` };
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { error: `mcpUrl must be http or https; got scheme '${url.protocol.replace(/:$/, '')}'` };
+  }
+  url.username = '';
+  url.password = '';
+  const safeUrl = url.href;
+  if (isLocalOrPrivateHost(url.hostname)) {
+    if (process.env.TOMOGRAPH_ALLOW_LOCAL_MCP === '0') {
+      return { error: `mcpUrl targets a local/private address (${url.hostname}), which TOMOGRAPH_ALLOW_LOCAL_MCP=0 forbids` };
+    }
+    process.stderr.write(`[mcp-url] note: ${safeUrl} targets a local/private address; set TOMOGRAPH_ALLOW_LOCAL_MCP=0 to refuse these\n`);
+  }
+  return { safeUrl };
+}
+
 // Returns a canonical object with the env overlay applied to spec.* AND
 // effective criticality/target propagated up to metadata.bindings so the
 // conformance scorer sees the correct tier for the selected environment.
@@ -786,6 +847,8 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   const env = readEnv(req.query);
 
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
+  if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
   if (!items || items.length === 0) return res.status(400).json({ ok: false, error: 'items array required and must be non-empty' });
   if (!DEPLOY_PRODUCTS.includes(product)) return res.status(400).json({ ok: false, error: `unsupported target product: ${product}` });
   if (!DEPLOY_VERSIONS[product]?.includes(version)) return res.status(400).json({ ok: false, error: `unsupported ${product} version: ${version}` });
@@ -811,7 +874,7 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   const missingTools = new Set();
 
   const results = [];
-  process.stderr.write(`[deploy-bulk] ${meta.id} -> ${mcpUrl} (${items.length} item${items.length === 1 ? '' : 's'}, ${product} ${version})\n`);
+  process.stderr.write(`[deploy-bulk] ${meta.id} -> ${safeMcpUrl} (${items.length} item${items.length === 1 ? '' : 's'}, ${product} ${version})\n`);
 
   for (const item of items) {
     const itStart = Date.now();
@@ -933,6 +996,8 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
   const env = readEnv(req.query);
   const dashboardId = typeof req.query.dashboardId === 'string' ? req.query.dashboardId : undefined;
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
+  if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
 
   const t0 = Date.now();
   try {
@@ -948,7 +1013,7 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
       ? filterPromRulesScope(compiled.content, scope)
       : compiled.content;
 
-    process.stderr.write(`[deploy] ${meta.id}@${canonical.metadata?.version || '?'} -> ${mcpUrl} via ${mcpTool} ` +
+    process.stderr.write(`[deploy] ${meta.id}@${canonical.metadata?.version || '?'} -> ${safeMcpUrl} via ${mcpTool} ` +
       `(${product} ${version}, target=${target}, scope=${scope || '—'}, env=${env || 'none'}, mode=${mode}, ${payload.length}b)\n`);
 
     const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth });
@@ -1017,7 +1082,7 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
     });
   } catch (e) {
     const tookMs = Date.now() - t0;
-    process.stderr.write(`[deploy]   error in ${tookMs}ms: ${e.message}\n`);
+    process.stderr.write(`[deploy]   error in ${tookMs}ms: ${redactCredentials(e.message)}\n`);
     res.status(502).json({ ok: false, error: e.message, tool: mcpTool, target,
       targetProduct: product, targetVersion: version, scope: scope || null, targetFolder: folder || null,
       mode, dryRun, env, tookMs });
@@ -1113,10 +1178,12 @@ app.post('/api/draft-from-mcp', async (req, res) => {
     ? body.packName.trim()
     : null;
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
+  if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
 
   const t0 = Date.now();
   try {
-    process.stderr.write(`[draft-from-mcp] POST -> ${mcpUrl}\n`);
+    process.stderr.write(`[draft-from-mcp] POST -> ${safeMcpUrl}\n`);
     const fetched = await fetchMcp({ mcpUrl, mcpAuth });
     const refreshedAt = new Date().toISOString();
     const pack = buildCanonicalPack({ refreshedAt, mcpUrl, packName, ...fetched });
@@ -1242,7 +1309,7 @@ app.post('/api/draft-from-mcp', async (req, res) => {
       tookMs: Date.now() - t0,
     });
   } catch (e) {
-    process.stderr.write(`[draft-from-mcp]   error in ${Date.now() - t0}ms: ${e.message}\n`);
+    process.stderr.write(`[draft-from-mcp]   error in ${Date.now() - t0}ms: ${redactCredentials(e.message)}\n`);
     res.status(502).json({ ok: false, error: e.message, tookMs: Date.now() - t0 });
   }
 });
@@ -1272,10 +1339,12 @@ app.post('/api/refresh-live', async (req, res) => {
   const mcpUrl = typeof body.mcpUrl === 'string' && body.mcpUrl.trim() ? body.mcpUrl.trim() : null;
   const mcpAuth = typeof body.mcpAuth === 'string' && body.mcpAuth ? body.mcpAuth : null;
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
+  if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
 
   const t0 = Date.now();
   try {
-    process.stderr.write(`[refresh-live] POST /api/refresh-live -> ${mcpUrl}\n`);
+    process.stderr.write(`[refresh-live] POST /api/refresh-live -> ${safeMcpUrl}\n`);
     const fetched = await fetchMcp({ mcpUrl, mcpAuth });
     const refreshedAt = new Date().toISOString();
     const pack = buildCanonicalPack({ refreshedAt, mcpUrl, ...fetched });
@@ -1296,7 +1365,7 @@ app.post('/api/refresh-live', async (req, res) => {
       annotations: pack.metadata.annotations,
     });
   } catch (e) {
-    process.stderr.write(`[refresh-live]   error in ${Date.now() - t0}ms: ${e.message}\n`);
+    process.stderr.write(`[refresh-live]   error in ${Date.now() - t0}ms: ${redactCredentials(e.message)}\n`);
     res.status(502).json({ ok: false, error: e.message, details: e.details });
   }
 });
