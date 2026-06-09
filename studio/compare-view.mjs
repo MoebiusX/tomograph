@@ -1611,13 +1611,6 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const passes = scorePctExact > PASS_SCORE_THRESHOLD;
   const status = passes ? 'PASS' : 'FAIL';
 
-  // Coverage-only when no Pack B is loaded: the coverage criteria are
-  // still graded against the built-in Observability Contract, so the
-  // verdict stands on Pack A alone — we just frame the header honestly.
-  const coverageOnly = !packB;
-  const contractName = packB?.meta?.name || packB?.metadata?.name || packB?.id || '—';
-  const contractMode = cov.contractMode;
-
   // Compact mono row builder for the summary block.
   const summaryRow = (label, value, hint, state) => `
     <tr class="diag-summary-row ${state || ''}">
@@ -1735,13 +1728,6 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
     <header class="diag-report-head">
       <div class="diag-report-head-line">
         <span class="diag-report-eyebrow">DIAGNOSTIC GRADE</span>
-        <span class="diag-report-vs">
-          ${coverageOnly
-            ? 'vs <strong>Observability Contract</strong> <span class="diag-report-mode">· coverage only</span>'
-            : (contractMode
-                ? 'vs <strong>Observability Contract</strong>' + (contractName && contractName !== '—' ? ' (' + escapeHtml(contractName) + ')' : '')
-                : 'vs <strong>' + escapeHtml(contractName) + '</strong>')}
-        </span>
         <span class="diag-report-status diag-${passes ? 'pass' : 'fail'}">${status}</span>
       </div>
       <table class="diag-summary">
