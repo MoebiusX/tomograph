@@ -165,7 +165,7 @@ MCP_AUTH=$MCP_CLIENT_KEY \
 npm run fetch-live
 ```
 
-The default output is `examples/production-live.pack.yaml`.
+The default output is the ignored local file `examples/production-live.pack.yaml`.
 
 See [`docs/MCP_INTEGRATION.md`](docs/MCP_INTEGRATION.md) for the live fetch and
 write-back contract.
@@ -239,7 +239,6 @@ tools/
     traceability.mjs       Requirement chains
 
 examples/
-  production-live.pack.yaml
   production-curated.pack.yaml
   target-advanced.pack.yaml
   demo-skeleton.pack.yaml

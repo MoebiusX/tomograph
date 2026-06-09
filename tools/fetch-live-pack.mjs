@@ -4,7 +4,7 @@
  *
  * Build a canonical ObservabilityPack v1.2 manifest from a live MCP
  * server's responses, validate it against the vendored schema, and write
- * it as YAML to `examples/production-live.pack.yaml`.
+ * it as a local generated YAML file.
  *
  * Phase 4 rewrite: emits canonical v1.2 only. No EMIT_FORMAT flag, no
  * studio-shape output. Sections MCP cannot directly verify (SLIs, SLOs,
@@ -20,7 +20,8 @@
  *
  * Env:
  *   MCP_URL   — MCP server endpoint. Default: https://mcp.example.com/observability
- *   OUTPUT    — Output path.         Default: examples/production-live.pack.yaml
+ *   OUTPUT    — Output path. Default: examples/production-live.pack.yaml
+ *               (generated locally; ignored by git)
  *   MCP_AUTH  — Optional bearer token if your MCP requires auth.
  *   PACK_NAME — Pack metadata.name.  Default: production-live
  *

@@ -64,7 +64,7 @@ The June 10, 2026 dry run is ready when:
 - `npm run test:compile` passes
 - `npm run test:server` passes
 - the browser can load `krystaline.service.repo.yaml` as Pack A
-- the browser can load `examples/production-live.pack.yaml` as Pack B
+- the browser can load a generated or supplied `production-live.pack.yaml` as Pack B
 - Diagnose renders `DIAGNOSTIC GRADE` without appending `vs production-live`
 - scores greater than 85% render `PASS`
 - Traceability explains settlement latency from SLO to live evidence

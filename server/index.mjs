@@ -1028,9 +1028,9 @@ app.get('/api/maturity-rubric', (req, res) => {
 // production path. This in-browser endpoint exists so a dev session can
 // kick off an ad-hoc refresh from a local MCP without spawning a process.
 
-// Phase 7q archived the bundled packs to examples/; the cron-driven
-// refresh-live-pack workflow writes there too. Keep this aligned so the
-// live-status badge actually finds the file.
+// Local live refreshes write this ignored runtime file. It is deliberately not
+// a committed example; the live-status badge reports absent until a refresh
+// creates it in the working tree.
 const LIVE_PACK_PATH = 'examples/production-live.pack.yaml';
 
 app.get('/api/live-status', (req, res) => {

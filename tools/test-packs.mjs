@@ -12,8 +12,7 @@
  *
  * Pack-specific expectations live in PACK_EXPECTATIONS below. Packs not
  * listed there only need to pass schema validation and adapt without
- * throwing — useful for the cron-managed production-live snapshot whose
- * exact conformance varies with the MCP it was fetched from.
+ * throwing.
  */
 
 import { readdirSync, readFileSync, existsSync } from 'node:fs';

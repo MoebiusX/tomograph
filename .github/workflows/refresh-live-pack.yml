@@ -1,9 +1,10 @@
 name: refresh-live-pack
 
-# Refresh examples/production-live.pack.yaml from the live MCP server.
+# Build a production-live pack from the live MCP server.
 # The fetcher builds a canonical ObservabilityPack v1.2 manifest from the
-# MCP responses, validates it against the vendored schema, and writes it
-# as YAML.
+# MCP responses, validates it against the vendored schema, and uploads the
+# result as a workflow artifact. Live snapshots are runtime evidence, not
+# committed source fixtures.
 #
 # Configure secrets MCP_URL and (optionally) MCP_AUTH in repo settings.
 
@@ -21,7 +22,7 @@ on:
       - tools/lib/validator.mjs
 
 permissions:
-  contents: write   # to commit the refreshed pack
+  contents: read
 
 concurrency:
   group: refresh-live-pack
@@ -47,20 +48,12 @@ jobs:
         env:
           MCP_URL:  ${{ secrets.MCP_URL }}
           MCP_AUTH: ${{ secrets.MCP_AUTH }}
-          OUTPUT:   examples/production-live.pack.yaml
+          OUTPUT:   .tmp-production-live.pack.yaml
         run: node tools/fetch-live-pack.mjs
 
-      - name: Commit if changed
-        run: |
-          git config user.name  'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add examples/production-live.pack.yaml
-          # Also drop the legacy JSON + the old packs/ path if they're still
-          # present from before Phase 7q's catalog archival.
-          git rm --quiet --ignore-unmatch packs/production-live.json packs/production-live.pack.yaml examples/production-live.json
-          if git diff --quiet --cached; then
-            echo "no changes"
-          else
-            git commit -m "chore(live): refresh $(date -u +%FT%TZ)"
-            git push
-          fi
+      - name: Upload live pack artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-live-pack
+          path: .tmp-production-live.pack.yaml
+          if-no-files-found: error
