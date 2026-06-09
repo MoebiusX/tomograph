@@ -1,3 +1,16 @@
+# =============================================================================
+# ObservabilityPack: krystaline  (drafted by the crawler)
+# Discovered at 2026-06-09T19:01:20.552Z
+# Files scanned: 464, classified: 106
+# Tier inferred: tier-2
+# Warnings: 4 (see metadata.annotations + the summary report)
+# -----------------------------------------------------------------------------
+# This is a DRAFT. Review every section before deploying. Annotations marked
+# "REPLACE WITH REAL QUERY" need a real PromQL expression that matches your
+# service. The tier was inferred from what was found in the repo — if your
+# service is tier-1, set metadata.bindings.criticality: tier-1 and fill the
+# missing chaos_experiments + per-SLO multi-window alerts.
+# =============================================================================
 apiVersion: observability.platform/v1
 kind: ObservabilityPack
 metadata:
@@ -14,7 +27,7 @@ metadata:
   labels:
     source: crawler
   annotations:
-    crawler.discoveredAt: 2026-06-09T17:13:07.754Z
+    crawler.discoveredAt: 2026-06-09T19:01:20.552Z
     crawler.filesScanned: "464"
     crawler.filesIncluded: "418"
     crawler.filesExcludedByEnvironment: "46"
@@ -7256,3 +7269,4 @@ spec:
       version:
         declared: "3.9"
         gating: "off"
+
