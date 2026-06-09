@@ -1317,7 +1317,7 @@ function renderPostureNarrative(posture) {
 //          8. Fresh           — mcp.refreshedAt within staleness window
 //
 // Overall score (out of 8) → verdict word:
-//   7-8 → Diagnostic-grade
+//   >85% → Diagnostic-grade (7/8 or better in the current rubric)
 //   5-6 → Almost diagnostic-grade
 //   3-4 → Not yet diagnostic-grade
 //   0-2 → Far from diagnostic-grade
@@ -1604,10 +1604,11 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const covPct   = pct(cov.passed, cov.total);
   const trustPct = pct(trust.passed, trust.total);
 
-  // Single binary verdict in audit terms. No "Almost diagnostic-grade",
-  // no "Critical" — just PASS or FAIL with the threshold stated.
-  const PASS_THRESHOLD = 7; // 7 of 8 to pass — graded against contract
-  const passes = overall.passed >= PASS_THRESHOLD && overall.liveDriftFree !== false;
+  // Single binary verdict in audit terms: PASS when the score is >85%.
+  // Individual failed criteria still render below as evidence and gaps.
+  const PASS_SCORE_THRESHOLD = 85;
+  const scorePctExact = overall.total === 0 ? 0 : (overall.passed / overall.total) * 100;
+  const passes = scorePctExact > PASS_SCORE_THRESHOLD;
   const status = passes ? 'PASS' : 'FAIL';
 
   // Coverage-only when no Pack B is loaded: the coverage criteria are
