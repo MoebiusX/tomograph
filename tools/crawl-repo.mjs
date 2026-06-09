@@ -76,6 +76,7 @@ v1.2 manifest by introspecting common observability artefacts.
     - alertmanager.yml           → spec.alerting.routes[]
     - OTel Collector configs     → spec.pipelines
     - Grafana dashboard JSONs    → spec.dashboards[]
+    - Helm values / K8s workloads→ spec.telemetry.backends[]
 
   Example:
     npm run crawl -- ./payments-svc --name payments --criticality tier-2 > payments.pack.yaml
@@ -121,6 +122,8 @@ async function main() {
     '',
     `# crawler summary`,
     `#   files scanned    : ${summary.files.scanned}`,
+    `#   files included   : ${summary.files.included}`,
+    `#   env scope        : ${summary.environment.profile || 'none'}${summary.environment.scoped ? ` (${summary.files.excludedByEnvironment} excluded)` : ''}`,
     `#   files classified : ${summary.files.classified}`,
     `#   by kind          : ${JSON.stringify(summary.files.byKind)}`,
     `#   backends         : ${summary.discovered.backends}`,
@@ -129,6 +132,7 @@ async function main() {
     `#   dashboards       : ${summary.discovered.dashboards}`,
     `#   alerting routes  : ${summary.discovered.alertingRoutes}`,
     `#   pipelines        : ${summary.discovered.pipelines}`,
+    `#   scaffold         : ${summary.scaffold?.length || 0}`,
     `#   tier inferred    : ${summary.inferred.tier}`,
     `#   warnings         : ${summary.warnings.length}`,
     ...summary.warnings.map(w => `#     · ${w}`),

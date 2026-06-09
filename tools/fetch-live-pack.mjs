@@ -4,7 +4,7 @@
  *
  * Build a canonical ObservabilityPack v1.2 manifest from a live MCP
  * server's responses, validate it against the vendored schema, and write
- * it as YAML to `examples/production-live.pack.yaml`.
+ * it as a local generated YAML file.
  *
  * Phase 4 rewrite: emits canonical v1.2 only. No EMIT_FORMAT flag, no
  * studio-shape output. Sections MCP cannot directly verify (SLIs, SLOs,
@@ -20,7 +20,8 @@
  *
  * Env:
  *   MCP_URL   — MCP server endpoint. Default: https://mcp.example.com/observability
- *   OUTPUT    — Output path.         Default: examples/production-live.pack.yaml
+ *   OUTPUT    — Output path. Default: examples/production-live.pack.yaml
+ *               (generated locally; ignored by git)
  *   MCP_AUTH  — Optional bearer token if your MCP requires auth.
  *   PACK_NAME — Pack metadata.name.  Default: production-live
  *
@@ -37,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { emit as emitYaml } from './lib/mini-yaml.mjs';
 import { validateCanonical, SPEC_VERSION } from './lib/validator.mjs';
 import { inferSlisFromRecordingRules } from './lib/sli-inference.mjs';
+import { materializeL2XFromBackends } from './lib/l2x.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = resolve(__dirname, '..', 'vendor', 'observability-pack-spec', `v${SPEC_VERSION}`, 'observability-pack.schema.json');
@@ -640,6 +642,13 @@ export function buildCanonicalPack({
     markVerified(`telemetry.backends.versions.${product}`);
   }
 
+  const l2x = materializeL2XFromBackends(backends, { markVerified });
+  annotations['mcp.discovered.extended_surfaces'] = String(l2x.evidence.length);
+  if (l2x.evidence.length) {
+    annotations['mcp.discovered.extended_surface_refs'] =
+      l2x.evidence.map((e) => `${e.artifactId}:${e.backendId}`).join(',');
+  }
+
   // Probes drive multiple downstream sections — hoist their results.
   const discoveredRules = probeResults?.recording_rules?.adapted || [];
 
@@ -888,6 +897,7 @@ export function buildCanonicalPack({
     spec: {
       otel: otelSection,
       telemetry: { backends },
+      ...l2x.sections,
       slis,
       slos,
       pipelines,

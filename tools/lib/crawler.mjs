@@ -4,8 +4,8 @@
 // Walks a service repository and emits a draft canonical
 // ObservabilityPack v1.2 manifest by introspecting common
 // observability artefacts: docker-compose backends, Prometheus
-// rules, Alertmanager configs, OTel Collector pipelines, and
-// Grafana dashboard JSONs.
+// rules, Alertmanager configs, OTel Collector pipelines, Grafana
+// dashboard JSONs, Helm values/templates, and Kubernetes workloads.
 //
 // The library is pure — it accepts an in-memory file map so the
 // CLI (which reads from disk) and the server endpoint (which
@@ -23,6 +23,7 @@
 
 import { parse as parseYaml, parseAll as parseYamlAll, emit as emitYaml } from './mini-yaml.mjs';
 import { inferSlisFromRecordingRules, ruleNameToSloId } from './sli-inference.mjs';
+import { materializeL2XFromBackends } from './l2x.mjs';
 
 // Parse a (possibly multi-document) YAML file into a list of non-null
 // documents. Prometheus rule files, Alertmanager configs and Kubernetes
@@ -50,7 +51,15 @@ const BACKEND_PATTERNS = [
   { match: /^thanos\/|thanos:|quay\.io\/thanos/i,                         product: 'thanos',                  signal: 'metrics' },
   { match: /^prom\/alertmanager|alertmanager:|prometheus-community.*alertmanager/i, product: 'alertmanager',  signal: 'alerting' },
   { match: /^pyroscope|grafana\/pyroscope/i,                              product: 'pyroscope',               signal: 'profiles' },
+  { match: /^cilium\/cilium|quay\.io\/cilium\/cilium|cilium:/i,             product: 'cilium',                  signal: 'network' },
+  { match: /^openpolicyagent\/opa|^opa:/i,                                  product: 'opa',                     signal: 'policy' },
+  { match: /^envoyproxy\/envoy|^envoy:/i,                                   product: 'envoy',                   signal: 'mesh' },
+  { match: /^consul:|^hashicorp\/consul/i,                                  product: 'consul',                  signal: 'mesh' },
+  { match: /^kong:|^kong\/kong/i,                                           product: 'kong',                    signal: 'gateway' },
+  { match: /^traefik:|^traefik\/traefik/i,                                  product: 'traefik',                 signal: 'gateway' },
   { match: /fluent[-/]?bit|fluent-bit/i,                                  product: 'fluent-bit',              signal: 'logs' },
+  { match: /^grafana\/alloy|^alloy:/i,                                      product: 'alloy',                   signal: 'collection' },
+  { match: /^elastic\/beats|^beats:/i,                                      product: 'beats',                   signal: 'collection' },
   { match: /timberio\/vector|vector:/i,                                   product: 'vector',                  signal: 'collection' },
   // Additional common production stacks
   { match: /victoriametrics\/victoria-metrics|victoriametrics\/vmselect|victoriametrics\/vminsert|victoriametrics\/vmstorage|victoriametrics\/vmagent/i,
@@ -182,6 +191,152 @@ export function detectArtefactKind(relPath, content) {
   return 'unknown';
 }
 
+function normalizeRepoPath(relPath) {
+  return String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+}
+
+function basenameOf(relPath) {
+  const parts = normalizeRepoPath(relPath).split('/').filter(Boolean);
+  return parts[parts.length - 1] || '';
+}
+
+function hasPathSegment(relPath, segment) {
+  return normalizeRepoPath(relPath).split('/').includes(segment);
+}
+
+function isEksSpecificPath(relPath) {
+  const p = normalizeRepoPath(relPath);
+  const base = basenameOf(p);
+  return /values-?eks/.test(base) || hasPathSegment(p, 'eks');
+}
+
+function isLocalK8sSpecificPath(relPath) {
+  const p = normalizeRepoPath(relPath);
+  const base = basenameOf(p);
+  return /values-?(local|kind|minikube)/.test(base)
+      || /^local[-_.]/.test(base)
+      || hasPathSegment(p, 'local-k8s')
+      || hasPathSegment(p, 'kind')
+      || hasPathSegment(p, 'minikube');
+}
+
+function normalizeEnvironmentProfile(environment) {
+  const raw = String(environment || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
+  if (!raw) return null;
+  if (/^(local-docker|docker|compose|local-dev|dev|development|local)$/.test(raw)) return 'local-docker';
+  if (/^(local-k8s|k8s-local|local-cluster|kind|minikube|kubernetes-local)$/.test(raw)) return 'local-k8s';
+  if (/^(eks|aws-eks)$/.test(raw)) return 'eks';
+  if (/^(prod|production|prd|k8s|kubernetes|helm)$/.test(raw)) return 'prod';
+  return null;
+}
+
+function detectDeploymentSurfaces(files) {
+  const out = {
+    docker: false,
+    k8s: false,
+    eksSpecific: false,
+    localK8sSpecific: false,
+  };
+  for (const relPath of files.keys()) {
+    const p = normalizeRepoPath(relPath);
+    const base = basenameOf(p);
+    if (/(^|\/)(docker-)?compose\.ya?ml$/.test(p) || /(^|\/)compose\.ya?ml$/.test(p)) {
+      out.docker = true;
+    }
+    if (hasPathSegment(p, 'k8s') || hasPathSegment(p, 'helm') || hasPathSegment(p, 'charts') || base === 'chart.yaml') {
+      out.k8s = true;
+    }
+    if (isEksSpecificPath(p)) {
+      out.eksSpecific = true;
+      out.k8s = true;
+    }
+    if (isLocalK8sSpecificPath(p)) {
+      out.localK8sSpecific = true;
+      out.k8s = true;
+    }
+  }
+  return out;
+}
+
+function isRootDockerConfig(relPath) {
+  const p = normalizeRepoPath(relPath);
+  const base = basenameOf(p);
+  if (/(^|\/)(docker-)?compose\.ya?ml$/.test(p) || /(^|\/)compose\.ya?ml$/.test(p)) return true;
+  if (hasPathSegment(p, 'k8s') || hasPathSegment(p, 'helm') || hasPathSegment(p, 'charts')) return false;
+  if (hasPathSegment(p, 'config')) return true;
+  return /^(prometheus|alertmanager|otel|otelcol|collector|loki|promtail)[\w.-]*\.ya?ml$/.test(base);
+}
+
+function isK8sPath(relPath) {
+  const p = normalizeRepoPath(relPath);
+  const base = basenameOf(p);
+  return hasPathSegment(p, 'k8s')
+      || hasPathSegment(p, 'helm')
+      || hasPathSegment(p, 'charts')
+      || base === 'chart.yaml'
+      || /^values[\w.-]*\.ya?ml$/.test(base);
+}
+
+function shouldIncludeForEnvironment(relPath, profile, surfaces) {
+  const p = normalizeRepoPath(relPath);
+
+  if (profile === 'local-docker') {
+    if (!surfaces.docker) return true;
+    return isRootDockerConfig(p);
+  }
+
+  if (profile === 'local-k8s') {
+    if (!surfaces.k8s) return true;
+    if (isRootDockerConfig(p) && surfaces.docker) return false;
+    if (isEksSpecificPath(p)) return false;
+    return isK8sPath(p);
+  }
+
+  if (profile === 'prod') {
+    if (!surfaces.k8s) return true;
+    if (isRootDockerConfig(p) && surfaces.docker) return false;
+    if (isLocalK8sSpecificPath(p)) return false;
+    if (isEksSpecificPath(p)) return false;
+    return isK8sPath(p);
+  }
+
+  if (profile === 'eks') {
+    if (!surfaces.k8s) return true;
+    if (isRootDockerConfig(p) && surfaces.docker) return false;
+    if (isLocalK8sSpecificPath(p)) return false;
+    return isK8sPath(p);
+  }
+
+  return true;
+}
+
+function scopeFilesForEnvironment(files, environment) {
+  const profile = normalizeEnvironmentProfile(environment);
+  const surfaces = detectDeploymentSurfaces(files);
+  const result = {
+    files,
+    profile,
+    surfaces,
+    applied: false,
+    excluded: [],
+  };
+  if (!profile) return result;
+
+  const scoped = new Map();
+  for (const [relPath, content] of files) {
+    if (shouldIncludeForEnvironment(relPath, profile, surfaces)) {
+      scoped.set(relPath, content);
+    } else {
+      result.excluded.push(relPath);
+    }
+  }
+
+  if (scoped.size === 0 || scoped.size === files.size) return result;
+  result.files = scoped;
+  result.applied = true;
+  return result;
+}
+
 /**
  * Crawl a map of files and emit a draft canonical pack.
  * @param {Map<string,string>|Record<string,string>} filesInput
@@ -194,25 +349,45 @@ export function detectArtefactKind(relPath, content) {
  * @returns {{canonical: object, summary: object, evidence: Record<string,string>}}
  */
 export function crawlFiles(filesInput, opts = {}) {
-  const files = filesInput instanceof Map
+  const rawFiles = filesInput instanceof Map
     ? filesInput
     : new Map(Object.entries(filesInput));
   const repoName = opts.repoName || 'crawled-service';
   const environment = opts.environment || 'prod';
   const binding = opts.binding || 'otel-elastic-prometheus-grafana';
   const owners = opts.owners || ['team-platform'];
+  const envScope = scopeFilesForEnvironment(rawFiles, environment);
+  const files = envScope.files;
 
   // ----- per-kind buckets -----
   const summary = {
-    files: { scanned: files.size, classified: 0, byKind: {} },
+    files: {
+      scanned: rawFiles.size,
+      included: files.size,
+      excludedByEnvironment: envScope.excluded.length,
+      classified: 0,
+      byKind: {},
+    },
+    environment: {
+      requested: environment,
+      profile: envScope.profile,
+      scoped: envScope.applied,
+      surfaces: envScope.surfaces,
+      excluded: envScope.excluded.slice(0, 40),
+    },
     discovered: {
       backends: 0, recordingRules: 0, burnRateAlerts: 0,
       pipelines: 0, dashboards: 0, alertingRoutes: 0,
+      extendedSurfaces: 0,
     },
     inferred: { slis: 0, slos: 0, baselines: false, tier: null },
     warnings: [],
     omitted: { syntheticRecordingRules: [] },
+    scaffold: [],
   };
+  if (envScope.applied) {
+    summary.warnings.push(`Environment scope "${envScope.profile}" excluded ${envScope.excluded.length} file(s) from other deployment surfaces.`);
+  }
   const evidence = {};   // <artefact-id> -> <relPath>
 
   const backends = [];
@@ -221,6 +396,7 @@ export function crawlFiles(filesInput, opts = {}) {
   const dashboards = [];
   const alertingRoutes = [];
   const pipelines = { receivers: [], processors: [], exporters: { metrics: null, logs: null, traces: null } };
+  const scaffoldSymbols = [];
 
   // ----- pass 1: classify -----
   const classified = [];
@@ -242,6 +418,8 @@ export function crawlFiles(filesInput, opts = {}) {
         case 'otel-collector':   walkOtelCollector(f, pipelines, evidence, summary); break;
         case 'grafana-dashboard':walkGrafanaDashboard(f, dashboards, evidence, summary); break;
         case 'helm-template':    walkHelmTemplate(f, { backends, recordingRules, burnRateAlerts, alertingRoutes, dashboards, pipelines }, evidence, summary); break;
+        case 'helm-values':      walkHelmValues(f, backends, evidence, summary); break;
+        case 'k8s-workload':     walkK8sWorkload(f, backends, evidence, summary); break;
         // Chart.yaml itself carries no observability contracts — the payloads
         // live in the templated manifests (handled as 'helm-template'). We
         // record the chart only as a signal that this is a Helm-packaged repo.
@@ -375,15 +553,31 @@ export function crawlFiles(filesInput, opts = {}) {
   }
 
   // ----- minimum pipelines -----
-  if (pipelines.receivers.length === 0)  pipelines.receivers = [{ name: 'otlp' }];
-  if (pipelines.processors.length === 0) pipelines.processors = [{ name: 'batch' }];
-  if (!pipelines.exporters.metrics) pipelines.exporters.metrics = { kind: 'prometheusremotewrite' };
-  if (!pipelines.exporters.logs)    pipelines.exporters.logs    = { kind: 'elasticsearch' };
-  if (!pipelines.exporters.traces)  pipelines.exporters.traces  = { kind: 'jaeger' };
+  if (pipelines.receivers.length === 0) {
+    pipelines.receivers = [{ name: 'otlp' }];
+    scaffoldSymbols.push('pipelines.receivers[0]');
+  }
+  if (pipelines.processors.length === 0) {
+    pipelines.processors = [{ name: 'batch' }];
+    scaffoldSymbols.push('pipelines.processors[0]');
+  }
+  if (!pipelines.exporters.metrics) {
+    pipelines.exporters.metrics = { kind: 'prometheusremotewrite' };
+    scaffoldSymbols.push('pipelines.exporters.metrics');
+  }
+  if (!pipelines.exporters.logs) {
+    pipelines.exporters.logs = { kind: 'elasticsearch' };
+    scaffoldSymbols.push('pipelines.exporters.logs');
+  }
+  if (!pipelines.exporters.traces) {
+    pipelines.exporters.traces = { kind: 'jaeger' };
+    scaffoldSymbols.push('pipelines.exporters.traces');
+  }
 
   // ----- minimum alerting routes -----
   if (alertingRoutes.length === 0) {
     alertingRoutes.push({ severity: 'SEV1', channels: [{ msteams: `#${repoName}-oncall` }] });
+    scaffoldSymbols.push('alerting.routes[0]');
     summary.warnings.push('No Alertmanager routes found — emitted stub SEV1 → MS Teams route.');
   }
 
@@ -395,6 +589,7 @@ export function crawlFiles(filesInput, opts = {}) {
       folder: repoName,
       source: `file://dashboards/${repoName}-overview.json`,
     });
+    scaffoldSymbols.push(`dashboards.${repoName}-overview`);
     summary.warnings.push('No Grafana dashboards found — emitted stub service-overview pointer.');
   }
 
@@ -404,6 +599,7 @@ export function crawlFiles(filesInput, opts = {}) {
     mttr_target_p50: '1d',
     review_cadence: 'monthly',
   };
+  scaffoldSymbols.push('baselines');
   summary.inferred.baselines = true;
 
   // ----- source-backed deployability guard -----
@@ -435,6 +631,16 @@ export function crawlFiles(filesInput, opts = {}) {
   if (realRules && realDashboards && realAlerting) tier = 'tier-2';
   summary.inferred.tier = tier;
   const criticality = opts.criticality || tier;
+  const l2x = materializeL2XFromBackends(backends);
+  summary.discovered.extendedSurfaces = l2x.evidence.length;
+  const syntheticCheckId = `${repoName}-health-canary`;
+  scaffoldSymbols.push(`validation.synthetic_checks.${syntheticCheckId}`);
+  summary.scaffold = [...scaffoldSymbols];
+
+  const scaffoldAnnotations = {};
+  for (const symbol of scaffoldSymbols) {
+    scaffoldAnnotations[`crawler.scaffold.${symbol}`] = 'schema-required fallback; no source evidence found in selected environment';
+  }
 
   // ----- canonical assembly -----
   const canonical = {
@@ -453,10 +659,16 @@ export function crawlFiles(filesInput, opts = {}) {
       annotations: {
         'crawler.discoveredAt':    opts.now || new Date().toISOString(),
         'crawler.filesScanned':    String(summary.files.scanned),
+        'crawler.filesIncluded':   String(summary.files.included),
+        'crawler.filesExcludedByEnvironment': String(summary.files.excludedByEnvironment),
         'crawler.filesClassified': String(summary.files.classified),
+        'crawler.environmentProfile': envScope.profile || '',
         'crawler.tierInferred':    tier,
         'crawler.warningCount':    String(summary.warnings.length),
         'crawler.syntheticRecordingRulesSkipped': String(summary.omitted.syntheticRecordingRules.length),
+        'crawler.extendedSurfaces': String(summary.discovered.extendedSurfaces),
+        'crawler.scaffoldCount':   String(scaffoldSymbols.length),
+        ...scaffoldAnnotations,
       },
     },
     spec: {
@@ -479,7 +691,7 @@ export function crawlFiles(filesInput, opts = {}) {
       baselines,
       validation: {
         synthetic_checks: [{
-          id: `${repoName}-health-canary`,
+          id: syntheticCheckId,
           kind: 'blackbox-exporter',
           target: `https://${repoName}.example.com/health`,
           interval: '1m',
@@ -491,6 +703,10 @@ export function crawlFiles(filesInput, opts = {}) {
 
   if (backends.length) {
     canonical.spec.telemetry = { backends };
+  }
+  Object.assign(canonical.spec, l2x.sections);
+  for (const item of l2x.evidence) {
+    evidence[item.artifactId] = evidence[item.backendId] || item.backendId;
   }
 
   // Evidence map lives in summary, not in metadata.annotations
@@ -619,7 +835,71 @@ function sniffObservabilityKind(content) {
   if (obj.receivers && obj.exporters && obj.service?.pipelines) return 'otel-collector';
   if (obj.services && typeof obj.services === 'object'
       && Object.values(obj.services).some(s => s?.image)) return 'docker-compose';
+  if (K8S_WORKLOAD_KINDS.has(obj.kind)
+      && (obj.spec?.template?.spec?.containers
+          || obj.spec?.containers
+          || obj.spec?.jobTemplate?.spec?.template?.spec?.containers)) {
+    return 'k8s-workload';
+  }
   return 'unknown';
+}
+
+function imageFromHelmImageObject(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  const repository = obj.repository || obj.repo || obj.name;
+  if (typeof repository !== 'string') return null;
+  const tag = typeof obj.tag === 'string' || typeof obj.tag === 'number' ? String(obj.tag) : '';
+  return tag ? `${repository}:${tag}` : repository;
+}
+
+function walkHelmValues(f, backends, evidence, summary) {
+  const visit = (node, path = []) => {
+    if (!node) return;
+    if (typeof node === 'string') {
+      const key = path[path.length - 1] || '';
+      if (/^(image|repository|repo|name)$/.test(String(key).toLowerCase())) {
+        registerBackendFromImage(node, f.relPath, backends, evidence, summary, { dedupeByProduct: true });
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((item, idx) => visit(item, path.concat(String(idx))));
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    const image = imageFromHelmImageObject(node);
+    if (image) registerBackendFromImage(image, f.relPath, backends, evidence, summary, { dedupeByProduct: true });
+
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'image' && typeof value === 'string') {
+        registerBackendFromImage(value, f.relPath, backends, evidence, summary, { dedupeByProduct: true });
+      }
+      visit(value, path.concat(key));
+    }
+  };
+
+  for (const obj of parseYamlDocs(f.content)) visit(obj);
+}
+
+function workloadPodSpec(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  if (obj.kind === 'CronJob') return obj.spec?.jobTemplate?.spec?.template?.spec || null;
+  return obj.spec?.template?.spec || obj.spec || null;
+}
+
+function walkK8sWorkload(f, backends, evidence, summary) {
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!K8S_WORKLOAD_KINDS.has(obj?.kind)) continue;
+    const podSpec = workloadPodSpec(obj);
+    const containers = [
+      ...(Array.isArray(podSpec?.containers) ? podSpec.containers : []),
+      ...(Array.isArray(podSpec?.initContainers) ? podSpec.initContainers : []),
+    ];
+    for (const c of containers) {
+      registerBackendFromImage(c?.image, f.relPath, backends, evidence, summary, { dedupeByProduct: true });
+    }
+  }
 }
 
 // Introspect a Helm template. The valuable observability contracts in a chart
@@ -638,6 +918,7 @@ function walkHelmTemplate(f, buckets, evidence, summary) {
       case 'otel-collector':   walkOtelCollector(sub, pipelines, evidence, summary); return true;
       case 'grafana-dashboard':walkGrafanaDashboard(sub, dashboards, evidence, summary); return true;
       case 'docker-compose':   walkDockerCompose(sub, backends, evidence, summary); return true;
+      case 'k8s-workload':     walkK8sWorkload(sub, backends, evidence, summary); return true;
       default: return false;
     }
   };

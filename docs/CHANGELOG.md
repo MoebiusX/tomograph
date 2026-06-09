@@ -42,11 +42,11 @@
 - File-upload + drag-and-drop loader (drops to `POST /api/validate`).
 
 ### Phase 4 — canonical-only fetcher
-- Rewrote `tools/fetch-live-pack.mjs` to build a canonical v1.2 manifest from MCP responses, validate it against the schema, and emit it as YAML to `packs/production-live.pack.yaml`. No `EMIT_FORMAT` flag, no studio-shape output.
+- Rewrote `tools/fetch-live-pack.mjs` to build a canonical v1.2 manifest from MCP responses, validate it against the schema, and emit it as YAML. No `EMIT_FORMAT` flag, no studio-shape output.
 - Added `emit()` to `tools/lib/mini-yaml.mjs` — round-trips with the parser on the canonical example.
 - Adapter now reads flat `metadata.annotations["mcp.verified.<symbol>"]` keys (the schema constrains annotations to `{string: string}`).
-- Workflow `refresh-live-pack.yml` writes the new YAML path; drops the legacy JSON.
-- Server `PACK_CATALOG` adds `production-live` (tolerant of missing file before first cron).
+- Workflow `refresh-live-pack.yml` builds the YAML and publishes it as a workflow artifact; live snapshots are not committed fixtures.
+- Server live-status reads a local ignored `examples/production-live.pack.yaml` when a dev refresh creates one.
 - New `tools/test-fetch-live.mjs` — 36-assertion offline test across rich + empty MCP cases.
 
 ### Phase 5 — bundled canonical packs

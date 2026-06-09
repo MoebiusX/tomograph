@@ -1315,6 +1315,7 @@ a:hover { color: var(--ink); }
 .card-source[data-source="Declared"] { background: var(--src-Declared); }
 .card-source[data-source="Verified"] { background: var(--src-Verified); }
 .card-source[data-source="Missing"]  { background: var(--src-Missing); }
+.card-source[data-source="Scaffold"] { background: #64748B; }
 
 .gating-chip {
   font-family: var(--mono); font-size: 9px;
@@ -2066,7 +2067,7 @@ a:hover { color: var(--ink); }
 }
 .drift-legend-item {
   display: grid;
-  grid-template-columns: auto auto 1fr;
+  grid-template-columns: auto auto minmax(90px, 1fr) auto;
   align-items: center;
   column-gap: 8px;
   row-gap: 1px;
@@ -2074,9 +2075,48 @@ a:hover { color: var(--ink); }
 .drift-legend-sw { width: 11px; height: 11px; border-radius: 2px; }
 .drift-legend-n { font: 700 18px/1 var(--mono); color: var(--ink-1); }
 .drift-legend-label { font: 600 12px/1.2 var(--sans); color: var(--ink-2); }
+.drift-weight {
+  justify-self: end;
+  padding: 2px 5px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  font: 700 9px/1 var(--mono);
+  letter-spacing: 0;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--ink-3);
+  background: rgba(255,255,255,0.02);
+}
+.drift-weight-good {
+  color: var(--ok, #16a34a);
+  border-color: color-mix(in srgb, var(--ok, #16a34a) 55%, transparent);
+}
+.drift-weight-anchor {
+  color: rgb(220, 90, 60);
+  border-color: rgba(220, 90, 60, 0.55);
+}
+.drift-weight-low {
+  color: rgb(210, 150, 24);
+  border-color: rgba(210, 150, 24, 0.55);
+}
+.drift-weight-weighted {
+  color: rgb(178, 121, 245);
+  border-color: rgba(178, 121, 245, 0.55);
+}
+.drift-legend-risk {
+  grid-column: 2 / -1;
+  font: 10.5px/1.25 var(--mono);
+  color: var(--ink-3);
+}
 .drift-legend-hint {
   grid-column: 2 / -1;
   font: 11px/1.35 var(--sans);
+  color: var(--ink-4);
+}
+.drift-risk-note {
+  margin: -2px 2px 12px;
+  max-width: 940px;
+  font: 11px/1.45 var(--mono);
   color: var(--ink-4);
 }
 
@@ -2192,6 +2232,7 @@ a:hover { color: var(--ink); }
   padding-right: 8px;
 }
 .diag-crit-table tr.is-pass .c-pip { color: rgb(46, 110, 50); }
+.diag-crit-table tr.is-partial .c-pip { color: rgb(180, 120, 0); }
 .diag-crit-table tr.is-fail .c-pip { color: rgb(178, 34, 34); }
 .diag-crit-table .c-name {
   width: 160px;
@@ -2233,6 +2274,7 @@ a:hover { color: var(--ink); }
   letter-spacing: 0.08em;
 }
 .diag-evidence-table tr.is-pass .e-status { color: rgb(46, 110, 50); }
+.diag-evidence-table tr.is-partial .e-status { color: rgb(180, 120, 0); }
 .diag-evidence-table tr.is-fail .e-status { color: rgb(178, 34, 34); }
 .diag-evidence-table tr:hover { background: var(--ink-bg); }
 

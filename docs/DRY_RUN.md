@@ -37,10 +37,11 @@ Expected dry-run inputs:
 
 ```text
 krystaline.service.repo.yaml
-examples/production-live.pack.yaml
+examples/production-live.pack.yaml  # generated locally or supplied for the run
 ```
 
-`production-live.pack.yaml` is shipped in `examples/`. The repo-derived
+`production-live.pack.yaml` is not a shipped example. Generate it from the live
+MCP endpoint or upload the supplied live pack for the run. The repo-derived
 `krystaline.service.repo.yaml` pack is the service fixture supplied for the dry
 run; upload it through the picker or place it under `examples/` before the run.
 
@@ -146,9 +147,9 @@ Expected current shape:
 
 ```text
 DIAGNOSTIC GRADE PASS
-Score    88% 7/8
+Score    88% 7.04/8
 Coverage 100% 5/5
-Trust    67% 2/3
+Trust    68% 2.04/3
 Verified YES live signal present
 ```
 

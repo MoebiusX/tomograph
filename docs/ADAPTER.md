@@ -36,7 +36,7 @@ const { spec, effective } = applyEnvironmentOverlay(canonical.spec, 'staging');
   layers: {
     L1: artefact[],
     L2: artefact[],
-    L2X: artefact[],                     // extended surfaces
+    L2X: artefact[],                     // canonical §5.12.4 extended surfaces
     L3: artefact[],
     L4: { policy: artefact[], alerting: artefact[], healing: artefact[] },
     L5: artefact[],
@@ -58,7 +58,8 @@ Each `artefact` is:
   desc: string,                          // one-line summary
   tool: string,                          // implementation tool/family
   tags: string[],
-  source: 'Declared' | 'Verified',       // 'Missing' added by Phase 3b conformance pass
+  source: 'Declared' | 'Verified' | 'Scaffold',
+                                          // 'Missing' added by Phase 3b conformance pass
   defines?: string,                      // symbol it defines, e.g. "slis.api_availability"
   refs?: string[],                       // symbols it references (for cross-ref checker)
   spec: object,                          // raw canonical section/item (drawer detail)
@@ -80,9 +81,9 @@ The adapter walks each top-level spec section into a deterministic family of lay
 | `spec.pipelines.processors[]` | L2 | `PIP-PRC-{NN}` | |
 | `spec.pipelines.exporters.{metrics\|logs\|traces}` | L2 | `PIP-EXP-{MET\|LOG\|TRC}` | |
 | `spec.storage.{metrics\|logs\|traces}` | L2 | `STO-{MET\|LOG\|TRC}-01` | |
+| `spec.profiling` | **L2X** | `PROF-01` | Extended surface from spec §5.12.4 |
 | `metadata.annotations.mcp.discovered.scrape_jobs` | L2 | `SCRAPE-{NN}` | Expand-level live scrape evidence |
 | `metadata.annotations.mcp.discovered.metric_names_sample` | L2 | `METRIC-{NN}` | Expand-level live metric inventory |
-| `spec.profiling` | **L2X** | `PROF-01` | RFC-0001 sibling layer |
 | `spec.network` | **L2X** | `NET-01` | |
 | `spec.policy_engine` | **L2X** | `POE-01` | |
 | `spec.mesh[]` | **L2X** | `MESH-{NN}` | |

@@ -86,10 +86,8 @@ export function diffPacks(aLayered, bLayered) {
     const aItems = layerArtefacts(aLayered, layerId);
     const bItems = layerArtefacts(bLayered, layerId);
 
-    const aByKey = new Map();
-    const bByKey = new Map();
-    for (const a of aItems) aByKey.set(keyOf(a), a);
-    for (const b of bItems) bByKey.set(keyOf(b), b);
+    const aByKey = groupByKey(aItems);
+    const bByKey = groupByKey(bItems);
 
     // Kinds (artefact families) the declared side (A) actually participates in
     // for this layer. The behavioural key is `${kind}::${identity}`, so the
@@ -104,25 +102,18 @@ export function diffPacks(aLayered, bLayered) {
 
     const bucket = { onlyInA: [], onlyInB: [], inBoth: [], outOfScope: [] };
 
-    for (const [k, a] of aByKey) {
+    for (const [k, aGroup] of aByKey) {
       if (bByKey.has(k)) {
-        // Same behavioural identity — now compare the full behavioural
-        // contracts to decide whether they actually AGREE. Aligned only when
-        // the behaviour objects are equal (no deltas); otherwise drifted, with
-        // the diverging behavioural fields attached.
-        const b = bByKey.get(k);
-        const deltas = deltasOf(a, b);
-        const match = deltas.length === 0 ? 'aligned' : 'drifted';
-        bucket.inBoth.push({ key: k, a, b, match, deltas });
+        matchGroups(k, aGroup, bByKey.get(k), bucket);
       } else {
-        bucket.onlyInA.push({ key: k, artefact: a });
+        pushUnmatched(bucket.onlyInA, k, aGroup);
       }
     }
-    for (const [k, b] of bByKey) {
+    for (const [k, bGroup] of bByKey) {
       if (aByKey.has(k)) continue;
       const kind = k.slice(0, k.indexOf('::'));
-      if (aKinds.has(kind)) bucket.onlyInB.push({ key: k, artefact: b });
-      else bucket.outOfScope.push({ key: k, artefact: b });
+      if (aKinds.has(kind)) pushUnmatched(bucket.onlyInB, k, bGroup);
+      else pushUnmatched(bucket.outOfScope, k, bGroup);
     }
 
     // Stable order — alphabetical by key — so the UI doesn't reshuffle on
@@ -172,4 +163,82 @@ export function diffPacks(aLayered, bLayered) {
     },
     layers,
   };
+}
+
+function groupByKey(items) {
+  const out = new Map();
+  for (const item of items) {
+    const k = keyOf(item);
+    if (!out.has(k)) out.set(k, []);
+    out.get(k).push(item);
+  }
+  return out;
+}
+
+function matchGroups(baseKey, aGroup, bGroup, bucket) {
+  const suffix = Math.max(aGroup.length, bGroup.length) > 1;
+  let seq = 0;
+  const unusedB = bGroup.map((b, i) => ({ b, i }));
+  const usedA = new Set();
+
+  // Pair exact behavioural matches first so a self-diff remains fully aligned
+  // even when one pack contains duplicate identity keys.
+  for (let ai = 0; ai < aGroup.length; ai++) {
+    const bi = unusedB.findIndex(({ b }) => deltasOf(aGroup[ai], b).length === 0);
+    if (bi === -1) continue;
+    const [{ b }] = unusedB.splice(bi, 1);
+    bucket.inBoth.push({
+      key: occurrenceKey(baseKey, seq++, suffix),
+      a: aGroup[ai],
+      b,
+      match: 'aligned',
+      deltas: [],
+    });
+    usedA.add(ai);
+  }
+
+  const unusedA = aGroup
+    .map((a, i) => ({ a, i }))
+    .filter(({ i }) => !usedA.has(i));
+
+  // Remaining items share identity but not the same contract. Pair each A with
+  // the closest remaining B, then leave surplus controls visible as onlyInA/B.
+  while (unusedA.length && unusedB.length) {
+    const { a } = unusedA.shift();
+    let best = 0;
+    let bestDeltas = deltasOf(a, unusedB[0].b);
+    for (let i = 1; i < unusedB.length; i++) {
+      const d = deltasOf(a, unusedB[i].b);
+      if (d.length < bestDeltas.length) {
+        best = i;
+        bestDeltas = d;
+      }
+    }
+    const [{ b }] = unusedB.splice(best, 1);
+    bucket.inBoth.push({
+      key: occurrenceKey(baseKey, seq++, suffix),
+      a,
+      b,
+      match: 'drifted',
+      deltas: bestDeltas,
+    });
+  }
+
+  for (const { a } of unusedA) {
+    bucket.onlyInA.push({ key: occurrenceKey(baseKey, seq++, suffix), artefact: a });
+  }
+  for (const { b } of unusedB) {
+    bucket.onlyInB.push({ key: occurrenceKey(baseKey, seq++, suffix), artefact: b });
+  }
+}
+
+function pushUnmatched(target, baseKey, group) {
+  const suffix = group.length > 1;
+  group.forEach((artefact, i) => {
+    target.push({ key: occurrenceKey(baseKey, i, suffix), artefact });
+  });
+}
+
+function occurrenceKey(baseKey, index, suffix) {
+  return suffix ? `${baseKey}#${String(index + 1).padStart(2, '0')}` : baseKey;
 }

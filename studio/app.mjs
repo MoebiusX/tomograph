@@ -2467,9 +2467,13 @@ function renderCrawlResult(out) {
 
   // Discovery summary
   const s = out.summary.discovered;
+  const f = out.summary.files || {};
+  const env = out.summary.environment || {};
   $('#crawl-result-summary').innerHTML = `
     <h4>what we found</h4>
     <table class="crawl-summary-table">
+      <tr><td>environment scope</td><td>${escapeHtml(env.profile || 'none')}${env.scoped ? ` · ${f.excludedByEnvironment || 0} excluded` : ''}</td></tr>
+      <tr><td>files used</td><td>${f.included ?? f.scanned ?? 0} / ${f.scanned ?? 0}</td></tr>
       <tr><td>backends</td><td>${s.backends}</td></tr>
       <tr><td>recording rules</td><td>${s.recordingRules}</td></tr>
       <tr><td>burn-rate alerts</td><td>${s.burnRateAlerts}</td></tr>

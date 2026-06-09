@@ -13,6 +13,7 @@ import { validateCanonical } from './lib/validator.mjs';
 import { readFileSync } from 'node:fs';
 import { adapt } from './lib/adapter.mjs';
 import { evaluateConformance } from './lib/conformance.mjs';
+import { diffPacks } from './lib/diff.mjs';
 
 const SCHEMA_PATH = new URL('../vendor/observability-pack-spec/v1.2/observability-pack.schema.json', import.meta.url);
 const SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'));
@@ -31,6 +32,11 @@ services:
   prometheus:
     image: prom/prometheus:v2.51.0
     ports: ["9090:9090"]
+  init-helper:
+    image: busybox:1.36
+    command: >
+      echo preparing observability stack
+      && echo ready
   grafana:
     image: grafana/grafana:12.0.0
     ports: ["3000:3000"]
@@ -46,6 +52,23 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.96.0
     ports: ["4318:4318"]
+  pyroscope:
+    image: grafana/pyroscope:1.7.0
+    ports: ["4040:4040"]
+  cilium:
+    image: quay.io/cilium/cilium:v1.15.0
+  opa:
+    image: openpolicyagent/opa:0.63.0
+    ports: ["8181:8181"]
+  envoy:
+    image: envoyproxy/envoy:v1.31.0
+    ports: ["9901:9901"]
+  kong:
+    image: kong:3.6
+    ports: ["8001:8001"]
+  vector:
+    image: timberio/vector:0.36.0
+    ports: ["8686:8686"]
 `,
   'prometheus/rules/sli.yml': `groups:
   - name: payments_slis
@@ -155,6 +178,8 @@ assert(canonical.kind === 'ObservabilityPack',                 'kind is Observab
 assert(canonical.metadata.name === 'payments',                 'metadata.name = repo name');
 assert(canonical.metadata.bindings.criticality === 'tier-2',
   `tier-2 inferred from rules+dashboards+alerting (got ${canonical.metadata.bindings.criticality}; discovered ${JSON.stringify(summary.discovered)})`);
+assert(summary.warnings.every(w => !/Failed to parse docker-compose\.yml/.test(w)),
+       'docker-compose folded command block does not abort backend extraction');
 
 const backends = canonical.spec.telemetry?.backends || [];
 assert(backends.length >= 5, `discovered ≥5 backends (got ${backends.length})`);
@@ -163,6 +188,24 @@ assert(backends.some(b => b.product === 'grafana'),     'grafana backend discove
 assert(backends.some(b => b.product === 'loki'),        'loki backend discovered');
 assert(backends.some(b => b.product === 'tempo'),       'tempo backend discovered');
 assert(backends.some(b => b.product === 'alertmanager'),'alertmanager backend discovered');
+assert(backends.some(b => b.product === 'pyroscope'),   'pyroscope backend discovered');
+assert(backends.some(b => b.product === 'cilium'),      'cilium backend discovered');
+assert(backends.some(b => b.product === 'opa'),         'opa backend discovered');
+assert(backends.some(b => b.product === 'envoy'),       'envoy backend discovered');
+assert(backends.some(b => b.product === 'kong'),        'kong backend discovered');
+assert(backends.some(b => b.product === 'vector'),      'vector backend discovered');
+assert(summary.discovered.extendedSurfaces >= 6,
+       `L2X extended surfaces materialised (got ${summary.discovered.extendedSurfaces})`);
+
+assert(canonical.spec.profiling?.backend === 'profiles-pyroscope', 'profiling surface references pyroscope backend');
+assert(canonical.spec.network?.backend === 'network-cilium',       'network surface references cilium backend');
+assert(canonical.spec.policy_engine?.backend === 'policy-opa',     'policy engine surface references opa backend');
+assert(canonical.spec.mesh?.some(m => m.product === 'envoy' && m.role === 'proxy'),
+       'mesh surface materialises envoy proxy');
+assert(canonical.spec.mesh?.some(m => m.product === 'kong' && m.role === 'gateway'),
+       'mesh surface materialises kong gateway');
+assert(canonical.spec.collection?.some(c => c.product === 'vector' && c.role === 'aggregator'),
+       'collection surface materialises vector aggregator');
 
 const rules = canonical.spec.queries.recording_rules;
 assert(rules.length >= 2, `recording rules discovered (got ${rules.length})`);
@@ -190,6 +233,9 @@ assert(canonical.spec.slis.length >= 1, 'SLIs emitted');
 assert(canonical.spec.slos.length >= 1, 'SLOs emitted');
 assert(canonical.spec.baselines.mttd_target_p50, 'baselines emitted');
 assert(canonical.spec.validation.synthetic_checks.length >= 1, 'synthetic checks emitted');
+assert((summary.scaffold || []).includes('baselines'), 'schema-required baselines marked as scaffold');
+assert((summary.scaffold || []).some(s => s.startsWith('validation.synthetic_checks.')),
+       'schema-required synthetic check marked as scaffold');
 
 assert(Object.keys(evidence).length >= 5, `evidence map populated (${Object.keys(evidence).length} entries)`);
 
@@ -210,11 +256,27 @@ try {
   const adapted = adapt(canonical);
   assert(adapted.layers.L1.length > 0, 'adapter populates L1 from SLIs/SLOs');
   assert(adapted.layers.L2.length > 0, 'adapter populates L2 from backends + pipelines');
+  assert(adapted.layers.L2X.length >= 6, `adapter populates L2X from extended surfaces (got ${adapted.layers.L2X.length})`);
   assert(adapted.layers.L3.length > 0, 'adapter populates L3 from queries + dashboards');
+  assert(adapted.layers.L5.some(a => a.source === 'Scaffold' && /^SYN-/.test(a.id)),
+         'adapter surfaces scaffold source for schema-required synthetic checks');
 
   const conf = evaluateConformance(canonical);
   assert(typeof conf?.declaredTier === 'string',   'conformance scored (declared tier present)');
   assert(Array.isArray(conf?.clauses),             'conformance returns clauses array');
+  assert(conf.clauses.some(c => c.id === 'L2X.MUST.extended_backend_refs_resolve' && c.pass === true),
+         'conformance checks L2X backend references');
+
+  const sameLive = structuredClone(canonical);
+  const aligned = diffPacks(adapted, adapt(sameLive));
+  assert(aligned.layers.L2X.inBoth.length >= 6 && aligned.layers.L2X.onlyInA.length === 0,
+         'repo-vs-live L2X diff aligns when surfaces match');
+
+  const missingLive = structuredClone(canonical);
+  delete missingLive.spec.network;
+  const drift = diffPacks(adapted, adapt(missingLive));
+  assert(drift.layers.L2X.onlyInA.some(x => x.key.startsWith('network::')),
+         'repo-vs-live L2X diff reports missing live network surface');
 } catch (e) {
   process.stdout.write(`✗ downstream failed: ${e.message}\n`);
   failures++;
@@ -360,6 +422,77 @@ assert(helm.canonical.spec.slis.some(s => s.id === 'slo_http_requests'),
 assert(helm.canonical.spec.dashboards.some(d => d.id === 'checkout-overview'),
   'grafana dashboard lifted from embedded ConfigMap JSON');
 assert(validateCanonical(helm.canonical, SCHEMA).length === 0, 'helm chart crawl validates against v1.2 schema');
+
+// ---------- environment-scoped extraction ----------
+process.stdout.write('\n--- environment scoped extraction ---\n');
+const ENV_MIXED = {
+  'docker-compose.yml': `services:
+  prometheus:
+    image: prom/prometheus:v2.51.0
+`,
+  'k8s/charts/checkout/values.yaml': `grafana:
+  image:
+    repository: grafana/grafana
+    tag: 12.0.0
+`,
+  'k8s/charts/checkout/values-local.yaml': `loki:
+  image:
+    repository: grafana/loki
+    tag: 3.0.0
+`,
+  'k8s/charts/checkout/values-eks.yaml': `victoriametrics:
+  image:
+    repository: victoriametrics/victoria-metrics
+    tag: v1.101.0
+`,
+  'k8s/manifests/kube-state-metrics.yaml': `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+spec:
+  template:
+    spec:
+      containers:
+        - name: kube-state-metrics
+          image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0
+`,
+};
+assert(detectArtefactKind('k8s/charts/checkout/values-eks.yaml', ENV_MIXED['k8s/charts/checkout/values-eks.yaml']) === 'helm-values',
+  'Helm values detected as backend source');
+assert(detectArtefactKind('k8s/manifests/kube-state-metrics.yaml', ENV_MIXED['k8s/manifests/kube-state-metrics.yaml']) === 'k8s-workload',
+  'plain K8s workload detected as backend source');
+
+const products = (result) => new Set((result.canonical.spec.telemetry?.backends || []).map(b => b.product));
+const prod = crawlFiles(ENV_MIXED, { repoName: 'checkout', environment: 'prod', now: '2026-06-05T00:00:00.000Z' });
+const prodProducts = products(prod);
+assert(prod.summary.environment.profile === 'prod' && prod.summary.environment.scoped === true,
+  `prod environment maps to production Kubernetes extraction (${JSON.stringify(prod.summary.environment)})`);
+assert(prod.summary.files.excludedByEnvironment >= 2,
+  `prod scope excludes docker/local files when an explicit production overlay exists (got ${prod.summary.files.excludedByEnvironment})`);
+assert(prodProducts.has('grafana'), 'production Helm values backend discovered');
+assert(prodProducts.has('kube-state-metrics'), 'production K8s workload backend discovered');
+assert(!prodProducts.has('prometheus'), 'prod scan does not mix in docker-compose Prometheus');
+assert(!prodProducts.has('loki'), 'prod scan does not mix in local-k8s Loki');
+assert(!prodProducts.has('victoriametrics'), 'prod scan does not mix in explicit EKS values');
+
+const eks = crawlFiles(ENV_MIXED, { repoName: 'checkout', environment: 'eks', now: '2026-06-05T00:00:00.000Z' });
+const eksProducts = products(eks);
+assert(eks.summary.environment.profile === 'eks' && eks.summary.environment.scoped === true,
+  `explicit eks environment keeps EKS profile (${JSON.stringify(eks.summary.environment)})`);
+assert(eksProducts.has('victoriametrics'), 'explicit EKS values backend discovered');
+assert(!eksProducts.has('loki'), 'explicit EKS scan excludes local-k8s Loki');
+
+const localDocker = crawlFiles(ENV_MIXED, { repoName: 'checkout', environment: 'local-docker', now: '2026-06-05T00:00:00.000Z' });
+const dockerProducts = products(localDocker);
+assert(dockerProducts.has('prometheus'), 'local-docker scan keeps docker-compose backend');
+assert(!dockerProducts.has('victoriametrics'), 'local-docker scan excludes EKS values');
+
+const localK8s = crawlFiles(ENV_MIXED, { repoName: 'checkout', environment: 'local-k8s', now: '2026-06-05T00:00:00.000Z' });
+const localK8sProducts = products(localK8s);
+assert(localK8sProducts.has('grafana') && localK8sProducts.has('loki'),
+  'local-k8s scan reads base + local Helm values');
+assert(!localK8sProducts.has('prometheus'), 'local-k8s scan excludes docker-compose backend');
+assert(!localK8sProducts.has('victoriametrics'), 'local-k8s scan excludes EKS values');
 
 process.stdout.write(`\n${failures === 0 ? 'all crawler assertions pass.' : failures + ' failure(s).'}\n`);
 process.exit(failures === 0 ? 0 : 1);

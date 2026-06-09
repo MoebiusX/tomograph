@@ -214,7 +214,7 @@ For the Krystaline dry run:
 
 1. Clear stale uploads if needed.
 2. Load the supplied `krystaline.service.repo.yaml` repo pack as Pack A.
-3. Load `examples/production-live.pack.yaml` as Pack B.
+3. Load the generated or supplied `production-live.pack.yaml` as Pack B.
 4. Open Diagnose.
 5. Confirm Diagnostic Grade renders PASS when score is greater than 85%.
 6. Explain remaining drift from the drill-down.

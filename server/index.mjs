@@ -75,7 +75,7 @@ const EXAMPLE_PACKS = [
   {
     id: 'payment-service',
     label: 'Payment service (canonical example)',
-    path: 'examples/payment-service.pack.yaml',
+    path: 'vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml',
     description: "The spec repo's reference tier-1 pack — HTTP API + Kafka consumer.",
   },
   {
@@ -1028,9 +1028,9 @@ app.get('/api/maturity-rubric', (req, res) => {
 // production path. This in-browser endpoint exists so a dev session can
 // kick off an ad-hoc refresh from a local MCP without spawning a process.
 
-// Phase 7q archived the bundled packs to examples/; the cron-driven
-// refresh-live-pack workflow writes there too. Keep this aligned so the
-// live-status badge actually finds the file.
+// Local live refreshes write this ignored runtime file. It is deliberately not
+// a committed example; the live-status badge reports absent until a refresh
+// creates it in the working tree.
 const LIVE_PACK_PATH = 'examples/production-live.pack.yaml';
 
 app.get('/api/live-status', (req, res) => {
@@ -1367,7 +1367,7 @@ app.post('/api/crawl', (req, res) => {
 // Auth: respects GITHUB_TOKEN env var for higher rate limits + private
 // repos. Without it: public-only, 60 req/hr per IP.
 //
-// Bandwidth guards: max 50 files, max 16 MB total, max 1 MB per file.
+// Bandwidth guards: max 200 files, max 16 MB total, max 1 MB per file.
 // ----------------------------------------------------------------
 function parseGithubUrl(input) {
   if (typeof input !== 'string' || !input.trim()) return null;
@@ -1396,6 +1396,10 @@ function isCrawlerFile(path) {
     /(^|\/)otel[a-z0-9._-]*config[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
     /(^|\/)otelcol[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
     /(^|\/)collector[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)chart\.(ya?ml)$/.test(p) ||
+    /(^|\/)values[\w.-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)templates\/.*\.(ya?ml)$/.test(p) ||
+    /(^|\/)k8s\/.*\.(ya?ml)$/.test(p) ||
     /(^|\/)dashboards?\/.*\.json$/.test(p) ||
     /(^|\/)grafana\/.*\.json$/.test(p) ||
     /\.dashboard\.json$/.test(p) ||
@@ -1454,7 +1458,7 @@ app.post('/api/crawl-github', async (req, res) => {
     // 3. Filter to crawler-relevant blobs.
     const FILE_CAP_BYTES = 1 * 1024 * 1024;        // 1 MB / file
     const TOTAL_CAP_BYTES = 16 * 1024 * 1024;      // 16 MB total
-    const MAX_FILES = 50;
+    const MAX_FILES = 200;
     const candidates = (treeResp.tree || [])
       .filter(node => node.type === 'blob' && isCrawlerFile(node.path))
       .filter(node => !node.size || node.size <= FILE_CAP_BYTES)

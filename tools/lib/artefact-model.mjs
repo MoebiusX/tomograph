@@ -2,15 +2,14 @@
 //
 // BEHAVIORAL ARTEFACT MODEL
 //
-// The thesis: two artefacts are "the same" when they would do the same thing
-// once deployed — not when they share a name. A backend called `prom-1` in one
-// pack and `prometheus-metrics` in another is the SAME backend if both run
-// Prometheus over the metrics signal. A recording rule renamed but emitting the
-// same series at the same expression is the SAME rule. A metric is identified by
-// the series name it exposes, never by its position in a list.
+// The thesis: two artefacts are "the same" when they represent the same
+// deployed control. For telemetry artefacts that means product+signal, output
+// series, binding target, etc. For contract artefacts (SLIs, SLOs, dashboards,
+// derived views), the declared id is itself the handle other controls bind to,
+// so the id is part of the behaviour on purpose. Positional adapter ids such as
+// `SLI-01` or `BAK-03` are never behavioural identity.
 //
-// So we do NOT compare names. For every artefact family we construct a typed
-// object with two faces:
+// For every artefact family we construct a typed object with two faces:
 //
 //   identity  — the behaviour-determining handle used to PAIR an A artefact
 //               with its B counterpart. Derived from content (series name,
@@ -74,9 +73,11 @@ export function canonicalize(value, keyName) {
     return normalizeExpr(value);
   }
   if (Array.isArray(value)) {
-    return value
+    const out = value
       .map((v) => canonicalize(v))
+      .filter((v) => !isEmptyComparable(v))
       .sort((x, y) => JSON.stringify(x).localeCompare(JSON.stringify(y)));
+    return out.length ? out : undefined;
   }
   if (value && typeof value === 'object') {
     if (keyName === 'version') {
@@ -86,13 +87,18 @@ export function canonicalize(value, keyName) {
     for (const k of Object.keys(value).sort()) {
       if (VOLATILE_SPEC_KEYS.has(k)) continue;
       const cv = canonicalize(value[k], k);
-      if (cv === undefined || cv === null || cv === '') continue;
-      if (typeof cv === 'object' && !Array.isArray(cv) && Object.keys(cv).length === 0) continue;
+      if (isEmptyComparable(cv)) continue;
       out[k] = cv;
     }
     return out;
   }
   return value;
+}
+
+function isEmptyComparable(value) {
+  if (value === undefined || value === null || value === '') return true;
+  if (Array.isArray(value) && value.length === 0) return true;
+  return typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0;
 }
 
 function sortedObject(value) {

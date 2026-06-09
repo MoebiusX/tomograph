@@ -725,6 +725,79 @@ function compareModeFor(packB, compareBId) {
   return 'gap';
 }
 
+const DELTA_BADNESS = {
+  declaredNotLive: 1.0,
+  driftedDefault: 0.5,
+  driftedDecisionBearing: 1.0,
+  driftedCosmetic: 0.1,
+  liveNotDeclared: 0.15,
+};
+
+// Trust threshold derived from decision cost, not a round-number vote:
+// badness/aligned <= 0.176 means roughly one high-cost false reassurance
+// per six confirmed controls. Fidelity = aligned / (aligned + badness).
+const DRIFT_BADNESS_PER_ALIGNED_TRUST_CEILING = 0.176;
+const DRIFT_FIDELITY_TRUST_THRESHOLD = 1 / (1 + DRIFT_BADNESS_PER_ALIGNED_TRUST_CEILING);
+const DRIFT_HEALTH_PASS_PCT = Math.round(DRIFT_FIDELITY_TRUST_THRESHOLD * 100);
+const DECISION_BEARING_DELTA_RE = /(objective|target|threshold|window|duration|severity|burn|budget|expr|query|promql|expression|condition|sli|slo|metric|record|route|receiver|channel|contact|notification|pager|trigger|pipeline|exporter|backend|signal|good|total|mttd|mttr)/i;
+const COSMETIC_DELTA_RE = /(title|label|labels|legend|display|layout|grid|position|folder|tag|tags|description|desc|summary|annotation|annotations|unit|color|schema|uid|source|provider)/i;
+
+function isScaffoldArtefact(artefact) {
+  return artefact?.source === 'Scaffold';
+}
+
+function isScaffoldDiffEntry(entry) {
+  return isScaffoldArtefact(entry?.artefact) || isScaffoldArtefact(entry?.a) || isScaffoldArtefact(entry?.b);
+}
+
+function driftedEntryBadness(entry) {
+  const fields = (entry?.deltas || []).map((d) => String(d.field || '')).filter(Boolean);
+  if (fields.some((field) => DECISION_BEARING_DELTA_RE.test(field))) {
+    return { weight: DELTA_BADNESS.driftedDecisionBearing, className: 'decision' };
+  }
+  if (fields.length > 0 && fields.every((field) => COSMETIC_DELTA_RE.test(field))) {
+    return { weight: DELTA_BADNESS.driftedCosmetic, className: 'cosmetic' };
+  }
+  return { weight: DELTA_BADNESS.driftedDefault, className: 'default' };
+}
+
+function computeWeightedDeltaRisk({ mode, aligned, driftedEntries = [], drifted, onlyInA, onlyInB }) {
+  const aWeight = mode === 'drift'
+    ? DELTA_BADNESS.declaredNotLive
+    : DELTA_BADNESS.liveNotDeclared;
+  const bWeight = mode === 'drift'
+    ? DELTA_BADNESS.liveNotDeclared
+    : DELTA_BADNESS.declaredNotLive;
+  const driftEntries = driftedEntries.length
+    ? driftedEntries
+    : Array.from({ length: drifted || 0 }, () => null);
+  const driftedBreakdown = { decision: 0, default: 0, cosmetic: 0 };
+  let driftedUnits = 0;
+  for (const entry of driftEntries) {
+    if (isScaffoldDiffEntry(entry)) continue;
+    const cost = driftedEntryBadness(entry);
+    driftedBreakdown[cost.className] += 1;
+    driftedUnits += cost.weight;
+  }
+  const onlyInAUnits = onlyInA * aWeight;
+  const onlyInBUnits = onlyInB * bWeight;
+  const totalBadness = driftedUnits + onlyInAUnits + onlyInBUnits;
+  const denominator = aligned + totalBadness;
+  const health = denominator === 0 ? 1 : aligned / denominator;
+  const healthPct = Math.round(health * 100);
+  return {
+    aWeight,
+    bWeight,
+    driftedUnits,
+    driftedBreakdown,
+    onlyInAUnits,
+    onlyInBUnits,
+    totalBadness,
+    health,
+    healthPct,
+  };
+}
+
 // THE A-vs-B drill — the real side-by-side evidence behind the verdict.
 // Consumes state.diff (server-computed set arithmetic on the two packs'
 // artefact keys) and projects it through the active product lens, then
@@ -749,34 +822,41 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
 
   // Per-layer filtered buckets + running totals.
   const layerNames = { L1:'Contract', L2:'Telemetry', L2X:'Extended', L3:'Insight', L4:'Action', L5:'Validation', GOV:'Governance' };
-  let totAligned = 0, totDrifted = 0, totA = 0, totB = 0, totOOS = 0;
+  let totAligned = 0, totDrifted = 0, totA = 0, totB = 0, totOOS = 0, totScaffold = 0;
   const rows = [];
   for (const L of LAYERS_FOR_DIFF) {
     const bucket = diff.layers[L] || { onlyInA: [], onlyInB: [], inBoth: [], outOfScope: [] };
     // inBoth = shared identity. Split it: structurally-equal pairs are
     // aligned; same-identity-but-divergent pairs are drifted. Matching is
     // an object comparison, not a name check.
-    const matched = bucket.inBoth.filter(e => passesLens(e, 'a'));
+    const matched = bucket.inBoth.filter(e => passesLens(e, 'a') && !isScaffoldDiffEntry(e));
     const aligned = matched.filter(e => e.match !== 'drifted');
     const drifted = matched.filter(e => e.match === 'drifted');
-    const onlyInA = bucket.onlyInA.filter(e => passesLens(e, 'a'));
-    const onlyInB = bucket.onlyInB.filter(e => passesLens(e, 'b'));
+    const rawOnlyInA = bucket.onlyInA.filter(e => passesLens(e, 'a'));
+    const rawOnlyInB = bucket.onlyInB.filter(e => passesLens(e, 'b'));
+    const onlyInA = rawOnlyInA.filter(e => !isScaffoldDiffEntry(e));
+    const onlyInB = rawOnlyInB.filter(e => !isScaffoldDiffEntry(e));
+    const scaffold = [
+      ...rawOnlyInA.filter(e => isScaffoldDiffEntry(e)),
+      ...rawOnlyInB.filter(e => isScaffoldDiffEntry(e)),
+      ...bucket.inBoth.filter(e => passesLens(e, 'a') && isScaffoldDiffEntry(e)),
+    ];
     // Live members of a family this pack declares nothing of — the rest of the
     // platform inventory. Shown muted, never counted as drift.
     const outOfScope = (bucket.outOfScope || []).filter(e => passesLens(e, 'b'));
     if (aligned.length === 0 && drifted.length === 0 && onlyInA.length === 0
-        && onlyInB.length === 0 && outOfScope.length === 0) continue;
+        && onlyInB.length === 0 && outOfScope.length === 0 && scaffold.length === 0) continue;
     totAligned += aligned.length;
     totDrifted += drifted.length;
     totA += onlyInA.length;
     totB += onlyInB.length;
     totOOS += outOfScope.length;
-    rows.push({ L, name: layerNames[L] || L, aligned, drifted, onlyInA, onlyInB, outOfScope });
+    totScaffold += scaffold.length;
+    rows.push({ L, name: layerNames[L] || L, aligned, drifted, onlyInA, onlyInB, outOfScope, scaffold });
   }
 
   const universe = totAligned + totDrifted + totA + totB;
   if (universe === 0) return null;
-  const alignedPct = Math.round((totAligned / universe) * 100);
 
   // Mode-specific framing for the two delta columns.
   const bName = catalogEntryFor(compareBId)?.label || packB?.meta?.name || packB?.metadata?.name || packB?.id || 'Pack B';
@@ -788,10 +868,15 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
           : `Every declared artefact is confirmed live in <strong>${escapeHtml(bName)}</strong>.`,
         aLabel: 'Declared, not live',
         aHint: 'in your pack · not seen in the live system → drift risk',
+        aWeightClass: 'anchor',
+        aWeightText: '1.0',
         aClass: 'is-drift',
         bLabel: 'Live, not declared',
         bHint: 'seen live · missing from your pack → shadow signal',
+        bWeightClass: 'low',
+        bWeightText: '0.15',
         bClass: 'is-shadow',
+        riskNote: 'Weighted badness: declared-not-live = 1.0; drifted = 0.5 by default, 1.0 for decision-bearing fields, 0.1 for cosmetic fields; live-not-declared = 0.15. Out-of-scope live inventory is excluded.',
       }
     : {
         eyebrow: 'GAP · CURRENT vs TARGET',
@@ -800,10 +885,15 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
           : `You match or exceed <strong>${escapeHtml(bName)}</strong> on every artefact.`,
         aLabel: 'Beyond target',
         aHint: 'in your pack · not in the target → extra coverage',
+        aWeightClass: 'low',
+        aWeightText: '0.15',
         aClass: 'is-extra',
         bLabel: 'Missing vs target',
         bHint: 'in the target · not in your pack → gap to close',
+        bWeightClass: 'anchor',
+        bWeightText: '1.0',
         bClass: 'is-gap',
+        riskNote: 'Weighted badness: missing target artefacts = 1.0; drifted = 0.5 by default, 1.0 for decision-bearing fields, 0.1 for cosmetic fields; beyond-target extras = 0.15.',
       };
 
   const wrap = document.createElement('div');
@@ -850,16 +940,26 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
   const C_DRIFTED = 'rgb(150, 90, 200)';
   const C_DECL    = 'rgb(200, 70, 40)';
   const C_SHADOW  = 'rgb(180, 120, 0)';
-  const notAligned = totDrifted + totA + totB;
+  const allDriftedEntries = rows.flatMap(r => r.drifted);
+  const weighted = computeWeightedDeltaRisk({
+    mode,
+    aligned: totAligned,
+    driftedEntries: allDriftedEntries,
+    onlyInA: totA,
+    onlyInB: totB,
+  });
+  const fmtUnits = (n) => Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, '');
   const legendHtml = [
-    { n: totAligned, color: C_ALIGNED, label: 'Aligned',    hint: 'shape matches live' },
-    { n: totDrifted, color: C_DRIFTED, label: 'Drifted',    hint: 'field values diverge' },
-    { n: totA,       color: C_DECL,    label: frame.aLabel, hint: frame.aHint },
-    { n: totB,       color: C_SHADOW,  label: frame.bLabel, hint: frame.bHint },
+    { n: totAligned, units: 0, color: C_ALIGNED, label: 'Aligned', hint: 'shape matches live', weightClass: 'good', weightText: '0' },
+    { n: totDrifted, units: weighted.driftedUnits, color: C_DRIFTED, label: 'Drifted', hint: 'field values diverge', weightClass: 'weighted', weightText: 'field' },
+    { n: totA, units: weighted.onlyInAUnits, color: C_DECL, label: frame.aLabel, hint: frame.aHint, weightClass: frame.aWeightClass, weightText: frame.aWeightText },
+    { n: totB, units: weighted.onlyInBUnits, color: C_SHADOW, label: frame.bLabel, hint: frame.bHint, weightClass: frame.bWeightClass, weightText: frame.bWeightText },
   ].map(l => `<li class="drift-legend-item">
       <span class="drift-legend-sw" style="background:${l.color}"></span>
       <span class="drift-legend-n">${l.n}</span>
       <span class="drift-legend-label">${escapeHtml(l.label)}</span>
+      <span class="drift-weight drift-weight-${escapeHtml(l.weightClass)}">w ${escapeHtml(l.weightText)}</span>
+      <span class="drift-legend-risk">${escapeHtml(fmtUnits(l.units))} risk units</span>
       <span class="drift-legend-hint">${escapeHtml(l.hint)}</span>
     </li>`).join('');
 
@@ -896,16 +996,21 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
     </div>
     <div class="drift-charts">
       <figure class="drift-chart">
-        ${donut([{ value: totAligned, color: C_ALIGNED }, { value: notAligned, color: 'var(--ink-4)' }], alignedPct + '%')}
-        <figcaption>aligned</figcaption>
+        ${donut([{ value: totAligned, color: C_ALIGNED }, { value: weighted.totalBadness, color: 'var(--ink-4)' }], weighted.healthPct + '%')}
+        <figcaption>weighted health</figcaption>
       </figure>
       <span class="drift-charts-arrow" aria-hidden="true">→</span>
       <figure class="drift-chart">
-        ${donut([{ value: totDrifted, color: C_DRIFTED }, { value: totA, color: C_DECL }, { value: totB, color: C_SHADOW }], (100 - alignedPct) + '%')}
-        <figcaption>the rest</figcaption>
+        ${donut([
+          { value: weighted.driftedUnits, color: C_DRIFTED },
+          { value: weighted.onlyInAUnits, color: C_DECL },
+          { value: weighted.onlyInBUnits, color: C_SHADOW },
+        ], fmtUnits(weighted.totalBadness))}
+        <figcaption>weighted badness</figcaption>
       </figure>
       <ul class="drift-legend">${legendHtml}</ul>
     </div>
+    <p class="drift-risk-note">${escapeHtml(frame.riskNote)} Health = aligned / (aligned + weighted badness).</p>
     <table class="drift-table">
       <thead>
         <tr>
@@ -918,6 +1023,7 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
       </thead>
       <tbody>${layerRowsHtml}</tbody>
     </table>
+    ${totScaffold ? `<p class="drift-oos-note">${totScaffold} schema-required scaffold artefact${totScaffold === 1 ? '' : 's'} had no source evidence in the selected environment. Shown in the pack, excluded from drift badness.</p>` : ''}
     ${totOOS ? `<p class="drift-oos-note">${totOOS} live artefact${totOOS === 1 ? '' : 's'} out of declared scope — members of families <strong>${escapeHtml(bName)}</strong> runs but your pack doesn't declare (the rest of the platform inventory). Shown for context, not counted as drift.</p>` : ''}
   `;
   return wrap;
@@ -1316,11 +1422,12 @@ function renderPostureNarrative(posture) {
 //                               (MCP probe success / total ratio)
 //          8. Fresh           — mcp.refreshedAt within staleness window
 //
-// Overall score (out of 8) → verdict word:
-//   >85% → Diagnostic-grade (7/8 or better in the current rubric)
-//   5-6 → Almost diagnostic-grade
-//   3-4 → Not yet diagnostic-grade
-//   0-2 → Far from diagnostic-grade
+// Overall score (out of 8) → verdict word. Most criteria are binary;
+// drift-free contributes fractional credit equal to weighted fidelity.
+//   >85% → Diagnostic-grade
+//   >=5 → Almost diagnostic-grade
+//   >=3 → Not yet diagnostic-grade
+//   <3  → Far from diagnostic-grade
 // ============================================================
 
 // "Observability Contract" mode is on when Pack B is the
@@ -1483,32 +1590,59 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff) {
   const probesEmpty     = (liveAnn['mcp.probesEmpty']      || '').split(',').filter(Boolean);
   const probesFailed    = (liveAnn['mcp.probesFailed']     || '').split(',').filter(Boolean);
   const hasMcpSource = probesAttempted.length > 0 || !!liveAnn['mcp.refreshedAt'];
-  let driftFree, driftDetail;
+  let driftFree, driftDetail, driftScore = 0;
   const hasLiveDiff = !!diff?.layers && compareModeFor(packB, catalogBId) === 'drift';
   if (hasLiveDiff) {
+    let alignedLive = 0;
     let declaredMissing = 0;
     let behaviorDrifted = 0;
     let liveShadow = 0;
+    let scaffoldExcluded = 0;
+    const driftedEntries = [];
     for (const bucket of Object.values(diff.layers || {})) {
-      declaredMissing += bucket.onlyInA?.length || 0;
-      behaviorDrifted += bucket.drifted ?? (bucket.inBoth || []).filter(e => e.match === 'drifted').length;
-      liveShadow += bucket.onlyInB?.length || 0;
+      const concreteOnlyInA = (bucket.onlyInA || []).filter(e => !isScaffoldDiffEntry(e));
+      const concreteOnlyInB = (bucket.onlyInB || []).filter(e => !isScaffoldDiffEntry(e));
+      const concreteInBoth = (bucket.inBoth || []).filter(e => !isScaffoldDiffEntry(e));
+      scaffoldExcluded += (bucket.onlyInA || []).filter(e => isScaffoldDiffEntry(e)).length
+        + (bucket.onlyInB || []).filter(e => isScaffoldDiffEntry(e)).length
+        + (bucket.inBoth || []).filter(e => isScaffoldDiffEntry(e)).length;
+      declaredMissing += concreteOnlyInA.length;
+      const bucketDrifted = concreteInBoth.filter(e => e.match === 'drifted');
+      behaviorDrifted += bucketDrifted.length;
+      driftedEntries.push(...bucketDrifted);
+      alignedLive += concreteInBoth.filter(e => e.match !== 'drifted').length;
+      liveShadow += concreteOnlyInB.length;
     }
-    driftFree = declaredMissing === 0 && behaviorDrifted === 0;
+    const weighted = computeWeightedDeltaRisk({
+      mode: 'drift',
+      aligned: alignedLive,
+      driftedEntries,
+      drifted: behaviorDrifted,
+      onlyInA: declaredMissing,
+      onlyInB: liveShadow,
+    });
+    driftScore = Math.max(0, Math.min(1, weighted.health));
+    driftFree = weighted.health >= DRIFT_FIDELITY_TRUST_THRESHOLD;
+    const fmtUnits = (n) => Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, '');
+    const driftBreakdown = `${weighted.driftedBreakdown.decision} decision-bearing, ${weighted.driftedBreakdown.default} default, ${weighted.driftedBreakdown.cosmetic} cosmetic`;
+    const scaffoldNote = scaffoldExcluded ? `; ${scaffoldExcluded} scaffold excluded` : '';
     driftDetail = driftFree
-      ? `repo declaration matches live state (${liveShadow} live-only shadow signal${liveShadow === 1 ? '' : 's'} noted separately)`
-      : `${declaredMissing} declared artefact${declaredMissing === 1 ? '' : 's'} not confirmed live; ${behaviorDrifted} matched artefact${behaviorDrifted === 1 ? '' : 's'} drifted; ${liveShadow} live-only shadow signal${liveShadow === 1 ? '' : 's'}`;
+      ? `weighted live-fidelity ${weighted.healthPct}% — declared-not-live ${declaredMissing}×1.0, drifted ${behaviorDrifted} (${driftBreakdown}), live-not-declared ${liveShadow}×0.15; ${fmtUnits(weighted.totalBadness)} badness units${scaffoldNote}`
+      : `weighted live-fidelity ${weighted.healthPct}% (<${DRIFT_HEALTH_PASS_PCT}% trust threshold); declared-not-live ${declaredMissing}×1.0, drifted ${behaviorDrifted} (${driftBreakdown}), live-not-declared ${liveShadow}×0.15; ${fmtUnits(weighted.totalBadness)} badness units${scaffoldNote}`;
   } else if (!hasMcpSource) {
     driftFree = false;
+    driftScore = 0;
     driftDetail = 'declared-only — no live signal to verify against (connect MCP or scan live)';
   } else if (probesAttempted.length === 0) {
     // Pack has refreshedAt but no probe table — can't compute ratio.
     driftFree = true;
+    driftScore = 1;
     driftDetail = 'live source connected — probe table not recorded';
   } else {
     const driftCount = probesEmpty.length + probesFailed.length;
     const driftRatio = driftCount / probesAttempted.length;
     driftFree = driftRatio <= DRIFT_FAIL_TOLERANCE;
+    driftScore = Math.max(0, Math.min(1, 1 - driftRatio));
     const pct = Math.round(driftRatio * 100);
     driftDetail = driftFree
       ? `${probesSucceeded.length}/${probesAttempted.length} probes confirmed (${pct}% empty or failed, within ${Math.round(DRIFT_FAIL_TOLERANCE * 100)}% tolerance)`
@@ -1545,6 +1679,7 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff) {
     },
     { key: 'drift-free',      label: 'Drift-free',      sub: 'declarations match live state',
       pass: driftFree,
+      score: driftScore,
       detail: driftDetail,
     },
     { key: 'fresh',           label: 'Fresh',           sub: 'recently verified against live',
@@ -1553,9 +1688,11 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff) {
     },
   ];
 
-  // ===== Overall verdict (equal-weighted) =====
-  const coveragePassed = coverageCriteria.filter(c => c.pass).length;
-  const trustPassed = trustCriteria.filter(c => c.pass).length;
+  // ===== Overall verdict (equal-weighted, fractional where a criterion has a score) =====
+  const criterionScore = (c) => typeof c.score === 'number' ? Math.max(0, Math.min(1, c.score)) : (c.pass ? 1 : 0);
+  const sumScore = (items) => items.reduce((n, c) => n + criterionScore(c), 0);
+  const coveragePassed = sumScore(coverageCriteria);
+  const trustPassed = sumScore(trustCriteria);
   const overallPassed = coveragePassed + trustPassed;
   const overallTotal = coverageCriteria.length + trustCriteria.length;   // 5 + 3 = 8
   const verdict =
@@ -1600,6 +1737,11 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const overall = diagnostic.overall;
 
   const pct = (passed, total) => total === 0 ? 0 : Math.round((passed / total) * 100);
+  const fmtScore = (n) => Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  const criterionScore = (c) => typeof c.score === 'number' ? Math.max(0, Math.min(1, c.score)) : (c.pass ? 1 : 0);
+  const criterionState = (c) => c.pass ? 'is-pass' : (criterionScore(c) > 0 ? 'is-partial' : 'is-fail');
+  const criterionPip = (c) => c.pass ? '✓' : (criterionScore(c) > 0 ? '◐' : '✗');
+  const criterionStatus = (c) => c.pass ? 'PASS' : (criterionScore(c) > 0 ? 'PARTIAL' : 'FAIL');
   const overallPct = pct(overall.passed, overall.total);
   const covPct   = pct(cov.passed, cov.total);
   const trustPct = pct(trust.passed, trust.total);
@@ -1639,8 +1781,8 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       </thead>
       <tbody>
         ${criteria.map(c => `
-          <tr class="diag-crit ${c.pass ? 'is-pass' : 'is-fail'}" data-key="${escapeHtml(c.key)}">
-            <td class="c-pip">${c.pass ? '✓' : '✗'}</td>
+          <tr class="diag-crit ${criterionState(c)}" data-key="${escapeHtml(c.key)}">
+            <td class="c-pip">${criterionPip(c)}</td>
             <td class="c-name">${escapeHtml(c.label)}</td>
             <td class="c-obs">${escapeHtml(c.detail)}</td>
             <td class="c-exp">${escapeHtml(c.sub)}</td>
@@ -1657,8 +1799,8 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const evidenceRows = [];
   // Collect from criteria themselves — each criterion encodes an evidence assertion.
   const C = (key, label) => cov.criteria.find(c => c.key === key) || trust.criteria.find(c => c.key === key);
-  const rowFor = (field, exp, obs, pass) => ({
-    field, exp, obs, pass,
+  const rowFor = (field, exp, obs, pass, score) => ({
+    field, exp, obs, pass, score,
   });
   evidenceRows.push(rowFor(
     'spec.telemetry.backends[].signal',
@@ -1694,7 +1836,8 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
     'repo-vs-live diff · fallback metadata.annotations.mcp.probesSucceeded',
     'declared artefacts active in live; fallback ≥70% probes when no live pack is loaded',
     C('drift-free')?.detail || '—',
-    C('drift-free')?.pass));
+    C('drift-free')?.pass,
+    C('drift-free')?.score));
   evidenceRows.push(rowFor(
     'metadata.annotations.mcp.refreshedAt',
     'within last 24h',
@@ -1713,11 +1856,11 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       </thead>
       <tbody>
         ${evidenceRows.map(r => `
-          <tr class="${r.pass ? 'is-pass' : 'is-fail'}">
+          <tr class="${criterionState(r)}">
             <td class="e-field">${escapeHtml(r.field)}</td>
             <td class="e-exp">${escapeHtml(r.exp)}</td>
             <td class="e-obs">${escapeHtml(r.obs)}</td>
-            <td class="e-status">${r.pass ? 'PASS' : 'FAIL'}</td>
+            <td class="e-status">${criterionStatus(r)}</td>
           </tr>
         `).join('')}
       </tbody>
@@ -1733,9 +1876,9 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       <table class="diag-summary">
         <colgroup><col><col><col></colgroup>
         <tbody>
-          ${summaryRow('Score',    `<span class="diag-pct">${overallPct}%</span> <span class="diag-frac">${overall.passed}/${overall.total}</span>`, bar(overallPct))}
-          ${summaryRow('Coverage', `<span class="diag-pct">${covPct}%</span> <span class="diag-frac">${cov.passed}/${cov.total}</span>`,       bar(covPct))}
-          ${summaryRow('Trust',    `<span class="diag-pct">${trustPct}%</span> <span class="diag-frac">${trust.passed}/${trust.total}</span>`, bar(trustPct))}
+          ${summaryRow('Score',    `<span class="diag-pct">${overallPct}%</span> <span class="diag-frac">${fmtScore(overall.passed)}/${overall.total}</span>`, bar(overallPct))}
+          ${summaryRow('Coverage', `<span class="diag-pct">${covPct}%</span> <span class="diag-frac">${fmtScore(cov.passed)}/${cov.total}</span>`,       bar(covPct))}
+          ${summaryRow('Trust',    `<span class="diag-pct">${trustPct}%</span> <span class="diag-frac">${fmtScore(trust.passed)}/${trust.total}</span>`, bar(trustPct))}
           ${summaryRow('Verified', trust.hasMcpSource ? '<span class="diag-yes">YES</span>' : '<span class="diag-no">NO</span>',
                        trust.hasMcpSource ? 'live signal present' : 'connect MCP or scan live to verify',
                        trust.hasMcpSource ? '' : 'is-warn')}
@@ -1747,7 +1890,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       <header class="diag-section-head">
         <span class="diag-section-num">2A</span>
         <span class="diag-section-title">Coverage — are we observing the right signals?</span>
-        <span class="diag-section-meta">${cov.passed}/${cov.total} met · ${covPct}%</span>
+        <span class="diag-section-meta">${fmtScore(cov.passed)}/${cov.total} score · ${covPct}%</span>
       </header>
       ${critTable(cov.criteria)}
     </section>
@@ -1756,7 +1899,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       <header class="diag-section-head">
         <span class="diag-section-num">2B</span>
         <span class="diag-section-title">Trust — can we trust what the signals show?</span>
-        <span class="diag-section-meta">${trust.passed}/${trust.total} met · ${trustPct}%</span>
+        <span class="diag-section-meta">${fmtScore(trust.passed)}/${trust.total} score · ${trustPct}%</span>
       </header>
       ${!trust.hasMcpSource ? `
         <div class="diag-banner">
@@ -1771,7 +1914,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       <header class="diag-section-head">
         <span class="diag-section-num">⊜</span>
         <span class="diag-section-title">Evidence — expected vs observed</span>
-        <span class="diag-section-meta">${evidenceRows.filter(r => r.pass).length}/${evidenceRows.length} confirmed</span>
+        <span class="diag-section-meta">${fmtScore(evidenceRows.reduce((n, r) => n + criterionScore(r), 0))}/${evidenceRows.length} evidence score</span>
       </header>
       ${evidenceTable}
     </section>

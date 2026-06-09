@@ -165,7 +165,7 @@ MCP_AUTH=$MCP_CLIENT_KEY \
 npm run fetch-live
 ```
 
-The default output is `examples/production-live.pack.yaml`.
+The default output is the ignored local file `examples/production-live.pack.yaml`.
 
 See [`docs/MCP_INTEGRATION.md`](docs/MCP_INTEGRATION.md) for the live fetch and
 write-back contract.
@@ -239,11 +239,12 @@ tools/
     traceability.mjs       Requirement chains
 
 examples/
-  production-live.pack.yaml
-  payment-service.pack.yaml
   production-curated.pack.yaml
   target-advanced.pack.yaml
   demo-skeleton.pack.yaml
+
+vendor/observability-pack-spec/v1.2/examples/
+  payment-service.pack.yaml
 
 reference-packs/
   kafka.pack.yaml
@@ -260,6 +261,7 @@ reference-packs/
 - [`docs/DIFF.md`](docs/DIFF.md) - structural alignment and drift model
 - [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) - maturity rubric scoring
 - [`docs/USER_STORY_CRAWLER_PROVENANCE.md`](docs/USER_STORY_CRAWLER_PROVENANCE.md) - provenance requirements for deployable artifacts
+- [`docs/USER_STORY_REQUIRED_DEPLOYMENT_ENVIRONMENT.md`](docs/USER_STORY_REQUIRED_DEPLOYMENT_ENVIRONMENT.md) - backlog story for required crawl environment selection
 
 ## License
 
