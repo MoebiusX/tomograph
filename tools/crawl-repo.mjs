@@ -132,6 +132,7 @@ async function main() {
     `#   dashboards       : ${summary.discovered.dashboards}`,
     `#   alerting routes  : ${summary.discovered.alertingRoutes}`,
     `#   pipelines        : ${summary.discovered.pipelines}`,
+    `#   scaffold         : ${summary.scaffold?.length || 0}`,
     `#   tier inferred    : ${summary.inferred.tier}`,
     `#   warnings         : ${summary.warnings.length}`,
     ...summary.warnings.map(w => `#     · ${w}`),

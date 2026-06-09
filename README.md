@@ -240,10 +240,12 @@ tools/
 
 examples/
   production-live.pack.yaml
-  payment-service.pack.yaml
   production-curated.pack.yaml
   target-advanced.pack.yaml
   demo-skeleton.pack.yaml
+
+vendor/observability-pack-spec/v1.2/examples/
+  payment-service.pack.yaml
 
 reference-packs/
   kafka.pack.yaml
@@ -260,6 +262,7 @@ reference-packs/
 - [`docs/DIFF.md`](docs/DIFF.md) - structural alignment and drift model
 - [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) - maturity rubric scoring
 - [`docs/USER_STORY_CRAWLER_PROVENANCE.md`](docs/USER_STORY_CRAWLER_PROVENANCE.md) - provenance requirements for deployable artifacts
+- [`docs/USER_STORY_REQUIRED_DEPLOYMENT_ENVIRONMENT.md`](docs/USER_STORY_REQUIRED_DEPLOYMENT_ENVIRONMENT.md) - backlog story for required crawl environment selection
 
 ## License
 

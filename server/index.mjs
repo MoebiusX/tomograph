@@ -75,7 +75,7 @@ const EXAMPLE_PACKS = [
   {
     id: 'payment-service',
     label: 'Payment service (canonical example)',
-    path: 'examples/payment-service.pack.yaml',
+    path: 'vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml',
     description: "The spec repo's reference tier-1 pack — HTTP API + Kafka consumer.",
   },
   {

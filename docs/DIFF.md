@@ -114,6 +114,33 @@ reported separately.
 The strongest diagnostic signal is the gap between them: high Jaccard and low
 alignment means Tomograph found the same controls, but their definitions drift.
 
+## Weighted Drift Fidelity
+
+The Diagnose view does not score every delta equally. It uses weighted badness:
+
+| Bucket | Weight | Rationale |
+|---|---:|---|
+| Declared, not live | 1.0 | false reassurance: the pack claims production protection that live did not confirm |
+| Drifted | 0.5 default | miscalibration: same control exists, but fields differ |
+| Drifted decision field | 1.0 | SLO objective, query, alert window, severity, route/channel, MTTD/MTTR, etc. |
+| Drifted cosmetic field | 0.1 | label, display, folder, tag, description, etc. |
+| Live, not declared | 0.15 | shadow signal: useful inventory gap, but less dangerous than false reassurance |
+| Out-of-scope live | 0.0 | excluded platform inventory |
+| Scaffold | 0.0 | schema-required fallback with no source evidence |
+
+Weighted fidelity is:
+
+```text
+aligned / (aligned + weighted_badness)
+```
+
+The current trusted-fidelity threshold is derived from decision cost: weighted
+badness must stay below about `0.176` per confirmed artefact, roughly one
+high-cost false reassurance per six confirmed controls. That maps to about
+85% fidelity. The drift-free criterion contributes fractional credit equal to
+the measured weighted fidelity; crossing the threshold decides whether the row
+is safe to trust.
+
 ## Public API
 
 ```js

@@ -35,7 +35,8 @@ import { buildRequirementTraceability } from './traceability.mjs';
 //     desc: string,         // one-line summary
 //     tool: string,         // implementation tool/family
 //     tags: string[],       // free-form tags
-//     source: 'Declared' | 'Verified',  // 'Missing' added by Phase 3 conformance pass
+//     source: 'Declared' | 'Verified' | 'Scaffold',
+//                              // 'Missing' added by Phase 3 conformance pass
 //     defines?: string,     // symbol this artefact defines (e.g. "slis.api_availability")
 //     refs?: string[],      // symbols this artefact references (cross-ref check input)
 //     spec: object,         // raw canonical section/item (drawer detail)
@@ -67,12 +68,17 @@ export function adapt(canonical, opts = {}) {
   // schema constrains metadata.annotations to {string: string}).
   const annotations = canonical.metadata?.annotations || {};
   const verifyPrefix = 'mcp.verified.';
+  const scaffoldPrefix = 'crawler.scaffold.';
 
   const ctx = {
     spec,
     annotations,
     canonical,    // adaptMetricInventory + adaptDashboardPanels read metadata.annotations directly
-    sourceOf: (id) => (annotations[`${verifyPrefix}${id}`] ? 'Verified' : 'Declared'),
+    sourceOf: (id) => (
+      annotations[`${verifyPrefix}${id}`]
+        ? 'Verified'
+        : annotations[`${scaffoldPrefix}${id}`] ? 'Scaffold' : 'Declared'
+    ),
     mcpEvidence: (id) => annotations[`${verifyPrefix}${id}`] ?? undefined,
   };
 
@@ -146,7 +152,11 @@ export function adapt(canonical, opts = {}) {
 }
 
 export function listEnvironments(canonical) {
-  return Object.keys(canonical?.spec?.environments || {});
+  const out = new Set(Object.keys(canonical?.spec?.environments || {}));
+  for (const env of canonical?.metadata?.bindings?.environments || []) {
+    if (typeof env === 'string' && env.trim()) out.add(env.trim());
+  }
+  return [...out];
 }
 
 export function applyEnvironmentOverlay(specInput, envName) {

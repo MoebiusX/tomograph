@@ -204,6 +204,22 @@ function hasPathSegment(relPath, segment) {
   return normalizeRepoPath(relPath).split('/').includes(segment);
 }
 
+function isEksSpecificPath(relPath) {
+  const p = normalizeRepoPath(relPath);
+  const base = basenameOf(p);
+  return /values-?eks/.test(base) || hasPathSegment(p, 'eks');
+}
+
+function isLocalK8sSpecificPath(relPath) {
+  const p = normalizeRepoPath(relPath);
+  const base = basenameOf(p);
+  return /values-?(local|kind|minikube)/.test(base)
+      || /^local[-_.]/.test(base)
+      || hasPathSegment(p, 'local-k8s')
+      || hasPathSegment(p, 'kind')
+      || hasPathSegment(p, 'minikube');
+}
+
 function normalizeEnvironmentProfile(environment) {
   const raw = String(environment || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
   if (!raw) return null;
@@ -230,11 +246,11 @@ function detectDeploymentSurfaces(files) {
     if (hasPathSegment(p, 'k8s') || hasPathSegment(p, 'helm') || hasPathSegment(p, 'charts') || base === 'chart.yaml') {
       out.k8s = true;
     }
-    if (/values-?eks/.test(base) || hasPathSegment(p, 'eks')) {
+    if (isEksSpecificPath(p)) {
       out.eksSpecific = true;
       out.k8s = true;
     }
-    if (/values-?local/.test(base) || /values-?(kind|minikube)/.test(base)) {
+    if (isLocalK8sSpecificPath(p)) {
       out.localK8sSpecific = true;
       out.k8s = true;
     }
@@ -263,7 +279,6 @@ function isK8sPath(relPath) {
 
 function shouldIncludeForEnvironment(relPath, profile, surfaces) {
   const p = normalizeRepoPath(relPath);
-  const base = basenameOf(p);
 
   if (profile === 'local-docker') {
     if (!surfaces.docker) return true;
@@ -273,14 +288,22 @@ function shouldIncludeForEnvironment(relPath, profile, surfaces) {
   if (profile === 'local-k8s') {
     if (!surfaces.k8s) return true;
     if (isRootDockerConfig(p) && surfaces.docker) return false;
-    if (/values-?eks/.test(base) || hasPathSegment(p, 'eks')) return false;
+    if (isEksSpecificPath(p)) return false;
     return isK8sPath(p);
   }
 
-  if (profile === 'prod' || profile === 'eks') {
+  if (profile === 'prod') {
     if (!surfaces.k8s) return true;
     if (isRootDockerConfig(p) && surfaces.docker) return false;
-    if (surfaces.eksSpecific && (/values-?local/.test(base) || /values-?(kind|minikube)/.test(base))) return false;
+    if (isLocalK8sSpecificPath(p)) return false;
+    if (isEksSpecificPath(p)) return false;
+    return isK8sPath(p);
+  }
+
+  if (profile === 'eks') {
+    if (!surfaces.k8s) return true;
+    if (isRootDockerConfig(p) && surfaces.docker) return false;
+    if (isLocalK8sSpecificPath(p)) return false;
     return isK8sPath(p);
   }
 
@@ -360,6 +383,7 @@ export function crawlFiles(filesInput, opts = {}) {
     inferred: { slis: 0, slos: 0, baselines: false, tier: null },
     warnings: [],
     omitted: { syntheticRecordingRules: [] },
+    scaffold: [],
   };
   if (envScope.applied) {
     summary.warnings.push(`Environment scope "${envScope.profile}" excluded ${envScope.excluded.length} file(s) from other deployment surfaces.`);
@@ -372,6 +396,7 @@ export function crawlFiles(filesInput, opts = {}) {
   const dashboards = [];
   const alertingRoutes = [];
   const pipelines = { receivers: [], processors: [], exporters: { metrics: null, logs: null, traces: null } };
+  const scaffoldSymbols = [];
 
   // ----- pass 1: classify -----
   const classified = [];
@@ -528,15 +553,31 @@ export function crawlFiles(filesInput, opts = {}) {
   }
 
   // ----- minimum pipelines -----
-  if (pipelines.receivers.length === 0)  pipelines.receivers = [{ name: 'otlp' }];
-  if (pipelines.processors.length === 0) pipelines.processors = [{ name: 'batch' }];
-  if (!pipelines.exporters.metrics) pipelines.exporters.metrics = { kind: 'prometheusremotewrite' };
-  if (!pipelines.exporters.logs)    pipelines.exporters.logs    = { kind: 'elasticsearch' };
-  if (!pipelines.exporters.traces)  pipelines.exporters.traces  = { kind: 'jaeger' };
+  if (pipelines.receivers.length === 0) {
+    pipelines.receivers = [{ name: 'otlp' }];
+    scaffoldSymbols.push('pipelines.receivers[0]');
+  }
+  if (pipelines.processors.length === 0) {
+    pipelines.processors = [{ name: 'batch' }];
+    scaffoldSymbols.push('pipelines.processors[0]');
+  }
+  if (!pipelines.exporters.metrics) {
+    pipelines.exporters.metrics = { kind: 'prometheusremotewrite' };
+    scaffoldSymbols.push('pipelines.exporters.metrics');
+  }
+  if (!pipelines.exporters.logs) {
+    pipelines.exporters.logs = { kind: 'elasticsearch' };
+    scaffoldSymbols.push('pipelines.exporters.logs');
+  }
+  if (!pipelines.exporters.traces) {
+    pipelines.exporters.traces = { kind: 'jaeger' };
+    scaffoldSymbols.push('pipelines.exporters.traces');
+  }
 
   // ----- minimum alerting routes -----
   if (alertingRoutes.length === 0) {
     alertingRoutes.push({ severity: 'SEV1', channels: [{ msteams: `#${repoName}-oncall` }] });
+    scaffoldSymbols.push('alerting.routes[0]');
     summary.warnings.push('No Alertmanager routes found — emitted stub SEV1 → MS Teams route.');
   }
 
@@ -548,6 +589,7 @@ export function crawlFiles(filesInput, opts = {}) {
       folder: repoName,
       source: `file://dashboards/${repoName}-overview.json`,
     });
+    scaffoldSymbols.push(`dashboards.${repoName}-overview`);
     summary.warnings.push('No Grafana dashboards found — emitted stub service-overview pointer.');
   }
 
@@ -557,6 +599,7 @@ export function crawlFiles(filesInput, opts = {}) {
     mttr_target_p50: '1d',
     review_cadence: 'monthly',
   };
+  scaffoldSymbols.push('baselines');
   summary.inferred.baselines = true;
 
   // ----- source-backed deployability guard -----
@@ -590,6 +633,14 @@ export function crawlFiles(filesInput, opts = {}) {
   const criticality = opts.criticality || tier;
   const l2x = materializeL2XFromBackends(backends);
   summary.discovered.extendedSurfaces = l2x.evidence.length;
+  const syntheticCheckId = `${repoName}-health-canary`;
+  scaffoldSymbols.push(`validation.synthetic_checks.${syntheticCheckId}`);
+  summary.scaffold = [...scaffoldSymbols];
+
+  const scaffoldAnnotations = {};
+  for (const symbol of scaffoldSymbols) {
+    scaffoldAnnotations[`crawler.scaffold.${symbol}`] = 'schema-required fallback; no source evidence found in selected environment';
+  }
 
   // ----- canonical assembly -----
   const canonical = {
@@ -616,6 +667,8 @@ export function crawlFiles(filesInput, opts = {}) {
         'crawler.warningCount':    String(summary.warnings.length),
         'crawler.syntheticRecordingRulesSkipped': String(summary.omitted.syntheticRecordingRules.length),
         'crawler.extendedSurfaces': String(summary.discovered.extendedSurfaces),
+        'crawler.scaffoldCount':   String(scaffoldSymbols.length),
+        ...scaffoldAnnotations,
       },
     },
     spec: {
@@ -638,7 +691,7 @@ export function crawlFiles(filesInput, opts = {}) {
       baselines,
       validation: {
         synthetic_checks: [{
-          id: `${repoName}-health-canary`,
+          id: syntheticCheckId,
           kind: 'blackbox-exporter',
           target: `https://${repoName}.example.com/health`,
           interval: '1m',

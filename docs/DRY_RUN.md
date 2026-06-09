@@ -146,9 +146,9 @@ Expected current shape:
 
 ```text
 DIAGNOSTIC GRADE PASS
-Score    88% 7/8
+Score    88% 7.04/8
 Coverage 100% 5/5
-Trust    67% 2/3
+Trust    68% 2.04/3
 Verified YES live signal present
 ```
 

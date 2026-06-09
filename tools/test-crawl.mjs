@@ -233,6 +233,9 @@ assert(canonical.spec.slis.length >= 1, 'SLIs emitted');
 assert(canonical.spec.slos.length >= 1, 'SLOs emitted');
 assert(canonical.spec.baselines.mttd_target_p50, 'baselines emitted');
 assert(canonical.spec.validation.synthetic_checks.length >= 1, 'synthetic checks emitted');
+assert((summary.scaffold || []).includes('baselines'), 'schema-required baselines marked as scaffold');
+assert((summary.scaffold || []).some(s => s.startsWith('validation.synthetic_checks.')),
+       'schema-required synthetic check marked as scaffold');
 
 assert(Object.keys(evidence).length >= 5, `evidence map populated (${Object.keys(evidence).length} entries)`);
 
@@ -255,6 +258,8 @@ try {
   assert(adapted.layers.L2.length > 0, 'adapter populates L2 from backends + pipelines');
   assert(adapted.layers.L2X.length >= 6, `adapter populates L2X from extended surfaces (got ${adapted.layers.L2X.length})`);
   assert(adapted.layers.L3.length > 0, 'adapter populates L3 from queries + dashboards');
+  assert(adapted.layers.L5.some(a => a.source === 'Scaffold' && /^SYN-/.test(a.id)),
+         'adapter surfaces scaffold source for schema-required synthetic checks');
 
   const conf = evaluateConformance(canonical);
   assert(typeof conf?.declaredTier === 'string',   'conformance scored (declared tier present)');
@@ -464,10 +469,11 @@ assert(prod.summary.environment.profile === 'prod' && prod.summary.environment.s
   `prod environment maps to production Kubernetes extraction (${JSON.stringify(prod.summary.environment)})`);
 assert(prod.summary.files.excludedByEnvironment >= 2,
   `prod scope excludes docker/local files when an explicit production overlay exists (got ${prod.summary.files.excludedByEnvironment})`);
-assert(prodProducts.has('victoriametrics'), 'production values backend discovered');
+assert(prodProducts.has('grafana'), 'production Helm values backend discovered');
 assert(prodProducts.has('kube-state-metrics'), 'production K8s workload backend discovered');
 assert(!prodProducts.has('prometheus'), 'prod scan does not mix in docker-compose Prometheus');
 assert(!prodProducts.has('loki'), 'prod scan does not mix in local-k8s Loki');
+assert(!prodProducts.has('victoriametrics'), 'prod scan does not mix in explicit EKS values');
 
 const eks = crawlFiles(ENV_MIXED, { repoName: 'checkout', environment: 'eks', now: '2026-06-05T00:00:00.000Z' });
 const eksProducts = products(eks);

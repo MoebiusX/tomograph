@@ -58,7 +58,8 @@ Each `artefact` is:
   desc: string,                          // one-line summary
   tool: string,                          // implementation tool/family
   tags: string[],
-  source: 'Declared' | 'Verified',       // 'Missing' added by Phase 3b conformance pass
+  source: 'Declared' | 'Verified' | 'Scaffold',
+                                          // 'Missing' added by Phase 3b conformance pass
   defines?: string,                      // symbol it defines, e.g. "slis.api_availability"
   refs?: string[],                       // symbols it references (for cross-ref checker)
   spec: object,                          // raw canonical section/item (drawer detail)
