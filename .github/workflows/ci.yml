@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit runtime dependencies (high+)
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Lint fetcher (node --check)
         run: npm run lint:fetcher
 

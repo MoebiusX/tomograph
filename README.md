@@ -132,6 +132,15 @@ npm run dev
 
 Open `http://127.0.0.1:8000`.
 
+### Security Posture
+
+The server is a local diagnostic workspace with **no authentication**. Every
+`/api/*` route is open to anyone who can reach the port — including routes
+that make outbound requests on your behalf (`/api/draft-from-mcp`,
+`/api/refresh-live`, the deploy endpoints). Run it on localhost or behind a
+reverse proxy that enforces auth. Never expose it directly to an untrusted
+network.
+
 Useful local checks:
 
 ```bash
@@ -287,6 +296,7 @@ deploy/k8s/
 - [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) - maturity rubric scoring
 - [`docs/USER_STORY_CRAWLER_PROVENANCE.md`](docs/USER_STORY_CRAWLER_PROVENANCE.md) - provenance requirements for deployable artifacts
 - [`docs/USER_STORY_REQUIRED_DEPLOYMENT_ENVIRONMENT.md`](docs/USER_STORY_REQUIRED_DEPLOYMENT_ENVIRONMENT.md) - backlog story for required crawl environment selection
+- [`docs/REFACTORING_PLAN.md`](docs/REFACTORING_PLAN.md) - maintainability refactor backlog from the 2026-06 audit
 
 ## License
 

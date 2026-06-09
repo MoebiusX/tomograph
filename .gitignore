@@ -3,6 +3,8 @@ node_modules/
 *.log
 .env
 .env.*
+# …but the documented example config must stay in the repo.
+!.env.example
 
 # Coverage output (c8 / nyc).
 coverage/
@@ -30,3 +32,6 @@ coverage/
 PROJECT_STATUS_SURVEY.md
 docs/TOMOGRAPH_BRAND_PLAN.md
 docs/TOMOGRAPH_MIGRATION_CHECKLIST.md
+
+# Superseded scratch versions of the brand/architecture diagrams.
+docs/diagrams/_prev*
