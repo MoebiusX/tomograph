@@ -25,6 +25,18 @@ function crc32(bytes) {
 const u16 = (n) => [n & 0xFF, (n >>> 8) & 0xFF];
 const u32 = (n) => [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF];
 
+// Entry names land verbatim in the archive, where extractors interpret them
+// as paths. Reject anything an unzip tool could write outside its target
+// directory (zip-slip): absolute paths, drive letters, and `..` segments.
+// Backslashes are normalised to `/` first so `..\` can't sneak past.
+function safeEntryName(name) {
+  const n = String(name).replaceAll('\\', '/');
+  if (!n || n.startsWith('/') || /^[A-Za-z]:/.test(n) || n.split('/').some(s => s === '..')) {
+    throw new Error(`zip: unsafe entry name ${JSON.stringify(name)}`);
+  }
+  return n;
+}
+
 // files: [{ name: string, data: string | Uint8Array }] → Uint8Array (the .zip).
 export function makeZip(files) {
   const enc = new TextEncoder();
@@ -33,7 +45,7 @@ export function makeZip(files) {
   let offset = 0;          // running offset of each local header
 
   for (const f of files) {
-    const nameBytes = enc.encode(f.name);
+    const nameBytes = enc.encode(safeEntryName(f.name));
     const data = typeof f.data === 'string' ? enc.encode(f.data) : f.data;
     const crc = crc32(data);
 
