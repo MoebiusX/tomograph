@@ -82,6 +82,8 @@ export function openDrawer(artefact, def, sublayerKey, side = 'b') {
   // Per-artefact-type structured panels.
   const typed = renderTypedPanels(artefact, def);
   if (typed) panels.appendChild(typed);
+  const trace = renderRequirementTracePanel(artefact, side);
+  if (trace) panels.appendChild(trace);
 
   // Always-show canonical source
   const src = panel('Canonical source', 'canonical-source');
@@ -165,6 +167,7 @@ function renderTypedPanels(artefact, def) {
   if (id.startsWith('OTEL-'))    return panelOtel(s);
   if (id.startsWith('BAK-'))     return panelBackend(s);
   if (id.startsWith('STO-'))     return panelStorage(s);
+  if (id.startsWith('SCRAPE-'))  return panelScrapeJob(s);
   if (id.startsWith('PIP-'))     return panelPipeline(id, s);
   if (id.startsWith('DASH-'))    return panelDashboard(s);
   if (id.startsWith('QRY-'))     return panelRecordingRule(s);
@@ -180,6 +183,44 @@ function renderTypedPanels(artefact, def) {
       id.startsWith('MESH-') || id.startsWith('COL-')) return panelExtended(id, s);
   if (id.startsWith('IMP-'))     return panelImport(s);
   return null;
+}
+
+function renderRequirementTracePanel(artefact, side = 'b') {
+  const pack = side === 'a'
+    ? state.pack
+    : (state.activeLayer === 'COMPARE' && side === 'b' ? state.packB : state.pack);
+  const chains = pack?.traceability?.chains || [];
+  if (!chains.length) return null;
+  const symbol = artefact.defines;
+  if (!symbol || !/^(slis|slos)\./.test(symbol)) return null;
+  const hits = chains.filter(c => c.slo?.symbol === symbol || c.sli?.symbol === symbol);
+  if (!hits.length) return null;
+
+  const p = panel('Requirement trace', 'p-requirement-trace');
+  for (const chain of hits.slice(0, 3)) {
+    const sec = subpanel(chain.slo?.id || chain.sli?.id || 'requirement');
+    sec.appendChild(dl([
+      ['slo', chain.slo?.id],
+      ['sli', chain.sli?.id],
+      ['status', chain.gaps?.length ? `${chain.gaps.length} gap(s)` : 'complete'],
+      ['metrics', chain.metrics?.map(m => m.name).slice(0, 6).join(', ')],
+      ['recording rules', chain.recordingRules?.map(r => r.name).slice(0, 4).join(', ')],
+      ['exporters', chain.exporters?.map(e => e.title || e.id).join(', ')],
+      ['scrape evidence', chain.scrapeJobs?.items?.length
+        ? chain.scrapeJobs.items.map(j => j.name).join(', ')
+        : (chain.scrapeJobs?.observedCount ? `${chain.scrapeJobs.observedCount} jobs observed` : null)],
+      ['dashboards', chain.dashboards?.map(d => d.title || d.id).slice(0, 4).join(', ')],
+      ['alerts', chain.alerts?.map(a => a.name).slice(0, 5).join(', ')],
+    ]));
+    if (chain.gaps?.length) {
+      const gap = document.createElement('div');
+      gap.className = 'trace-gap-list';
+      gap.innerHTML = chain.gaps.map(g => `<code>${escapeHtml(g)}</code>`).join('');
+      sec.appendChild(gap);
+    }
+    p.appendChild(sec);
+  }
+  return p;
 }
 
 function dl(rows) {
@@ -342,6 +383,15 @@ function panelStorage(s) {
     sec.appendChild(table(s.downsample.map(d => [d.resolution, d.retain_for]), ['resolution', 'retain for']));
     p.appendChild(sec);
   }
+  return p;
+}
+
+function panelScrapeJob(s) {
+  const p = panel('Scrape job', 'p-scrape');
+  p.appendChild(dl([
+    ['job', s.job],
+    ['source', s.source],
+  ]));
   return p;
 }
 
@@ -589,4 +639,3 @@ export function closeDrawer(side) {
       k === state.activeCardKey || k === state.activeCardKeyA || k === state.activeCardKeyB);
   });
 }
-

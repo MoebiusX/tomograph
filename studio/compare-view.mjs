@@ -200,8 +200,19 @@ export function renderTraceabilityView(host) {
   section.className = 'section trace-view';
   section.dataset.layer = 'TRACE';
 
-  if (!state.pack || !state.packB) {
-    section.innerHTML = '<div class="placeholder">Load Pack A and Pack B first.</div>';
+  if (!state.pack) {
+    section.innerHTML = '<div class="placeholder">Load a pack first.</div>';
+    host.appendChild(section);
+    return;
+  }
+
+  const requirementBlock = renderRequirementTraceabilityBlock(state.pack);
+  if (requirementBlock) section.appendChild(requirementBlock);
+
+  if (!state.packB) {
+    if (!requirementBlock) {
+      section.innerHTML = '<div class="placeholder">No SLI/SLO requirements found in this pack.</div>';
+    }
     host.appendChild(section);
     return;
   }
@@ -312,6 +323,163 @@ export function renderTraceabilityView(host) {
   }
 
   host.appendChild(section);
+}
+
+function renderRequirementTraceabilityBlock(pack) {
+  const trace = pack?.traceability;
+  const chains = Array.isArray(trace?.chains) ? trace.chains : [];
+  if (!chains.length) return null;
+
+  const block = document.createElement('div');
+  block.className = 'rt-block';
+
+  const summary = trace.summary || {};
+  const head = document.createElement('div');
+  head.className = 'section-head rt-head';
+  head.innerHTML = `
+    <span class="section-num">REQ</span>
+    <span class="section-name">Requirements Traceability · SLO/SLI proof chain</span>
+    <span class="section-count">${chains.length} requirement${chains.length === 1 ? '' : 's'}</span>
+  `;
+  block.appendChild(head);
+
+  const lede = document.createElement('div');
+  lede.className = 'trace-lede rt-lede';
+  lede.innerHTML = `
+    Each row follows the diagnostic chain from <em>SLO/SLI</em> to the metrics, recording rules,
+    exporters, scrape evidence, dashboards, and alerts that prove it in production.
+  `;
+  block.appendChild(lede);
+
+  const cards = document.createElement('div');
+  cards.className = 'rt-summary-grid';
+  const cardData = [
+    ['requirements', summary.requirements ?? chains.length],
+    ['complete', summary.complete ?? chains.filter(c => !c.gaps?.length).length],
+    ['metrics', summary.withMetrics ?? 0],
+    ['dashboards', summary.withDashboards ?? 0],
+    ['alerts', summary.withAlerts ?? 0],
+  ];
+  for (const [label, value] of cardData) {
+    const card = document.createElement('div');
+    card.className = 'rt-summary-card';
+    card.innerHTML = `
+      <div class="rt-summary-key">${escapeHtml(label)}</div>
+      <div class="rt-summary-val">${escapeHtml(String(value))}</div>
+    `;
+    cards.appendChild(card);
+  }
+  block.appendChild(cards);
+
+  const list = document.createElement('div');
+  list.className = 'rt-chain-list';
+  for (const chain of chains) list.appendChild(renderRequirementChain(chain));
+  block.appendChild(list);
+
+  return block;
+}
+
+function renderRequirementChain(chain) {
+  const row = document.createElement('article');
+  row.className = 'rt-chain';
+  row.dataset.complete = String(!chain.gaps?.length);
+
+  const sloLabel = chain.slo
+    ? `${chain.slo.id}${chain.slo.objective != null ? ` · ${formatPct(chain.slo.objective)}` : ''}${chain.slo.window ? ` / ${chain.slo.window}` : ''}`
+    : '(no SLO)';
+  const title = chain.slo?.id || chain.sli?.id || chain.id;
+
+  const head = document.createElement('div');
+  head.className = 'rt-chain-head';
+  head.innerHTML = `
+    <div>
+      <div class="rt-chain-title">${escapeHtml(title)}</div>
+      <div class="rt-chain-sub">${escapeHtml(sloLabel)}${chain.sli?.id ? ` · SLI ${escapeHtml(chain.sli.id)}` : ''}</div>
+    </div>
+    <div class="rt-chain-status">${chain.gaps?.length ? `${chain.gaps.length} gap${chain.gaps.length === 1 ? '' : 's'}` : 'complete'}</div>
+  `;
+  row.appendChild(head);
+
+  const lanes = document.createElement('div');
+  lanes.className = 'rt-lanes';
+  lanes.appendChild(renderRtLane('metric', chain.metrics?.map(m => metricTraceLabel(m)), 'missing'));
+  lanes.appendChild(renderRtLane('rule', chain.recordingRules?.map(r => r.name), 'none'));
+  lanes.appendChild(renderRtLane('exporter', chain.exporters?.map(e => e.title || e.id), 'missing'));
+  lanes.appendChild(renderRtLane('scrape', scrapeTraceLabels(chain.scrapeJobs), 'missing'));
+  lanes.appendChild(renderRtLane('dashboard', dashboardTraceLabels(chain.dashboards), 'missing'));
+  lanes.appendChild(renderRtLane('alert', chain.alerts?.map(a => a.name), 'missing'));
+  row.appendChild(lanes);
+
+  if (chain.gaps?.length || chain.notes?.length) {
+    const meta = document.createElement('div');
+    meta.className = 'rt-chain-meta';
+    for (const gap of chain.gaps || []) {
+      const code = document.createElement('code');
+      code.className = 'rt-gap';
+      code.textContent = gap;
+      meta.appendChild(code);
+    }
+    for (const note of chain.notes || []) {
+      const code = document.createElement('code');
+      code.className = 'rt-note';
+      code.textContent = note;
+      meta.appendChild(code);
+    }
+    row.appendChild(meta);
+  }
+  return row;
+}
+
+function renderRtLane(label, items = [], emptyLabel = 'missing') {
+  const lane = document.createElement('div');
+  lane.className = 'rt-lane';
+  const clean = (items || []).filter(Boolean);
+  lane.dataset.empty = String(clean.length === 0);
+  lane.innerHTML = `<div class="rt-lane-key">${escapeHtml(label)}</div>`;
+  const list = document.createElement('div');
+  list.className = 'rt-lane-items';
+  if (!clean.length) {
+    const item = document.createElement('span');
+    item.className = 'rt-lane-empty';
+    item.textContent = emptyLabel;
+    list.appendChild(item);
+  } else {
+    for (const value of clean.slice(0, 6)) {
+      const item = document.createElement('span');
+      item.className = 'rt-lane-item';
+      item.textContent = value;
+      list.appendChild(item);
+    }
+    if (clean.length > 6) {
+      const more = document.createElement('span');
+      more.className = 'rt-lane-more';
+      more.textContent = `+${clean.length - 6}`;
+      list.appendChild(more);
+    }
+  }
+  lane.appendChild(list);
+  return lane;
+}
+
+function metricTraceLabel(metric) {
+  if (!metric) return '';
+  return `${metric.name}${metric.verified === false ? ' (unverified)' : ''}`;
+}
+
+function scrapeTraceLabels(scrape) {
+  if (!scrape) return [];
+  if (Array.isArray(scrape.items) && scrape.items.length) return scrape.items.map(j => j.name);
+  if (scrape.observedCount) return [`${scrape.observedCount} jobs observed`];
+  return [];
+}
+
+function dashboardTraceLabels(dashboards = []) {
+  return dashboards.map(d => `${d.title || d.id}${d.panels?.length ? ` (${d.panels.length} panel${d.panels.length === 1 ? '' : 's'})` : ''}`);
+}
+
+function formatPct(value) {
+  if (typeof value !== 'number') return String(value ?? '');
+  return `${(value * 100).toFixed(2).replace(/\.?0+$/, '')}%`;
 }
 
 function renderTraceRow(bucketKey, finding, resolvedSet) {
@@ -486,7 +654,7 @@ export function renderBenchmarkView(view) {
 
   // THE verdict — diagnostic-grade YES/NO from coverage (2A) + trust /
   // drift (2B), Pack A alone. Always leads the view.
-  const diagnostic = computeDiagnosticGrade(state.pack, state.packB, posture, state.compareBId);
+  const diagnostic = computeDiagnosticGrade(state.pack, state.packB, posture, state.compareBId, state.diff);
   const verdict = renderDiagnosticGradeVerdict(diagnostic, lens, state.packB);
   scaffold.appendChild(verdict);
 
@@ -1196,7 +1364,7 @@ const FRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
 // the live system didn't confirm what the pack declares.
 const DRIFT_FAIL_TOLERANCE = 0.30;
 
-function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
+function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff) {
   // ===== Coverage criteria (2A) =====
   const meta = packA?.meta || {};
   const ann = meta?.annotations || packA?.metadata?.annotations || {};
@@ -1306,15 +1474,31 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
 
   // ---- 7. Drift-free ----
   // Live signal integrity: did the declarations the pack makes about
-  // the world match what the MCP actually observed? Read directly off
-  // the probe-outcome annotations stamped by the fetcher.
+  // the world match what the MCP actually observed? When Pack B is a
+  // live reconstruction, use the actual A-vs-B diff. Probe success only
+  // says the live scanner worked; it does not prove declared artefacts
+  // are active in production.
   const probesAttempted = (liveAnn['mcp.probesAttempted']  || '').split(',').filter(Boolean);
   const probesSucceeded = (liveAnn['mcp.probesSucceeded']  || '').split(',').filter(Boolean);
   const probesEmpty     = (liveAnn['mcp.probesEmpty']      || '').split(',').filter(Boolean);
   const probesFailed    = (liveAnn['mcp.probesFailed']     || '').split(',').filter(Boolean);
   const hasMcpSource = probesAttempted.length > 0 || !!liveAnn['mcp.refreshedAt'];
   let driftFree, driftDetail;
-  if (!hasMcpSource) {
+  const hasLiveDiff = !!diff?.layers && compareModeFor(packB, catalogBId) === 'drift';
+  if (hasLiveDiff) {
+    let declaredMissing = 0;
+    let behaviorDrifted = 0;
+    let liveShadow = 0;
+    for (const bucket of Object.values(diff.layers || {})) {
+      declaredMissing += bucket.onlyInA?.length || 0;
+      behaviorDrifted += bucket.drifted ?? (bucket.inBoth || []).filter(e => e.match === 'drifted').length;
+      liveShadow += bucket.onlyInB?.length || 0;
+    }
+    driftFree = declaredMissing === 0 && behaviorDrifted === 0;
+    driftDetail = driftFree
+      ? `repo declaration matches live state (${liveShadow} live-only shadow signal${liveShadow === 1 ? '' : 's'} noted separately)`
+      : `${declaredMissing} declared artefact${declaredMissing === 1 ? '' : 's'} not confirmed live; ${behaviorDrifted} matched artefact${behaviorDrifted === 1 ? '' : 's'} drifted; ${liveShadow} live-only shadow signal${liveShadow === 1 ? '' : 's'}`;
+  } else if (!hasMcpSource) {
     driftFree = false;
     driftDetail = 'declared-only — no live signal to verify against (connect MCP or scan live)';
   } else if (probesAttempted.length === 0) {
@@ -1398,6 +1582,7 @@ function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
       passed: overallPassed,
       total:  overallTotal,
       verdict,
+      liveDriftFree: driftFree,
     },
   };
 }
@@ -1422,7 +1607,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   // Single binary verdict in audit terms. No "Almost diagnostic-grade",
   // no "Critical" — just PASS or FAIL with the threshold stated.
   const PASS_THRESHOLD = 7; // 7 of 8 to pass — graded against contract
-  const passes = overall.passed >= PASS_THRESHOLD;
+  const passes = overall.passed >= PASS_THRESHOLD && overall.liveDriftFree !== false;
   const status = passes ? 'PASS' : 'FAIL';
 
   // Coverage-only when no Pack B is loaded: the coverage criteria are
@@ -1512,8 +1697,8 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
     C('chaos-validated')?.detail || '—',
     C('chaos-validated')?.pass));
   evidenceRows.push(rowFor(
-    'metadata.annotations.mcp.probesSucceeded',
-    '≥ 70% of attempted probes return data',
+    'repo-vs-live diff · fallback metadata.annotations.mcp.probesSucceeded',
+    'declared artefacts active in live; fallback ≥70% probes when no live pack is loaded',
     C('drift-free')?.detail || '—',
     C('drift-free')?.pass));
   evidenceRows.push(rowFor(
@@ -2043,6 +2228,20 @@ export function catalogEntryFor(packId) {
   return (state.catalog || []).find(p => p.id === packId) || null;
 }
 
+function uploadedSourceHint(p) {
+  if (p?.source !== 'uploaded') return '';
+  const m = String(p.description || '').match(/^Uploaded pack\s+—\s+(.+)$/);
+  const source = (m?.[1] || '').trim();
+  if (!source || source === p.label || source === p.name) return '';
+  return source;
+}
+
+function packOptionLabel(p) {
+  const version = p.version || '?';
+  const source = uploadedSourceHint(p);
+  return `${p.label || p.id} · v${version}${source ? ` · from ${source}` : ''}`;
+}
+
 function renderComparePackHeader(side, pack, diffMeta) {
   const card = document.createElement('div');
   card.className = `compare-pack-card compare-pack-card-${side}`;
@@ -2072,7 +2271,7 @@ function renderComparePackHeader(side, pack, diffMeta) {
   // Build the pack + env picker options from the live catalog.
   const packOptionsHtml = (state.catalog || [])
     .filter(p => p.ok)
-    .map(p => `<option value="${escapeHtml(p.id)}" ${p.id === activeId ? 'selected' : ''}>${escapeHtml(p.label)}</option>`)
+    .map(p => `<option value="${escapeHtml(p.id)}" ${p.id === activeId ? 'selected' : ''}>${escapeHtml(packOptionLabel(p))}</option>`)
     .join('');
   const envOptionsHtml = (envOptions.length ? envOptions : (activeEnv ? [activeEnv] : []))
     .map(e => `<option value="${escapeHtml(e)}" ${e === activeEnv ? 'selected' : ''}>${escapeHtml(e)}</option>`)
