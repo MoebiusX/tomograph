@@ -12,12 +12,14 @@ For the canonical model, read:
 - **[`../vendor/observability-pack-spec/v1.2/docs/maturity-model.md`](../vendor/observability-pack-spec/v1.2/docs/maturity-model.md)** — the full tier-3 → tier-2 → tier-1 clause rubric.
 - **[`../vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml`](../vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml)** — the canonical example.
 
-## What the studio adds — L2X (Extended Surfaces)
+## What the studio projects — L2X (Extended Surfaces)
 
 The canonical spec carves the manifest into ten dimensions across five
 layers (L1 Contract, L2 Telemetry, L3 Insight, L4 Action, L5 Validation),
-plus governance. The studio adds **one sub-layer** for display purposes:
-**L2X · Extended Surfaces.**
+plus governance. The v1.2 spec also defines optional extended technology
+surfaces in `spec.profiling`, `spec.network`, `spec.policy_engine`,
+`spec.mesh[]`, and `spec.collection[]`. The studio projects those canonical
+fields into **L2X · Extended Surfaces**.
 
 L2X groups the optional, telemetry-adjacent spec sections that the v1.2
 spec carved out as "extended technology surfaces" in §5.12.4 of the spec:
@@ -30,7 +32,13 @@ spec carved out as "extended technology surfaces" in §5.12.4 of the spec:
 | `spec.mesh[]` | `MESH-NN` | Envoy, Consul, Kong, Traefik |
 | `spec.collection[]` | `COL-NN` | Fluent Bit, Beats, Vector, Alloy |
 
-These all consume telemetry the same way L2 does, but they're optional and they reference (rather than declare) backends. Rendering them as a separate L2X tab keeps L2 focused on the core "produce + collect + persist" loop while still surfacing the extended surfaces when a pack declares them. The L2X tab is **hidden when empty** so packs without extended surfaces look uncluttered.
+These all consume telemetry the same way L2 does, but they're optional and
+they reference backends declared in `spec.telemetry.backends[]`. Rendering
+them as a separate L2X tab keeps L2 focused on the core "produce + collect +
+persist" loop while still surfacing the extended surfaces when a pack declares
+them or when the crawler/live MCP materialises them from discovered backends.
+The L2X tab is **hidden when empty** so packs without extended surfaces look
+uncluttered.
 
 ## What the studio adds — source tag taxonomy
 

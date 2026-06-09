@@ -16,6 +16,7 @@ export const state = {
   // and the header bar + tabs appear. Logo click returns to 'home'.
   mode: 'home',
   catalog: [],
+  selectedService: null,
   selectedPackId: null,
   selectedEnv: null,
   pack: null,
@@ -43,10 +44,10 @@ export const state = {
   tracePrefs: { suppressed: [], resolved: [] },
   traceOpen: { aligned: false, declaredNotVerified: true, verifiedNotDeclared: true, stale: true },
   // Per-section Expand toggles — each L2/L3 section hides its detail-level
-  // artefacts by default and reveals them on demand. L2: metric inventory
-  // (METRIC-NN) vs the exporters / scrape jobs that produce it. L3: dashboard
-  // panels (PANEL-NN) and queries (recording rules / derived views) vs the
-  // dashboards. Persisted so the user's choice survives refresh.
+  // artefacts by default and reveals them on demand. L2: live evidence
+  // inventory (METRIC-NN + SCRAPE-NN). L3: dashboard panels (PANEL-NN) and
+  // queries (recording rules / derived views) vs the dashboards. Persisted so
+  // the user's choice survives refresh.
   expandL2: false,
   expandL3Panels: false,
   expandL3Queries: false,
@@ -74,6 +75,9 @@ export const state = {
                                // provider.kind=grafana, anything whose mcp.source.<id>
                                // annotation came from a grafana_* tool, and any artefact
                                // that refs a surface backend). 'all' disables the filter.
+  diffScopeMode: '',           // '' means use Pack A's tomograph.diff.scopeMode annotation
+                               // or the service-scoped default. Otherwise:
+                               // 'service' | 'family' | 'all'.
   diff: null,                  // last fetched /api/diff result
   packB: null,                 // B's full layered pack (for atlases)
   atlasVariant: 'strata',      // 'strata' | 'periodic' | 'constellation' | 'skyline' | 'transit' | 'arbor'
@@ -92,9 +96,9 @@ export const state = {
   deployProduct: 'grafana',    // chosen target product
   deployVersion: '12',         // chosen target version (string — matches matrix.versions)
   deployScope: 'both',         // for prometheus-rules: both | recording | alerting
-  // Remediate set-operation: which artefacts to deploy. null → resolves to
-  // 'A-B' when Pack B is loaded (the delta to close), else 'A'.
-  remediateOp: null,           // 'A' | 'B' | 'AUB' | 'A-B'
+  // Reconcile mode. null → bidirectional when Pack B is loaded, otherwise
+  // deploy-only. Legacy values (A/B/AUB/A-B) are migrated in compile-view.
+  remediateOp: null,           // 'all' | 'deploy' | 'retrofeed' | 'drift'
   remediateDeselected: null,   // Set<string> of identities the user unchecked
   mcpStatus: null,
 };
@@ -109,10 +113,11 @@ export const state = {
 // pack that vanished from the catalog just drops silently.
 const PERSIST_KEY = 'studioState.v1';
 const PERSIST_FIELDS = [
+  'selectedService',
   'selectedPackId', 'selectedEnv',
   'compareBId', 'compareBEnv',
   'view', 'layerFilter', 'diagnoseSub',
-  'compareSlice', 'compareSearch', 'compareLens',
+  'compareSlice', 'compareSearch', 'compareLens', 'diffScopeMode',
   'viewFocus',
   'atlasVariant', 'arborView',
   'compileGroup', 'compileFlavor', 'compileArtifact',

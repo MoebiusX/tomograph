@@ -12,13 +12,8 @@
 
 import { makeZip } from './lib/zip.mjs';
 
-const failures = [];
-function assert(cond, label, got, want) {
-  if (cond) { process.stdout.write(`✓ ${label}\n`); return; }
-  const detail = got !== undefined ? `\n    got:  ${JSON.stringify(got)}\n    want: ${JSON.stringify(want)}` : '';
-  failures.push(`${label}${detail}`);
-  process.stdout.write(`✗ ${label}${detail}\n`);
-}
+import { createHarness } from './lib/harness.mjs';
+const { assert, report } = createHarness();
 
 // Independent CRC-32 (do NOT reuse the writer's table, so a bug there is caught).
 function crc32(bytes) {
@@ -89,13 +84,26 @@ for (let i = 0; i < files.length; i++) {
   assert(got.crc === crc32(wantBytes), `entry ${i} CRC-32 matches an independent computation`, got.crc, crc32(wantBytes));
 }
 
+// Unsafe entry names are rejected (zip-slip guard); safe relatives pass.
+function rejects(name) {
+  try { makeZip([{ name, data: 'x' }]); return false; } catch { return true; }
+}
+assert(rejects('../escape.txt'), 'rejects ../ traversal name');
+assert(rejects('a/../../escape.txt'), 'rejects nested .. traversal name');
+assert(rejects('..\\escape.txt'), 'rejects backslash .. traversal name');
+assert(rejects('/etc/passwd'), 'rejects absolute path name');
+assert(rejects('C:/windows/evil.txt'), 'rejects drive-letter path name');
+assert(rejects(''), 'rejects empty name');
+assert(!rejects('a/b..c/d.txt'), 'allows dots inside path segments');
+{
+  const z = makeZip([{ name: 'dir\\file.txt', data: 'x' }]);
+  const { entries: es } = readZip(z);
+  assert(es[0].name === 'dir/file.txt', 'backslash separators normalised to /', es[0].name, 'dir/file.txt');
+}
+
 // Empty archive is still a valid (if trivial) zip: just an EOCD record.
 const empty = makeZip([]);
 assert(empty.length === 22, 'empty file list → 22-byte EOCD-only archive', empty.length, 22);
 assert(rd32(empty, 0) === 0x06054b50, 'empty archive is a lone EOCD record');
 
-if (failures.length) {
-  process.stderr.write(`\n${failures.length} zip assertion(s) failed.\n`);
-  process.exit(1);
-}
-process.stdout.write(`\nall zip round-trip assertions pass.\n`);
+report('zip', 'all zip round-trip assertions pass.');

@@ -14,6 +14,17 @@ import { LAYER_DEFS, L4_SUBGROUPS } from './constants.mjs';
 import { openDrawer } from './drawer.mjs';
 import { defaultEnvFor, loadPackB, openDeployModal, renderMainView, renderTabs, refresh } from './app.mjs';
 import { cardKey } from './layers-view.mjs';
+import { diffEntryLabel } from './artifact-model.mjs';
+import {
+  POSTURE_LAYERS,
+  POSTURE_MECHANISMS_PER_LAYER,
+  compareModeFor,
+  computeDiagnosticGrade,
+  computeWeightedDeltaRisk,
+  criterionScore,
+  diagnosticAuditStatus,
+  isScaffoldDiffEntry,
+} from './diagnostic-grade.mjs';
 
 // ---------- compare view ----------
 
@@ -37,6 +48,8 @@ export async function loadDiff() {
   const params = new URLSearchParams({ a: state.selectedPackId, b: state.compareBId });
   if (state.selectedEnv) params.set('aEnv', state.selectedEnv);
   if (state.compareBEnv) params.set('bEnv', state.compareBEnv);
+  params.set('scopeMode', activeDiffScopeMode());
+  if (state.selectedService) params.set('service', state.selectedService);
   try {
     const result = await api(`/api/diff?${params}`);
     // Sanity-check the shape so a stale server returning some other JSON
@@ -48,6 +61,17 @@ export async function loadDiff() {
   } catch (e) {
     state.diff = { error: e.message };
   }
+}
+
+function activeDiffScopeMode() {
+  return normalizeDiffScopeMode(state.diffScopeMode || state.pack?.meta?.diffScopeMode);
+}
+
+function normalizeDiffScopeMode(value) {
+  const raw = String(value || 'service').trim().toLowerCase();
+  if (raw === 'family' || raw === 'legacy' || raw === 'off') return 'family';
+  if (raw === 'all' || raw === 'none' || raw === 'strict') return 'all';
+  return 'service';
 }
 
 export async function refreshDiff() {
@@ -199,8 +223,19 @@ export function renderTraceabilityView(host) {
   section.className = 'section trace-view';
   section.dataset.layer = 'TRACE';
 
-  if (!state.pack || !state.packB) {
-    section.innerHTML = '<div class="placeholder">Load Pack A and Pack B first.</div>';
+  if (!state.pack) {
+    section.innerHTML = '<div class="placeholder">Load a pack first.</div>';
+    host.appendChild(section);
+    return;
+  }
+
+  const requirementBlock = renderRequirementTraceabilityBlock(state.pack);
+  if (requirementBlock) section.appendChild(requirementBlock);
+
+  if (!state.packB) {
+    if (!requirementBlock) {
+      section.innerHTML = '<div class="placeholder">No SLI/SLO requirements found in this pack.</div>';
+    }
     host.appendChild(section);
     return;
   }
@@ -311,6 +346,163 @@ export function renderTraceabilityView(host) {
   }
 
   host.appendChild(section);
+}
+
+function renderRequirementTraceabilityBlock(pack) {
+  const trace = pack?.traceability;
+  const chains = Array.isArray(trace?.chains) ? trace.chains : [];
+  if (!chains.length) return null;
+
+  const block = document.createElement('div');
+  block.className = 'rt-block';
+
+  const summary = trace.summary || {};
+  const head = document.createElement('div');
+  head.className = 'section-head rt-head';
+  head.innerHTML = `
+    <span class="section-num">REQ</span>
+    <span class="section-name">Requirements Traceability · SLO/SLI proof chain</span>
+    <span class="section-count">${chains.length} requirement${chains.length === 1 ? '' : 's'}</span>
+  `;
+  block.appendChild(head);
+
+  const lede = document.createElement('div');
+  lede.className = 'trace-lede rt-lede';
+  lede.innerHTML = `
+    Each row follows the diagnostic chain from <em>SLO/SLI</em> to the metrics, recording rules,
+    exporters, scrape evidence, dashboards, and alerts that prove it in production.
+  `;
+  block.appendChild(lede);
+
+  const cards = document.createElement('div');
+  cards.className = 'rt-summary-grid';
+  const cardData = [
+    ['requirements', summary.requirements ?? chains.length],
+    ['complete', summary.complete ?? chains.filter(c => !c.gaps?.length).length],
+    ['metrics', summary.withMetrics ?? 0],
+    ['dashboards', summary.withDashboards ?? 0],
+    ['alerts', summary.withAlerts ?? 0],
+  ];
+  for (const [label, value] of cardData) {
+    const card = document.createElement('div');
+    card.className = 'rt-summary-card';
+    card.innerHTML = `
+      <div class="rt-summary-key">${escapeHtml(label)}</div>
+      <div class="rt-summary-val">${escapeHtml(String(value))}</div>
+    `;
+    cards.appendChild(card);
+  }
+  block.appendChild(cards);
+
+  const list = document.createElement('div');
+  list.className = 'rt-chain-list';
+  for (const chain of chains) list.appendChild(renderRequirementChain(chain));
+  block.appendChild(list);
+
+  return block;
+}
+
+function renderRequirementChain(chain) {
+  const row = document.createElement('article');
+  row.className = 'rt-chain';
+  row.dataset.complete = String(!chain.gaps?.length);
+
+  const sloLabel = chain.slo
+    ? `${chain.slo.id}${chain.slo.objective != null ? ` · ${formatPct(chain.slo.objective)}` : ''}${chain.slo.window ? ` / ${chain.slo.window}` : ''}`
+    : '(no SLO)';
+  const title = chain.slo?.id || chain.sli?.id || chain.id;
+
+  const head = document.createElement('div');
+  head.className = 'rt-chain-head';
+  head.innerHTML = `
+    <div>
+      <div class="rt-chain-title">${escapeHtml(title)}</div>
+      <div class="rt-chain-sub">${escapeHtml(sloLabel)}${chain.sli?.id ? ` · SLI ${escapeHtml(chain.sli.id)}` : ''}</div>
+    </div>
+    <div class="rt-chain-status">${chain.gaps?.length ? `${chain.gaps.length} gap${chain.gaps.length === 1 ? '' : 's'}` : 'complete'}</div>
+  `;
+  row.appendChild(head);
+
+  const lanes = document.createElement('div');
+  lanes.className = 'rt-lanes';
+  lanes.appendChild(renderRtLane('metric', chain.metrics?.map(m => metricTraceLabel(m)), 'missing'));
+  lanes.appendChild(renderRtLane('rule', chain.recordingRules?.map(r => r.name), 'none'));
+  lanes.appendChild(renderRtLane('exporter', chain.exporters?.map(e => e.title || e.id), 'missing'));
+  lanes.appendChild(renderRtLane('scrape', scrapeTraceLabels(chain.scrapeJobs), 'missing'));
+  lanes.appendChild(renderRtLane('dashboard', dashboardTraceLabels(chain.dashboards), 'missing'));
+  lanes.appendChild(renderRtLane('alert', chain.alerts?.map(a => a.name), 'missing'));
+  row.appendChild(lanes);
+
+  if (chain.gaps?.length || chain.notes?.length) {
+    const meta = document.createElement('div');
+    meta.className = 'rt-chain-meta';
+    for (const gap of chain.gaps || []) {
+      const code = document.createElement('code');
+      code.className = 'rt-gap';
+      code.textContent = gap;
+      meta.appendChild(code);
+    }
+    for (const note of chain.notes || []) {
+      const code = document.createElement('code');
+      code.className = 'rt-note';
+      code.textContent = note;
+      meta.appendChild(code);
+    }
+    row.appendChild(meta);
+  }
+  return row;
+}
+
+function renderRtLane(label, items = [], emptyLabel = 'missing') {
+  const lane = document.createElement('div');
+  lane.className = 'rt-lane';
+  const clean = (items || []).filter(Boolean);
+  lane.dataset.empty = String(clean.length === 0);
+  lane.innerHTML = `<div class="rt-lane-key">${escapeHtml(label)}</div>`;
+  const list = document.createElement('div');
+  list.className = 'rt-lane-items';
+  if (!clean.length) {
+    const item = document.createElement('span');
+    item.className = 'rt-lane-empty';
+    item.textContent = emptyLabel;
+    list.appendChild(item);
+  } else {
+    for (const value of clean.slice(0, 6)) {
+      const item = document.createElement('span');
+      item.className = 'rt-lane-item';
+      item.textContent = value;
+      list.appendChild(item);
+    }
+    if (clean.length > 6) {
+      const more = document.createElement('span');
+      more.className = 'rt-lane-more';
+      more.textContent = `+${clean.length - 6}`;
+      list.appendChild(more);
+    }
+  }
+  lane.appendChild(list);
+  return lane;
+}
+
+function metricTraceLabel(metric) {
+  if (!metric) return '';
+  return `${metric.name}${metric.verified === false ? ' (unverified)' : ''}`;
+}
+
+function scrapeTraceLabels(scrape) {
+  if (!scrape) return [];
+  if (Array.isArray(scrape.items) && scrape.items.length) return scrape.items.map(j => j.name);
+  if (scrape.observedCount) return [`${scrape.observedCount} jobs observed`];
+  return [];
+}
+
+function dashboardTraceLabels(dashboards = []) {
+  return dashboards.map(d => `${d.title || d.id}${d.panels?.length ? ` (${d.panels.length} panel${d.panels.length === 1 ? '' : 's'})` : ''}`);
+}
+
+function formatPct(value) {
+  if (typeof value !== 'number') return String(value ?? '');
+  return `${(value * 100).toFixed(2).replace(/\.?0+$/, '')}%`;
 }
 
 function renderTraceRow(bucketKey, finding, resolvedSet) {
@@ -485,7 +677,7 @@ export function renderBenchmarkView(view) {
 
   // THE verdict — diagnostic-grade YES/NO from coverage (2A) + trust /
   // drift (2B), Pack A alone. Always leads the view.
-  const diagnostic = computeDiagnosticGrade(state.pack, state.packB, posture, state.compareBId);
+  const diagnostic = computeDiagnosticGrade(state.pack, state.packB, posture, state.compareBId, state.diff);
   const verdict = renderDiagnosticGradeVerdict(diagnostic, lens, state.packB);
   scaffold.appendChild(verdict);
 
@@ -508,6 +700,7 @@ export function renderBenchmarkView(view) {
     // Pack B present — render the true side-by-side A-vs-B drill (drift
     // cells / gap deltas) as the lead evidence beneath the verdict.
     placeCompareBand(renderDriftDrill(state.diff, state.packB, state.compareBId, lens));
+    placeCompareBand(renderLiveScopeControl({ standalone: true }));
   }
 
   // Drill-down — per-layer × per-mechanism coverage map. Pack-A-derived,
@@ -539,23 +732,6 @@ function renderComparePrompt() {
   return el;
 }
 
-// Detect what KIND of comparison Pack B represents so the drill can
-// frame the deltas correctly:
-//   'gap'   — B is a target / reference / contract ("what good looks
-//             like"). onlyInB = the gap to close; onlyInA = beyond target.
-//   'drift' — B is the live / deployed system ("what's actually out
-//             there"). onlyInA = declared but unconfirmed (drift risk);
-//             onlyInB = observed live but undeclared (shadow signal).
-// Ambiguous comparisons default to 'gap' — "what's different / missing"
-// is the more common intent when benchmarking against another pack.
-function compareModeFor(packB, compareBId) {
-  const bId = String(compareBId || packB?.id || '').toLowerCase();
-  const src = inferPackSource(packB);
-  const isLiveLike = /(^|[-_])(live|deployed|prod|runtime)([-_]|$)/.test(bId) || src === 'Live';
-  if (isLiveLike) return 'drift';
-  return 'gap';
-}
-
 // THE A-vs-B drill — the real side-by-side evidence behind the verdict.
 // Consumes state.diff (server-computed set arithmetic on the two packs'
 // artefact keys) and projects it through the active product lens, then
@@ -580,34 +756,41 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
 
   // Per-layer filtered buckets + running totals.
   const layerNames = { L1:'Contract', L2:'Telemetry', L2X:'Extended', L3:'Insight', L4:'Action', L5:'Validation', GOV:'Governance' };
-  let totAligned = 0, totDrifted = 0, totA = 0, totB = 0, totOOS = 0;
+  let totAligned = 0, totDrifted = 0, totA = 0, totB = 0, totOOS = 0, totScaffold = 0;
   const rows = [];
   for (const L of LAYERS_FOR_DIFF) {
     const bucket = diff.layers[L] || { onlyInA: [], onlyInB: [], inBoth: [], outOfScope: [] };
     // inBoth = shared identity. Split it: structurally-equal pairs are
     // aligned; same-identity-but-divergent pairs are drifted. Matching is
     // an object comparison, not a name check.
-    const matched = bucket.inBoth.filter(e => passesLens(e, 'a'));
+    const matched = bucket.inBoth.filter(e => passesLens(e, 'a') && !isScaffoldDiffEntry(e));
     const aligned = matched.filter(e => e.match !== 'drifted');
     const drifted = matched.filter(e => e.match === 'drifted');
-    const onlyInA = bucket.onlyInA.filter(e => passesLens(e, 'a'));
-    const onlyInB = bucket.onlyInB.filter(e => passesLens(e, 'b'));
+    const rawOnlyInA = bucket.onlyInA.filter(e => passesLens(e, 'a'));
+    const rawOnlyInB = bucket.onlyInB.filter(e => passesLens(e, 'b'));
+    const onlyInA = rawOnlyInA.filter(e => !isScaffoldDiffEntry(e));
+    const onlyInB = rawOnlyInB.filter(e => !isScaffoldDiffEntry(e));
+    const scaffold = [
+      ...rawOnlyInA.filter(e => isScaffoldDiffEntry(e)),
+      ...rawOnlyInB.filter(e => isScaffoldDiffEntry(e)),
+      ...bucket.inBoth.filter(e => passesLens(e, 'a') && isScaffoldDiffEntry(e)),
+    ];
     // Live members of a family this pack declares nothing of — the rest of the
     // platform inventory. Shown muted, never counted as drift.
     const outOfScope = (bucket.outOfScope || []).filter(e => passesLens(e, 'b'));
     if (aligned.length === 0 && drifted.length === 0 && onlyInA.length === 0
-        && onlyInB.length === 0 && outOfScope.length === 0) continue;
+        && onlyInB.length === 0 && outOfScope.length === 0 && scaffold.length === 0) continue;
     totAligned += aligned.length;
     totDrifted += drifted.length;
     totA += onlyInA.length;
     totB += onlyInB.length;
     totOOS += outOfScope.length;
-    rows.push({ L, name: layerNames[L] || L, aligned, drifted, onlyInA, onlyInB, outOfScope });
+    totScaffold += scaffold.length;
+    rows.push({ L, name: layerNames[L] || L, aligned, drifted, onlyInA, onlyInB, outOfScope, scaffold });
   }
 
   const universe = totAligned + totDrifted + totA + totB;
   if (universe === 0) return null;
-  const alignedPct = Math.round((totAligned / universe) * 100);
 
   // Mode-specific framing for the two delta columns.
   const bName = catalogEntryFor(compareBId)?.label || packB?.meta?.name || packB?.metadata?.name || packB?.id || 'Pack B';
@@ -619,10 +802,15 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
           : `Every declared artefact is confirmed live in <strong>${escapeHtml(bName)}</strong>.`,
         aLabel: 'Declared, not live',
         aHint: 'in your pack · not seen in the live system → drift risk',
+        aWeightClass: 'anchor',
+        aWeightText: '1.0',
         aClass: 'is-drift',
         bLabel: 'Live, not declared',
         bHint: 'seen live · missing from your pack → shadow signal',
+        bWeightClass: 'low',
+        bWeightText: '0.15',
         bClass: 'is-shadow',
+        riskNote: 'Weighted badness: declared-not-live = 1.0; drifted = 0.5 by default, 1.0 for decision-bearing fields, 0.1 for cosmetic fields; live-not-declared = 0.15. Out-of-scope live inventory is excluded.',
       }
     : {
         eyebrow: 'GAP · CURRENT vs TARGET',
@@ -631,22 +819,24 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
           : `You match or exceed <strong>${escapeHtml(bName)}</strong> on every artefact.`,
         aLabel: 'Beyond target',
         aHint: 'in your pack · not in the target → extra coverage',
+        aWeightClass: 'low',
+        aWeightText: '0.15',
         aClass: 'is-extra',
         bLabel: 'Missing vs target',
         bHint: 'in the target · not in your pack → gap to close',
+        bWeightClass: 'anchor',
+        bWeightText: '1.0',
         bClass: 'is-gap',
+        riskNote: 'Weighted badness: missing target artefacts = 1.0; drifted = 0.5 by default, 1.0 for decision-bearing fields, 0.1 for cosmetic fields; beyond-target extras = 0.15.',
       };
 
   const wrap = document.createElement('div');
   wrap.className = `benchmark-block drift-drill-block drift-mode-${mode}`;
 
-  // Sample keys for a bucket, prettified (strip the family prefix).
+  // Sample keys for a bucket, using the human artefact title when the
+  // server key is a structural projection like sli:{"id":"..."}.
   const sampleKeys = (entries, max = 4) => {
-    const names = entries.slice(0, max).map(e => {
-      const k = e.key || '';
-      const short = k.includes(':') ? k.slice(k.indexOf(':') + 1) : k;
-      return escapeHtml(short || k);
-    });
+    const names = entries.slice(0, max).map(e => escapeHtml(diffEntryLabel(e)));
     const more = entries.length > max ? ` +${entries.length - max}` : '';
     return names.length ? names.join(' · ') + more : '—';
   };
@@ -655,10 +845,8 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
   // WHICH artefacts drifted but WHICH FIELDS diverged.
   const sampleDeltas = (entries, max = 3) => {
     const names = entries.slice(0, max).map(e => {
-      const k = e.key || '';
-      const short = k.includes(':') ? k.slice(k.indexOf(':') + 1) : k;
       const fields = (e.deltas || []).map(d => d.field).slice(0, 3).join(',');
-      return escapeHtml(short || k) + (fields ? `<span class="drift-delta-fields">(${escapeHtml(fields)})</span>` : '');
+      return escapeHtml(diffEntryLabel(e)) + (fields ? `<span class="drift-delta-fields">(${escapeHtml(fields)})</span>` : '');
     });
     const more = entries.length > max ? ` +${entries.length - max}` : '';
     return names.length ? names.join(' · ') + more : '—';
@@ -686,16 +874,26 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
   const C_DRIFTED = 'rgb(150, 90, 200)';
   const C_DECL    = 'rgb(200, 70, 40)';
   const C_SHADOW  = 'rgb(180, 120, 0)';
-  const notAligned = totDrifted + totA + totB;
+  const allDriftedEntries = rows.flatMap(r => r.drifted);
+  const weighted = computeWeightedDeltaRisk({
+    mode,
+    aligned: totAligned,
+    driftedEntries: allDriftedEntries,
+    onlyInA: totA,
+    onlyInB: totB,
+  });
+  const fmtUnits = (n) => Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, '');
   const legendHtml = [
-    { n: totAligned, color: C_ALIGNED, label: 'Aligned',    hint: 'shape matches live' },
-    { n: totDrifted, color: C_DRIFTED, label: 'Drifted',    hint: 'field values diverge' },
-    { n: totA,       color: C_DECL,    label: frame.aLabel, hint: frame.aHint },
-    { n: totB,       color: C_SHADOW,  label: frame.bLabel, hint: frame.bHint },
+    { n: totAligned, units: 0, color: C_ALIGNED, label: 'Aligned', hint: 'shape matches live', weightClass: 'good', weightText: '0' },
+    { n: totDrifted, units: weighted.driftedUnits, color: C_DRIFTED, label: 'Drifted', hint: 'field values diverge', weightClass: 'weighted', weightText: 'field' },
+    { n: totA, units: weighted.onlyInAUnits, color: C_DECL, label: frame.aLabel, hint: frame.aHint, weightClass: frame.aWeightClass, weightText: frame.aWeightText },
+    { n: totB, units: weighted.onlyInBUnits, color: C_SHADOW, label: frame.bLabel, hint: frame.bHint, weightClass: frame.bWeightClass, weightText: frame.bWeightText },
   ].map(l => `<li class="drift-legend-item">
       <span class="drift-legend-sw" style="background:${l.color}"></span>
       <span class="drift-legend-n">${l.n}</span>
       <span class="drift-legend-label">${escapeHtml(l.label)}</span>
+      <span class="drift-weight drift-weight-${escapeHtml(l.weightClass)}">w ${escapeHtml(l.weightText)}</span>
+      <span class="drift-legend-risk">${escapeHtml(fmtUnits(l.units))} risk units</span>
       <span class="drift-legend-hint">${escapeHtml(l.hint)}</span>
     </li>`).join('');
 
@@ -732,16 +930,21 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
     </div>
     <div class="drift-charts">
       <figure class="drift-chart">
-        ${donut([{ value: totAligned, color: C_ALIGNED }, { value: notAligned, color: 'var(--ink-4)' }], alignedPct + '%')}
-        <figcaption>aligned</figcaption>
+        ${donut([{ value: totAligned, color: C_ALIGNED }, { value: weighted.totalBadness, color: 'var(--ink-4)' }], weighted.healthPct + '%')}
+        <figcaption>weighted health</figcaption>
       </figure>
       <span class="drift-charts-arrow" aria-hidden="true">→</span>
       <figure class="drift-chart">
-        ${donut([{ value: totDrifted, color: C_DRIFTED }, { value: totA, color: C_DECL }, { value: totB, color: C_SHADOW }], (100 - alignedPct) + '%')}
-        <figcaption>the rest</figcaption>
+        ${donut([
+          { value: weighted.driftedUnits, color: C_DRIFTED },
+          { value: weighted.onlyInAUnits, color: C_DECL },
+          { value: weighted.onlyInBUnits, color: C_SHADOW },
+        ], fmtUnits(weighted.totalBadness))}
+        <figcaption>weighted badness</figcaption>
       </figure>
       <ul class="drift-legend">${legendHtml}</ul>
     </div>
+    <p class="drift-risk-note">${escapeHtml(frame.riskNote)} Health = aligned / (aligned + weighted badness).</p>
     <table class="drift-table">
       <thead>
         <tr>
@@ -754,6 +957,7 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
       </thead>
       <tbody>${layerRowsHtml}</tbody>
     </table>
+    ${totScaffold ? `<p class="drift-oos-note">${totScaffold} schema-required scaffold artefact${totScaffold === 1 ? '' : 's'} had no source evidence in the selected environment. Shown in the pack, excluded from drift badness.</p>` : ''}
     ${totOOS ? `<p class="drift-oos-note">${totOOS} live artefact${totOOS === 1 ? '' : 's'} out of declared scope — members of families <strong>${escapeHtml(bName)}</strong> runs but your pack doesn't declare (the rest of the platform inventory). Shown for context, not counted as drift.</p>` : ''}
   `;
   return wrap;
@@ -770,28 +974,6 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
 // titles, dashboard folders, alert names — overridable via
 // `metadata.annotations.layer.<artefact-id>: infra|platform|app|ux`.
 // ============================================================
-const POSTURE_LAYERS = [
-  { key: 'infra',    label: 'Infrastructure', hint: 'nodes · pods · disk · network' },
-  { key: 'platform', label: 'Platform',       hint: 'db · cache · queue · gateway' },
-  { key: 'app',      label: 'Application',    hint: 'service · API · job · business logic' },
-  { key: 'ux',       label: 'User Experience',hint: 'frontend · journey · business outcome' },
-];
-
-// Layer-specific mechanisms — each has a present/absent verdict per
-// layer based on artefacts classified to that layer.
-const POSTURE_MECHANISMS_PER_LAYER = [
-  { key: 'sli',        label: 'SLI defined',       hint: 'what we measure' },
-  { key: 'slo',        label: 'SLO declared',      hint: 'target reliability' },
-  { key: 'alert',      label: 'Alert wired',       hint: 'fires on threshold or burn-rate' },
-  { key: 'dashboard',  label: 'Dashboard',         hint: 'human-readable view' },
-  { key: 'metric',     label: 'Metrics flowing',   hint: 'scrape job, recording rule, or evidence' },
-  { key: 'log',        label: 'Logs flowing',      hint: 'log scrape / shipper' },
-  { key: 'trace',      label: 'Traces flowing',    hint: 'span emission attested' },
-  { key: 'runbook',    label: 'Runbook linked',    hint: 'oncall response declared' },
-  { key: 'chaos',      label: 'Chaos validated',   hint: 'fault injection tested' },
-  { key: 'synthetic',  label: 'Synthetic check',   hint: 'active uptime probe' },
-];
-
 // Platform-wide mechanisms — single status, doesn't depend on layer.
 const POSTURE_MECHANISMS_GLOBAL = [
   { key: 'instrumentation', label: 'OTel SDK',     hint: 'instrumentation contract' },
@@ -1152,259 +1334,13 @@ function renderPostureNarrative(posture) {
 //                               (MCP probe success / total ratio)
 //          8. Fresh           — mcp.refreshedAt within staleness window
 //
-// Overall score (out of 8) → verdict word:
-//   7-8 → Diagnostic-grade
-//   5-6 → Almost diagnostic-grade
-//   3-4 → Not yet diagnostic-grade
-//   0-2 → Far from diagnostic-grade
+// Overall score (out of 8) → verdict word. Most criteria are binary;
+// drift-free contributes fractional credit equal to weighted fidelity.
+//   >85% → Diagnostic-grade
+//   >=5 → Almost diagnostic-grade
+//   >=3 → Not yet diagnostic-grade
+//   <3  → Far from diagnostic-grade
 // ============================================================
-
-// "Observability Contract" mode is on when Pack B is the
-// hand-authored aspirational/contract reference. The internal label
-// is OLA; the user-facing label is "Observability Contract".
-//
-// Detection runs three ways (any one suffices):
-//   1. The pack itself carries `metadata.annotations.studio.role: contract`
-//      (canonical signal — the contract pack declares its role).
-//   2. The catalog id (the dropdown slot, not pack.metadata.name) is a
-//      known contract slot — covers target-advanced even before the
-//      annotation is added, and any future *-contract slot.
-//   3. The pack's id or metadata.name carries a `contract` or `ola` token.
-const CONTRACT_PACK_IDS = new Set(['target-advanced']);
-function isObservabilityContractPack(pack, catalogId) {
-  if (!pack) return false;
-  const role = pack.meta?.annotations?.['studio.role'] || pack.metadata?.annotations?.['studio.role'];
-  if (String(role || '').toLowerCase() === 'contract') return true;
-  const slot = String(catalogId || '').toLowerCase();
-  if (slot && CONTRACT_PACK_IDS.has(slot)) return true;
-  if (slot && /(^|-)contract($|-)/i.test(slot)) return true;
-  if (slot && /(^|-)ola($|-)/i.test(slot))      return true;
-  const id = String(pack.id || pack.meta?.id || pack.metadata?.name || '').toLowerCase();
-  if (CONTRACT_PACK_IDS.has(id)) return true;
-  if (/(^|-)contract($|-)/i.test(id)) return true;
-  if (/(^|-)ola($|-)/i.test(id))      return true;
-  return false;
-}
-function contractLabelFor(packB, catalogId) {
-  if (!packB) return null;
-  if (isObservabilityContractPack(packB, catalogId)) return 'Observability Contract';
-  return packB?.meta?.name || packB?.metadata?.name || packB?.id || 'reference pack';
-}
-
-// Staleness window for the freshness criterion. 24h is the demo
-// default — daily refresh is the lowest bar for a "live" pack.
-const FRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
-// Drift tolerance: how many probes can come back empty/failed and
-// still pass. 0.3 = up to 30% of attempted probes can be empty/failed
-// without flunking. Empty AND failed both count as drift signal —
-// the live system didn't confirm what the pack declares.
-const DRIFT_FAIL_TOLERANCE = 0.30;
-
-function computeDiagnosticGrade(packA, packB, posture, catalogBId) {
-  // ===== Coverage criteria (2A) =====
-  const meta = packA?.meta || {};
-  const ann = meta?.annotations || packA?.metadata?.annotations || {};
-  const L1 = packA?.layers?.L1 || [];
-  const L2 = packA?.layers?.L2 || [];
-  const L4 = packA?.layers?.L4 || {};
-  const L5 = packA?.layers?.L5 || [];
-
-  // ---- 1. Multi-modal ----
-  const signalsPresent = new Set();
-  for (const b of L2) {
-    const sig = String(b.spec?.signal || b.signal || '').toLowerCase();
-    if (['metrics','logs','traces','profiles'].includes(sig)) signalsPresent.add(sig);
-  }
-  const allSignals = ['metrics','logs','traces','profiles'];
-  const signalsCount = signalsPresent.size;
-  const multiModal = signalsCount >= 3;
-
-  // ---- 2. Correlated ----
-  const otel = L2.find(a => /^OTEL-/.test(a.id || ''));
-  const propagators = otel?.spec?.sdk?.propagators || otel?.sdk?.propagators || [];
-  const hasTraceContext = (Array.isArray(propagators) ? propagators : [])
-    .some(p => /tracecontext/i.test(String(p)));
-  const logCorrelationDeclared = !!(otel?.spec?.log_correlation === true || otel?.log_correlation === true);
-  const correlated = hasTraceContext && (logCorrelationDeclared || signalsPresent.has('logs'));
-
-  // ---- 3. Calibrated ----
-  const hasBaselines = L5.some(a => /baseline/i.test(a.id || '') || /baseline/i.test(a.title || ''));
-  const slos = L1.filter(a => /^SLO-/.test(a.id || ''));
-  const slosWithObjective = slos.filter(a => {
-    const obj = a.spec?.objective ?? a.objective;
-    return typeof obj === 'number' && obj > 0 && obj <= 1;
-  });
-  const calibrated = hasBaselines && slosWithObjective.length > 0;
-
-  // ---- 4. Comprehensive ----
-  let totalObserved = 0;
-  for (const l of POSTURE_LAYERS) {
-    let present = 0, evidence = 0;
-    for (const m of POSTURE_MECHANISMS_PER_LAYER) {
-      const arr = posture.cells[`${l.key}:${m.key}`];
-      if (arr && arr.length) {
-        if (arr.every(a => a._evidence)) evidence++;
-        else present++;
-      }
-    }
-    totalObserved += (present + evidence) / POSTURE_MECHANISMS_PER_LAYER.length;
-  }
-  const avgObservedPct = Math.round((totalObserved / POSTURE_LAYERS.length) * 100);
-  const comprehensive = avgObservedPct >= 50;
-
-  // ---- 5. Actionable ----
-  const healings = (L4.healing || []).concat(
-    Array.isArray(L4) ? L4.filter(a => /^HEAL-/.test(a.id || '')) : []
-  );
-  const actionableCount = healings.length;
-  const actionable = actionableCount > 0;
-
-  const coverageCriteria = [
-    { key: 'multi-modal',   label: 'Multi-modal',   sub: 'metrics + logs + traces + profiles',
-      pass: multiModal,
-      detail: `${signalsCount} of ${allSignals.length} signals declared as backends` +
-              (signalsCount > 0 ? ' (' + [...signalsPresent].join(', ') + ')' : ''),
-    },
-    { key: 'correlated',    label: 'Correlated',    sub: 'signals linked at evidence-level',
-      pass: correlated,
-      detail: hasTraceContext
-        ? (logCorrelationDeclared ? 'tracecontext propagator + log_correlation: true' : 'tracecontext propagator declared')
-        : 'tracecontext propagator missing — logs/traces can\'t be joined',
-    },
-    { key: 'calibrated',    label: 'Calibrated',    sub: 'normal defined with numbers',
-      pass: calibrated,
-      detail: hasBaselines
-        ? (slosWithObjective.length
-            ? `MTTD/MTTR baselines + ${slosWithObjective.length} SLO${slosWithObjective.length === 1 ? '' : 's'} with explicit objective`
-            : 'baselines declared but no SLOs have explicit objectives')
-        : 'no MTTD/MTTR baselines declared',
-    },
-    { key: 'comprehensive', label: 'Comprehensive', sub: 'coverage spans all layers',
-      pass: comprehensive,
-      detail: `${avgObservedPct}% average observed across infra · platform · app · ux`,
-    },
-    { key: 'actionable',    label: 'Actionable',    sub: 'alerts lead to a response path',
-      pass: actionable,
-      detail: actionableCount > 0
-        ? `${actionableCount} remediation runbook${actionableCount === 1 ? '' : 's'} declared`
-        : 'no runbooks linked — when an alert fires, oncall has no scripted response',
-    },
-  ];
-
-  // ===== Trust criteria (2B) =====
-
-  // The live/verified evidence (MCP probe outcomes + refreshedAt) is
-  // stamped by the fetcher onto whichever pack was drafted from live.
-  // In the drift journey Pack A is the declared repo scan (no MCP) and
-  // Pack B is the live draft that carries the evidence; in the single-
-  // pack refreshed workflow Pack A carries its own evidence. Read the
-  // trust signals from whichever pack actually has MCP annotations,
-  // favouring the live half (Pack B).
-  const annB = packB?.meta?.annotations || packB?.metadata?.annotations || {};
-  const hasMcpAnnotations = (a) => !!a && Object.keys(a).some(k => k.startsWith('mcp.'));
-  const liveAnn = hasMcpAnnotations(annB) ? annB : ann;
-
-  // ---- 6. Chaos-validated ----
-  const chaosCount = L5.filter(a => /^CHAOS-/.test(a.id || '')).length;
-  const chaosValidated = chaosCount > 0;
-
-  // ---- 7. Drift-free ----
-  // Live signal integrity: did the declarations the pack makes about
-  // the world match what the MCP actually observed? Read directly off
-  // the probe-outcome annotations stamped by the fetcher.
-  const probesAttempted = (liveAnn['mcp.probesAttempted']  || '').split(',').filter(Boolean);
-  const probesSucceeded = (liveAnn['mcp.probesSucceeded']  || '').split(',').filter(Boolean);
-  const probesEmpty     = (liveAnn['mcp.probesEmpty']      || '').split(',').filter(Boolean);
-  const probesFailed    = (liveAnn['mcp.probesFailed']     || '').split(',').filter(Boolean);
-  const hasMcpSource = probesAttempted.length > 0 || !!liveAnn['mcp.refreshedAt'];
-  let driftFree, driftDetail;
-  if (!hasMcpSource) {
-    driftFree = false;
-    driftDetail = 'declared-only — no live signal to verify against (connect MCP or scan live)';
-  } else if (probesAttempted.length === 0) {
-    // Pack has refreshedAt but no probe table — can't compute ratio.
-    driftFree = true;
-    driftDetail = 'live source connected — probe table not recorded';
-  } else {
-    const driftCount = probesEmpty.length + probesFailed.length;
-    const driftRatio = driftCount / probesAttempted.length;
-    driftFree = driftRatio <= DRIFT_FAIL_TOLERANCE;
-    const pct = Math.round(driftRatio * 100);
-    driftDetail = driftFree
-      ? `${probesSucceeded.length}/${probesAttempted.length} probes confirmed (${pct}% empty or failed, within ${Math.round(DRIFT_FAIL_TOLERANCE * 100)}% tolerance)`
-      : `${driftCount}/${probesAttempted.length} probes empty or failed (${pct}%) — declared surface exceeds what live attests`;
-  }
-
-  // ---- 8. Fresh ----
-  const refreshedAtStr = liveAnn['mcp.refreshedAt'];
-  let fresh, freshDetail;
-  if (!refreshedAtStr) {
-    fresh = false;
-    freshDetail = 'no mcp.refreshedAt annotation — pack has never been verified against live state';
-  } else {
-    const refreshedAtMs = Date.parse(refreshedAtStr);
-    if (!Number.isFinite(refreshedAtMs)) {
-      fresh = false;
-      freshDetail = `mcp.refreshedAt is unparseable (${refreshedAtStr})`;
-    } else {
-      const ageMs = Date.now() - refreshedAtMs;
-      const ageHrs = Math.round(ageMs / 3600000);
-      fresh = ageMs <= FRESH_WINDOW_MS;
-      freshDetail = fresh
-        ? `last refreshed ${ageHrs}h ago — within 24h staleness window`
-        : `last refreshed ${ageHrs}h ago — exceeds 24h staleness window, signals may have drifted`;
-    }
-  }
-
-  const trustCriteria = [
-    { key: 'chaos-validated', label: 'Chaos-validated', sub: 'recovery proven by fault injection',
-      pass: chaosValidated,
-      detail: chaosCount > 0
-        ? `${chaosCount} chaos experiment${chaosCount === 1 ? '' : 's'} declared`
-        : 'no chaos experiments — recovery procedures are theoretical',
-    },
-    { key: 'drift-free',      label: 'Drift-free',      sub: 'declarations match live state',
-      pass: driftFree,
-      detail: driftDetail,
-    },
-    { key: 'fresh',           label: 'Fresh',           sub: 'recently verified against live',
-      pass: fresh,
-      detail: freshDetail,
-    },
-  ];
-
-  // ===== Overall verdict (equal-weighted) =====
-  const coveragePassed = coverageCriteria.filter(c => c.pass).length;
-  const trustPassed = trustCriteria.filter(c => c.pass).length;
-  const overallPassed = coveragePassed + trustPassed;
-  const overallTotal = coverageCriteria.length + trustCriteria.length;   // 5 + 3 = 8
-  const verdict =
-    overallPassed >= 7 ? { word: 'Diagnostic-grade',          level: 'is-grade' } :
-    overallPassed >= 5 ? { word: 'Almost diagnostic-grade',   level: 'is-almost' } :
-    overallPassed >= 3 ? { word: 'Not yet diagnostic-grade',  level: 'is-not-yet' } :
-                         { word: 'Far from diagnostic-grade', level: 'is-far' };
-
-  return {
-    coverage: {
-      criteria: coverageCriteria,
-      passed:   coveragePassed,
-      total:    coverageCriteria.length,
-      contractLabel: contractLabelFor(packB, catalogBId),
-      contractMode:  isObservabilityContractPack(packB, catalogBId),
-    },
-    trust: {
-      criteria: trustCriteria,
-      passed:   trustPassed,
-      total:    trustCriteria.length,
-      hasMcpSource,
-    },
-    overall: {
-      passed: overallPassed,
-      total:  overallTotal,
-      verdict,
-    },
-  };
-}
 
 // Diagnose view — rendered as a compliance report, not a pitch deck.
 // Density and evidence are the design language; every row encodes
@@ -1419,22 +1355,20 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const overall = diagnostic.overall;
 
   const pct = (passed, total) => total === 0 ? 0 : Math.round((passed / total) * 100);
+  const fmtScore = (n) => Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  const criterionState = (c) => c.pass ? 'is-pass' : (criterionScore(c) > 0 ? 'is-partial' : 'is-fail');
+  const criterionPip = (c) => c.pass ? '✓' : (criterionScore(c) > 0 ? '◐' : '✗');
+  const criterionStatus = (c) => c.pass ? 'PASS' : (criterionScore(c) > 0 ? 'PARTIAL' : 'FAIL');
   const overallPct = pct(overall.passed, overall.total);
   const covPct   = pct(cov.passed, cov.total);
   const trustPct = pct(trust.passed, trust.total);
+  const chainBlock = renderDiagnosticTraceabilityGraph(diagnostic.traceabilityGraph);
 
-  // Single binary verdict in audit terms. No "Almost diagnostic-grade",
-  // no "Critical" — just PASS or FAIL with the threshold stated.
-  const PASS_THRESHOLD = 7; // 7 of 8 to pass — graded against contract
-  const passes = overall.passed >= PASS_THRESHOLD;
-  const status = passes ? 'PASS' : 'FAIL';
-
-  // Coverage-only when no Pack B is loaded: the coverage criteria are
-  // still graded against the built-in Observability Contract, so the
-  // verdict stands on Pack A alone — we just frame the header honestly.
-  const coverageOnly = !packB;
-  const contractName = packB?.meta?.name || packB?.metadata?.name || packB?.id || '—';
-  const contractMode = cov.contractMode;
+  // Single binary verdict in audit terms: PASS when the score is >85%.
+  // Individual failed criteria still render below as evidence and gaps.
+  const audit = overall.audit || diagnosticAuditStatus(overall.passed, overall.total);
+  const passes = audit.passes;
+  const status = audit.status;
 
   // Compact mono row builder for the summary block.
   const summaryRow = (label, value, hint, state) => `
@@ -1464,8 +1398,8 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       </thead>
       <tbody>
         ${criteria.map(c => `
-          <tr class="diag-crit ${c.pass ? 'is-pass' : 'is-fail'}" data-key="${escapeHtml(c.key)}">
-            <td class="c-pip">${c.pass ? '✓' : '✗'}</td>
+          <tr class="diag-crit ${criterionState(c)}" data-key="${escapeHtml(c.key)}">
+            <td class="c-pip">${criterionPip(c)}</td>
             <td class="c-name">${escapeHtml(c.label)}</td>
             <td class="c-obs">${escapeHtml(c.detail)}</td>
             <td class="c-exp">${escapeHtml(c.sub)}</td>
@@ -1482,8 +1416,8 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const evidenceRows = [];
   // Collect from criteria themselves — each criterion encodes an evidence assertion.
   const C = (key, label) => cov.criteria.find(c => c.key === key) || trust.criteria.find(c => c.key === key);
-  const rowFor = (field, exp, obs, pass) => ({
-    field, exp, obs, pass,
+  const rowFor = (field, exp, obs, pass, score) => ({
+    field, exp, obs, pass, score,
   });
   evidenceRows.push(rowFor(
     'spec.telemetry.backends[].signal',
@@ -1516,10 +1450,11 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
     C('chaos-validated')?.detail || '—',
     C('chaos-validated')?.pass));
   evidenceRows.push(rowFor(
-    'metadata.annotations.mcp.probesSucceeded',
-    '≥ 70% of attempted probes return data',
+    'requirement derivation graph · fallback repo-vs-live diff / mcp probes',
+    'declared SLO/SLI chains active in live; fallback ≥70% probes when no live pack is loaded',
     C('drift-free')?.detail || '—',
-    C('drift-free')?.pass));
+    C('drift-free')?.pass,
+    C('drift-free')?.score));
   evidenceRows.push(rowFor(
     'metadata.annotations.mcp.refreshedAt',
     'within last 24h',
@@ -1538,11 +1473,11 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       </thead>
       <tbody>
         ${evidenceRows.map(r => `
-          <tr class="${r.pass ? 'is-pass' : 'is-fail'}">
+          <tr class="${criterionState(r)}">
             <td class="e-field">${escapeHtml(r.field)}</td>
             <td class="e-exp">${escapeHtml(r.exp)}</td>
             <td class="e-obs">${escapeHtml(r.obs)}</td>
-            <td class="e-status">${r.pass ? 'PASS' : 'FAIL'}</td>
+            <td class="e-status">${criterionStatus(r)}</td>
           </tr>
         `).join('')}
       </tbody>
@@ -1553,21 +1488,14 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
     <header class="diag-report-head">
       <div class="diag-report-head-line">
         <span class="diag-report-eyebrow">DIAGNOSTIC GRADE</span>
-        <span class="diag-report-vs">
-          ${coverageOnly
-            ? 'vs <strong>Observability Contract</strong> <span class="diag-report-mode">· coverage only</span>'
-            : (contractMode
-                ? 'vs <strong>Observability Contract</strong>' + (contractName && contractName !== '—' ? ' (' + escapeHtml(contractName) + ')' : '')
-                : 'vs <strong>' + escapeHtml(contractName) + '</strong>')}
-        </span>
         <span class="diag-report-status diag-${passes ? 'pass' : 'fail'}">${status}</span>
       </div>
       <table class="diag-summary">
         <colgroup><col><col><col></colgroup>
         <tbody>
-          ${summaryRow('Score',    `<span class="diag-pct">${overallPct}%</span> <span class="diag-frac">${overall.passed}/${overall.total}</span>`, bar(overallPct))}
-          ${summaryRow('Coverage', `<span class="diag-pct">${covPct}%</span> <span class="diag-frac">${cov.passed}/${cov.total}</span>`,       bar(covPct))}
-          ${summaryRow('Trust',    `<span class="diag-pct">${trustPct}%</span> <span class="diag-frac">${trust.passed}/${trust.total}</span>`, bar(trustPct))}
+          ${summaryRow('Score',    `<span class="diag-pct">${overallPct}%</span> <span class="diag-frac">${fmtScore(overall.passed)}/${overall.total}</span>`, bar(overallPct))}
+          ${summaryRow('Coverage', `<span class="diag-pct">${covPct}%</span> <span class="diag-frac">${fmtScore(cov.passed)}/${cov.total}</span>`,       bar(covPct))}
+          ${summaryRow('Trust',    `<span class="diag-pct">${trustPct}%</span> <span class="diag-frac">${fmtScore(trust.passed)}/${trust.total}</span>`, bar(trustPct))}
           ${summaryRow('Verified', trust.hasMcpSource ? '<span class="diag-yes">YES</span>' : '<span class="diag-no">NO</span>',
                        trust.hasMcpSource ? 'live signal present' : 'connect MCP or scan live to verify',
                        trust.hasMcpSource ? '' : 'is-warn')}
@@ -1579,7 +1507,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       <header class="diag-section-head">
         <span class="diag-section-num">2A</span>
         <span class="diag-section-title">Coverage — are we observing the right signals?</span>
-        <span class="diag-section-meta">${cov.passed}/${cov.total} met · ${covPct}%</span>
+        <span class="diag-section-meta">${fmtScore(cov.passed)}/${cov.total} score · ${covPct}%</span>
       </header>
       ${critTable(cov.criteria)}
     </section>
@@ -1588,7 +1516,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       <header class="diag-section-head">
         <span class="diag-section-num">2B</span>
         <span class="diag-section-title">Trust — can we trust what the signals show?</span>
-        <span class="diag-section-meta">${trust.passed}/${trust.total} met · ${trustPct}%</span>
+        <span class="diag-section-meta">${fmtScore(trust.passed)}/${trust.total} score · ${trustPct}%</span>
       </header>
       ${!trust.hasMcpSource ? `
         <div class="diag-banner">
@@ -1599,16 +1527,80 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       ${critTable(trust.criteria)}
     </section>
 
+    ${chainBlock}
+
     <section class="diag-section">
       <header class="diag-section-head">
         <span class="diag-section-num">⊜</span>
         <span class="diag-section-title">Evidence — expected vs observed</span>
-        <span class="diag-section-meta">${evidenceRows.filter(r => r.pass).length}/${evidenceRows.length} confirmed</span>
+        <span class="diag-section-meta">${fmtScore(evidenceRows.reduce((n, r) => n + criterionScore(r), 0))}/${evidenceRows.length} evidence score</span>
       </header>
       ${evidenceTable}
     </section>
   `;
   return wrap;
+}
+
+function renderDiagnosticTraceabilityGraph(graph) {
+  const branches = Array.isArray(graph?.branches) ? graph.branches : [];
+  const rollup = graph?.rollup;
+  if (!rollup || !branches.length) return '';
+  const fmtPct = (n) => `${Math.round((Number(n) || 0) * 100)}%`;
+  const fmtStatus = (status) => ({
+    intact: 'Intact',
+    partial: 'Partial',
+    broken: 'Broken',
+    undeclared: 'Live-only',
+  }[status] || status || 'Unknown');
+  const evidenceFor = (branch) => {
+    const interesting = (branch.nodes || []).filter((node) =>
+      ['declared_only', 'drifted', 'unverifiable', 'live_only'].includes(node.status)
+    );
+    if (!interesting.length && branch.missingRoles?.length) {
+      return branch.missingRoles.map((role) => `${role.role}: ${role.detail}`).join(' · ');
+    }
+    if (!interesting.length) return 'all load-bearing nodes aligned';
+    return interesting.slice(0, 5).map((node) => {
+      const status = {
+        declared_only: 'missing live',
+        drifted: 'drifted',
+        unverifiable: 'unverifiable',
+        live_only: 'live-only',
+      }[node.status] || node.status;
+      const fields = node.deltas?.length ? ` (${node.deltas.map(d => d.field).slice(0, 3).join(', ')})` : '';
+      return `${node.kind}: ${node.label} · ${status}${fields}`;
+    }).join(' · ') + (interesting.length > 5 ? ` · +${interesting.length - 5}` : '');
+  };
+  const cards = branches.map((branch) => `
+    <article class="diag-chain-card diag-chain-${escapeHtml(branch.verdict)}">
+      <div class="diag-chain-head">
+        <span class="diag-chain-title">${escapeHtml(branch.title || branch.rootKey || 'requirement')}</span>
+        <span class="diag-chain-status">${escapeHtml(fmtStatus(branch.verdict))}</span>
+      </div>
+      <div class="diag-chain-meta">
+        <span>${escapeHtml(String(branch.integrityPct ?? Math.round((branch.integrity || 0) * 100)))}% integrity</span>
+        <span>${escapeHtml(branch.confidence === 'inferred' ? 'inferred edges' : 'declared edges')}</span>
+        <span>${escapeHtml(`${branch.counts?.aligned || 0} aligned`)}</span>
+      </div>
+      <div class="diag-chain-evidence">${escapeHtml(evidenceFor(branch))}</div>
+    </article>
+  `).join('');
+  return `
+    <section class="diag-section diag-chain-section">
+      <header class="diag-section-head">
+        <span class="diag-section-num">2B.G</span>
+        <span class="diag-section-title">Requirement Chains — SLO/SLI derivation integrity</span>
+        <span class="diag-section-meta">${rollup.intact}/${rollup.declaredTotal} intact · ${escapeHtml(fmtPct(rollup.integrityMean))}</span>
+      </header>
+      <div class="diag-chain-rollup">
+        <span class="diag-chain-rollup-cell is-intact"><strong>${rollup.intact}</strong> intact</span>
+        <span class="diag-chain-rollup-cell is-partial"><strong>${rollup.partial}</strong> partial</span>
+        <span class="diag-chain-rollup-cell is-broken"><strong>${rollup.broken}</strong> broken</span>
+        <span class="diag-chain-rollup-cell is-undeclared"><strong>${rollup.undeclared}</strong> live-only</span>
+      </div>
+      <div class="diag-chain-grid">${cards}</div>
+    </section>
+  `;
 }
 
 function renderBenchmarkHeadline(posture, lens) {
@@ -1967,7 +1959,11 @@ function renderCompareView(view) {
     Promise.all([
       haveB    ? Promise.resolve() : loadPackB(),
       haveDiff ? Promise.resolve() : loadDiff(),
-    ]).then(() => { renderTabs(); renderMainView(); });
+    ]).then(() => { renderTabs(); renderMainView(); })
+      .catch((e) => {
+        loading.className = 'error';
+        loading.textContent = `Failed to load packs: ${e.message}`;
+      });
     return;
   }
 
@@ -2047,6 +2043,20 @@ export function catalogEntryFor(packId) {
   return (state.catalog || []).find(p => p.id === packId) || null;
 }
 
+function uploadedSourceHint(p) {
+  if (p?.source !== 'uploaded') return '';
+  const m = String(p.description || '').match(/^Uploaded pack\s+—\s+(.+)$/);
+  const source = (m?.[1] || '').trim();
+  if (!source || source === p.label || source === p.name) return '';
+  return source;
+}
+
+function packOptionLabel(p) {
+  const version = p.version || '?';
+  const source = uploadedSourceHint(p);
+  return `${p.label || p.id} · v${version}${source ? ` · from ${source}` : ''}`;
+}
+
 function renderComparePackHeader(side, pack, diffMeta) {
   const card = document.createElement('div');
   card.className = `compare-pack-card compare-pack-card-${side}`;
@@ -2076,7 +2086,7 @@ function renderComparePackHeader(side, pack, diffMeta) {
   // Build the pack + env picker options from the live catalog.
   const packOptionsHtml = (state.catalog || [])
     .filter(p => p.ok)
-    .map(p => `<option value="${escapeHtml(p.id)}" ${p.id === activeId ? 'selected' : ''}>${escapeHtml(p.label)}</option>`)
+    .map(p => `<option value="${escapeHtml(p.id)}" ${p.id === activeId ? 'selected' : ''}>${escapeHtml(packOptionLabel(p))}</option>`)
     .join('');
   const envOptionsHtml = (envOptions.length ? envOptions : (activeEnv ? [activeEnv] : []))
     .map(e => `<option value="${escapeHtml(e)}" ${e === activeEnv ? 'selected' : ''}>${escapeHtml(e)}</option>`)
@@ -2444,6 +2454,7 @@ function renderCompareFilters() {
   };
   lensWrap.appendChild(lensSel);
   wrap.appendChild(lensWrap);
+  wrap.appendChild(renderLiveScopeControl());
 
   const search = document.createElement('input');
   search.type = 'search';
@@ -2463,6 +2474,65 @@ function renderCompareFilters() {
     });
   });
   wrap.appendChild(search);
+  return wrap;
+}
+
+function renderLiveScopeControl({ standalone = false } = {}) {
+  const modes = [
+    {
+      id: 'service',
+      label: 'Service scope',
+      hint: 'Multitenant mode: live-only artefacts outside Pack A service are out of scope.',
+    },
+    {
+      id: 'family',
+      label: 'Family only',
+      hint: 'Single-tenant mode: all live-only artefacts in families Pack A declares are counted.',
+    },
+    {
+      id: 'all',
+      label: 'All live',
+      hint: 'Strict inventory mode: every unmatched live artefact is counted.',
+    },
+  ];
+  const active = activeDiffScopeMode();
+  const wrap = document.createElement('div');
+  wrap.className = 'compare-scope-wrap' + (standalone ? ' compare-scope-standalone' : '');
+  const label = document.createElement('span');
+  label.className = 'compare-scope-label';
+  label.textContent = 'Live scope';
+  wrap.appendChild(label);
+  const sel = document.createElement('select');
+  sel.className = 'compare-scope-select';
+  sel.title = 'Choose how live-only artefacts are classified.';
+  for (const mode of modes) {
+    const opt = document.createElement('option');
+    opt.value = mode.id;
+    opt.textContent = mode.label;
+    opt.title = mode.hint;
+    sel.appendChild(opt);
+  }
+  sel.value = active;
+  sel.dataset.scopeMode = active;
+  sel.onchange = () => {
+    const next = normalizeDiffScopeMode(sel.value);
+    if (activeDiffScopeMode() === next) return;
+    state.diffScopeMode = next;
+    state.diff = null;
+    sel.dataset.scopeMode = next;
+    refreshDiff();
+  };
+  wrap.appendChild(sel);
+  const meta = state.diff?.scope;
+  if (standalone && meta?.mode) {
+    const note = document.createElement('span');
+    note.className = 'compare-scope-note';
+    const tokenCount = Array.isArray(meta.serviceTokens) ? meta.serviceTokens.length : 0;
+    const prefixCount = Array.isArray(meta.metricPrefixes) ? meta.metricPrefixes.length : 0;
+    const service = meta.service ? `${meta.service} · ` : '';
+    note.textContent = `${service}${meta.mode} · ${tokenCount} service token${tokenCount === 1 ? '' : 's'} · ${prefixCount} metric prefix${prefixCount === 1 ? '' : 'es'}`;
+    wrap.appendChild(note);
+  }
   return wrap;
 }
 
@@ -2949,4 +3019,3 @@ function renderCompareColumn(label, cls, items, def, inBothPairs = null) {
   }
   return col;
 }
-

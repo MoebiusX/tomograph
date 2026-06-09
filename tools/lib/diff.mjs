@@ -29,6 +29,7 @@
 //     B − A  = onlyInB ∪ outOfScope
 
 import {
+  classify,
   identityKeyOf,
   behaviorOf,
   deltasOf,
@@ -55,20 +56,22 @@ export { deltasOf };
 
 function layerArtefacts(layered, layerId) {
   const ls = layered?.layers || {};
+  const comparable = (artefact) => classify(artefact) !== 'panel';
   if (layerId === 'L4') {
     return [
       ...(ls.L4?.policy   || []),
       ...(ls.L4?.alerting || []),
       ...(ls.L4?.healing  || []),
-    ];
+    ].filter(comparable);
   }
-  return ls[layerId] || [];
+  return (ls[layerId] || []).filter(comparable);
 }
 
 function packMeta(layered) {
   return {
     id: layered?.id,
     name: layered?.name,
+    service: layered?.meta?.service,
     criticality: layered?.meta?.criticality,
     environment: layered?.meta?.environment,
     version: layered?.meta?.version,
@@ -76,9 +79,11 @@ function packMeta(layered) {
   };
 }
 
-export function diffPacks(aLayered, bLayered) {
+export function diffPacks(aLayered, bLayered, opts = {}) {
   if (!aLayered || !bLayered) throw new Error('diffPacks: both packs required');
 
+  const scopeMode = normalizeScopeMode(opts.scopeMode);
+  const serviceScope = buildServiceScope(aLayered, opts.service);
   const layers = {};
   let onlyInA = 0, onlyInB = 0, inBoth = 0, aligned = 0, drifted = 0, outOfScope = 0;
 
@@ -86,10 +91,8 @@ export function diffPacks(aLayered, bLayered) {
     const aItems = layerArtefacts(aLayered, layerId);
     const bItems = layerArtefacts(bLayered, layerId);
 
-    const aByKey = new Map();
-    const bByKey = new Map();
-    for (const a of aItems) aByKey.set(keyOf(a), a);
-    for (const b of bItems) bByKey.set(keyOf(b), b);
+    const aByKey = groupByKey(aItems);
+    const bByKey = groupByKey(bItems);
 
     // Kinds (artefact families) the declared side (A) actually participates in
     // for this layer. The behavioural key is `${kind}::${identity}`, so the
@@ -104,25 +107,23 @@ export function diffPacks(aLayered, bLayered) {
 
     const bucket = { onlyInA: [], onlyInB: [], inBoth: [], outOfScope: [] };
 
-    for (const [k, a] of aByKey) {
+    for (const [k, aGroup] of aByKey) {
       if (bByKey.has(k)) {
-        // Same behavioural identity — now compare the full behavioural
-        // contracts to decide whether they actually AGREE. Aligned only when
-        // the behaviour objects are equal (no deltas); otherwise drifted, with
-        // the diverging behavioural fields attached.
-        const b = bByKey.get(k);
-        const deltas = deltasOf(a, b);
-        const match = deltas.length === 0 ? 'aligned' : 'drifted';
-        bucket.inBoth.push({ key: k, a, b, match, deltas });
+        matchGroups(k, aGroup, bByKey.get(k), bucket);
       } else {
-        bucket.onlyInA.push({ key: k, artefact: a });
+        pushUnmatched(bucket.onlyInA, k, aGroup);
       }
     }
-    for (const [k, b] of bByKey) {
+    for (const [k, bGroup] of bByKey) {
       if (aByKey.has(k)) continue;
       const kind = k.slice(0, k.indexOf('::'));
-      if (aKinds.has(kind)) bucket.onlyInB.push({ key: k, artefact: b });
-      else bucket.outOfScope.push({ key: k, artefact: b });
+      if (scopeMode === 'service' && isOutsideServiceScope(bGroup, serviceScope)) {
+        pushUnmatched(bucket.outOfScope, k, bGroup);
+      } else if (aKinds.has(kind) || scopeMode === 'all') {
+        pushUnmatched(bucket.onlyInB, k, bGroup);
+      } else {
+        pushUnmatched(bucket.outOfScope, k, bGroup);
+      }
     }
 
     // Stable order — alphabetical by key — so the UI doesn't reshuffle on
@@ -148,6 +149,7 @@ export function diffPacks(aLayered, bLayered) {
   return {
     a: packMeta(aLayered),
     b: packMeta(bLayered),
+    scope: diffScopeMeta(scopeMode, serviceScope),
     summary: {
       onlyInA,
       onlyInB,
@@ -172,4 +174,295 @@ export function diffPacks(aLayered, bLayered) {
     },
     layers,
   };
+}
+
+function normalizeScopeMode(value) {
+  const raw = String(value || 'service').trim().toLowerCase();
+  if (raw === 'family' || raw === 'legacy' || raw === 'off') return 'family';
+  if (raw === 'all' || raw === 'none' || raw === 'strict') return 'all';
+  return 'service';
+}
+
+function diffScopeMeta(mode, scope) {
+  return {
+    mode,
+    service: scope.service || null,
+    serviceTokens: [...(scope.explicit || [])].sort(),
+    declaredMetricCount: scope.declaredMetrics?.size || 0,
+    metricPrefixes: [...(scope.metricPrefixes || [])].sort(),
+  };
+}
+
+const GENERIC_SERVICE_TOKENS = new Set([
+  'alert', 'alerts', 'api', 'app', 'apps', 'availability', 'backend',
+  'client', 'clients', 'core', 'dashboard', 'dashboards', 'demo', 'draft',
+  'error', 'errors', 'exporter', 'frontend', 'health', 'latency', 'live',
+  'local', 'log', 'logs', 'mcp', 'metric', 'metrics', 'monitoring',
+  'observability', 'pack', 'platform', 'prod', 'production', 'processor',
+  'repo', 'request', 'requests', 'runtime', 'scanned', 'server', 'service',
+  'services', 'signal', 'signals', 'system', 'target', 'telemetry', 'test',
+  'total', 'trace', 'traces', 'worker',
+  'alertmanager', 'alloy', 'cilium', 'collector', 'grafana', 'jaeger',
+  'kong', 'kube', 'kubernetes', 'kubestatemetrics', 'kubelet', 'loki',
+  'node', 'nodeexporter', 'otel', 'postgres', 'postgresql', 'prometheus',
+  'promtail', 'rabbitmq', 'redis', 'tempo', 'vector', 'victoria',
+  'victoriametrics',
+]);
+
+const GENERIC_METRIC_PREFIXES = new Set([
+  'alert', 'alertmanager', 'alerts', 'container', 'go', 'grafana', 'grpc',
+  'http', 'jaeger', 'jvm', 'kube', 'kubelet', 'loki', 'node', 'nodejs',
+  'otel', 'otelcol', 'pg', 'pod', 'process', 'prometheus', 'promtail',
+  'pushgateway', 'rabbitmq', 'redis', 'tempo', 'vm',
+]);
+
+function buildServiceScope(layered, serviceOverride) {
+  const explicit = new Set();
+  const addExplicit = (value) => addNameTokens(explicit, value, { allowShort: false });
+  addExplicit(serviceOverride);
+  addExplicit(layered?.meta?.service);
+  addExplicit(layered?.meta?.name);
+  addExplicit(layered?.name);
+  addExplicit(layered?.id);
+
+  const declaredMetrics = new Set();
+  const metricPrefixes = new Set();
+
+  for (const layerId of LAYER_ORDER) {
+    for (const artefact of layerArtefacts(layered, layerId)) {
+      const kind = classify(artefact);
+      const spec = artefact?.spec || {};
+      if (kind === 'metric') {
+        const metric = String(spec.name || artefact.title || '').trim();
+        if (!metric) continue;
+        declaredMetrics.add(metric.toLowerCase());
+        const prefix = metricPrefix(metric);
+        if (isUsefulMetricPrefix(prefix)) metricPrefixes.add(prefix);
+      }
+      if (spec.origin_service) addNameTokens(explicit, spec.origin_service, { allowShort: false });
+      if (spec.service) addNameTokens(explicit, spec.service, { allowShort: false });
+    }
+  }
+
+  return { service: serviceOverride || layered?.meta?.service || layered?.meta?.name || layered?.name || layered?.id || '', explicit, declaredMetrics, metricPrefixes };
+}
+
+function isOutsideServiceScope(group, scope) {
+  if (!scopeHasSignal(scope)) return false;
+  return group.every((artefact) => !artefactInServiceScope(artefact, scope));
+}
+
+function scopeHasSignal(scope) {
+  return (scope?.explicit?.size || 0)
+      || (scope?.declaredMetrics?.size || 0)
+      || (scope?.metricPrefixes?.size || 0);
+}
+
+function artefactInServiceScope(artefact, scope) {
+  if (!artefact) return false;
+  const kind = classify(artefact);
+  const spec = artefact.spec || {};
+  const text = artefactScopeText(artefact);
+  const compactText = compact(text);
+
+  for (const token of scope.explicit || []) {
+    if (token && compactText.includes(token)) return true;
+  }
+  if (kind !== 'metric') {
+    for (const metric of scope.declaredMetrics || []) {
+      if (metric && mentionsPromMetric(text, metric)) return true;
+    }
+  }
+
+  if (kind === 'metric') {
+    const name = String(spec.name || artefact.title || '').toLowerCase();
+    if ((scope.declaredMetrics || new Set()).has(name)) return true;
+    const prefix = metricPrefix(name);
+    return isUsefulMetricPrefix(prefix) && (scope.metricPrefixes || new Set()).has(prefix);
+  }
+
+  if (kind === 'scrape_job') {
+    const job = compact(spec.job || artefact.title || '');
+    for (const token of scope.explicit || []) {
+      if (job.includes(token) || token.includes(job)) return true;
+    }
+  }
+
+  return false;
+}
+
+function artefactScopeText(artefact) {
+  const spec = artefact?.spec || {};
+  const chunks = [
+    artefact?.id,
+    artefact?.title,
+    artefact?.desc,
+    artefact?.defines,
+    artefact?.parent,
+    ...(artefact?.tags || []),
+    ...(artefact?.refs || []),
+  ];
+  appendSpecScopeText(spec, chunks);
+  return chunks.filter(Boolean).join(' ');
+}
+
+function appendSpecScopeText(value, chunks, depth = 0) {
+  if (value == null || depth > 4) return;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    chunks.push(String(value));
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.slice(0, 48).forEach((item) => appendSpecScopeText(item, chunks, depth + 1));
+    return;
+  }
+  if (typeof value === 'object') {
+    for (const key of [
+      'id', 'name', 'job', 'service', 'source_name', 'origin_service',
+      'origin_file', 'file', 'query', 'expr', 'promql', 'expression',
+      'binds_to', 'slo', 'sli', 'record', 'folder', 'title',
+    ]) {
+      if (key in value) appendSpecScopeText(value[key], chunks, depth + 1);
+    }
+    for (const key of ['used_by', 'references', 'labels', 'annotations', 'targets']) {
+      if (key in value) appendSpecScopeText(value[key], chunks, depth + 1);
+    }
+  }
+}
+
+function addNameTokens(target, value, { allowShort = false } = {}) {
+  if (typeof value !== 'string') return;
+  for (const token of serviceTokens(value, allowShort)) target.add(token);
+}
+
+function serviceTokens(value, allowShort = false) {
+  const raw = String(value || '').toLowerCase();
+  const out = new Set();
+  const whole = compact(raw);
+  if (isUsefulServiceToken(whole, allowShort)) out.add(whole);
+  for (const part of raw.split(/[^a-z0-9]+/i)) {
+    const token = compact(part);
+    if (isUsefulServiceToken(token, allowShort)) out.add(token);
+  }
+  return [...out];
+}
+
+function isUsefulServiceToken(token, allowShort = false) {
+  if (!token) return false;
+  if (GENERIC_SERVICE_TOKENS.has(token)) return false;
+  if (token.length >= 3) return true;
+  return allowShort && token.length >= 2;
+}
+
+function metricPrefix(name) {
+  const raw = String(name || '').toLowerCase();
+  const sep = raw.includes(':') ? ':' : '_';
+  return raw.split(sep)[0] || '';
+}
+
+function mentionsPromMetric(text, metric) {
+  const haystack = String(text || '').toLowerCase();
+  const needle = String(metric || '').toLowerCase();
+  if (!needle) return false;
+  let index = haystack.indexOf(needle);
+  while (index !== -1) {
+    const before = index === 0 ? '' : haystack[index - 1];
+    const after = haystack[index + needle.length] || '';
+    if (!isPromMetricChar(before) && !isPromMetricChar(after)) return true;
+    index = haystack.indexOf(needle, index + 1);
+  }
+  return false;
+}
+
+function isPromMetricChar(ch) {
+  return !!ch && /[a-z0-9_:]/i.test(ch);
+}
+
+function isUsefulMetricPrefix(prefix) {
+  return !!prefix
+    && prefix.length >= 2
+    && !GENERIC_METRIC_PREFIXES.has(prefix)
+    && !GENERIC_SERVICE_TOKENS.has(prefix);
+}
+
+function compact(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function groupByKey(items) {
+  const out = new Map();
+  for (const item of items) {
+    const k = keyOf(item);
+    if (!out.has(k)) out.set(k, []);
+    out.get(k).push(item);
+  }
+  return out;
+}
+
+function matchGroups(baseKey, aGroup, bGroup, bucket) {
+  const suffix = Math.max(aGroup.length, bGroup.length) > 1;
+  let seq = 0;
+  const unusedB = bGroup.map((b, i) => ({ b, i }));
+  const usedA = new Set();
+
+  // Pair exact behavioural matches first so a self-diff remains fully aligned
+  // even when one pack contains duplicate identity keys.
+  for (let ai = 0; ai < aGroup.length; ai++) {
+    const bi = unusedB.findIndex(({ b }) => deltasOf(aGroup[ai], b).length === 0);
+    if (bi === -1) continue;
+    const [{ b }] = unusedB.splice(bi, 1);
+    bucket.inBoth.push({
+      key: occurrenceKey(baseKey, seq++, suffix),
+      a: aGroup[ai],
+      b,
+      match: 'aligned',
+      deltas: [],
+    });
+    usedA.add(ai);
+  }
+
+  const unusedA = aGroup
+    .map((a, i) => ({ a, i }))
+    .filter(({ i }) => !usedA.has(i));
+
+  // Remaining items share identity but not the same contract. Pair each A with
+  // the closest remaining B, then leave surplus controls visible as onlyInA/B.
+  while (unusedA.length && unusedB.length) {
+    const { a } = unusedA.shift();
+    let best = 0;
+    let bestDeltas = deltasOf(a, unusedB[0].b);
+    for (let i = 1; i < unusedB.length; i++) {
+      const d = deltasOf(a, unusedB[i].b);
+      if (d.length < bestDeltas.length) {
+        best = i;
+        bestDeltas = d;
+      }
+    }
+    const [{ b }] = unusedB.splice(best, 1);
+    bucket.inBoth.push({
+      key: occurrenceKey(baseKey, seq++, suffix),
+      a,
+      b,
+      match: 'drifted',
+      deltas: bestDeltas,
+    });
+  }
+
+  for (const { a } of unusedA) {
+    bucket.onlyInA.push({ key: occurrenceKey(baseKey, seq++, suffix), artefact: a });
+  }
+  for (const { b } of unusedB) {
+    bucket.onlyInB.push({ key: occurrenceKey(baseKey, seq++, suffix), artefact: b });
+  }
+}
+
+function pushUnmatched(target, baseKey, group) {
+  const suffix = group.length > 1;
+  group.forEach((artefact, i) => {
+    target.push({ key: occurrenceKey(baseKey, i, suffix), artefact });
+  });
+}
+
+function occurrenceKey(baseKey, index, suffix) {
+  return suffix ? `${baseKey}#${String(index + 1).padStart(2, '0')}` : baseKey;
 }

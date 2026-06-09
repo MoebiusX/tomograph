@@ -82,6 +82,8 @@ export function openDrawer(artefact, def, sublayerKey, side = 'b') {
   // Per-artefact-type structured panels.
   const typed = renderTypedPanels(artefact, def);
   if (typed) panels.appendChild(typed);
+  const trace = renderRequirementTracePanel(artefact, side);
+  if (trace) panels.appendChild(trace);
 
   // Always-show canonical source
   const src = panel('Canonical source', 'canonical-source');
@@ -165,8 +167,11 @@ function renderTypedPanels(artefact, def) {
   if (id.startsWith('OTEL-'))    return panelOtel(s);
   if (id.startsWith('BAK-'))     return panelBackend(s);
   if (id.startsWith('STO-'))     return panelStorage(s);
+  if (id.startsWith('METRIC-'))  return panelMetric(s);
+  if (id.startsWith('SCRAPE-'))  return panelScrapeJob(s);
   if (id.startsWith('PIP-'))     return panelPipeline(id, s);
   if (id.startsWith('DASH-'))    return panelDashboard(s);
+  if (id.startsWith('PANEL-'))   return panelDashboardPanel(s);
   if (id.startsWith('QRY-'))     return panelRecordingRule(s);
   if (id.startsWith('VIEW-'))    return panelDerivedView(s);
   if (id.startsWith('POL-'))     return panelBurnRate(s);
@@ -180,6 +185,44 @@ function renderTypedPanels(artefact, def) {
       id.startsWith('MESH-') || id.startsWith('COL-')) return panelExtended(id, s);
   if (id.startsWith('IMP-'))     return panelImport(s);
   return null;
+}
+
+function renderRequirementTracePanel(artefact, side = 'b') {
+  const pack = side === 'a'
+    ? state.pack
+    : (state.activeLayer === 'COMPARE' && side === 'b' ? state.packB : state.pack);
+  const chains = pack?.traceability?.chains || [];
+  if (!chains.length) return null;
+  const symbol = artefact.defines;
+  if (!symbol || !/^(slis|slos)\./.test(symbol)) return null;
+  const hits = chains.filter(c => c.slo?.symbol === symbol || c.sli?.symbol === symbol);
+  if (!hits.length) return null;
+
+  const p = panel('Requirement trace', 'p-requirement-trace');
+  for (const chain of hits.slice(0, 3)) {
+    const sec = subpanel(chain.slo?.id || chain.sli?.id || 'requirement');
+    sec.appendChild(dl([
+      ['slo', chain.slo?.id],
+      ['sli', chain.sli?.id],
+      ['status', chain.gaps?.length ? `${chain.gaps.length} gap(s)` : 'complete'],
+      ['metrics', chain.metrics?.map(m => m.name).slice(0, 6).join(', ')],
+      ['recording rules', chain.recordingRules?.map(r => r.name).slice(0, 4).join(', ')],
+      ['exporters', chain.exporters?.map(e => e.title || e.id).join(', ')],
+      ['scrape evidence', chain.scrapeJobs?.items?.length
+        ? chain.scrapeJobs.items.map(j => j.name).join(', ')
+        : (chain.scrapeJobs?.observedCount ? `${chain.scrapeJobs.observedCount} jobs observed` : null)],
+      ['dashboards', chain.dashboards?.map(d => d.title || d.id).slice(0, 4).join(', ')],
+      ['alerts', chain.alerts?.map(a => a.name).slice(0, 5).join(', ')],
+    ]));
+    if (chain.gaps?.length) {
+      const gap = document.createElement('div');
+      gap.className = 'trace-gap-list';
+      gap.innerHTML = chain.gaps.map(g => `<code>${escapeHtml(g)}</code>`).join('');
+      sec.appendChild(gap);
+    }
+    p.appendChild(sec);
+  }
+  return p;
 }
 
 function dl(rows) {
@@ -345,6 +388,61 @@ function panelStorage(s) {
   return p;
 }
 
+function panelScrapeJob(s) {
+  const isTelemetrySource = s.type === 'TelemetrySource';
+  const p = panel(isTelemetrySource ? 'Telemetry source' : 'Scrape job', 'p-scrape');
+  p.appendChild(dl([
+    ['type', s.type],
+    ['job', s.job],
+    ['source', s.source],
+    ['file', s.origin_file || s.file],
+    ['query', s.scrape_query || s.metrics_path],
+    ['interval', s.interval],
+    ['targets', s.targets?.join(', ')],
+  ]));
+  if (s.exports?.length) {
+    const sec = subpanel(`exports (${s.exports.length})`);
+    const ul = document.createElement('ul');
+    ul.className = 'endpoint-list';
+    for (const name of s.exports) {
+      const li = document.createElement('li');
+      li.textContent = name;
+      ul.appendChild(li);
+    }
+    sec.appendChild(ul);
+    p.appendChild(sec);
+  }
+  return p;
+}
+
+function panelMetric(s) {
+  const p = panel('Metric', 'p-metric');
+  p.appendChild(dl([
+    ['name', s.name],
+    ['source name', s.source_name],
+    ['source', s.source],
+    ['origin kind', s.origin_kind],
+    ['confidence', s.confidence],
+    ['candidate', s.candidate ? 'yes' : null],
+    ['telemetry source', s.origin_service],
+    ['file', s.origin_file],
+    ['query', s.query || s.origin_query || s.name],
+    ['type', s.metric_type],
+    ['help', s.help],
+    ['labels', s.origin_labels?.join(', ')],
+    ['used by', s.used_by?.join(', ')],
+  ]));
+  if (s.references?.length) {
+    const sec = subpanel(`references (${s.references.length})`);
+    sec.appendChild(table(
+      s.references.map(r => [r.kind, r.name, r.file]),
+      ['kind', 'name', 'file'],
+    ));
+    p.appendChild(sec);
+  }
+  return p;
+}
+
 function panelPipeline(id, s) {
   let kind = 'pipeline';
   if (id.startsWith('PIP-RCV-')) kind = 'receiver';
@@ -380,6 +478,44 @@ function panelDashboard(s) {
       return [b.panel, a];
     });
     sec.appendChild(table(rows, ['panel', 'binds to']));
+    p.appendChild(sec);
+  }
+  if (s.params?.panels?.length) {
+    const sec = subpanel(`uses (${s.params.panels.length})`);
+    sec.appendChild(table(
+      s.params.panels.slice(0, 80).map(panel => [
+        panel.title || panel.panel,
+        panel.binds_to || '—',
+        (panel.metrics || []).slice(0, 4).join(', '),
+        panel.expr || panel.query || '',
+      ]),
+      ['panel', 'binds to', 'metrics', 'query'],
+    ));
+    if (s.params.panels.length > 80) {
+      const note = document.createElement('p');
+      note.className = 'muted';
+      note.textContent = `${s.params.panels.length - 80} more panel query uses captured in canonical source.`;
+      sec.appendChild(note);
+    }
+    p.appendChild(sec);
+  }
+  return p;
+}
+
+function panelDashboardPanel(s) {
+  const p = panel('Dashboard panel', 'p-dashboard-panel');
+  p.appendChild(dl([
+    ['panel', s.panel || s.title],
+    ['binds to', s.binds_to],
+    ['confidence', s.binding_confidence],
+    ['reason', s.binding_reason],
+    ['datasource', s.datasource],
+    ['refId', s.refId],
+    ['metrics', s.metrics?.join(', ')],
+  ]));
+  if (s.expr || s.query) {
+    const sec = subpanel('query');
+    sec.appendChild(code(s.expr || s.query));
     p.appendChild(sec);
   }
   return p;
@@ -589,4 +725,3 @@ export function closeDrawer(side) {
       k === state.activeCardKey || k === state.activeCardKeyA || k === state.activeCardKeyB);
   });
 }
-

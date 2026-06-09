@@ -7,6 +7,7 @@
  */
 
 import { start } from './index.mjs';
+import { createServer } from 'node:http';
 
 const failures = [];
 function assert(cond, label, got, want) {
@@ -26,6 +27,45 @@ async function getText(base, path) {
   const r = await fetch(`${base}${path}`);
   if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
   return r.text();
+}
+
+async function startFakeMcp(toolNames) {
+  const calls = [];
+  const srv = createServer(async (req, res) => {
+    let raw = '';
+    req.setEncoding('utf8');
+    for await (const chunk of req) raw += chunk;
+    let msg = {};
+    try { msg = JSON.parse(raw || '{}'); } catch (_) {}
+    const send = (result) => {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Mcp-Session-Id': 'smoke-session',
+      });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id ?? 1, result }));
+    };
+    if (msg.method === 'initialize') {
+      send({ protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'fake-mcp' } });
+      return;
+    }
+    if (msg.method === 'tools/list') {
+      send({ tools: toolNames.map(name => ({ name })) });
+      return;
+    }
+    if (msg.method === 'tools/call') {
+      calls.push(msg.params);
+      send({ content: [{ type: 'text', text: JSON.stringify({ ok: true, name: msg.params?.name }) }] });
+      return;
+    }
+    send({});
+  });
+  await new Promise(resolve => srv.listen(0, '127.0.0.1', resolve));
+  const addr = srv.address();
+  return {
+    url: `http://${addr.address}:${addr.port}/mcp`,
+    calls,
+    close: () => new Promise(resolve => srv.close(resolve)),
+  };
 }
 
 const srv = await start({ port: 0, silent: true });
@@ -70,6 +110,10 @@ try {
   assert(!!example, 'examples include payment-service');
   assert(example?.criticality === 'tier-1', 'payment-service criticality');
   assert(example?.environments?.length === 2, 'payment-service environments count');
+  assert(typeof example?.service === 'string' && example.service.length > 0,
+         'example catalog entries expose service workspace metadata');
+  assert(Array.isArray(example?.services) && example.services.length >= 1,
+         'example catalog entries expose service aliases');
 
   // /api/references — the catalogue reference packs (Advanced → References)
   const references = await getJson(base, '/api/references');
@@ -134,15 +178,24 @@ try {
   assert(diff.b?.id === 'production-curated',  'diff.b.id = production-curated metadata.name');
   assert(diff.a?.criticality === 'tier-1', 'diff.a carries criticality');
   assert(diff.b?.criticality === 'tier-2', 'diff.b carries criticality');
+  assert(diff.scope?.mode === 'service', 'diff defaults to service scope mode');
   assert(typeof diff.summary?.onlyInA === 'number', 'diff.summary.onlyInA present');
   assert(typeof diff.summary?.inBoth  === 'number', 'diff.summary.inBoth present');
   assert(typeof diff.summary?.jaccard === 'number', 'diff.summary.jaccard present');
+  assert(typeof diff.traceabilityGraph?.rollup?.integrityMean === 'number',
+         'diff.traceabilityGraph.rollup.integrityMean present');
+  assert(Array.isArray(diff.traceabilityGraph?.branches),
+         'diff.traceabilityGraph.branches array present');
   assert(diff.summary.aTotal > diff.summary.bTotal,
          'target-advanced has more artefacts than production-curated',
          { aTotal: diff.summary.aTotal, bTotal: diff.summary.bTotal },
          'aTotal > bTotal');
   assert(Array.isArray(diff.layers?.L1?.onlyInA), 'diff.layers.L1.onlyInA array');
   assert(Array.isArray(diff.layers?.L4?.inBoth),  'diff.layers.L4.inBoth array (sub-layers flattened)');
+  const familyDiff = await getJson(base, '/api/diff?a=target-advanced&b=production-curated&scopeMode=family');
+  assert(familyDiff.scope?.mode === 'family', 'diff accepts scopeMode=family');
+  const serviceDiff = await getJson(base, '/api/diff?a=target-advanced&b=production-curated&service=platform-edge');
+  assert(serviceDiff.scope?.service === 'platform-edge', 'diff accepts service workspace override');
   // missing args
   const badDiff = await fetch(`${base}/api/diff?a=target-advanced`);
   assert(badDiff.status === 400, 'diff with missing b → 400');
@@ -295,6 +348,47 @@ try {
   const deployBody = await deployNoUrl.json();
   assert(/mcpUrl/.test(deployBody.error || ''), 'deploy 400 mentions mcpUrl');
 
+  // SSRF guard — non-http(s) mcpUrl schemes are rejected with 400 before
+  // any fetch happens, on every endpoint that takes an mcpUrl.
+  const postJson = (path, body) => fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  for (const [path, body] of [
+    ['/api/packs/payment-service/deploy/prometheus-rules', { mcpUrl: 'file:///etc/passwd' }],
+    ['/api/packs/payment-service/deploy-bulk', { mcpUrl: 'ftp://mcp.example/x', items: [{ group: 'rules' }] }],
+    ['/api/draft-from-mcp', { mcpUrl: 'gopher://127.0.0.1:70/mcp' }],
+    ['/api/refresh-live', { mcpUrl: 'file://C:/secrets' }],
+  ]) {
+    const r = await postJson(path, body);
+    assert(r.status === 400, `${path} rejects non-http(s) mcpUrl scheme → 400`, r.status, 400);
+    const rBody = await r.json();
+    assert(/http/.test(rBody.error || ''), `${path} scheme rejection names http(s)`, rBody.error);
+  }
+
+  // SSRF guard — unparseable mcpUrl → 400, with any embedded credentials
+  // redacted from the echoed error.
+  const badUrl = await postJson('/api/refresh-live', { mcpUrl: 'http://user:hunter2@' });
+  assert(badUrl.status === 400, 'unparseable mcpUrl → 400');
+  const badUrlBody = await badUrl.json();
+  assert(!/hunter2/.test(badUrlBody.error || ''), 'unparseable-mcpUrl error redacts credentials', badUrlBody.error);
+
+  // SSRF guard — local/private addresses are allowed by default (the fake-MCP
+  // tests below depend on that) but refused when TOMOGRAPH_ALLOW_LOCAL_MCP=0.
+  // The server runs in-process, so flipping process.env takes effect live.
+  process.env.TOMOGRAPH_ALLOW_LOCAL_MCP = '0';
+  try {
+    for (const blocked of ['http://127.0.0.1:9999/mcp', 'http://localhost:9999/mcp',
+                           'http://169.254.169.254/latest/meta-data/', 'http://[::1]:9999/mcp',
+                           'http://0x7f000001:9999/mcp']) {
+      const r = await postJson('/api/draft-from-mcp', { mcpUrl: blocked });
+      assert(r.status === 400, `ALLOW_LOCAL_MCP=0 blocks ${blocked} → 400`, r.status, 400);
+    }
+  } finally {
+    delete process.env.TOMOGRAPH_ALLOW_LOCAL_MCP;
+  }
+
   // POST /api/packs/:id/deploy/:target — unknown pack → 404
   const deployBadPack = await fetch(`${base}/api/packs/does-not-exist/deploy/prometheus-rules`, {
     method: 'POST',
@@ -311,8 +405,8 @@ try {
   });
   assert(deployBadMcp.status === 502, 'deploy unreachable MCP → 502');
   const deployErr = await deployBadMcp.json();
-  // Default deploy is to Grafana 12 with scope=both → apply_grafana_rules.
-  assert(deployErr.tool === 'apply_grafana_rules',
+  // Default deploy is to Grafana 12 with scope=both → otel-mcp-server's Grafana rule writer.
+  assert(deployErr.tool === 'grafana_create_alert_rule',
          'deploy 502 echoes the default tool for prometheus-rules → Grafana 12 + scope=both');
   assert(deployErr.target === 'prometheus-rules', 'deploy 502 echoes the target');
   assert(deployErr.targetProduct === 'grafana', 'deploy 502 echoes targetProduct');
@@ -356,7 +450,7 @@ try {
   assert(/unsupported.*version/i.test(badVerBody.error || ''),
          'bad-version error names the unsupported version');
 
-  // Deploy with scope=recording → default tool flips to recording variant
+  // Deploy with scope=recording → same Grafana alert-rule writer; scope filters the compiled rules.
   const deployRecording = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -364,20 +458,58 @@ try {
   });
   assert(deployRecording.status === 502, 'deploy with scope=recording → 502 from unreachable mcp');
   const recBody = await deployRecording.json();
-  assert(recBody.tool === 'apply_grafana_recording_rules',
-         'scope=recording defaults to apply_grafana_recording_rules');
+  assert(recBody.tool === 'grafana_create_alert_rule',
+         'scope=recording defaults to grafana_create_alert_rule');
   assert(recBody.scope === 'recording', 'echoes scope=recording');
 
-  // Deploy with scope=alerting → default tool flips again
+  // Deploy with scope=alerting → same tool, different scope.
   const deployAlerting = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no', scope: 'alerting', targetVersion: '13' }),
   });
   const alrBody = await deployAlerting.json();
-  assert(alrBody.tool === 'apply_grafana_alerting_rules',
-         'scope=alerting defaults to apply_grafana_alerting_rules');
+  assert(alrBody.tool === 'grafana_create_alert_rule',
+         'scope=alerting defaults to grafana_create_alert_rule');
   assert(alrBody.targetVersion === '13', 'echoes Grafana 13');
+
+  // Bulk deploy → converts Grafana-managed provisioning YAML into the JSON
+  // shape expected by otel-mcp-server's write tool.
+  const fakeMcp = await startFakeMcp(['grafana_create_alert_rule', 'grafana_create_dashboard']);
+  try {
+    const deployBulk = await fetch(`${base}/api/packs/payment-service/deploy-bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mcpUrl: fakeMcp.url,
+        targetProduct: 'grafana',
+        targetVersion: '12',
+        targetFolder: 'observability-pack',
+        items: [{ group: 'rules', flavor: 'prometheus', artifact: 'declared:0', scope: 'recording' }],
+      }),
+    });
+    assert(deployBulk.status === 200, 'deploy-bulk to fake MCP → 200');
+    const bulkBody = await deployBulk.json();
+    assert(bulkBody.ok === true && bulkBody.summary?.ok === 1,
+           'deploy-bulk reports the selected artefact as deployed');
+    assert(fakeMcp.calls.length === 1, 'deploy-bulk made one MCP tool call for one declared rule',
+           fakeMcp.calls.length, 1);
+    const call = fakeMcp.calls[0];
+    assert(call.name === 'grafana_create_alert_rule',
+           'deploy-bulk calls grafana_create_alert_rule');
+    assert(call.arguments?.mode === 'upsert',
+           'deploy-bulk uses idempotent upsert mode by default');
+    assert(call.arguments?.rule?.folderUID === 'observability-pack',
+           'deploy-bulk maps targetFolder to rule.folderUID');
+    assert(call.arguments?.rule?.ruleGroup,
+           'deploy-bulk populates rule.ruleGroup from the provisioning group');
+    assert(call.arguments?.rule?.record?.metric,
+           'deploy-bulk sends recording rule record.metric');
+    assert(call.arguments?.rule?.noDataState === 'OK' && !('no_data_state' in call.arguments.rule),
+           'deploy-bulk converts Grafana YAML snake_case fields to API camelCase');
+  } finally {
+    await fakeMcp.close();
+  }
 
   // /api/maturity-rubric
   const rubric = await getJson(base, '/api/maturity-rubric');
@@ -447,6 +579,7 @@ try {
   // canonical schema and surface evidence pointers.
   const crawlBody = {
     repoName: 'smoke-crawl',
+    diffScopeMode: 'family',
     files: {
       'docker-compose.yml': `version: '3.8'\nservices:\n  prometheus:\n    image: prom/prometheus:v2.51.0\n    ports: ["9090:9090"]\n  grafana:\n    image: grafana/grafana:12.0.0\n    ports: ["3000:3000"]\n`,
       'rules.yml': `groups:\n  - name: g\n    rules:\n      - record: smoke:availability:ratio\n        expr: sum(rate(req_total[5m]))\n`,
@@ -464,6 +597,10 @@ try {
   assert(crawlOut.ok === true, 'crawl ok');
   assert(crawlOut.canonical?.apiVersion === 'observability.platform/v1', 'crawl emits canonical v1');
   assert(crawlOut.canonical?.metadata?.name === 'smoke-crawl', 'crawl honors repoName');
+  assert(crawlOut.canonical?.metadata?.annotations?.['tomograph.diff.scopeMode'] === 'family',
+         'crawl honors requested live-drift scope mode');
+  assert(crawlOut.summary?.comparison?.diffScopeMode === 'family',
+         'crawl summary echoes requested live-drift scope mode');
   assert(Array.isArray(crawlOut.canonical?.spec?.telemetry?.backends), 'crawl emits telemetry.backends');
   assert(crawlOut.canonical.spec.telemetry.backends.some(b => b.product === 'prometheus'),
          'crawl discovers prometheus backend from docker-compose');
@@ -498,6 +635,7 @@ try {
   const shell = await getText(base, '/');
   assert(shell.includes('id="crawl-panel"'), 'shell includes #crawl-panel');
   assert(shell.includes('id="crawl-dropzone"'), 'shell includes the dropzone');
+  assert(shell.includes('id="crawl-diff-scope"'), 'shell includes the crawler live-scope selector');
   assert(shell.includes('id="crawl-btn"'), 'shell includes the "new from repo" button');
 
   // Shell carries the Path B "new from live" surface (Phase 7n)

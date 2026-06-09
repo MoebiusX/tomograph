@@ -273,9 +273,9 @@ shape valid as you go."*
   state means edits are immediate, undo is cheap, and there's no
   paste-the-YAML-back-in cycle.
 - **A first-class differentiator.** No other observability tool ships
-  visual composition of declarative artefacts. The diagram in the
-  Möbius Loop ("declare once") becomes literal: you declare by
-  composition, the rest of the loop is automatic.
+  visual composition of declarative artefacts. The diagnostic-chain
+  model becomes literal: compose the requirement branch once, then
+  regenerate, compare, and deploy from the same structured map.
 
 ---
 

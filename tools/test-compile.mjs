@@ -38,13 +38,8 @@ const FIXTURES = [
   { id: 'demo-skeleton',       path: 'examples/demo-skeleton.pack.yaml' },
 ];
 
-const failures = [];
-function assert(cond, label, got, want) {
-  if (cond) { process.stdout.write(`  ✓ ${label}\n`); return; }
-  const detail = got !== undefined ? `\n      got:  ${JSON.stringify(got).slice(0, 120)}\n      want: ${JSON.stringify(want).slice(0, 120)}` : '';
-  failures.push(`${label}${detail}`);
-  process.stdout.write(`  ✗ ${label}${detail}\n`);
-}
+import { createHarness } from './lib/harness.mjs';
+const { assert, failures, report } = createHarness({ indent: '  ', truncate: 120 });
 
 function check(file) {
   process.stdout.write(`\n[${file.id}] ${file.path}\n`);
@@ -158,8 +153,4 @@ for (const f of FIXTURES) {
   }
 }
 
-if (failures.length) {
-  process.stderr.write(`\n${failures.length} compile assertion(s) failed.\n`);
-  process.exit(1);
-}
-process.stdout.write(`\nall compile assertions pass.\n`);
+report('compile');

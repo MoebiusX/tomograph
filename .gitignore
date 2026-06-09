@@ -3,6 +3,8 @@ node_modules/
 *.log
 .env
 .env.*
+# …but the documented example config must stay in the repo.
+!.env.example
 
 # Coverage output (c8 / nyc).
 coverage/
@@ -20,8 +22,16 @@ coverage/
 *.service.repo.yaml
 *.repo.pack.yaml
 
+# Generated live MCP snapshots. The app may create these locally, but they are
+# runtime evidence, not source fixtures.
+/examples/production-live.pack.yaml
+/examples/production-live.json
+
 # Internal, repo-local working docs — status surveys, ad-hoc audits,
 # brand/rename strategy and launch backlog. Not part of the public doc set.
 PROJECT_STATUS_SURVEY.md
 docs/TOMOGRAPH_BRAND_PLAN.md
 docs/TOMOGRAPH_MIGRATION_CHECKLIST.md
+
+# Superseded scratch versions of the brand/architecture diagrams.
+docs/diagrams/_prev*

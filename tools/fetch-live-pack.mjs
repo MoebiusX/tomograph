@@ -4,7 +4,7 @@
  *
  * Build a canonical ObservabilityPack v1.2 manifest from a live MCP
  * server's responses, validate it against the vendored schema, and write
- * it as YAML to `examples/production-live.pack.yaml`.
+ * it as a local generated YAML file.
  *
  * Phase 4 rewrite: emits canonical v1.2 only. No EMIT_FORMAT flag, no
  * studio-shape output. Sections MCP cannot directly verify (SLIs, SLOs,
@@ -20,7 +20,8 @@
  *
  * Env:
  *   MCP_URL   — MCP server endpoint. Default: https://mcp.example.com/observability
- *   OUTPUT    — Output path.         Default: examples/production-live.pack.yaml
+ *   OUTPUT    — Output path. Default: examples/production-live.pack.yaml
+ *               (generated locally; ignored by git)
  *   MCP_AUTH  — Optional bearer token if your MCP requires auth.
  *   PACK_NAME — Pack metadata.name.  Default: production-live
  *
@@ -37,6 +38,8 @@ import { fileURLToPath } from 'node:url';
 import { emit as emitYaml } from './lib/mini-yaml.mjs';
 import { validateCanonical, SPEC_VERSION } from './lib/validator.mjs';
 import { inferSlisFromRecordingRules } from './lib/sli-inference.mjs';
+import { materializeL2XFromBackends } from './lib/l2x.mjs';
+import { serviceSlug as slug } from './lib/slug.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = resolve(__dirname, '..', 'vendor', 'observability-pack-spec', `v${SPEC_VERSION}`, 'observability-pack.schema.json');
@@ -46,6 +49,20 @@ const MCP_URL_DEFAULT  = process.env.MCP_URL  || 'https://mcp.example.com/observ
 const OUTPUT           = process.env.OUTPUT   || 'examples/production-live.pack.yaml';
 const MCP_AUTH_DEFAULT = process.env.MCP_AUTH || null;
 const PACK_NAME        = (process.env.PACK_NAME || 'production-live').toLowerCase();
+const GRAFANA_DASHBOARD_SEARCH_LIMIT = Math.min(Number(process.env.TOMOGRAPH_GRAFANA_DASHBOARD_LIMIT || 100) || 100, 500);
+const GRAFANA_DASHBOARD_PANEL_LIMIT  = Math.min(Number(process.env.TOMOGRAPH_GRAFANA_PANEL_LIMIT || 500) || 500, 500);
+const GRAFANA_DASHBOARD_INCLUDE_JSON = !/^(0|false|no|off)$/i.test(process.env.TOMOGRAPH_GRAFANA_INCLUDE_JSON || 'true');
+const JSON_ANNOTATION_BLOCK_LENGTH = 4096;
+// Per-request MCP timeout. Without it a hung endpoint stalls the fetch (and
+// the server's /api/refresh-live caller) forever. Capped at 5 minutes.
+const MCP_TIMEOUT_MS = Math.min(Number(process.env.TOMOGRAPH_MCP_TIMEOUT_MS || 30_000) || 30_000, 300_000);
+
+function annotationJson(value) {
+  const compact = JSON.stringify(value);
+  return compact.length > JSON_ANNOTATION_BLOCK_LENGTH
+    ? JSON.stringify(value, null, 2)
+    : compact;
+}
 
 // ============================================================
 // MCP client — same wire protocol as before. Parameterised by
@@ -73,6 +90,7 @@ export function createMcpClient({ mcpUrl, mcpAuth = null } = {}) {
       method: 'POST',
       headers,
       body: JSON.stringify({ jsonrpc: '2.0', id: nextId++, method, params }),
+      signal: AbortSignal.timeout(MCP_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`MCP HTTP ${res.status} on ${method}: ${await res.text().catch(() => '')}`);
     if (res.headers.get('mcp-session-id')) session = res.headers.get('mcp-session-id');
@@ -105,6 +123,25 @@ export function createMcpClient({ mcpUrl, mcpAuth = null } = {}) {
     return data.result;
   }
 
+  async function notify(method, params = {}) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream',
+      'MCP-Protocol-Version': '2025-06-18',
+    };
+    if (mcpAuth) headers['Authorization'] = `Bearer ${mcpAuth}`;
+    if (session) headers['Mcp-Session-Id'] = session;
+
+    const res = await fetch(mcpUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ jsonrpc: '2.0', method, params }),
+      signal: AbortSignal.timeout(MCP_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`MCP HTTP ${res.status} on ${method}: ${await res.text().catch(() => '')}`);
+    if (res.headers.get('mcp-session-id')) session = res.headers.get('mcp-session-id');
+  }
+
   async function callTool(name, args = {}) {
     const result = await rpc('tools/call', { name, arguments: args });
     if (result?.isError) {
@@ -117,20 +154,13 @@ export function createMcpClient({ mcpUrl, mcpAuth = null } = {}) {
     catch { return text; }
   }
 
-  return { rpc, callTool };
+  return { rpc, notify, callTool };
 }
 
 // ============================================================
 // Pack builder — pure, takes stubbed MCP responses, returns a canonical
 // v1.2 manifest. Exported for offline tests.
 // ============================================================
-
-function slug(s, fallback = 'svc') {
-  if (typeof s !== 'string' || !s) return fallback;
-  const cleaned = s.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-  if (cleaned.length < 2) return fallback;
-  return cleaned.slice(0, 50);
-}
 
 function pickCriticality(services) {
   // Heuristic: the cron treats prod observability as tier-2 by default.
@@ -251,6 +281,110 @@ function parseBackendCapabilities(response) {
   };
 }
 
+function specSlug(s, fallback = 'item') {
+  let out = String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  if (!/^[a-z]/.test(out)) out = `${fallback}-${out}`.replace(/-+$/g, '');
+  if (!/[a-z0-9]$/.test(out)) out = `${out}x`;
+  return out.length >= 2 ? out : fallback;
+}
+
+function dashboardIdFrom(item, fallback = 'dashboard') {
+  const source = item?.dashboard?.uid || item?.uid || item?.id || item?.dashboard?.title || item?.title || fallback;
+  return specSlug(source, 'dash');
+}
+
+function panelIdFrom(panel, fallback = 'panel') {
+  return specSlug(panel?.title || panel?.id || panel?.refId || fallback, 'panel');
+}
+
+function grafanaDashboardSearchItems(response) {
+  const list = Array.isArray(response) ? response
+    : (response?.results || response?.dashboards || response?.items || []);
+  return Array.isArray(list)
+    ? list.filter(d => (d.type ? d.type === 'dash-db' : true))
+    : [];
+}
+
+function dashboardFromSearchItem(d) {
+  const id = dashboardIdFrom(d);
+  const uid = d.uid || d.id || null;
+  const params = {
+    ...(uid ? { uid: String(uid) } : {}),
+    ...(d.title ? { title: d.title } : {}),
+    ...(d.url ? { url: d.url } : {}),
+    ...(d.uri ? { uri: d.uri } : {}),
+    ...(Array.isArray(d.tags) && d.tags.length ? { tags: d.tags } : {}),
+    ...(d.folderUid ? { folderUid: d.folderUid } : {}),
+    ...(d.type ? { type: d.type } : {}),
+  };
+  return {
+    id,
+    provider: { kind: 'grafana', version: '12.0', schemaVersion: 41 },
+    folder: d.folderTitle || d.folder || 'mcp-discovered',
+    source: d.url ? `grafana://${d.url}` : `grafana://uid/${uid || d.id || id}`,
+    ...(Object.keys(params).length ? { params } : {}),
+  };
+}
+
+function flattenGrafanaPanels(panels, out = []) {
+  for (const panel of (Array.isArray(panels) ? panels : [])) {
+    if (!panel || typeof panel !== 'object') continue;
+    out.push(panel);
+    if (Array.isArray(panel.panels)) flattenGrafanaPanels(panel.panels, out);
+  }
+  return out;
+}
+
+function dashboardFromGrafanaDetail(detail, searchItem = {}) {
+  const dash = detail?.dashboard || {};
+  const raw = detail?.raw && typeof detail.raw === 'object' ? detail.raw : null;
+  const id = dashboardIdFrom({ ...searchItem, dashboard: dash });
+  const schemaVersion = Number(dash.schemaVersion || raw?.schemaVersion);
+  const panelSummaries = Array.isArray(dash.panels) ? dash.panels : [];
+  const rawPanels = raw ? flattenGrafanaPanels(raw.panels || []) : [];
+  const panelSource = panelSummaries.length ? panelSummaries : rawPanels;
+  const panelBindings = panelSource
+    .map((p, i) => ({
+      panel: String(p.title || p.id || `panel-${i + 1}`),
+      binds_to: `ref:grafana/${id}/panels/${panelIdFrom(p, `panel-${i + 1}`)}`,
+    }))
+    .filter(p => p.panel && p.binds_to);
+
+  const params = {
+    ...(dash.uid ? { uid: dash.uid } : (searchItem.uid ? { uid: searchItem.uid } : {})),
+    ...(dash.title ? { title: dash.title } : (searchItem.title ? { title: searchItem.title } : {})),
+    ...(Array.isArray(dash.tags) && dash.tags.length ? { tags: dash.tags } : {}),
+    ...(dash.timezone ? { timezone: dash.timezone } : {}),
+    ...(dash.refresh ? { refresh: dash.refresh } : {}),
+    ...(dash.time ? { time: dash.time } : {}),
+    ...(dash.version != null ? { dashboardVersion: dash.version } : {}),
+    ...(Array.isArray(dash.variables) && dash.variables.length ? { variables: dash.variables } : {}),
+    ...(dash.panelCount != null ? { panelCount: dash.panelCount } : { panelCount: panelSource.length }),
+    ...(dash.returnedPanels != null ? { returnedPanels: dash.returnedPanels } : { returnedPanels: panelSource.length }),
+    ...(panelSummaries.length ? { panels: panelSummaries } : {}),
+    ...(raw ? { raw } : {}),
+  };
+
+  return {
+    id,
+    provider: {
+      kind: 'grafana',
+      version: '12.0',
+      ...(Number.isFinite(schemaVersion) ? { schemaVersion } : { schemaVersion: 41 }),
+    },
+    folder: detail?.meta?.folderTitle || searchItem.folderTitle || searchItem.folder || 'mcp-discovered',
+    source: detail?.meta?.url ? `grafana://${detail.meta.url}`
+      : (searchItem.url ? `grafana://${searchItem.url}` : `grafana://uid/${dash.uid || searchItem.uid || id}`),
+    ...(Object.keys(params).length ? { params } : {}),
+    ...(panelBindings.length ? { panel_bindings: panelBindings } : {}),
+  };
+}
+
 export function buildCanonicalPack({
   refreshedAt,
   mcpUrl,
@@ -288,7 +422,9 @@ export function buildCanonicalPack({
   // Core tools that were called regardless of probes.
   const coreCalled = ['system_health','system_topology','anomalies_active','anomalies_baselines'].filter(n => !errors[n]);
   // Probe tool that actually responded (per probe).
-  const probeAnswered = Object.entries(probeResults).filter(([_, v]) => v?.tool).map(([k, v]) => v.tool);
+  const probeAnswered = Object.entries(probeResults)
+    .filter(([_, v]) => v?.tool)
+    .flatMap(([_, v]) => String(v.tool).split('+').filter(Boolean));
   // Classify each probe by outcome:
   //   data    — MCP responded with non-empty content (a real answer)
   //   empty   — MCP responded but the payload was empty (an honest zero)
@@ -513,6 +649,13 @@ export function buildCanonicalPack({
     markVerified(`telemetry.backends.versions.${product}`);
   }
 
+  const l2x = materializeL2XFromBackends(backends, { markVerified });
+  annotations['mcp.discovered.extended_surfaces'] = String(l2x.evidence.length);
+  if (l2x.evidence.length) {
+    annotations['mcp.discovered.extended_surface_refs'] =
+      l2x.evidence.map((e) => `${e.artifactId}:${e.backendId}`).join(',');
+  }
+
   // Probes drive multiple downstream sections — hoist their results.
   const discoveredRules = probeResults?.recording_rules?.adapted || [];
 
@@ -634,6 +777,14 @@ export function buildCanonicalPack({
   let dashboards;
   if (Array.isArray(discoveredDashboards) && discoveredDashboards.length > 0) {
     dashboards = discoveredDashboards;
+    const dashboardPanelTotal = dashboards.reduce((sum, d) =>
+      sum + (Array.isArray(d.panel_bindings) ? d.panel_bindings.length : 0), 0);
+    const dashboardRawTotal = dashboards.filter(d => d.params?.raw).length;
+    annotations['mcp.discovered.dashboard_panels'] = String(dashboardPanelTotal);
+    annotations['mcp.discovered.dashboard_raw_json'] = String(dashboardRawTotal);
+    if (Array.isArray(probeResults?.dashboards?.detailErrors) && probeResults.dashboards.detailErrors.length) {
+      annotations['mcp.discovered.dashboard_detail_errors'] = probeResults.dashboards.detailErrors.slice(0, 64).join(',');
+    }
     markVerified('dashboards');
   } else {
     dashboards = [{
@@ -696,14 +847,17 @@ export function buildCanonicalPack({
   if (Array.isArray(scrapeJobs) && scrapeJobs.length) {
     annotations['mcp.discovered.scrape_jobs'] = scrapeJobs.slice(0, 64).join(',');
     markVerified('telemetry.scrape');
+    markVerified('pipelines.exporters.metrics');
   }
   const metricNames = probeResults?.metric_names?.adapted;
   if (Array.isArray(metricNames) && metricNames.length) {
-    // Cap to 200 names to keep annotation bytes sane; full inventory is
-    // a probe call away when the engineer needs it.
+    // Keep the full metric inventory for diagnostic-grade branch matching.
+    // The sample remains for compact UI/log previews.
+    annotations['mcp.discovered.metric_names'] = annotationJson(metricNames);
     annotations['mcp.discovered.metric_names_count'] = String(metricNames.length);
     annotations['mcp.discovered.metric_names_sample'] = metricNames.slice(0, 200).join(',');
     markVerified('otel.metrics');
+    markVerified('pipelines.exporters.metrics');
   }
 
   // ---- spec.alerting ----
@@ -753,6 +907,7 @@ export function buildCanonicalPack({
     spec: {
       otel: otelSection,
       telemetry: { backends },
+      ...l2x.sections,
       slis,
       slos,
       pipelines,
@@ -873,22 +1028,22 @@ export const PROBES = [
     name: 'dashboards',
     // grafana_dashboards_search is the canonical otel-mcp-server tool
     // (Grafana skill). The others are legacy / community-MCP names.
-    candidates: ['grafana_dashboards_search', 'grafana_dashboard_get', 'list_dashboards', 'grafana_dashboards', 'grafana_list_dashboards', 'grafana_search_dashboards', 'dashboards_list', 'grafana_search'],
+    candidates: [
+      { name: 'grafana_dashboards_search', args: { type: 'dash-db', limit: GRAFANA_DASHBOARD_SEARCH_LIMIT } },
+      'grafana_dashboard_get',
+      'list_dashboards',
+      'grafana_dashboards',
+      'grafana_list_dashboards',
+      'grafana_search_dashboards',
+      'dashboards_list',
+      'grafana_search',
+    ],
     target: 'spec.dashboards',
     adapt: (response) => {
       // otel-mcp-server's grafana_dashboards_search returns:
       //   { count: <n>, results: [{ id, uid, title, type:'dash-db'|'dash-folder', url, uri, tags, folderUid?, folderTitle? }] }
       // Generic shapes also supported: bare array, {dashboards}, {items}.
-      const list = Array.isArray(response) ? response
-        : (response?.results || response?.dashboards || response?.items || []);
-      return list
-        .filter(d => (d.type ? d.type === 'dash-db' : true))
-        .map(d => ({
-          id: String(d.uid || d.id || d.title || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || `dash-${(d.uid || d.id || 'x').toString().slice(0, 6)}`,
-          provider: { kind: 'grafana', version: '12.0', schemaVersion: 41 },
-          folder: d.folderTitle || d.folder || 'mcp-discovered',
-          source: d.url ? `grafana://${d.url}` : `grafana://uid/${d.uid || d.id}`,
-        }));
+      return grafanaDashboardSearchItems(response).map(dashboardFromSearchItem);
     },
   },
   {
@@ -962,7 +1117,7 @@ export const PROBES = [
 
 export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   if (!mcpUrl) throw new Error('fetchMcp: mcpUrl required');
-  const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth });
+  const { rpc, notify, callTool } = createMcpClient({ mcpUrl, mcpAuth });
   const errors = {};
   const safe = async (name, fn) => {
     try { return await fn(); } catch (e) { errors[name] = e.message; return null; }
@@ -1003,11 +1158,12 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     }
   };
 
-  await rpc('initialize', {
+  const initialized = await rpc('initialize', {
     protocolVersion: '2025-06-18',
     capabilities: {},
     clientInfo: { name: 'tomograph-fetcher', version: '0.3.0' },
-  }).catch(() => {});
+  }).then(() => true).catch(() => false);
+  if (initialized) await notify('notifications/initialized').catch(() => {});
 
   // Discover what the MCP actually exposes via tools/list. This is the
   // foundation for honest probing — instead of guessing candidate tool
@@ -1152,6 +1308,55 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
       outcome: 'failed',
     };
   }));
+
+  // Dashboard search only returns the catalogue row. For diagnostic-grade
+  // drift we need the artifact body too: variables, panels, targets, and the
+  // raw sanitized Grafana JSON when the MCP exposes it. Enrich the winning
+  // dashboard probe with one grafana_dashboard_get call per UID.
+  if (
+    probeResults.dashboards?.tool === 'grafana_dashboards_search' &&
+    discoveredToolNames.has('grafana_dashboard_get')
+  ) {
+    const searchResponse = await cachedCall('grafana_dashboards_search', {
+      type: 'dash-db',
+      limit: GRAFANA_DASHBOARD_SEARCH_LIMIT,
+    });
+    const searchItems = grafanaDashboardSearchItems(searchResponse);
+    const detailed = [];
+    const detailErrors = [];
+    for (const item of searchItems) {
+      const uid = item.uid || item.id;
+      if (!uid) {
+        detailed.push(dashboardFromSearchItem(item));
+        continue;
+      }
+      const detail = await cachedCall('grafana_dashboard_get', {
+        uid,
+        include_json: GRAFANA_DASHBOARD_INCLUDE_JSON,
+        panel_limit: GRAFANA_DASHBOARD_PANEL_LIMIT,
+      });
+      if (detail) {
+        detailed.push(dashboardFromGrafanaDetail(detail, item));
+      } else {
+        detailErrors.push(String(uid));
+        detailed.push(dashboardFromSearchItem(item));
+      }
+    }
+    if (detailed.length) {
+      probeResults.dashboards = {
+        ...probeResults.dashboards,
+        tool: 'grafana_dashboards_search+grafana_dashboard_get',
+        attempted: [
+          ...(probeResults.dashboards.attempted || []),
+          'grafana_dashboard_get',
+        ].filter((v, i, a) => a.indexOf(v) === i),
+        adapted: detailed,
+        rawSize: JSON.stringify(detailed).length,
+        outcome: 'data',
+        detailErrors,
+      };
+    }
+  }
 
   // ----------------------------------------------------------------
   // Version probes — authoritative live version capture.
@@ -1361,7 +1566,7 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   // canonical pack.
   const allMatchedNames = new Set(
     Object.values(probeResults)
-      .map(r => r.tool)
+      .flatMap(r => String(r?.tool || '').split('+'))
       .filter(Boolean)
       .concat(['system_health', 'system_topology', 'anomalies_active', 'anomalies_baselines'])
   );

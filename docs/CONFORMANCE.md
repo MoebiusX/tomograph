@@ -3,12 +3,12 @@
 The conformance scorer (`tools/lib/conformance.mjs`) evaluates a canonical
 pack against a hand-curated subset of the maturity rubric from
 [spec §5 + §7](../vendor/observability-pack-spec/v1.2/spec.md). The studio
-exposes the scoring as the **CONF** tab and via
+exposes the scoring under **Advanced -> Conformance** and via
 `GET /api/packs/:id/conformance?env=<name>`.
 
 ## Rubric
 
-29 clauses across L1–L5. Each clause is `{ id, dimension, severity, minTier, description, specRef, evaluate }`:
+30 clauses across L1–L5 plus L2X. Each clause is `{ id, dimension, severity, minTier, description, specRef, evaluate }`:
 
 - `severity`: `MUST` (weight 1) or `SHOULD` (weight 0.5).
 - `minTier`: the least-stringent tier at which the clause applies. Rank `tier-3 < tier-2 < tier-1`. A clause with `minTier: tier-3` applies to every pack; one with `minTier: tier-1` only applies to tier-1 packs.
@@ -34,6 +34,7 @@ The rubric is intentionally **content-focused** — schema-enforced rules (e.g. 
 | `L2.MUST.logs_and_traces_exporters` | L2 | MUST | tier-1 | §5.2 |
 | `L2.MUST.tail_sampling` | L2 | MUST | tier-1 | §5.2 |
 | `L2.SHOULD.backend_gating_enforce` | L2 | SHOULD | tier-1 | §5.12.3 |
+| `L2X.MUST.extended_backend_refs_resolve` | L2X | MUST | tier-3 | §5.12.4 |
 | `L3.MUST.recording_rule_per_slo` | L3 | MUST | tier-3 | §5.5 |
 | `L3.MUST.service_overview_dashboard` | L3 | MUST | tier-3 | §5.6 |
 | `L3.MUST.slo_burn_dashboard` | L3 | MUST | tier-2 | §5.6 |
@@ -66,12 +67,12 @@ conformant     = must.passed === must.total   (per spec §8 definition)
 
 | Pack | Tier | MUST | SHOULD | Conformant |
 |---|---|---|---|---|
-| `demo-skeleton.pack.yaml` | tier-3 | 8/8 (100%) | 0/0 | yes |
-| `production-curated.pack.yaml` | tier-2 | 12/14 (86%) | 0/1 | no — 3 honest gaps |
-| `target-advanced.pack.yaml` | tier-1 | 24/24 (100%) | 5/5 (100%) | yes |
-| `payment-service.pack.yaml` (canonical example) | tier-1 | 20/24 (83%) | 5/5 (100%) | no — 4 orphan SLOs |
+| `demo-skeleton.pack.yaml` | tier-3 | 9/9 (100%) | 0/0 | yes |
+| `production-curated.pack.yaml` | tier-2 | 13/15 (87%) | 0/1 | no — 2 honest gaps |
+| `target-advanced.pack.yaml` | tier-1 | 25/25 (100%) | 5/5 (100%) | yes |
+| `payment-service.pack.yaml` (canonical example) | tier-1 | 21/25 (84%) | 5/5 (100%) | no — 4 orphan SLOs |
 
-The canonical example itself fails 4 MUSTs (`L3.MUST.recording_rule_per_slo`, `L4.MUST.multi_window_burn_rate`, `L5.MUST.tier1_chaos_for_each_slo`, `L5.MUST.tier1_weekly_prod_chaos`) because two of its five SLOs (`api_latency_99_p99_500ms`, `consumer_success_99_95`) aren't covered by a recording rule, burn-rate alert, or chaos experiment. The studio surfaces these as red-X items in the CONF tab — visible drift the spec's own reference example carries.
+The canonical example itself fails 4 MUSTs (`L3.MUST.recording_rule_per_slo`, `L4.MUST.multi_window_burn_rate`, `L5.MUST.tier1_chaos_for_each_slo`, `L5.MUST.tier1_weekly_prod_chaos`) because two of its five SLOs (`api_latency_99_p99_500ms`, `consumer_success_99_95`) aren't covered by a recording rule, burn-rate alert, or chaos experiment. The studio surfaces these as red-X items in Advanced -> Conformance: visible drift the spec's own reference example carries.
 
 ## Extending the rubric
 

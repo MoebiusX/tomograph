@@ -1,138 +1,164 @@
 # MCP Integration
 
-How the studio talks to `otel-mcp-server` (or any MCP-exposing
-observability surface), what the fetcher builds, and how to wire it on a
-cron.
+Tomograph uses MCP for two jobs:
 
-## What the fetcher produces
+1. **Read live production posture** and reconstruct it as an ObservabilityPack.
+2. **Write selected remediation artifacts** back to the observability platform.
 
-`tools/fetch-live-pack.mjs` builds a **canonical ObservabilityPack v1.2
-manifest** from MCP responses, validates it against the vendored schema,
-and writes it as YAML to `examples/production-live.pack.yaml`. The same path
-shows up in the studio's pack catalog (`/api/packs`) under the id
-`production-live`, so a refreshed pack is immediately visible to anyone
-hitting the studio.
+The read path powers Diagnose. The write path powers Remediate.
 
-Phase 4 of the migration consolidated the output. There's no
-`EMIT_FORMAT`, no studio-shape JSON. One file, one format, validated
-before write.
+## Read Path: Live Pack Generation
 
-## What lands as real content
+`tools/fetch-live-pack.mjs` interrogates an MCP endpoint and emits a canonical
+ObservabilityPack v1.2 manifest. By default it writes the ignored local file:
 
-| Pack section | Source from MCP |
+```text
+examples/production-live.pack.yaml
+```
+
+That file is runtime evidence, not a committed fixture. Upload it through the
+studio or generate it locally when you need a live Pack B.
+
+The studio can also call the same flow through `POST /api/draft-from-mcp`.
+Successful drafts are registered in memory and become selectable as Pack B.
+
+```bash
+MCP_URL=https://otel-mcp.example.com/mcp \
+MCP_AUTH=$MCP_CLIENT_KEY \
+npm run fetch-live
+```
+
+## What The Live Pack Contains
+
+The live pack is not just a health summary. It carries the artifacts needed for
+diagnostic-grade drift:
+
+| Area | Live evidence |
 |---|---|
-| `spec.slis` / `spec.slos` | One ratio SLI + 99% / 30d SLO per service discovered by `system_health` |
-| `spec.telemetry.backends` | `metrics-prom` + `logs-elastic` always; `traces-jaeger` marked verified when `system_topology` shows a jaeger edge |
-| `spec.queries.recording_rules` | One per synthesised SLO |
-| `spec.policy.burn_rate_alerts` | `5m/1h@14x SEV1` + `30m/6h@6x SEV2` per SLO |
-| `spec.baselines` | MTTD derived from `anomalies_baselines`' smallest threshold; MTTR from criticality default; `measurement_source: mcp.anomalies_baselines` |
+| Services and topology | discovered services, service graph hints, OTel backend evidence |
+| Metrics | metric inventory and names observed from the live platform |
+| Scrape jobs | Prometheus/VictoriaMetrics scrape evidence |
+| Recording rules | full rule names and expressions where the MCP exposes them |
+| Alert rules | Grafana/Prometheus alerting rules and burn-rate alerts |
+| Dashboards | Grafana dashboard metadata plus dashboard bodies, panels, variables, and targets |
+| Baselines | MTTD/MTTR and anomaly-derived evidence when available |
+| Backend versions | observed platform products and versions |
 
-## What stays minimum-viable
+This is what lets Tomograph compare declared repo artifacts against live
+production artifacts instead of only checking whether a live endpoint responded.
 
-The schema requires all ten spec dimensions (`otel`, `slis`, `slos`,
-`pipelines`, `queries`, `dashboards`, `policy`, `alerting`, `baselines`,
-`validation`). Sections MCP cannot directly attest are populated with
-the leanest stubs that still pass the validator — `otel.semconv` set to
-the floor `1.26.0+`, `pipelines` with otlp receiver + batch processor +
-three exporters, one stub dashboard, one stub SEV1 route.
+## Verification Annotations
 
-The conformance scorer then surfaces what's NOT attested as honest
-missing-MUST findings rather than the fetcher pretending compliance.
-
-## Verification markers
-
-`metadata.annotations` is `{string: string}` per the schema, so per-
-artefact attestation lives as **flat keys**:
+The schema constrains `metadata.annotations` to flat string keys, so MCP
+attestation is stored as annotations:
 
 ```yaml
 metadata:
   annotations:
-    mcp.refreshedAt: "2026-06-06T00:00:00Z"
-    mcp.url: "https://mcp.example.com/observability"
-    mcp.toolsCalled: "system_health,system_topology,anomalies_active,anomalies_baselines"
+    mcp.refreshedAt: "2026-06-09T00:09:14.730Z"
+    mcp.url: "https://otel-mcp.example.com/mcp"
+    mcp.toolsCalled: "system_health,vmalert_rules,grafana_dashboards_search,grafana_dashboard_get,metrics_label_values,metrics_targets"
     mcp.toolsFailed: ""
-    mcp.servicesDiscovered: "svc-checkout,svc-settler,svc-fraud"
-    mcp.baselinesComputed: "2"
-    mcp.activeAnomalies: "1"
+    mcp.probesAttempted: "recording_rules,alert_rules,dashboards,metric_names,scrape_configs"
+    mcp.probesSucceeded: "recording_rules,alert_rules,dashboards,metric_names,scrape_configs"
+    mcp.probesEmpty: ""
+    mcp.probesFailed: ""
 
-    # per-artefact verification — adapter promotes these to source: Verified
-    mcp.verified.otel: "2026-06-06T00:00:00Z"
-    mcp.verified.slis.svc_checkout_availability: "2026-06-06T00:00:00Z"
-    mcp.verified.telemetry.backends.metrics-prom: "2026-06-06T00:00:00Z"
-    mcp.verified.telemetry.backends.traces-jaeger: "2026-06-06T00:00:00Z"
-    mcp.verified.baselines: "2026-06-06T00:00:00Z"
+    mcp.verified.otel: "2026-06-09T00:09:14.730Z"
+    mcp.verified.telemetry.scrape: "2026-06-09T00:09:14.730Z"
+    mcp.verified.queries.recording_rules: "2026-06-09T00:09:14.730Z"
+    mcp.verified.dashboards: "2026-06-09T00:09:14.730Z"
+    mcp.verified.policy.burn_rate_alerts: "2026-06-09T00:09:14.730Z"
 ```
 
-The adapter checks for `mcp.verified.<symbol>` on each artefact's defining symbol and flips its source tag from `Declared` to `Verified` when present.
+The adapter promotes artifacts with matching `mcp.verified.<symbol>` keys to
+`Verified`. The Diagnostic Grade uses these annotations to decide whether a
+fresh live signal exists.
 
-## Configuration
+Dashboard search alone is not enough for diagnostic drift. The fetcher uses
+`grafana_dashboards_search` to find dashboard UIDs, then calls
+`grafana_dashboard_get` for each UID so Tomograph captures panels, variables,
+targets, and sanitized dashboard JSON.
 
-Env vars:
+## Diagnostic Drift Semantics
 
-| Var | Default | Meaning |
-|---|---|---|
-| `MCP_URL` | `https://mcp.example.com/observability` | MCP server endpoint |
-| `OUTPUT` | `examples/production-live.pack.yaml` | Where to write the YAML pack |
-| `MCP_AUTH` | _(none)_ | Bearer token if your MCP requires auth |
-| `PACK_NAME` | `production-live` | `metadata.name` of the produced pack |
+When Pack B is live-like, Diagnose treats the comparison as declared vs live:
+
+| Bucket | Meaning |
+|---|---|
+| Aligned | Same artifact identity and same behavior. |
+| Drifted | Same identity, different behavior. |
+| Declared, not live | Pack A declares it, but Pack B did not confirm it. |
+| Live, not declared | Production has it, but Pack A does not declare it. |
+| Out of scope | Live platform inventory from families Pack A does not participate in. |
+
+The Diagnostic Grade passes when the total score is greater than 85%. Drift is
+still rendered as evidence and usually becomes the Remediate plan.
+
+## Write Path: Deploy Through MCP
+
+The Remediate deploy flow compiles selected pack artifacts and sends them to an
+MCP write target. For Grafana, Tomograph uses:
+
+| Tomograph artifact | MCP tool |
+|---|---|
+| Grafana-managed recording rules | `grafana_create_alert_rule` |
+| Grafana-managed alerting rules | `grafana_create_alert_rule` |
+| Grafana dashboards | `grafana_create_dashboard` |
+
+Prometheus, Alertmanager, and OTel Collector compile outputs remain available
+for download even when no write tool is configured.
+
+## Required Server Configuration For Writes
+
+Writes are intentionally explicit. The Grafana token belongs on the MCP server,
+not in the browser.
 
 ```bash
-MCP_URL=https://otel-mcp.internal/mcp \
-MCP_AUTH=$MCP_TOKEN \
-node tools/fetch-live-pack.mjs
+MCP_ENABLE_WRITES=true
+GRAFANA_URL=https://grafana.example.net
+GRAFANA_AUTH_TOKEN=glsa_...
+MCP_AUTH_KEYS='{"keys":[{"id":"tomograph","key":"sk-tomograph-prod"}]}'
 ```
 
-## MCP tools the fetcher uses
+The Tomograph deploy modal receives the MCP client key, for example:
 
-| Tool | Used for |
+```text
+sk-tomograph-prod
+```
+
+Grafana permissions:
+
+| Operation | Required permission |
 |---|---|
-| `system_health` | discovered services → `metadata.bindings.service`, per-service SLIs, OTel + metrics-prom backend verification |
-| `system_topology` | jaeger backend verification (if topology shows a jaeger edge) |
-| `anomalies_active` | `mcp.activeAnomalies` annotation count |
-| `anomalies_baselines` | derives `spec.baselines.mttd_target_p50` from smallest threshold; marks `baselines` verified |
+| Managed rule write | `alert.provisioning:write` |
+| Dashboard write | `dashboards:write` |
+| Folder management | `folders:write` |
 
-Optional ZK tools (`zk_stats`, `zk_solvency`) are no longer probed — Phase 4 dropped them with the rest of the studio-shape baggage.
+## Deploy Safety Rules
 
-## Cron / CI
+- Deploy only source-backed artifacts by default.
+- Treat inferred artifacts as guidance unless the compiler materialized them
+  from a source-backed contract.
+- Prefer scoped deltas over full regeneration for dry runs.
+- Re-run live generation after deploy and compare again.
+- Never store Grafana service-account tokens in the browser or pack.
 
-The included workflow runs every 15 minutes:
+## Useful Endpoints
 
-```yaml
-# .github/workflows/refresh-live-pack.yml
-on:
-  schedule:
-    - cron: '*/15 * * * *'
-  workflow_dispatch:
-  push:
-    paths:
-      - tools/fetch-live-pack.mjs
-      - tools/lib/adapter.mjs
-      - tools/lib/mini-yaml.mjs
-      - tools/lib/validator.mjs
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/draft-from-mcp` | Generate and register a live pack from MCP |
+| `GET` | `/api/packs/:id/compile-catalog` | Enumerate deployable compile items |
+| `GET` | `/api/packs/:id/compile-artifact` | Compile one selected artifact |
+| `POST` | `/api/packs/:id/deploy-bulk` | Deploy selected artifacts |
+| `POST` | `/api/packs/:id/deploy/:target` | Deploy one compiled target |
 
-jobs:
-  refresh:
-    steps:
-      - name: Fetch live pack from MCP
-        env:
-          MCP_URL:  ${{ secrets.MCP_URL }}
-          MCP_AUTH: ${{ secrets.MCP_AUTH }}
-          OUTPUT:   examples/production-live.pack.yaml
-        run: node tools/fetch-live-pack.mjs
+## Offline Test
 
-      - name: Commit if changed
-        run: |
-          git add examples/production-live.pack.yaml
-          git rm --ignore-unmatch packs/production-live.json packs/production-live.pack.yaml   # legacy cleanup
-          if git diff --quiet --cached; then echo "no changes"
-          else
-            git commit -m "chore(live): refresh $(date -u +%FT%TZ)"
-            git push
-          fi
+```bash
+npm run test:fetch
 ```
 
-Configure `MCP_URL` and (optionally) `MCP_AUTH` as repo secrets.
-
-## Offline test
-
-`tools/test-fetch-live.mjs` exercises the pack builder with two synthetic MCP scenarios — rich (services + topology + baselines) and empty (zero services, partial tool failures). Asserts schema validation, MCP annotations, verification markers, adapter integration, and YAML round-trip. Run as `npm run test:fetch`.
+The test suite exercises rich and partial MCP responses, validates the emitted
+pack, checks verification markers, and confirms adapter integration.

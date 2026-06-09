@@ -1,174 +1,234 @@
 # User Journey
 
-Tomograph has one canonical flow. Keep design changes faithful to it.
-When in doubt, read this doc and the journey will tell you whether
-your change makes the path shorter or longer.
+Tomograph has one product journey:
 
-## North-star flow
-
-```
-                            ┌──────────────────────────────┐
-                            │           OPEN APP           │
-                            │  (or click the brand logo)   │
-                            └──────────────┬───────────────┘
-                                           │
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │             HOME             │
-                            │   single drop-zone affordance │
-                            │   "Drop a pack to begin."     │
-                            └──────────────┬───────────────┘
-                                           │
-                  ┌────────────────────────┼────────────────────────┐
-                  │                        │                        │
-            drop a YAML/JSON         crawl a repo            draft from MCP
-            (or pick from disk)    (npm run crawl)          (POST MCP URL)
-                  │                        │                        │
-                  └────────────────────────┼────────────────────────┘
-                                           │
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │      POST /api/validate      │
-                            │   schema → adapter → score   │
-                            │   registers canonical with    │
-                            │   deterministic content id    │
-                            └──────────────┬───────────────┘
-                                           │
-                                  ok? selectedPackId
-                                  set to registered.id
-                                           │
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │     SINGLE-PACK STUDIO       │
-                            │                              │
-                            │  Layers      browse L1..GOV  │
-                            │  Conformance score vs rubric │
-                            │  Compile     →  Prometheus  │
-                            │              →  Grafana     │
-                            │              →  OTel        │
-                            │              →  Alertmanager │
-                            │  Schema      maturity view   │
-                            │                              │
-                            │  header carries Pack A + Env │
-                            │  pickers (always visible)    │
-                            │                              │
-                            │  Pack B picker also visible  │
-                            │  — empty until used          │
-                            └──────────────┬───────────────┘
-                                           │
-                                user picks a Pack B
-                                from the header
-                                           │
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │       AUTO-SWITCH TO         │
-                            │       COMPARE VIEW           │
-                            │                              │
-                            │   (header pickers hide —     │
-                            │    pack cards inside the     │
-                            │    compare view carry their  │
-                            │    own pickers + swap btn)   │
-                            └──────────────┬───────────────┘
-                                           │
-                                           ▼
-                            ┌──────────────────────────────┐
-                            │     COMPARE / TRACEABILITY   │
-                            │     / ATLAS                  │
-                            │                              │
-                            │  Compare     side-by-side    │
-                            │              per-layer diff  │
-                            │  Traceability                │
-                            │              aligned /       │
-                            │              declared-not-   │
-                            │              verified /      │
-                            │              verified-not-   │
-                            │              declared /      │
-                            │              stale           │
-                            │  Atlas       6 visual variants│
-                            │              (strata,        │
-                            │               periodic,      │
-                            │               constellation, │
-                            │               skyline,       │
-                            │               transit, arbor)│
-                            │                              │
-                            │  Conformance + Compile stay  │
-                            │  available; A|B focus toggle │
-                            │  on the view-nav lets the    │
-                            │  user score / compile either │
-                            │  side without losing context │
-                            └──────────────────────────────┘
+```text
+Discover -> Diagnose -> Remediate
 ```
 
-## Invariants the journey relies on
+The journey is not a marketing funnel and not a dashboard catalogue. It is a
+diagnostic workflow for one question:
 
-1. **Empty start.** Nothing is preloaded. No bundled examples on the
-   home screen. The user supplies their own pack as the first
-   meaningful action.
+> Is this service's observability diagnostic-grade?
 
-2. **One affordance per surface.** Home: one drop-zone, three input
-   methods. Single-pack views: header pickers, period. Compare view:
-   inline pack-card pickers, period. **Never** show the same control
-   twice — the duplication of header + inline pickers on Compare was
-   the bug that motivated this document.
+Design and implementation decisions must shorten the path from raw inputs to
+that answer.
 
-3. **Picking Pack B is the user saying "compare".** It auto-switches
-   to the Compare view. Don't make the user click a separate "Compare"
-   nav button. (Exception: if the user explicitly chose Atlas or
-   Traceability between B-changes, respect that — they're already on
-   a cross-pack view.)
+## The Three Questions
 
-4. **State persists across reloads.** localStorage carries pack ids,
-   the active view, layer filter, focus side, and trace-finding
-   preferences. Server restart clears uploads (in-memory); rehydrate
-   gracefully drops unknown ids and falls back to home.
+| Step | User question | Product answer |
+|---|---|---|
+| Discover | What do we have? | Render the observability tomogram from a repo, live scan, or pack. |
+| Diagnose | Can we trust it? | Score coverage and trust; show declared-vs-live drift. |
+| Remediate | How do we fix it? | Compile and deploy the source-backed delta. |
 
-5. **Uploaded / crawled / drafted packs are first-class.** Same
-   `/api/packs/:id/*` surface as catalog packs. Deterministic content
-   hash gives them stable ids across restarts and engineers. The
-   only thing they don't survive is process restart of the server
-   (in-memory only).
+The primary chrome uses these questions directly:
 
-## When you make a change
+1. **Discover - What Do We Have?**
+2. **Diagnose - Can We Trust It?**
+3. **Remediate - Fix The Gaps**
 
-Ask:
+Advanced views exist, but they are not the core journey. They support expert
+analysis: References, Conformance, Schema, OTLP Coverage, Traceability, Atlas.
 
-- Does this **shorten** the path from "open app" to "see useful data"?
-- Does it add a **decision the user doesn't need to make**?
-- Does it **duplicate** an existing control?
-- Does it **preserve state** the user spent effort to create?
-- Does it **show what's on-screen** (single-pack views show Pack A
-  metadata; Compare shows both)?
+## OLA And Observability Contract
 
-If any of those answers is wrong, the change is fighting the journey.
+The OLA is the service's observability intent. Tomograph represents that intent
+as a canonical ObservabilityPack:
 
-## What lives where on screen
+- criticality and ownership
+- SLOs and SLIs
+- telemetry and backend bindings
+- recording rules and dashboards
+- alerts, routes, and remediations
+- validation evidence and freshness expectations
 
-| Region                | Single-pack views                  | Compare view                            |
-|-----------------------|-------------------------------------|------------------------------------------|
-| Header brand + logo   | always                              | always                                   |
-| Pack A picker         | visible in header                   | hidden — moved into the compare pack card|
-| Env A picker          | visible in header                   | hidden — moved into the compare pack card|
-| Pack B picker         | visible in header (empty)           | hidden — moved into the compare pack card|
-| Env B picker          | visible in header (after B loaded)  | hidden — moved into the compare pack card|
-| Metadata strip        | always                              | always                                   |
-| View nav              | Layers · Conformance · Compile · Schema | + Compare · Traceability · Atlas       |
-| Layer filter chips    | only on Layers view                 | only on Layers view                      |
-| A \| B focus toggle   | on Conformance / Compile / Schema   | (hidden — Compare shows both sides)      |
+During the main dry-run flow, Pack A is the declared contract from the service
+repo and Pack B is the verified live state from MCP. Diagnose answers whether
+the live production posture satisfies the declared contract well enough to be
+diagnostic-grade.
 
-## Things the journey is NOT
+## North-Star Flow
 
-- It is **not** a "select your tier" first-screen. The home doesn't
-  ask "are you a tier-1 platform team?"
-- It is **not** a marketplace of bundled examples. Examples exist for
-  the regression suite + as Pack B comparison targets; they don't
-  surface as a recommended starting point on home.
-- It is **not** a two-track "Analyze a single pack vs Compare two
-  packs" decision tree. There's one track: open a pack, work on it,
-  add Pack B when you want comparison.
+```text
+Open app
+  |
+  v
+Discover
+  |
+  |-- scan a service repo
+  |-- generate from a live MCP endpoint
+  |-- upload a YAML/JSON pack
+  v
+Pack A loaded: declared observability posture
+  |
+  v
+Load Pack B: live production posture
+  |
+  v
+Diagnose
+  |
+  |-- Diagnostic Grade
+  |-- Coverage criteria
+  |-- Trust criteria
+  |-- Drift drill
+  |-- Traceability chains
+  v
+Remediate
+  |
+  |-- A minus B delta
+  |-- deployable source-backed artifacts
+  |-- manual follow-up items
+  |-- compile selected artifacts
+  |-- deploy through MCP write tools
+  v
+Re-run live scan and compare again
+```
 
-## See also
+## Diagnostic Grade Contract
 
-- [`docs/MODEL.md`](MODEL.md) — pointer to the canonical ObservabilityPack spec v1.2
-- [`docs/ADAPTER.md`](ADAPTER.md) — how canonical → layered display projection works
-- [`docs/CONFORMANCE.md`](CONFORMANCE.md) — how the maturity rubric scores
-- [`docs/MCP_INTEGRATION.md`](MCP_INTEGRATION.md) — the live-fetcher wire details
+The Diagnostic Grade is the top-level answer. It is scored from eight criteria:
+
+### Coverage - Are We Observing The Right Things?
+
+1. **Multi-modal** - metrics, logs, traces, or profiles cover the service.
+2. **Correlated** - telemetry can be joined through trace context or log
+   correlation.
+3. **Calibrated** - SLOs have numeric objectives and baselines exist.
+4. **Comprehensive** - coverage spans the major service layers.
+5. **Actionable** - alerts lead to a runbook or remediation path.
+
+### Trust - Can We Trust What The Signals Show?
+
+6. **Chaos-validated** - recovery has fault-injection evidence.
+7. **Drift-free** - declared artifacts match live state.
+8. **Fresh** - the live signal was verified recently.
+
+The displayed verdict is:
+
+```text
+PASS when score > 85%
+FAIL otherwise
+```
+
+Failed criteria still render as evidence. A score can pass while drift remains
+visible. That is intentional: the grade answers whether the posture is
+diagnostic-grade overall; the drill-down tells the team what to fix next.
+
+## Pack Roles
+
+| Role | Meaning |
+|---|---|
+| Pack A | The declared posture, usually generated from the service repo. |
+| Pack B | The verified/live posture, usually generated from MCP. |
+| Reference pack | A curated target posture used for benchmarking, not the default dry-run path. |
+
+The dry-run path is **repo vs live**, not repo vs aspirational reference.
+
+## Required UI Invariants
+
+1. **The first screen must be useful.** Discover is the entry point and must let
+   a user create or load a pack immediately.
+
+2. **The three primary tabs are the workflow.** Do not add another first-class
+   navigation layer that competes with Discover, Diagnose, Remediate.
+
+3. **Pack identity must be explicit.** Uploaded/crawled/drafted pack selectors
+   must show enough source context to prevent stale or typo uploads from being
+   mistaken for the dry-run input.
+
+4. **Pack B means comparison.** When a live pack is loaded as Pack B, Diagnose
+   must be able to answer repo-vs-live drift without another conceptual mode.
+
+5. **Diagnostic heading stays focused.** The heading is `DIAGNOSTIC GRADE`
+   plus PASS/FAIL. The live target belongs in the drift section, not in the
+   grade title.
+
+6. **Drift remains evidence, not decoration.** Declared-not-live, drifted, and
+   live-only signals must stay visible even when the overall grade passes.
+
+7. **Remediate separates deployable from manual.** Source-backed artifacts may
+   be selected for deploy. Inferred guidance must be labelled and kept out of
+   default deploy selections.
+
+8. **State must not create false confidence.** Persisted local state is useful,
+   but reset and source labels must make stale comparisons easy to clear.
+
+## What Belongs In Each Step
+
+### Discover
+
+Belongs here:
+
+- repo scan
+- live MCP generation
+- YAML/JSON upload
+- pack catalog selection
+- layered artifact inventory
+- source metadata and crawler summary
+
+Does not belong here:
+
+- final diagnostic verdict
+- deploy actions
+- benchmark marketing copy
+
+### Diagnose
+
+Belongs here:
+
+- Diagnostic Grade
+- score, coverage, trust, verified status
+- evidence table
+- drift drill
+- traceability to explain why an artifact matters
+- comparison and atlas analysis as advanced diagnostics
+
+Does not belong here:
+
+- deploy submission
+- compile output as the main surface
+- unrelated reference browsing
+
+### Remediate
+
+Belongs here:
+
+- A minus B delta
+- deployable rows
+- manual follow-up rows
+- compile preview
+- deploy modal
+- validation status
+- rollback/dry-run affordances
+
+Does not belong here:
+
+- hiding drift because the grade passed
+- deploying artifacts without provenance
+- forcing all artifacts through the same deploy path
+
+## Dry-Run Golden Path
+
+For the Krystaline dry run:
+
+1. Clear stale uploads if needed.
+2. Load the supplied `krystaline.service.repo.yaml` repo pack as Pack A.
+3. Load the generated or supplied `production-live.pack.yaml` as Pack B.
+4. Open Diagnose.
+5. Confirm Diagnostic Grade renders PASS when score is greater than 85%.
+6. Explain remaining drift from the drill-down.
+7. Open Traceability for SLO-to-artifact evidence.
+8. Open Remediate.
+9. Compile the settlement latency remediation artifacts.
+10. Deploy only when the MCP write target and token are ready.
+11. Re-run live generation and compare again.
+
+See [`DRY_RUN.md`](DRY_RUN.md) for the executable checklist.
+
+## See Also
+
+- [`DIFF.md`](DIFF.md) - structural drift model
+- [`MCP_INTEGRATION.md`](MCP_INTEGRATION.md) - live scan and write-back path
+- [`CONFORMANCE.md`](CONFORMANCE.md) - maturity rubric scoring
+- [`USER_STORY_CRAWLER_PROVENANCE.md`](USER_STORY_CRAWLER_PROVENANCE.md) - provenance for deployable artifacts

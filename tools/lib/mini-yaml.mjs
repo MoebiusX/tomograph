@@ -12,6 +12,7 @@
 //   - Flow mappings: `{k: v, k2: v2}`
 //   - Flow sequences: `[a, b, c]`
 //   - Literal block scalars: `|` (preserves newlines, strips common indent)
+//   - Folded block scalars: `>` (folds paragraphs, strips common indent)
 //   - Single- and double-quoted scalars
 //   - Bare scalars: integers, floats, booleans, null, plain strings
 //   - Full-line comments (`# ...`) and trailing comments
@@ -20,7 +21,6 @@
 //
 // INTENTIONAL NON-GOALS (not used in canonical packs we care about)
 //   - YAML anchors / aliases (& / *)
-//   - Folded block scalars `>`
 //   - Block chomping indicators (`|+`, `|-`)
 //   - Tag handles (`!!str`)
 //   - Complex keys (`? key`)
@@ -209,8 +209,8 @@ function parseBlockMapping(stream, indent) {
           out[key] = null;
         }
       }
-    } else if (rest === '|') {
-      out[key] = readLiteralBlockScalar(stream, indent);
+    } else if (isBlockScalarHead(rest)) {
+      out[key] = readBlockScalar(stream, indent, rest[0]);
     } else {
       out[key] = parseValue(rest);
     }
@@ -245,8 +245,8 @@ function parseBlockSequence(stream, indent) {
           arr.push(parseBlockMapping(stream, childIndent));
         }
       }
-    } else if (inline === '|') {
-      arr.push(readLiteralBlockScalar(stream, indent));
+    } else if (isBlockScalarHead(inline)) {
+      arr.push(readBlockScalar(stream, indent, inline[0]));
     } else if (looksLikeMappingHead(inline)) {
       // Compact sequence-of-mappings: first key inline, rest of the mapping
       // at indent + 2 (YAML standard: continuation indents past `- `).
@@ -255,9 +255,9 @@ function parseBlockSequence(stream, indent) {
       const firstColon = findMappingColon(inline);
       const firstKey = unquote(inline.slice(0, firstColon).trim());
       const firstRest = inline.slice(firstColon + 1).trim();
-      if (firstRest === '|') {
-        // `- key: |` — literal block scalar value living below itemIndent.
-        item[firstKey] = readLiteralBlockScalar(stream, itemIndent);
+      if (isBlockScalarHead(firstRest)) {
+        // `- key: |` / `- key: >` — block scalar value below itemIndent.
+        item[firstKey] = readBlockScalar(stream, itemIndent, firstRest[0]);
       } else if (firstRest === '') {
         // `- key:` — the first key carries a nested block (mapping/sequence)
         // at a deeper indent, e.g.
@@ -296,10 +296,14 @@ function parseBlockSequence(stream, indent) {
   return arr;
 }
 
-// Collect lines strictly more indented than `parentIndent`, preserve their
-// content with the leading common indent stripped, join with `\n`. Trailing
-// blank lines are dropped; a final newline is appended.
-function readLiteralBlockScalar(stream, parentIndent) {
+function isBlockScalarHead(s) {
+  return /^[|>][-+]?/.test(s);
+}
+
+// Collect lines strictly more indented than `parentIndent`, preserving their
+// content with the leading common indent stripped. Trailing blank lines are
+// dropped; callers decide whether to preserve or fold line breaks.
+function readBlockScalarLines(stream, parentIndent) {
   const collected = [];
   let blockIndent = null;
   while (stream.hasMore()) {
@@ -317,7 +321,33 @@ function readLiteralBlockScalar(stream, parentIndent) {
     stream.idx++;
   }
   while (collected.length && collected[collected.length - 1] === '') collected.pop();
+  return collected;
+}
+
+function readBlockScalar(stream, parentIndent, style) {
+  const collected = readBlockScalarLines(stream, parentIndent);
+  if (style === '>') return foldBlockScalarLines(collected);
   return collected.join('\n') + '\n';
+}
+
+function foldBlockScalarLines(lines) {
+  const chunks = [];
+  let paragraph = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    chunks.push(paragraph.join(' '));
+    paragraph = [];
+  };
+  for (const line of lines) {
+    if (line === '') {
+      flushParagraph();
+      chunks.push('');
+      continue;
+    }
+    paragraph.push(line);
+  }
+  flushParagraph();
+  return chunks.join('\n') + '\n';
 }
 
 // Parse a scalar / flow value.
@@ -382,6 +412,8 @@ function parseFlowSequence(s) {
 // booleans / null. Compact (no empty containers as inline `{}`/`[]`).
 // ============================================================
 
+const BLOCK_SCALAR_LENGTH = 4096;
+
 export function emit(value, opts = {}) {
   const indent = opts.indent || 2;
   const out = emitValue(value, 0, indent, true);
@@ -406,9 +438,13 @@ function emitScalarString(s) {
   // Multi-line: use a literal block scalar. Caller handles placement.
   // We tag the result with a sentinel `__BLOCK__` so the parent renderer
   // knows to format it correctly. (Single-line emission shouldn't see this.)
-  if (s.includes('\n')) return '__BLOCK__:' + s;
+  if (shouldEmitBlockScalarString(s)) return '__BLOCK__:' + s;
   if (needsQuoting(s)) return JSON.stringify(s); // double-quoted with JSON escapes
   return s;
+}
+
+function shouldEmitBlockScalarString(s) {
+  return s.includes('\n') || s.length > BLOCK_SCALAR_LENGTH;
 }
 
 function needsQuoting(s) {
@@ -452,7 +488,7 @@ function emitMapping(obj, depth, indent, topLevel) {
       lines.push(emitMapping(v, depth + 1, indent));
       continue;
     }
-    if (typeof v === 'string' && v.includes('\n')) {
+    if (typeof v === 'string' && shouldEmitBlockScalarString(v)) {
       lines.push(`${pad}${key}: |`);
       // strip trailing single newline so block content doesn't double-up
       const content = v.replace(/\n$/, '');
@@ -489,7 +525,7 @@ function emitSequence(arr, depth, indent) {
       const firstIsComplex =
         (Array.isArray(firstVal) && firstVal.length > 0) ||
         (firstVal !== null && typeof firstVal === 'object' && Object.keys(firstVal).length > 0) ||
-        (typeof firstVal === 'string' && firstVal.includes('\n'));
+        (typeof firstVal === 'string' && shouldEmitBlockScalarString(firstVal));
       if (firstIsComplex) {
         lines.push(`${pad}-`);
         lines.push(emitMapping(item, depth + 1, indent));
@@ -502,7 +538,7 @@ function emitSequence(arr, depth, indent) {
       for (let i = 1; i < mapLines.length; i++) lines.push(mapLines[i]);
       continue;
     }
-    if (typeof item === 'string' && item.includes('\n')) {
+    if (typeof item === 'string' && shouldEmitBlockScalarString(item)) {
       lines.push(`${pad}- |`);
       const content = item.replace(/\n$/, '');
       const childPad = ' '.repeat((depth + 1) * indent);

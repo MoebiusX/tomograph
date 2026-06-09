@@ -4,8 +4,8 @@
 // Walks a service repository and emits a draft canonical
 // ObservabilityPack v1.2 manifest by introspecting common
 // observability artefacts: docker-compose backends, Prometheus
-// rules, Alertmanager configs, OTel Collector pipelines, and
-// Grafana dashboard JSONs.
+// rules, Alertmanager configs, OTel Collector pipelines, Grafana
+// dashboard JSONs, Helm values/templates, and Kubernetes workloads.
 //
 // The library is pure — it accepts an in-memory file map so the
 // CLI (which reads from disk) and the server endpoint (which
@@ -22,7 +22,10 @@
 // ============================================================
 
 import { parse as parseYaml, parseAll as parseYamlAll, emit as emitYaml } from './mini-yaml.mjs';
-import { inferSlisFromRecordingRules, ruleNameToSloId } from './sli-inference.mjs';
+import { inferSlisFromRecordingRules, ruleNameToSliId, ruleNameToSloId } from './sli-inference.mjs';
+import { materializeL2XFromBackends } from './l2x.mjs';
+import { PROMQL_KEYWORDS, extractPromqlMetricNames } from './promql.mjs';
+import { symbolSlug as slug } from './slug.mjs';
 
 // Parse a (possibly multi-document) YAML file into a list of non-null
 // documents. Prometheus rule files, Alertmanager configs and Kubernetes
@@ -50,7 +53,15 @@ const BACKEND_PATTERNS = [
   { match: /^thanos\/|thanos:|quay\.io\/thanos/i,                         product: 'thanos',                  signal: 'metrics' },
   { match: /^prom\/alertmanager|alertmanager:|prometheus-community.*alertmanager/i, product: 'alertmanager',  signal: 'alerting' },
   { match: /^pyroscope|grafana\/pyroscope/i,                              product: 'pyroscope',               signal: 'profiles' },
+  { match: /^cilium\/cilium|quay\.io\/cilium\/cilium|cilium:/i,             product: 'cilium',                  signal: 'network' },
+  { match: /^openpolicyagent\/opa|^opa:/i,                                  product: 'opa',                     signal: 'policy' },
+  { match: /^envoyproxy\/envoy|^envoy:/i,                                   product: 'envoy',                   signal: 'mesh' },
+  { match: /^consul:|^hashicorp\/consul/i,                                  product: 'consul',                  signal: 'mesh' },
+  { match: /^kong:|^kong\/kong/i,                                           product: 'kong',                    signal: 'gateway' },
+  { match: /^traefik:|^traefik\/traefik/i,                                  product: 'traefik',                 signal: 'gateway' },
   { match: /fluent[-/]?bit|fluent-bit/i,                                  product: 'fluent-bit',              signal: 'logs' },
+  { match: /^grafana\/alloy|^alloy:/i,                                      product: 'alloy',                   signal: 'collection' },
+  { match: /^elastic\/beats|^beats:/i,                                      product: 'beats',                   signal: 'collection' },
   { match: /timberio\/vector|vector:/i,                                   product: 'vector',                  signal: 'collection' },
   // Additional common production stacks
   { match: /victoriametrics\/victoria-metrics|victoriametrics\/vmselect|victoriametrics\/vminsert|victoriametrics\/vmstorage|victoriametrics\/vmagent/i,
@@ -74,6 +85,8 @@ const K8S_WORKLOAD_KINDS = new Set([
   'ReplicationController', 'Pod', 'Job', 'CronJob',
 ]);
 
+const METRIC_SOURCE_EXT_RE = /\.(?:cjs|mjs|js|jsx|ts|tsx|py|go|java|kt|rs|cs)$/i;
+
 // Match an image reference (`repository[:tag]`) against the known backend
 // catalog and register it on the backends bucket. Shared by the Helm values,
 // Helm template, and plain-K8s workload walkers. When `dedupeByProduct` is set
@@ -81,7 +94,7 @@ const K8S_WORKLOAD_KINDS = new Set([
 // and per-environment values files), an existing backend with the same
 // signal+product is treated as already-discovered; the docker-compose walker
 // keeps its historical per-service uniqueness and so does not pass the flag.
-function registerBackendFromImage(image, relPath, backends, evidence, summary, { dedupeByProduct = false } = {}) {
+function registerBackendFromImage(image, relPath, backends, evidence, summary, { dedupeByProduct = false, pipelines = null } = {}) {
   const ref = String(image || '').trim();
   if (!ref) return false;
   const tag = (ref.split(':')[1] || '').trim();
@@ -102,9 +115,18 @@ function registerBackendFromImage(image, relPath, backends, evidence, summary, {
     backends.push(backend);
     evidence[id] = relPath;
     summary.discovered.backends++;
+    registerMetricsExporterFromBackend(p, pipelines, relPath, evidence, summary);
     return true;
   }
   return false;
+}
+
+function registerMetricsExporterFromBackend(pattern, pipelines, relPath, evidence, summary) {
+  if (!pipelines || pattern?.signal !== 'metrics') return;
+  if (pipelines.exporters?.metrics) return;
+  pipelines.exporters.metrics = { kind: 'prometheusremotewrite' };
+  evidence['pipelines.exporters.metrics'] = relPath;
+  summary.discovered.pipelineExporters = (summary.discovered.pipelineExporters || 0) + 1;
 }
 
 // ============================================================
@@ -131,6 +153,11 @@ export function detectArtefactKind(relPath, content) {
     } catch (_) { /* not json */ }
     return 'unknown';
   }
+
+  if (METRIC_SOURCE_EXT_RE.test(lower) && looksLikeMetricSource(content, lower)) {
+    return 'metric-source-code';
+  }
+
   // YAML — could be many things; look at shape.
   if (!/\.ya?ml$/i.test(lower)) return 'unknown';
 
@@ -167,6 +194,9 @@ export function detectArtefactKind(relPath, content) {
       && obj.groups.some(g => g.rules?.some(r => 'record' in r || 'alert' in r))) {
     return 'prometheus-rules';
   }
+  if (Array.isArray(obj.scrape_configs)
+      && obj.scrape_configs.some(s => s?.job_name)) return 'prometheus-scrape-config';
+  if (looksLikeActuatorMetricsConfig(lower, content, obj)) return 'actuator-metrics-config';
   if (obj.route && obj.receivers && Array.isArray(obj.receivers)) return 'alertmanager';
   if (obj.receivers && obj.exporters && obj.service?.pipelines)   return 'otel-collector';
   if (obj.services && typeof obj.services === 'object'
@@ -182,44 +212,232 @@ export function detectArtefactKind(relPath, content) {
   return 'unknown';
 }
 
+function normalizeRepoPath(relPath) {
+  return String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+}
+
+function basenameOf(relPath) {
+  const parts = normalizeRepoPath(relPath).split('/').filter(Boolean);
+  return parts[parts.length - 1] || '';
+}
+
+function hasPathSegment(relPath, segment) {
+  return normalizeRepoPath(relPath).split('/').includes(segment);
+}
+
+function isEksSpecificPath(relPath) {
+  const p = normalizeRepoPath(relPath);
+  const base = basenameOf(p);
+  return /values-?eks/.test(base) || hasPathSegment(p, 'eks');
+}
+
+function isLocalK8sSpecificPath(relPath) {
+  const p = normalizeRepoPath(relPath);
+  const base = basenameOf(p);
+  return /values-?(local|kind|minikube)/.test(base)
+      || /^local[-_.]/.test(base)
+      || hasPathSegment(p, 'local-k8s')
+      || hasPathSegment(p, 'kind')
+      || hasPathSegment(p, 'minikube');
+}
+
+function normalizeEnvironmentProfile(environment) {
+  const raw = String(environment || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
+  if (!raw) return null;
+  if (/^(local-docker|docker|compose|local-dev|dev|development|local)$/.test(raw)) return 'local-docker';
+  if (/^(local-k8s|k8s-local|local-cluster|kind|minikube|kubernetes-local)$/.test(raw)) return 'local-k8s';
+  if (/^(eks|aws-eks)$/.test(raw)) return 'eks';
+  if (/^(prod|production|prd|k8s|kubernetes|helm)$/.test(raw)) return 'prod';
+  return null;
+}
+
+function normalizeDiffScopeMode(value) {
+  const raw = String(value || 'service').trim().toLowerCase().replace(/[\s_]+/g, '-');
+  if (raw === 'family' || raw === 'legacy' || raw === 'off') return 'family';
+  if (raw === 'all' || raw === 'none' || raw === 'strict') return 'all';
+  return 'service';
+}
+
+function detectDeploymentSurfaces(files) {
+  const out = {
+    docker: false,
+    k8s: false,
+    eksSpecific: false,
+    localK8sSpecific: false,
+  };
+  for (const relPath of files.keys()) {
+    const p = normalizeRepoPath(relPath);
+    const base = basenameOf(p);
+    if (/(^|\/)(docker-)?compose\.ya?ml$/.test(p) || /(^|\/)compose\.ya?ml$/.test(p)) {
+      out.docker = true;
+    }
+    if (hasPathSegment(p, 'k8s') || hasPathSegment(p, 'helm') || hasPathSegment(p, 'charts') || base === 'chart.yaml') {
+      out.k8s = true;
+    }
+    if (isEksSpecificPath(p)) {
+      out.eksSpecific = true;
+      out.k8s = true;
+    }
+    if (isLocalK8sSpecificPath(p)) {
+      out.localK8sSpecific = true;
+      out.k8s = true;
+    }
+  }
+  return out;
+}
+
+function isRootDockerConfig(relPath) {
+  const p = normalizeRepoPath(relPath);
+  const base = basenameOf(p);
+  if (/(^|\/)(docker-)?compose\.ya?ml$/.test(p) || /(^|\/)compose\.ya?ml$/.test(p)) return true;
+  if (hasPathSegment(p, 'k8s') || hasPathSegment(p, 'helm') || hasPathSegment(p, 'charts')) return false;
+  if (hasPathSegment(p, 'config')) return true;
+  return /^(prometheus|alertmanager|otel|otelcol|collector|loki|promtail)[\w.-]*\.ya?ml$/.test(base);
+}
+
+function isK8sPath(relPath) {
+  const p = normalizeRepoPath(relPath);
+  const base = basenameOf(p);
+  return hasPathSegment(p, 'k8s')
+      || hasPathSegment(p, 'helm')
+      || hasPathSegment(p, 'charts')
+      || base === 'chart.yaml'
+      || /^values[\w.-]*\.ya?ml$/.test(base);
+}
+
+function isSourceCodePath(relPath) {
+  return METRIC_SOURCE_EXT_RE.test(relPath);
+}
+
+function shouldIncludeForEnvironment(relPath, profile, surfaces) {
+  const p = normalizeRepoPath(relPath);
+  if (isSourceCodePath(p)) return true;
+
+  if (profile === 'local-docker') {
+    if (!surfaces.docker) return true;
+    return isRootDockerConfig(p);
+  }
+
+  if (profile === 'local-k8s') {
+    if (!surfaces.k8s) return true;
+    if (isRootDockerConfig(p) && surfaces.docker) return false;
+    if (isEksSpecificPath(p)) return false;
+    return isK8sPath(p);
+  }
+
+  if (profile === 'prod') {
+    if (!surfaces.k8s) return true;
+    if (isRootDockerConfig(p) && surfaces.docker) return false;
+    if (isLocalK8sSpecificPath(p)) return false;
+    if (isEksSpecificPath(p)) return false;
+    return isK8sPath(p);
+  }
+
+  if (profile === 'eks') {
+    if (!surfaces.k8s) return true;
+    if (isRootDockerConfig(p) && surfaces.docker) return false;
+    if (isLocalK8sSpecificPath(p)) return false;
+    return isK8sPath(p);
+  }
+
+  return true;
+}
+
+function scopeFilesForEnvironment(files, environment) {
+  const profile = normalizeEnvironmentProfile(environment);
+  const surfaces = detectDeploymentSurfaces(files);
+  const result = {
+    files,
+    profile,
+    surfaces,
+    applied: false,
+    excluded: [],
+  };
+  if (!profile) return result;
+
+  const scoped = new Map();
+  for (const [relPath, content] of files) {
+    if (shouldIncludeForEnvironment(relPath, profile, surfaces)) {
+      scoped.set(relPath, content);
+    } else {
+      result.excluded.push(relPath);
+    }
+  }
+
+  if (scoped.size === 0 || scoped.size === files.size) return result;
+  result.files = scoped;
+  result.applied = true;
+  return result;
+}
+
 /**
  * Crawl a map of files and emit a draft canonical pack.
  * @param {Map<string,string>|Record<string,string>} filesInput
  * @param {object} [opts]
  * @param {string} [opts.repoName='crawled-service']  - metadata.name
  * @param {string} [opts.environment='prod']
+ * @param {string} [opts.diffScopeMode='service']      - service | family | all.
  * @param {string} [opts.criticality]                  - 'tier-1'|'tier-2'|'tier-3'. Inferred if omitted.
  * @param {string} [opts.binding='otel-elastic-prometheus-grafana']
  * @param {Array<string>} [opts.owners=['team-platform']]
  * @returns {{canonical: object, summary: object, evidence: Record<string,string>}}
  */
 export function crawlFiles(filesInput, opts = {}) {
-  const files = filesInput instanceof Map
+  const rawFiles = filesInput instanceof Map
     ? filesInput
     : new Map(Object.entries(filesInput));
   const repoName = opts.repoName || 'crawled-service';
   const environment = opts.environment || 'prod';
   const binding = opts.binding || 'otel-elastic-prometheus-grafana';
   const owners = opts.owners || ['team-platform'];
+  const diffScopeMode = normalizeDiffScopeMode(opts.diffScopeMode || opts.diffScope || opts.liveScope);
+  const envScope = scopeFilesForEnvironment(rawFiles, environment);
+  const files = envScope.files;
 
   // ----- per-kind buckets -----
   const summary = {
-    files: { scanned: files.size, classified: 0, byKind: {} },
+    files: {
+      scanned: rawFiles.size,
+      included: files.size,
+      excludedByEnvironment: envScope.excluded.length,
+      classified: 0,
+      byKind: {},
+    },
+    environment: {
+      requested: environment,
+      profile: envScope.profile,
+      scoped: envScope.applied,
+      surfaces: envScope.surfaces,
+      excluded: envScope.excluded.slice(0, 40),
+    },
+    comparison: {
+      diffScopeMode,
+    },
     discovered: {
       backends: 0, recordingRules: 0, burnRateAlerts: 0,
+      metricDefinitions: 0, scrapeJobs: 0,
       pipelines: 0, dashboards: 0, alertingRoutes: 0,
+      extendedSurfaces: 0,
     },
     inferred: { slis: 0, slos: 0, baselines: false, tier: null },
     warnings: [],
+    omitted: { syntheticRecordingRules: [] },
+    scaffold: [],
   };
+  if (envScope.applied) {
+    summary.warnings.push(`Environment scope "${envScope.profile}" excluded ${envScope.excluded.length} file(s) from other deployment surfaces.`);
+  }
   const evidence = {};   // <artefact-id> -> <relPath>
 
   const backends = [];
   const recordingRules = [];
   const burnRateAlerts = [];
+  const metricDefinitions = [];
+  const scrapeJobs = [];
   const dashboards = [];
   const alertingRoutes = [];
   const pipelines = { receivers: [], processors: [], exporters: { metrics: null, logs: null, traces: null } };
+  const scaffoldSymbols = [];
 
   // ----- pass 1: classify -----
   const classified = [];
@@ -231,16 +449,32 @@ export function crawlFiles(filesInput, opts = {}) {
     summary.files.byKind[kind] = (summary.files.byKind[kind] || 0) + 1;
   }
 
+  // Honor Helm `enabled: false`: a component the selected environment disables
+  // must not be declared as a live backend. The toggle often lives in an env
+  // overlay (values-eks) while the image lives in base values.yaml, so merge
+  // `enabled` across the in-scope values files (overlays win) before walking.
+  const disabledComponents = collectDisabledComponents(
+    classified.filter((f) => f.kind === 'helm-values'),
+  );
+  if (disabledComponents.size) {
+    summary.discovered.disabledComponents = [...disabledComponents];
+  }
+
   // ----- pass 2: walk per kind -----
   for (const f of classified) {
     try {
       switch (f.kind) {
-        case 'docker-compose':   walkDockerCompose(f, backends, evidence, summary); break;
-        case 'prometheus-rules': walkPrometheusRules(f, recordingRules, burnRateAlerts, evidence, summary); break;
+        case 'docker-compose':   walkDockerCompose(f, backends, pipelines, evidence, summary); break;
+        case 'prometheus-rules': walkPrometheusRules(f, recordingRules, burnRateAlerts, metricDefinitions, evidence, summary); break;
+        case 'prometheus-scrape-config': walkPrometheusScrapeConfig(f, scrapeJobs, evidence, summary); break;
+        case 'actuator-metrics-config': walkActuatorMetricsConfig(f, scrapeJobs, evidence, summary, repoName); break;
+        case 'metric-source-code': walkMetricSourceCode(f, metricDefinitions, evidence, summary, repoName); break;
         case 'alertmanager':     walkAlertmanager(f, alertingRoutes, evidence, summary); break;
         case 'otel-collector':   walkOtelCollector(f, pipelines, evidence, summary); break;
-        case 'grafana-dashboard':walkGrafanaDashboard(f, dashboards, evidence, summary); break;
-        case 'helm-template':    walkHelmTemplate(f, { backends, recordingRules, burnRateAlerts, alertingRoutes, dashboards, pipelines }, evidence, summary); break;
+        case 'grafana-dashboard':walkGrafanaDashboard(f, dashboards, metricDefinitions, evidence, summary); break;
+        case 'helm-template':    walkHelmTemplate(f, { backends, recordingRules, burnRateAlerts, metricDefinitions, scrapeJobs, alertingRoutes, dashboards, pipelines, repoName }, evidence, summary); break;
+        case 'helm-values':      walkHelmValues(f, backends, pipelines, evidence, summary, disabledComponents); break;
+        case 'k8s-workload':     walkK8sWorkload(f, backends, pipelines, evidence, summary); break;
         // Chart.yaml itself carries no observability contracts — the payloads
         // live in the templated manifests (handled as 'helm-template'). We
         // record the chart only as a signal that this is a Helm-packaged repo.
@@ -374,15 +608,31 @@ export function crawlFiles(filesInput, opts = {}) {
   }
 
   // ----- minimum pipelines -----
-  if (pipelines.receivers.length === 0)  pipelines.receivers = [{ name: 'otlp' }];
-  if (pipelines.processors.length === 0) pipelines.processors = [{ name: 'batch' }];
-  if (!pipelines.exporters.metrics) pipelines.exporters.metrics = { kind: 'prometheusremotewrite' };
-  if (!pipelines.exporters.logs)    pipelines.exporters.logs    = { kind: 'elasticsearch' };
-  if (!pipelines.exporters.traces)  pipelines.exporters.traces  = { kind: 'jaeger' };
+  if (pipelines.receivers.length === 0) {
+    pipelines.receivers = [{ name: 'otlp' }];
+    scaffoldSymbols.push('pipelines.receivers[0]');
+  }
+  if (pipelines.processors.length === 0) {
+    pipelines.processors = [{ name: 'batch' }];
+    scaffoldSymbols.push('pipelines.processors[0]');
+  }
+  if (!pipelines.exporters.metrics) {
+    pipelines.exporters.metrics = { kind: 'prometheusremotewrite' };
+    scaffoldSymbols.push('pipelines.exporters.metrics');
+  }
+  if (!pipelines.exporters.logs) {
+    pipelines.exporters.logs = { kind: 'elasticsearch' };
+    scaffoldSymbols.push('pipelines.exporters.logs');
+  }
+  if (!pipelines.exporters.traces) {
+    pipelines.exporters.traces = { kind: 'jaeger' };
+    scaffoldSymbols.push('pipelines.exporters.traces');
+  }
 
   // ----- minimum alerting routes -----
   if (alertingRoutes.length === 0) {
     alertingRoutes.push({ severity: 'SEV1', channels: [{ msteams: `#${repoName}-oncall` }] });
+    scaffoldSymbols.push('alerting.routes[0]');
     summary.warnings.push('No Alertmanager routes found — emitted stub SEV1 → MS Teams route.');
   }
 
@@ -394,6 +644,7 @@ export function crawlFiles(filesInput, opts = {}) {
       folder: repoName,
       source: `file://dashboards/${repoName}-overview.json`,
     });
+    scaffoldSymbols.push(`dashboards.${repoName}-overview`);
     summary.warnings.push('No Grafana dashboards found — emitted stub service-overview pointer.');
   }
 
@@ -403,20 +654,28 @@ export function crawlFiles(filesInput, opts = {}) {
     mttr_target_p50: '1d',
     review_cadence: 'monthly',
   };
+  scaffoldSymbols.push('baselines');
   summary.inferred.baselines = true;
 
-  // ----- recording rule per SLO (spec rubric requires this) -----
-  // Recording rule names must match ^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*:[a-z0-9_]+$
-  // (Prometheus convention: namespace:metric:operation). Slug the repo
-  // name so hyphens and uppercase don't break the pattern.
+  // ----- source-backed deployability guard -----
+  // Older crawler builds emitted one synthetic recording rule per SLO to
+  // satisfy the conformance rubric. Those rows were useful hints, but they
+  // had no source provenance in the repo and were indistinguishable from
+  // deployable rules in the Remediate flow. Keep the candidate names in the
+  // crawl summary, but do not place them in spec.queries.recording_rules.
   const repoNs = String(repoName).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'svc';
   for (const slo of sloMap.values()) {
     const sliName = (slo.sli || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'sli';
     const ruleName = `${repoNs}:${sliName}:ratio_5m`;
     if (!recordingRules.some(r => r.name === ruleName)) {
-      recordingRules.push({ name: ruleName, expr: `ref:slis.${slo.sli}` });
+      summary.omitted.syntheticRecordingRules.push({ name: ruleName, expr: `ref:slis.${slo.sli}` });
     }
   }
+  if (summary.omitted.syntheticRecordingRules.length) {
+    summary.warnings.push(`Skipped ${summary.omitted.syntheticRecordingRules.length} synthetic recording rule candidate(s) with no source provenance. Add source Prometheus/Grafana rules or compile them explicitly before deploying.`);
+  }
+
+  inferDashboardPanelBindings(dashboards, sliMap, sloMap, recordingRules, summary);
 
   // ----- tier inference -----
   //   tier-1 = rich (rules + dashboards + alertmanager + chaos)
@@ -429,6 +688,19 @@ export function crawlFiles(filesInput, opts = {}) {
   if (realRules && realDashboards && realAlerting) tier = 'tier-2';
   summary.inferred.tier = tier;
   const criticality = opts.criticality || tier;
+  const l2x = materializeL2XFromBackends(backends);
+  summary.discovered.extendedSurfaces = l2x.evidence.length;
+  const syntheticCheckId = `${repoName}-health-canary`;
+  scaffoldSymbols.push(`validation.synthetic_checks.${syntheticCheckId}`);
+  summary.scaffold = [...scaffoldSymbols];
+
+  const scaffoldAnnotations = {};
+  for (const symbol of scaffoldSymbols) {
+    scaffoldAnnotations[`crawler.scaffold.${symbol}`] = 'schema-required fallback; no source evidence found in selected environment';
+  }
+  curateMetricDefinitions(metricDefinitions, summary);
+  const metricAnnotations = buildMetricDefinitionAnnotations(metricDefinitions);
+  const scrapeAnnotations = buildScrapeJobAnnotations(scrapeJobs);
 
   // ----- canonical assembly -----
   const canonical = {
@@ -447,9 +719,19 @@ export function crawlFiles(filesInput, opts = {}) {
       annotations: {
         'crawler.discoveredAt':    opts.now || new Date().toISOString(),
         'crawler.filesScanned':    String(summary.files.scanned),
+        'crawler.filesIncluded':   String(summary.files.included),
+        'crawler.filesExcludedByEnvironment': String(summary.files.excludedByEnvironment),
         'crawler.filesClassified': String(summary.files.classified),
+        'crawler.environmentProfile': envScope.profile || '',
+        'tomograph.diff.scopeMode': diffScopeMode,
         'crawler.tierInferred':    tier,
         'crawler.warningCount':    String(summary.warnings.length),
+        'crawler.syntheticRecordingRulesSkipped': String(summary.omitted.syntheticRecordingRules.length),
+        'crawler.extendedSurfaces': String(summary.discovered.extendedSurfaces),
+        'crawler.scaffoldCount':   String(scaffoldSymbols.length),
+        ...metricAnnotations,
+        ...scrapeAnnotations,
+        ...scaffoldAnnotations,
       },
     },
     spec: {
@@ -472,7 +754,7 @@ export function crawlFiles(filesInput, opts = {}) {
       baselines,
       validation: {
         synthetic_checks: [{
-          id: `${repoName}-health-canary`,
+          id: syntheticCheckId,
           kind: 'blackbox-exporter',
           target: `https://${repoName}.example.com/health`,
           interval: '1m',
@@ -484,6 +766,10 @@ export function crawlFiles(filesInput, opts = {}) {
 
   if (backends.length) {
     canonical.spec.telemetry = { backends };
+  }
+  Object.assign(canonical.spec, l2x.sections);
+  for (const item of l2x.evidence) {
+    evidence[item.artifactId] = evidence[item.backendId] || item.backendId;
   }
 
   // Evidence map lives in summary, not in metadata.annotations
@@ -608,11 +894,657 @@ function sniffObservabilityKind(content) {
   try { obj = parseYaml(content); } catch (_) { return 'unknown'; }
   if (!obj || typeof obj !== 'object') return 'unknown';
   if (Array.isArray(obj.groups) && obj.groups.some(g => g.rules?.some(r => 'record' in r || 'alert' in r))) return 'prometheus-rules';
+  if (Array.isArray(obj.scrape_configs) && obj.scrape_configs.some(s => s?.job_name)) return 'prometheus-scrape-config';
+  if (looksLikeActuatorMetricsConfig('', content, obj)) return 'actuator-metrics-config';
   if (obj.route && Array.isArray(obj.receivers)) return 'alertmanager';
   if (obj.receivers && obj.exporters && obj.service?.pipelines) return 'otel-collector';
   if (obj.services && typeof obj.services === 'object'
       && Object.values(obj.services).some(s => s?.image)) return 'docker-compose';
+  if (K8S_WORKLOAD_KINDS.has(obj.kind)
+      && (obj.spec?.template?.spec?.containers
+          || obj.spec?.containers
+          || obj.spec?.jobTemplate?.spec?.template?.spec?.containers)) {
+    return 'k8s-workload';
+  }
   return 'unknown';
+}
+
+function imageFromHelmImageObject(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  const repository = obj.repository || obj.repo || obj.name;
+  if (typeof repository !== 'string') return null;
+  const tag = typeof obj.tag === 'string' || typeof obj.tag === 'number' ? String(obj.tag) : '';
+  return tag ? `${repository}:${tag}` : repository;
+}
+
+function looksLikeActuatorMetricsConfig(relPath, content, obj = null) {
+  const p = normalizeRepoPath(relPath);
+  const text = String(content || '');
+  const fileLooksRelevant = /(^|\/)(application|bootstrap)[\w.-]*\.ya?ml$/.test(p)
+    || /application[\w.-]*\.ya?ml[#/]/.test(p)
+    || p === '';
+  if (!fileLooksRelevant && !/\/actuator\/prometheus/.test(text)) return false;
+  if (/\/actuator\/prometheus/.test(text)) return true;
+  if (!/management:/i.test(text) || !/prometheus/i.test(text)) return false;
+  const management = obj?.management;
+  if (management && typeof management === 'object') {
+    const endpoints = management.endpoints?.web?.exposure?.include;
+    const endpointProm = management.endpoint?.prometheus?.enabled;
+    const exportProm = management.metrics?.export?.prometheus?.enabled;
+    if (String(endpoints || '').includes('prometheus')) return true;
+    if (endpointProm === true || exportProm === true) return true;
+  }
+  return /endpoint[s]?:[\s\S]*prometheus/i.test(text)
+      || /metrics:[\s\S]*prometheus/i.test(text);
+}
+
+function actuatorServiceName(obj, relPath, fallback) {
+  const springName = obj?.spring?.application?.name;
+  if (typeof springName === 'string' && springName.trim()) return springName.trim();
+  return serviceFromPath(relPath, fallback);
+}
+
+function actuatorPrometheusPath(obj) {
+  const base = obj?.management?.endpoints?.web?.basePath
+    || obj?.management?.endpoints?.web?.['base-path']
+    || '/actuator';
+  const mapped = obj?.management?.endpoints?.web?.pathMapping?.prometheus
+    || obj?.management?.endpoints?.web?.['path-mapping']?.prometheus
+    || 'prometheus';
+  return `/${String(base || '/actuator').replace(/^\/+|\/+$/g, '')}/${String(mapped || 'prometheus').replace(/^\/+|\/+$/g, '')}`;
+}
+
+function looksLikeMetricSource(content, relPath = '') {
+  const p = normalizeRepoPath(relPath);
+  return /prom-client|prometheus_client|(?:prometheus|promauto(?:\.With\s*\([^)]*\))?)\.New(?:Counter|Gauge|Histogram|Summary)/.test(content)
+      || /@opentelemetry\/api|metrics\.getMeter|\.(?:create(?:Counter|Histogram|Gauge|ObservableCounter|ObservableGauge|ObservableUpDownCounter|UpDownCounter))\s*\(/.test(content)
+      || /\.(?:Int64|Float64)(?:Counter|Histogram|Gauge|UpDownCounter|ObservableCounter|ObservableGauge|ObservableUpDownCounter)\s*\(\s*['"]/.test(content)
+      || /new\s+(?:[A-Za-z_$][\w$]*\.)?(?:Counter|Gauge|Histogram|Summary)\s*\(\s*(?:\{|['"])/.test(content)
+      || /\b(?:Counter|Gauge|Histogram|Summary)\s*\(\s*['"][A-Za-z_:][A-Za-z0-9_:]*['"]/.test(content)
+      || /io\.micrometer|MeterRegistry|(?:Counter|Gauge|Timer|DistributionSummary|LongTaskTimer)\.builder\s*\(/.test(content)
+      || /METRIC_NAME|String\.format\s*\(\s*["'][^"']*%s_|(?:^|[.\s])(?:name|put)\s*\(\s*["'][A-Za-z_:][A-Za-z0-9_:.-]*["']/.test(content)
+      || (metricSourcePathLooksRelevant(p) && /(?:metric|prometheus|counter|histogram|gauge|summary)[\s\S]{0,120}['"][A-Za-z_:][A-Za-z0-9_:.-]+['"]/i.test(content));
+}
+
+function metricSourcePathLooksRelevant(relPath) {
+  return /(^|\/)(metrics?|prometheus|observability|telemetry|exporter|collector|otel)(\/|[-_.])/.test(normalizeRepoPath(relPath));
+}
+
+function metricNameish(name) {
+  return typeof name === 'string' && /^[A-Za-z_:][A-Za-z0-9_:]*$/.test(name);
+}
+
+function normalizePrometheusMetricName(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return '';
+  const normalized = raw
+    .replace(/[^A-Za-z0-9_:]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!normalized) return '';
+  return /^[A-Za-z_:]/.test(normalized) ? normalized : `_${normalized}`;
+}
+
+function serviceFromPath(relPath, fallback = null) {
+  const parts = normalizeRepoPath(relPath).split('/').filter(Boolean);
+  if (!parts.length) return fallback;
+  if (parts[0] === 'server') return 'krystalinex-server';
+  if (['src', 'app', 'lib'].includes(parts[0])) return fallback;
+  return parts[0];
+}
+
+function walkMetricSourceCode(f, metricDefinitions, evidence, summary, repoName = null) {
+  const service = serviceFromPath(f.relPath, repoName);
+  const text = String(f.content || '');
+
+  const jsMetricRe = /new\s+(?:[A-Za-z_$][\w$]*\.)?(Counter|Gauge|Histogram|Summary)\s*\(\s*\{([\s\S]*?)\}\s*\)/g;
+  let match;
+  while ((match = jsMetricRe.exec(text)) !== null) {
+    const body = match[2] || '';
+    const name = firstStringProp(body, 'name');
+    if (!name) continue;
+    addMetricDefinition(metricDefinitions, evidence, summary, {
+      name,
+      type: match[1].toLowerCase(),
+      help: firstStringProp(body, 'help'),
+      labels: stringArrayProp(body, 'labelNames'),
+      service,
+      origin: f.relPath,
+      originKind: 'source-code',
+    });
+  }
+
+  const jsOtelMetricRe = /\.(create(?:Counter|Histogram|Gauge|ObservableCounter|ObservableGauge|ObservableUpDownCounter|UpDownCounter))\s*\(\s*['"]([^'"]+)['"]\s*(?:,\s*\{([\s\S]*?)\})?/g;
+  while ((match = jsOtelMetricRe.exec(text)) !== null) {
+    const sourceName = match[2] || '';
+    if (!sourceName) continue;
+    const body = match[3] || '';
+    addMetricDefinition(metricDefinitions, evidence, summary, {
+      name: sourceName,
+      sourceName,
+      type: `otel-js-${match[1].replace(/^create/, '').toLowerCase()}`,
+      help: firstStringProp(body, 'description') || firstStringProp(body, 'help'),
+      labels: [],
+      service,
+      origin: f.relPath,
+      originKind: 'source-code',
+    });
+  }
+
+  const pyMetricRe = /\b(Counter|Gauge|Histogram|Summary)\s*\(\s*['"]([A-Za-z_:][A-Za-z0-9_:]*)['"]\s*,\s*['"]([^'"]*)['"]/g;
+  while ((match = pyMetricRe.exec(text)) !== null) {
+    addMetricDefinition(metricDefinitions, evidence, summary, {
+      name: match[2],
+      type: match[1].toLowerCase(),
+      help: match[3] || '',
+      labels: [],
+      service,
+      origin: f.relPath,
+      originKind: 'source-code',
+    });
+  }
+
+  const goMetricRe = /\b(?:prometheus|promauto(?:\.With\s*\([^)]*\))?)\.New(Counter|Gauge|Histogram|Summary)(Vec)?\s*\(\s*(?:prometheus\.)?\w+Opts\s*\{([\s\S]*?)\}\s*(?:,\s*\[\]string\s*\{([^}]*)\})?/g;
+  while ((match = goMetricRe.exec(text)) !== null) {
+    const body = match[3] || '';
+    const name = goPrometheusMetricName(body);
+    if (!name) continue;
+    addMetricDefinition(metricDefinitions, evidence, summary, {
+      name,
+      type: `go-prometheus-${match[1].toLowerCase()}${match[2] ? '-vec' : ''}`,
+      help: firstGoStringProp(body, 'Help'),
+      labels: goStringList(match[4]),
+      service,
+      origin: f.relPath,
+      originKind: 'source-code',
+    });
+  }
+
+  const goOtelMetricRe = /\.(Int64|Float64)(Counter|Histogram|Gauge|UpDownCounter|ObservableCounter|ObservableGauge|ObservableUpDownCounter)\s*\(\s*['"]([^'"]+)['"]\s*([^)]*)\)/g;
+  while ((match = goOtelMetricRe.exec(text)) !== null) {
+    const sourceName = match[3] || '';
+    if (!sourceName) continue;
+    const body = match[4] || '';
+    addMetricDefinition(metricDefinitions, evidence, summary, {
+      name: sourceName,
+      sourceName,
+      type: `otel-go-${match[1].toLowerCase()}-${match[2].toLowerCase()}`,
+      help: firstOtelGoDescription(body),
+      labels: [],
+      service,
+      origin: f.relPath,
+      originKind: 'source-code',
+    });
+  }
+
+  const micrometerBuilderRe = /\b(Counter|Gauge|Timer|DistributionSummary|LongTaskTimer)\.builder\s*\(\s*['"]([^'"]+)['"]\s*\)([\s\S]*?)(?:\.register\s*\(|;)/g;
+  while ((match = micrometerBuilderRe.exec(text)) !== null) {
+    const body = match[3] || '';
+    addMetricDefinition(metricDefinitions, evidence, summary, {
+      name: match[2],
+      sourceName: match[2],
+      type: `micrometer-${match[1].toLowerCase()}`,
+      help: firstChainedStringArg(body, 'description'),
+      labels: micrometerLabelKeys(body),
+      service,
+      origin: f.relPath,
+      originKind: 'source-code',
+    });
+  }
+
+  if (/MeterRegistry|io\.micrometer/.test(text)) {
+    const micrometerRegistryRe = /\b(?:meterRegistry|registry)\.(counter|gauge|timer|summary)\s*\(\s*['"]([^'"]+)['"]/g;
+    while ((match = micrometerRegistryRe.exec(text)) !== null) {
+      addMetricDefinition(metricDefinitions, evidence, summary, {
+        name: match[2],
+        sourceName: match[2],
+        type: `micrometer-${match[1].toLowerCase()}`,
+        help: '',
+        labels: [],
+        service,
+        origin: f.relPath,
+        originKind: 'source-code',
+      });
+    }
+  }
+
+  for (const metric of extractJavaStaticMetricFragments(f.relPath, text)) {
+    addMetricDefinition(metricDefinitions, evidence, summary, {
+      name: metric.name,
+      sourceName: metric.sourceName,
+      type: 'java-static-fragment',
+      help: '',
+      labels: [],
+      service,
+      origin: f.relPath,
+      originKind: 'source-code-fragment',
+      candidateOnly: true,
+    });
+  }
+
+  for (const metric of extractLanguageStaticMetricFragments(f.relPath, text)) {
+    addMetricDefinition(metricDefinitions, evidence, summary, {
+      name: metric.name,
+      sourceName: metric.sourceName,
+      type: `${metric.language}-static-fragment`,
+      help: '',
+      labels: [],
+      service,
+      origin: f.relPath,
+      originKind: 'source-code-fragment',
+      candidateOnly: true,
+    });
+  }
+}
+
+function addMetricDefinition(metricDefinitions, evidence, summary, item) {
+  const name = normalizePrometheusMetricName(item?.name);
+  if (!metricNameish(name)) return;
+  const metric = {
+    ...item,
+    name,
+    sourceName: item.sourceName && item.sourceName !== name ? item.sourceName : item.sourceName || null,
+    originKind: item.originKind || 'source-code',
+    candidateOnly: Boolean(item.candidateOnly),
+    confidence: item.candidateOnly ? 'candidate' : 'declared',
+    references: Array.isArray(item.references) ? item.references : [],
+    usedBy: Array.isArray(item.usedBy) ? item.usedBy.filter(Boolean) : [],
+  };
+  const existing = metricDefinitions.find(m =>
+    m.name === metric.name &&
+    m.origin === metric.origin &&
+    (m.originKind || 'source-code') === metric.originKind);
+  if (existing) {
+    mergeMetricEvidence(existing, metric);
+    return;
+  }
+  metricDefinitions.push(metric);
+  if (!evidence[`metrics.${metric.name}`]) evidence[`metrics.${metric.name}`] = metric.origin;
+  summary.discovered.metricDefinitions++;
+}
+
+function mergeMetricEvidence(target, source) {
+  if (!target.service && source.service) target.service = source.service;
+  if (!target.help && source.help) target.help = source.help;
+  if (!target.sourceName && source.sourceName) target.sourceName = source.sourceName;
+  target.labels = dedupe([...(target.labels || []), ...(source.labels || [])]);
+  target.usedBy = dedupe([...(target.usedBy || []), ...(source.usedBy || [])]).slice(0, 24);
+  target.references = [...(target.references || []), ...(source.references || [])].slice(0, 12);
+  target.candidateOnly = Boolean(target.candidateOnly && source.candidateOnly);
+  target.confidence = target.candidateOnly ? 'candidate' : 'declared';
+}
+
+function dedupe(values) {
+  const out = [];
+  const seen = new Set();
+  for (const v of values || []) {
+    if (!v || seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function firstStringProp(body, prop) {
+  const re = new RegExp(`\\b${prop}\\s*:\\s*['"]([^'"]+)['"]`);
+  return re.exec(body)?.[1] || '';
+}
+
+function firstGoStringProp(body, prop) {
+  const re = new RegExp(`\\b${prop}\\s*:\\s*['"]([^'"]+)['"]`);
+  return re.exec(body)?.[1] || '';
+}
+
+function goPrometheusMetricName(body) {
+  const name = firstGoStringProp(body, 'Name');
+  if (!name) return '';
+  return [firstGoStringProp(body, 'Namespace'), firstGoStringProp(body, 'Subsystem'), name]
+    .filter(Boolean)
+    .join('_');
+}
+
+function goStringList(body) {
+  return [...String(body || '').matchAll(/['"]([^'"]+)['"]/g)].map(m => m[1]);
+}
+
+function firstOtelGoDescription(body) {
+  return /WithDescription\s*\(\s*['"]([^'"]+)['"]/.exec(String(body || ''))?.[1] || '';
+}
+
+function stringArrayProp(body, prop) {
+  const re = new RegExp(`\\b${prop}\\s*:\\s*\\[([^\\]]*)\\]`);
+  const m = re.exec(body);
+  if (!m) return [];
+  return [...m[1].matchAll(/['"]([^'"]+)['"]/g)].map(x => x[1]);
+}
+
+function firstChainedStringArg(body, method) {
+  const re = new RegExp(`\\.${method}\\s*\\(\\s*['"]([^'"]+)['"]`);
+  return re.exec(body)?.[1] || '';
+}
+
+function micrometerLabelKeys(body) {
+  const out = new Set();
+  for (const match of body.matchAll(/\.tag\s*\(\s*['"]([^'"]+)['"]/g)) {
+    out.add(match[1]);
+  }
+  for (const match of body.matchAll(/\.tags\s*\(([^)]*)\)/g)) {
+    const values = [...String(match[1] || '').matchAll(/['"]([^'"]+)['"]/g)].map(m => m[1]);
+    for (let i = 0; i < values.length; i += 2) out.add(values[i]);
+  }
+  return [...out].filter(Boolean).sort();
+}
+
+function extractLanguageStaticMetricFragments(relPath, text) {
+  if (/\.java$/i.test(relPath)) return [];
+  if (!metricSourcePathLooksRelevant(relPath)) return [];
+  if (!/(metric|prometheus|counter|histogram|gauge|summary|otel|telemetry|exporter)/i.test(text)) return [];
+  const language = metricSourceLanguage(relPath);
+  const out = new Map();
+  const add = (raw) => {
+    const sourceName = String(raw || '').trim();
+    if (!sourceName || sourceName.length > 160) return;
+    if (!/[A-Za-z_:][A-Za-z0-9_:.-]/.test(sourceName)) return;
+    const name = normalizePrometheusMetricName(sourceName);
+    if (!metricNameish(name) || STATIC_FRAGMENT_STOPWORDS.has(name)) return;
+    out.set(name, { name, sourceName: sourceName === name ? null : sourceName, language });
+  };
+  for (const m of text.matchAll(/\b[A-Za-z0-9_]*METRIC[A-Za-z0-9_]*\s*(?::[^=]+)?=\s*["']([A-Za-z_:][A-Za-z0-9_:.-]+)["']/gi)) {
+    add(m[1]);
+  }
+  for (const m of text.matchAll(/\b(?:metricName|metric_name|seriesName|series_name)\s*(?::[^=]+)?=\s*["']([A-Za-z_:][A-Za-z0-9_:.-]+)["']/gi)) {
+    add(m[1]);
+  }
+  for (const m of text.matchAll(/\b(?:[A-Za-z0-9_]*METRIC[A-Za-z0-9_]*|metricNames|metrics|series|exports)\b\s*(?::[^=]+)?=\s*\[([\s\S]*?)\]/gi)) {
+    for (const s of String(m[1] || '').matchAll(/["']([A-Za-z_:][A-Za-z0-9_:.-]+)["']/g)) add(s[1]);
+  }
+  for (const m of text.matchAll(/\b(?:registerMetric|recordMetric|observeMetric|emitMetric|metricName)\s*\(\s*["']([A-Za-z_:][A-Za-z0-9_:.-]+)["']/gi)) {
+    add(m[1]);
+  }
+  return [...out.values()];
+}
+
+function metricSourceLanguage(relPath) {
+  const p = normalizeRepoPath(relPath);
+  if (/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(p)) return 'typescript';
+  if (/\.go$/.test(p)) return 'go';
+  if (/\.py$/.test(p)) return 'python';
+  if (/\.kt$/.test(p)) return 'kotlin';
+  if (/\.rs$/.test(p)) return 'rust';
+  if (/\.cs$/.test(p)) return 'csharp';
+  return 'source';
+}
+
+function extractJavaStaticMetricFragments(relPath, text) {
+  if (!/\.java$/i.test(relPath)) return [];
+  if (!/METRIC_NAME|String\.format|(?:^|[.\s])(?:name|put)\s*\(/.test(text)) return [];
+  const prefix = javaMetricPrefix(relPath, text);
+  const out = new Map();
+  const add = (raw) => {
+    const sourceName = String(raw || '').trim();
+    if (!sourceName || sourceName.length > 160) return;
+    const full = sourceName.includes('_') || !prefix ? sourceName : `${prefix}${sourceName}`;
+    const name = normalizePrometheusMetricName(full);
+    if (!metricNameish(name) || JAVA_FRAGMENT_STOPWORDS.has(name)) return;
+    out.set(name, { name, sourceName: sourceName === name ? null : sourceName });
+  };
+  for (const m of text.matchAll(/\.(?:name|put)\s*\(\s*["']([A-Za-z_:][A-Za-z0-9_:.-]*)["']/g)) {
+    add(m[1]);
+  }
+  for (const m of text.matchAll(/\bMETRIC_NAME\s*=\s*["']([A-Za-z_:][A-Za-z0-9_:.-]*)["']/g)) {
+    add(m[1]);
+  }
+  for (const m of text.matchAll(/\bMETRIC_NAME\s*=\s*String\.format\s*\(\s*["'][^"']*%s[_:-]([A-Za-z0-9_:.-]+)[^"']*["'][^)]*\)/g)) {
+    add(`${prefix}${m[1]}`);
+  }
+  for (const m of text.matchAll(/String\.format\s*\(\s*["']%s[_:-]([A-Za-z0-9_:.-]+)["']\s*,\s*\w+\s*\)/g)) {
+    add(`${prefix}${m[1]}`);
+  }
+  return [...out.values()];
+}
+
+const JAVA_FRAGMENT_STOPWORDS = new Set([
+  'name', 'type', 'description', 'metric', 'metrics', 'help', 'value',
+]);
+
+const STATIC_FRAGMENT_STOPWORDS = new Set([
+  ...JAVA_FRAGMENT_STOPWORDS,
+  'counter', 'histogram', 'gauge', 'summary', 'register', 'registry',
+  'duration', 'latency', 'status', 'method', 'route', 'service', 'namespace',
+]);
+
+function javaMetricPrefix(relPath, text) {
+  const p = normalizeRepoPath(relPath);
+  if (/otel-collector|syslog|event/.test(p)) return 'sol_event_';
+  if (/metrics-exporter|solace/.test(p) || /solace/i.test(text)) return 'solace_';
+  return '';
+}
+
+function extractPrometheusMetricNames(expr) {
+  return extractPromqlMetricNames(expr).filter(metricNameish);
+}
+
+function addPromqlMetricReferences(metricDefinitions, evidence, summary, expr, context) {
+  const names = extractPrometheusMetricNames(expr);
+  for (const name of names) {
+    addMetricDefinition(metricDefinitions, evidence, summary, {
+      name,
+      type: 'promql-reference',
+      origin: context.origin,
+      originKind: 'promql-reference',
+      query: expr,
+      usedBy: [context.usedBy],
+      references: [{
+        kind: context.kind,
+        name: context.name || '',
+        file: context.origin,
+      }],
+    });
+  }
+}
+
+function addRecordingRuleOutputMetric(metricDefinitions, evidence, summary, rule, context) {
+  if (!rule?.record) return;
+  addMetricDefinition(metricDefinitions, evidence, summary, {
+    name: rule.record,
+    type: 'recording-rule-output',
+    origin: context.origin,
+    originKind: 'recording-rule-output',
+    query: context.expr || '',
+    usedBy: [context.usedBy],
+    references: [{
+      kind: 'recording-rule-output',
+      name: rule.record,
+      file: context.origin,
+    }],
+  });
+}
+
+function curateMetricDefinitions(metricDefinitions, summary) {
+  const referenced = new Set(
+    metricDefinitions
+      .filter(m => ['promql-reference', 'recording-rule-output'].includes(m.originKind))
+      .map(m => m.name),
+  );
+  let unreferenced = 0;
+  for (const metric of metricDefinitions) {
+    if (!metric.candidateOnly) continue;
+    metric.confidence = referenced.has(metric.name) ? 'referenced-candidate' : 'candidate';
+    if (!referenced.has(metric.name)) unreferenced++;
+  }
+  summary.discovered.metricEvidence = metricDefinitions.length;
+  summary.discovered.metricDefinitions = new Set(metricDefinitions.map(m => m.name)).size;
+  summary.discovered.metricCandidatesDropped = 0;
+  summary.discovered.metricCandidatesUnreferenced = unreferenced;
+}
+
+function buildMetricDefinitionAnnotations(metricDefinitions) {
+  if (!metricDefinitions.length) return {};
+  const byName = new Map();
+  for (const metric of metricDefinitions) {
+    if (!byName.has(metric.name)) {
+      byName.set(metric.name, { primary: metric, all: [metric] });
+      continue;
+    }
+    const bucket = byName.get(metric.name);
+    bucket.all.push(metric);
+    if (metricOriginRank(metric) < metricOriginRank(bucket.primary)) bucket.primary = metric;
+  }
+  const names = [...byName.keys()].sort();
+  const origins = {};
+  for (const name of names) {
+    const bucket = byName.get(name);
+    const metric = bucket.primary;
+    const references = bucket.all.flatMap(m => m.references || []).slice(0, 12);
+    const usedBy = dedupe(bucket.all.flatMap(m => m.usedBy || [])).slice(0, 24);
+    origins[name] = {
+      file: metric.origin,
+      service: metric.service || '',
+      type: metric.type || '',
+      help: metric.help || '',
+      labels: metric.labels || [],
+      source_name: metric.sourceName || '',
+      origin_kind: metric.originKind || '',
+      confidence: metric.confidence || (metric.candidateOnly ? 'candidate' : 'declared'),
+      candidate: Boolean(metric.candidateOnly),
+      query: metric.query || '',
+      used_by: usedBy,
+      references,
+    };
+  }
+  return {
+    'crawler.discovered.metric_names': annotationJson(names),
+    'crawler.discovered.metric_names_count': String(names.length),
+    'crawler.discovered.metric_origins': annotationJson(origins),
+  };
+}
+
+const JSON_ANNOTATION_BLOCK_LENGTH = 4096;
+
+function annotationJson(value) {
+  const compact = JSON.stringify(value);
+  return compact.length > JSON_ANNOTATION_BLOCK_LENGTH
+    ? JSON.stringify(value, null, 2)
+    : compact;
+}
+
+function metricOriginRank(metric) {
+  const kind = metric?.originKind || 'source-code';
+  if (kind === 'source-code') return 0;
+  if (kind === 'source-code-fragment') return 1;
+  if (kind === 'recording-rule-output') return 2;
+  if (kind === 'promql-reference') return 3;
+  return 9;
+}
+
+function buildScrapeJobAnnotations(scrapeJobs) {
+  if (!scrapeJobs.length) return {};
+  const byJob = new Map();
+  for (const job of scrapeJobs) {
+    if (!byJob.has(job.job)) byJob.set(job.job, job);
+  }
+  const jobs = [...byJob.keys()].sort();
+  const origins = {};
+  for (const job of jobs) {
+    const item = byJob.get(job);
+    origins[job] = {
+      file: item.origin,
+      metrics_path: item.metrics_path || '',
+      interval: item.interval || '',
+      targets: item.targets || [],
+    };
+  }
+  return {
+    'crawler.discovered.scrape_jobs': annotationJson(jobs),
+    'crawler.discovered.scrape_jobs_count': String(jobs.length),
+    'crawler.discovered.scrape_job_origins': annotationJson(origins),
+  };
+}
+
+// Components disabled via Helm `enabled: false`, merged across the in-scope
+// values files. Base `values.yaml` is applied first; environment overlays
+// (`values-<env>.yaml`) are applied after and win — mirroring `helm -f` order.
+// A top-level component in the returned set must NOT be registered as a live
+// backend: the environment under inspection does not deploy it (e.g. prometheus
+// on EKS, where `values-eks.yaml` sets `prometheus.enabled: false` and the
+// cluster runs victoriametrics instead). Honors only top-level component
+// toggles, which is the convention these charts use.
+function collectDisabledComponents(valuesFiles) {
+  const ordered = [...valuesFiles].sort((a, b) => {
+    const rank = (p) => (/(^|\/)values\.ya?ml$/i.test(normalizeRepoPath(p)) ? 0 : 1);
+    return rank(a.relPath) - rank(b.relPath);
+  });
+  const effective = new Map(); // top-level component -> enabled boolean
+  for (const f of ordered) {
+    let docs;
+    try { docs = parseYamlDocs(f.content); } catch { continue; }
+    for (const obj of docs) {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) continue;
+      for (const [key, val] of Object.entries(obj)) {
+        if (val && typeof val === 'object' && !Array.isArray(val)
+            && typeof val.enabled === 'boolean') {
+          effective.set(key, val.enabled);
+        }
+      }
+    }
+  }
+  const disabled = new Set();
+  for (const [key, on] of effective) if (on === false) disabled.add(key);
+  return disabled;
+}
+
+function walkHelmValues(f, backends, pipelines, evidence, summary, disabledComponents = new Set()) {
+  const visit = (node, path = []) => {
+    if (!node) return;
+    // Prune the subtree of any top-level component the environment disables
+    // (Helm `enabled: false`), so its image is never registered as a backend.
+    const topComponent = path[0];
+    if (topComponent && disabledComponents.has(topComponent)) return;
+    if (typeof node === 'string') {
+      const key = path[path.length - 1] || '';
+      if (/^(image|repository|repo|name)$/.test(String(key).toLowerCase())) {
+        registerBackendFromImage(node, f.relPath, backends, evidence, summary, { dedupeByProduct: true, pipelines });
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((item, idx) => visit(item, path.concat(String(idx))));
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    const image = imageFromHelmImageObject(node);
+    if (image) registerBackendFromImage(image, f.relPath, backends, evidence, summary, { dedupeByProduct: true, pipelines });
+
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'image' && typeof value === 'string') {
+        registerBackendFromImage(value, f.relPath, backends, evidence, summary, { dedupeByProduct: true, pipelines });
+      }
+      visit(value, path.concat(key));
+    }
+  };
+
+  for (const obj of parseYamlDocs(f.content)) visit(obj);
+}
+
+function workloadPodSpec(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  if (obj.kind === 'CronJob') return obj.spec?.jobTemplate?.spec?.template?.spec || null;
+  return obj.spec?.template?.spec || obj.spec || null;
+}
+
+function walkK8sWorkload(f, backends, pipelines, evidence, summary) {
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!K8S_WORKLOAD_KINDS.has(obj?.kind)) continue;
+    const podSpec = workloadPodSpec(obj);
+    const containers = [
+      ...(Array.isArray(podSpec?.containers) ? podSpec.containers : []),
+      ...(Array.isArray(podSpec?.initContainers) ? podSpec.initContainers : []),
+    ];
+    for (const c of containers) {
+      registerBackendFromImage(c?.image, f.relPath, backends, evidence, summary, { dedupeByProduct: true, pipelines });
+    }
+  }
 }
 
 // Introspect a Helm template. The valuable observability contracts in a chart
@@ -623,14 +1555,17 @@ function sniffObservabilityKind(content) {
 // like a rule shipped as a standalone file. If the template embeds nothing, we
 // strip the scaffolding and treat the document itself as a single manifest.
 function walkHelmTemplate(f, buckets, evidence, summary) {
-  const { backends, recordingRules, burnRateAlerts, alertingRoutes, dashboards, pipelines } = buckets;
+  const { backends, recordingRules, burnRateAlerts, metricDefinitions, scrapeJobs, alertingRoutes, dashboards, pipelines, repoName } = buckets;
   const route = (kind, sub) => {
     switch (kind) {
-      case 'prometheus-rules': walkPrometheusRules(sub, recordingRules, burnRateAlerts, evidence, summary); return true;
+      case 'prometheus-rules': walkPrometheusRules(sub, recordingRules, burnRateAlerts, metricDefinitions, evidence, summary); return true;
+      case 'prometheus-scrape-config': walkPrometheusScrapeConfig(sub, scrapeJobs, evidence, summary); return true;
+      case 'actuator-metrics-config': walkActuatorMetricsConfig(sub, scrapeJobs, evidence, summary, repoName); return true;
       case 'alertmanager':     walkAlertmanager(sub, alertingRoutes, evidence, summary); return true;
       case 'otel-collector':   walkOtelCollector(sub, pipelines, evidence, summary); return true;
-      case 'grafana-dashboard':walkGrafanaDashboard(sub, dashboards, evidence, summary); return true;
-      case 'docker-compose':   walkDockerCompose(sub, backends, evidence, summary); return true;
+      case 'grafana-dashboard':walkGrafanaDashboard(sub, dashboards, metricDefinitions, evidence, summary); return true;
+      case 'docker-compose':   walkDockerCompose(sub, backends, pipelines, evidence, summary); return true;
+      case 'k8s-workload':     walkK8sWorkload(sub, backends, pipelines, evidence, summary); return true;
       default: return false;
     }
   };
@@ -644,6 +1579,8 @@ function walkHelmTemplate(f, buckets, evidence, summary) {
     let kind = 'unknown';
 
     if (/rule/.test(lk) || /^groups:\s*$/m.test(clean))                              kind = 'prometheus-rules';
+    else if (/scrape/.test(lk) || /^scrape_configs:\s*$/m.test(clean))                kind = 'prometheus-scrape-config';
+    else if (/application|bootstrap|actuator/.test(lk) || looksLikeActuatorMetricsConfig('', clean)) kind = 'actuator-metrics-config';
     else if (lk.endsWith('.json') || /"schemaVersion"\s*:/.test(clean))              kind = 'grafana-dashboard';
     else if (/^route:/m.test(clean) && /^receivers:/m.test(clean))                   kind = 'alertmanager';
     else if (/^receivers:/m.test(clean) && /^exporters:/m.test(clean) && /pipelines:/.test(clean)) kind = 'otel-collector';
@@ -674,7 +1611,7 @@ function walkHelmTemplate(f, buckets, evidence, summary) {
 // Per-kind walkers
 // ============================================================
 
-function walkDockerCompose(f, backends, evidence, summary) {
+function walkDockerCompose(f, backends, pipelines, evidence, summary) {
   for (const obj of parseYamlDocs(f.content)) {
     if (!obj?.services) continue;
     for (const [svcName, svc] of Object.entries(obj.services)) {
@@ -702,6 +1639,7 @@ function walkDockerCompose(f, backends, evidence, summary) {
         backends.push(backend);
         evidence[id] = f.relPath;
         summary.discovered.backends++;
+        registerMetricsExporterFromBackend(p, pipelines, f.relPath, evidence, summary);
         break;
       }
     }
@@ -721,7 +1659,7 @@ function inferEndpoint(svc, product) {
   return null;
 }
 
-function walkPrometheusRules(f, recordingRules, burnRateAlerts, evidence, summary) {
+function walkPrometheusRules(f, recordingRules, burnRateAlerts, metricDefinitions, evidence, summary) {
   let any = false;
   for (const obj of parseYamlDocs(f.content)) {
     if (!Array.isArray(obj.groups)) continue;
@@ -730,14 +1668,27 @@ function walkPrometheusRules(f, recordingRules, burnRateAlerts, evidence, summar
       for (const rule of group.rules || []) {
         if (rule.record) {
           const id = `QRY-${recordingRules.length + 1}-${slug(rule.record).slice(0, 16)}`;
+          const expr = typeof rule.expr === 'string' ? rule.expr : String(rule.expr || '');
           const entry = {
             name: rule.record,
-            expr: typeof rule.expr === 'string' ? rule.expr : String(rule.expr || ''),
+            expr,
           };
           if (group.interval) entry.interval = group.interval;
           recordingRules.push(entry);
           evidence[id] = `${f.relPath}#${group.name || '_'}/${rule.record}`;
           summary.discovered.recordingRules++;
+          const origin = `${f.relPath}#${group.name || '_'}/${rule.record}`;
+          addRecordingRuleOutputMetric(metricDefinitions, evidence, summary, rule, {
+            origin,
+            expr,
+            usedBy: `recording_rule:${rule.record}`,
+          });
+          addPromqlMetricReferences(metricDefinitions, evidence, summary, expr, {
+            kind: 'recording-rule',
+            name: rule.record,
+            origin,
+            usedBy: `recording_rule:${rule.record}`,
+          });
         } else if (rule.alert || rule.title) {
           // `rule.alert` is the Prometheus form; `rule.title` is the Grafana
           // unified-alerting form (provisioned alert rules). Both target an
@@ -751,12 +1702,76 @@ function walkPrometheusRules(f, recordingRules, burnRateAlerts, evidence, summar
             const id = `pol-${burnRateAlerts.length}`;
             evidence[id] = `${f.relPath}#${group.name || '_'}/${alertName}`;
             summary.discovered.burnRateAlerts++;
+            addPromqlMetricReferences(metricDefinitions, evidence, summary, expr, {
+              kind: 'alert-rule',
+              name: alertName,
+              origin: `${f.relPath}#${group.name || '_'}/${alertName}`,
+              usedBy: `alert:${alertName}`,
+            });
           }
         }
       }
     }
   }
   if (!any) return;
+}
+
+function walkPrometheusScrapeConfig(f, scrapeJobs, evidence, summary) {
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!Array.isArray(obj?.scrape_configs)) continue;
+    for (const cfg of obj.scrape_configs) {
+      const job = String(cfg?.job_name || '').trim();
+      if (!job) continue;
+      addScrapeJob(scrapeJobs, evidence, summary, {
+        job,
+        metrics_path: cfg.metrics_path || '/metrics',
+        interval: cfg.scrape_interval || obj.global?.scrape_interval || null,
+        targets: scrapeTargets(cfg),
+        origin: f.relPath,
+      });
+    }
+  }
+}
+
+function walkActuatorMetricsConfig(f, scrapeJobs, evidence, summary, repoName = null) {
+  for (const obj of parseYamlDocs(f.content)) {
+    if (!looksLikeActuatorMetricsConfig(f.relPath, f.content, obj)) continue;
+    const job = actuatorServiceName(obj, f.relPath, repoName);
+    if (!job) continue;
+    addScrapeJob(scrapeJobs, evidence, summary, {
+      job,
+      metrics_path: actuatorPrometheusPath(obj),
+      interval: null,
+      targets: [],
+      origin: f.relPath,
+    });
+  }
+}
+
+function addScrapeJob(scrapeJobs, evidence, summary, item) {
+  if (!item?.job) return;
+  if (scrapeJobs.some(j => j.job === item.job && j.origin === item.origin)) return;
+  scrapeJobs.push(item);
+  if (!evidence[`scrape.${item.job}`]) evidence[`scrape.${item.job}`] = item.origin;
+  summary.discovered.scrapeJobs++;
+}
+
+function scrapeTargets(cfg) {
+  const out = new Set();
+  for (const sc of cfg?.static_configs || []) {
+    for (const target of sc?.targets || []) {
+      if (target) out.add(String(target));
+    }
+  }
+  for (const ds of cfg?.dns_sd_configs || []) {
+    for (const name of ds?.names || []) {
+      if (name) out.add(String(name));
+    }
+  }
+  for (const ks of cfg?.kubernetes_sd_configs || []) {
+    if (ks?.role) out.add(`kubernetes:${ks.role}`);
+  }
+  return [...out].sort();
 }
 
 function parseAlertWindows(rule) {
@@ -909,12 +1924,13 @@ function mapExporterKind(name) {
   return name;
 }
 
-function walkGrafanaDashboard(f, dashboards, evidence, summary) {
+function walkGrafanaDashboard(f, dashboards, metricDefinitions, evidence, summary) {
   const dash = JSON.parse(f.content);
   let id = (dash.uid || dash.title || `dash-${dashboards.length + 1}`)
     .toString().toLowerCase().replace(/[^a-z0-9-]+/g, '-')
     .replace(/^-+|-+$/g, '').slice(0, 60);
   if (!/^[a-z]/.test(id)) id = 'd-' + id;
+  const panels = dashboardPromqlQueries(dash);
   dashboards.push({
     id,
     provider: {
@@ -924,14 +1940,203 @@ function walkGrafanaDashboard(f, dashboards, evidence, summary) {
     },
     folder: dash.tags?.[0] || 'crawled',
     source: `file://${f.relPath}`,
-    // panel_bindings intentionally omitted: schema requires binds_to to
-    // resolve to a real ref. The crawler can't infer those without
-    // domain knowledge; the engineer adds them on review.
+    params: {
+      title: dash.title || id,
+      uid: dash.uid || '',
+      panel_count: countDashboardPanels(dash.panels),
+      query_panel_count: panels.length,
+      panels,
+    },
   });
   evidence[id] = f.relPath;
   summary.discovered.dashboards++;
+
+  for (const q of panels) {
+    addPromqlMetricReferences(metricDefinitions, evidence, summary, q.expr, {
+      kind: 'dashboard-panel',
+      name: q.panel,
+      origin: `${f.relPath}#${q.panel}`,
+      usedBy: `dashboard:${id}/${q.panel}`,
+    });
+  }
 }
 
-function slug(s) {
-  return String(s || '').toLowerCase().replace(/[^a-z0-9-]+/g, '_').replace(/^_+|_+$/g, '');
+function dashboardPromqlQueries(dash) {
+  const out = [];
+  const walkPanels = (panels = []) => {
+    if (!Array.isArray(panels)) return;
+    for (const panel of panels) {
+      const rawTitle = String(panel.title || panel.id || `panel-${out.length + 1}`);
+      const panelName = slug(rawTitle) || `panel-${out.length + 1}`;
+      for (const target of panel.targets || []) {
+        const expr = target?.expr || target?.query || target?.expression;
+        if (typeof expr === 'string' && expr.trim()) {
+          out.push({
+            panel: panelName,
+            title: rawTitle,
+            expr,
+            refId: target?.refId || '',
+            datasource: datasourceLabel(target?.datasource || panel.datasource),
+            metrics: extractPrometheusMetricNames(expr),
+          });
+        }
+      }
+      walkPanels(panel.panels);
+    }
+  };
+  walkPanels(dash.panels);
+  return out;
+}
+
+function countDashboardPanels(panels = []) {
+  if (!Array.isArray(panels)) return 0;
+  let count = 0;
+  for (const panel of panels) {
+    if (!panel || typeof panel !== 'object') continue;
+    count++;
+    count += countDashboardPanels(panel.panels);
+  }
+  return count;
+}
+
+function datasourceLabel(ds) {
+  if (!ds) return '';
+  if (typeof ds === 'string') return ds;
+  if (typeof ds === 'object') return ds.uid || ds.type || ds.name || '';
+  return '';
+}
+
+function inferDashboardPanelBindings(dashboards, sliMap, sloMap, recordingRules, summary) {
+  const candidates = dashboardBindingCandidates(sliMap, sloMap, recordingRules);
+  if (!candidates.length) return;
+  let bound = 0;
+  for (const dashboard of dashboards) {
+    const panels = dashboard.params?.panels || [];
+    for (const panel of panels) {
+      if (panel.binds_to) continue;
+      const best = bestPanelBinding(panel, candidates);
+      if (!best) continue;
+      panel.binds_to = best.ref;
+      panel.binding_confidence = best.confidence;
+      panel.binding_reason = best.reason;
+      dashboard.panel_bindings ||= [];
+      if (!dashboard.panel_bindings.some(b => norm(b.panel) === norm(panel.panel || panel.title))) {
+        dashboard.panel_bindings.push({ panel: panel.title || panel.panel, binds_to: best.ref });
+        bound++;
+      }
+    }
+  }
+  if (bound) {
+    summary.discovered.dashboardPanelBindings = bound;
+    summary.warnings.push(`Inferred ${bound} dashboard panel binding(s) from panel queries and requirement/rule names.`);
+  }
+}
+
+function dashboardBindingCandidates(sliMap, sloMap, recordingRules) {
+  const bySli = new Map();
+  for (const sli of sliMap.values()) {
+    bySli.set(sli.id, {
+      ref: `slis.${sli.id}`,
+      kind: 'sli',
+      id: sli.id,
+      metrics: new Set([
+        ...extractPrometheusMetricNames(sli.good || ''),
+        ...extractPrometheusMetricNames(sli.total || ''),
+        ...extractPrometheusMetricNames(sli.query || ''),
+        ...extractPrometheusMetricNames(sli.expression || ''),
+      ]),
+      ruleNames: new Set(),
+      keywords: keywords(`${sli.id} ${sli.description || ''}`),
+    });
+  }
+  for (const rule of recordingRules) {
+    const sliId = ruleNameToSliId(rule.name);
+    if (!sliId || !bySli.has(sliId)) continue;
+    const candidate = bySli.get(sliId);
+    candidate.ruleNames.add(rule.name);
+    for (const metric of extractPrometheusMetricNames(rule.expr || '')) candidate.metrics.add(metric);
+    for (const word of keywords(`${rule.name} ${rule.expr || ''}`)) candidate.keywords.add(word);
+  }
+
+  const out = [...bySli.values()];
+  for (const slo of sloMap.values()) {
+    out.push({
+      ref: `slos.${slo.id}`,
+      kind: 'slo',
+      id: slo.id,
+      metrics: new Set(),
+      ruleNames: new Set(),
+      keywords: keywords(`${slo.id} ${slo.sli || ''}`),
+    });
+  }
+  return out;
+}
+
+function bestPanelBinding(panel, candidates) {
+  const hay = `${panel.title || ''} ${panel.panel || ''} ${panel.expr || ''}`.toLowerCase();
+  const panelMetrics = new Set(panel.metrics || extractPrometheusMetricNames(panel.expr || ''));
+  const scored = candidates
+    .map(candidate => scorePanelBinding(hay, panelMetrics, candidate))
+    .filter(candidate => candidate.score >= 5)
+    .sort((a, b) => b.score - a.score || a.ref.localeCompare(b.ref));
+  if (!scored.length) return null;
+  if (scored.length > 1 && scored[0].score === scored[1].score) return null;
+  const top = scored[0];
+  return {
+    ref: top.ref,
+    confidence: top.score >= 8 ? 'declared-inferred' : 'inferred',
+    reason: top.reasons.join(', '),
+  };
+}
+
+function scorePanelBinding(hay, panelMetrics, candidate) {
+  let score = 0;
+  const reasons = [];
+  const id = candidate.id.toLowerCase();
+  const ref = candidate.ref.toLowerCase();
+  if (hay.includes(ref) || hay.includes(`ref:${ref}`)) {
+    score += 8;
+    reasons.push('explicit ref text');
+  }
+  if (matchesLooseId(hay, id)) {
+    score += 5;
+    reasons.push('requirement id text');
+  }
+  for (const ruleName of candidate.ruleNames || []) {
+    if (!ruleName || !hay.includes(String(ruleName).toLowerCase())) continue;
+    score += 7;
+    reasons.push('recording rule name');
+    break;
+  }
+  const sharedMetrics = [...panelMetrics].filter(metric => candidate.metrics?.has(metric));
+  if (sharedMetrics.length) {
+    score += Math.min(5, sharedMetrics.length * 2);
+    reasons.push(`shared metrics:${sharedMetrics.slice(0, 3).join('|')}`);
+  }
+  const sharedKeywords = [...(candidate.keywords || [])].filter(word => hay.includes(word)).slice(0, 4);
+  if (sharedKeywords.length >= 2) {
+    score += Math.min(4, sharedKeywords.length);
+    reasons.push(`keywords:${sharedKeywords.join('|')}`);
+  }
+  return { ref: candidate.ref, score, reasons };
+}
+
+function matchesLooseId(hay, id) {
+  if (!hay || !id) return false;
+  if (hay.includes(id)) return true;
+  return hay.includes(id.replace(/_/g, ':')) || hay.includes(id.replace(/_/g, '-'));
+}
+
+function keywords(text) {
+  const out = new Set();
+  for (const raw of String(text || '').toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length < 4) continue;
+    if (PROMQL_KEYWORDS.has(raw)) continue;
+    out.add(raw);
+  }
+  return out;
+}
+
+function norm(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }

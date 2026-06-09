@@ -51,6 +51,17 @@ function exporters(c)     { return spec(c).pipelines?.exporters || {}; }
 function otel(c)          { return spec(c).otel || {}; }
 function baselines(c)     { return spec(c).baselines || {}; }
 
+function extendedBackendRefs(c) {
+  const s = spec(c);
+  return [
+    s.profiling?.backend,
+    s.network?.backend,
+    s.policy_engine?.backend,
+    ...(s.mesh || []).map(x => x.backend),
+    ...(s.collection || []).map(x => x.backend),
+  ].filter(Boolean);
+}
+
 function stripRef(id) {
   if (typeof id !== 'string') return '';
   return id.replace(/^ref:/, '').replace(/^(slis|slos)\./, '');
@@ -184,6 +195,17 @@ export const RUBRIC = [
       // enforce" since the canonical example uses `warn`. Real tier-1 packs
       // should harden to `enforce`.
       return backends(c).some(b => b.version?.min && (b.version.gating === 'enforce' || b.version.gating === 'warn'));
+    },
+  },
+  {
+    id: 'L2X.MUST.extended_backend_refs_resolve', dimension: 'L2X', severity: 'MUST', minTier: 'tier-3',
+    description: 'Every extended surface references a declared telemetry backend or explicit external ref.',
+    specRef: '§5.12.4',
+    evaluate(c) {
+      const refs = extendedBackendRefs(c);
+      if (!refs.length) return true;
+      const ids = new Set(backends(c).map(b => b.id));
+      return refs.every(ref => typeof ref === 'string' && (ref.startsWith('ref:') || ids.has(ref)));
     },
   },
 

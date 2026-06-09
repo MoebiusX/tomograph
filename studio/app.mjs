@@ -25,7 +25,7 @@ import {
   focusedCompileFlavor, setFocusedCompileFlavor,
   focusedCompileArtifact, setFocusedCompileArtifact,
 } from './focus.mjs';
-import { escapeHtml, toast, fmtRelative } from './util.mjs';
+import { escapeHtml, toast, fmtRelative, installDialogFocusTrap } from './util.mjs';
 import { renderSchemaView } from './schema-view.mjs';
 import { renderConformanceView } from './conformance-view.mjs';
 import { renderOtlpView } from './otlp-view.mjs';
@@ -35,6 +35,7 @@ import { openDrawer, closeDrawer } from './drawer.mjs';
 import { renderDiscoverDashboard, renderLayersView, renderCard, cardKey } from './layers-view.mjs';
 import { renderAtlasView } from './atlas-view.mjs';
 import { renderBenchmarkView, renderComparePicker, renderTraceabilityView, refreshDiff, loadDiff, LENS_PRODUCTS } from './compare-view.mjs';
+import { catalogToDeployManifest } from './artifact-model.mjs';
 
 // `state`, the `$`/`$$` DOM helpers and the persistence layer now live in
 // studio/state.mjs (imported above).
@@ -70,6 +71,7 @@ async function rehydrateFromPersistence() {
   }
 
   // Restore non-pack UI fields up-front so the first render shows them.
+  if (typeof saved.selectedService === 'string') state.selectedService = saved.selectedService;
   if (typeof saved.view === 'string')          state.view = saved.view;
   // Migrate persisted state from prior nav layouts to the three-tab
   // model (Layers · Compare · Compile). Anything outside those three
@@ -87,6 +89,7 @@ async function rehydrateFromPersistence() {
   if (typeof saved.compareSlice === 'string')  state.compareSlice = saved.compareSlice;
   if (typeof saved.compareSearch === 'string') state.compareSearch = saved.compareSearch;
   if (typeof saved.compareLens === 'string')   state.compareLens = saved.compareLens;
+  if (typeof saved.diffScopeMode === 'string') state.diffScopeMode = saved.diffScopeMode;
   if (saved.viewFocus === 'a' || saved.viewFocus === 'b') state.viewFocus = saved.viewFocus;
   if (typeof saved.atlasVariant === 'string')  state.atlasVariant = saved.atlasVariant;
   if (typeof saved.arborView === 'string')     state.arborView = saved.arborView;
@@ -128,6 +131,13 @@ async function rehydrateFromPersistence() {
       renderEnvBSelect();
       renderTabs();
       renderMainView();
+    }).catch((e) => {
+      // Pack B restore is best-effort: keep the session usable on Pack A.
+      state.compareBId = null;
+      state.packB = null;
+      toast(`Couldn't restore Pack B: ${e.message}`, 'error');
+      renderTabs();
+      renderMainView();
     });
   }
   return true;
@@ -147,27 +157,194 @@ async function loadPack(id, env) {
 
 // ---------- selectors ----------
 
+function uploadedSourceHint(p) {
+  if (p?.source !== 'uploaded') return '';
+  const m = String(p.description || '').match(/^Uploaded pack\s+—\s+(.+)$/);
+  const source = (m?.[1] || '').trim();
+  if (!source || source === p.label || source === p.name) return '';
+  return source;
+}
+
+function packSelectLabel(p, { prefixUploaded = false } = {}) {
+  const prefix = prefixUploaded && p.source === 'uploaded' ? '📂 ' : '';
+  const version = p.version || '?';
+  const source = uploadedSourceHint(p);
+  return `${prefix}${p.label} · v${version}${source ? ` · from ${source}` : ''}`;
+}
+
+function normalizeServiceKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function serviceNamesForPack(p) {
+  const names = new Set();
+  const add = (value) => {
+    const v = String(value || '').trim();
+    if (v) names.add(v);
+  };
+  add(p?.service);
+  add(p?.namespace);
+  add(p?.name);
+  if (Array.isArray(p?.services)) p.services.forEach(add);
+  return [...names];
+}
+
+function primaryServiceName(p) {
+  return String(p?.service || p?.namespace || p?.name || p?.label || '').trim();
+}
+
+function serviceKeyForPack(p) {
+  return normalizeServiceKey(primaryServiceName(p));
+}
+
+function isLiveAggregatePack(p) {
+  const text = [
+    p?.id, p?.label, p?.name, p?.description, p?.source,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return /\b(live|mcp|production-live|draft-from-mcp)\b/.test(text);
+}
+
+function serviceCatalogue() {
+  const byKey = new Map();
+  const add = (name, p) => {
+    const key = normalizeServiceKey(name);
+    if (!key) return;
+    if (!byKey.has(key)) byKey.set(key, {
+      key,
+      label: String(name).trim(),
+      packCount: 0,
+      liveCount: 0,
+    });
+    const item = byKey.get(key);
+    if (p) {
+      if (isLiveAggregatePack(p)) item.liveCount += 1;
+      else item.packCount += 1;
+    }
+  };
+  for (const p of [...(state.catalog || []), ...(state._examplesCache || [])]) {
+    if (!p?.ok) continue;
+    const aggregate = isLiveAggregatePack(p);
+    const primaryKey = serviceKeyForPack(p);
+    if (!aggregate) add(primaryServiceName(p), p);
+    for (const svc of p.services || []) {
+      if (aggregate && normalizeServiceKey(svc) === primaryKey) continue;
+      add(svc, p);
+    }
+  }
+  const current = state.pack?.meta?.service;
+  if (current) add(current);
+  return [...byKey.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function packMatchesService(p, serviceKey, { side = 'a' } = {}) {
+  if (!serviceKey) return true;
+  if (!p?.ok) return false;
+  const keys = new Set(serviceNamesForPack(p).map(normalizeServiceKey).filter(Boolean));
+  if (keys.has(serviceKey)) return true;
+  // Pack B is often an aggregate live snapshot from a multitenant platform.
+  // Keep it available; the diff's selected service scope keeps unrelated
+  // live inventory out of the grade.
+  return side === 'b' && isLiveAggregatePack(p);
+}
+
+function ensureServiceFromPack() {
+  if (state.selectedService) return;
+  const entry = state.catalog.find(p => p.id === state.selectedPackId);
+  const key = serviceKeyForPack(entry) || normalizeServiceKey(state.pack?.meta?.service);
+  if (key) state.selectedService = key;
+}
+
+function clearPackBState() {
+  state.compareBId = null;
+  state.compareBEnv = null;
+  state.packB = null;
+  state.diff = null;
+  state.conformanceB = null;
+  state.compileCatalogB = null;
+  state.compileContentB = null;
+  state.viewFocus = 'a';
+}
+
+function renderServiceSelect() {
+  const sel = $('#service-select');
+  if (!sel) return;
+  const services = serviceCatalogue();
+  sel.innerHTML = '';
+  if (!services.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '— service —';
+    sel.appendChild(opt);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  if (!state.selectedService || !services.some(s => s.key === state.selectedService)) {
+    ensureServiceFromPack();
+    if (!state.selectedService || !services.some(s => s.key === state.selectedService)) {
+      state.selectedService = services[0].key;
+    }
+  }
+  for (const service of services) {
+    const opt = document.createElement('option');
+    opt.value = service.key;
+    opt.textContent = service.label;
+    sel.appendChild(opt);
+  }
+  sel.value = state.selectedService || '';
+  sel.onchange = () => {
+    state.selectedService = sel.value || null;
+    const currentA = state.catalog.find(p => p.id === state.selectedPackId);
+    if (state.selectedPackId && !packMatchesService(currentA, state.selectedService, { side: 'a' })) {
+      const nextA = state.catalog.find(p => p.ok && packMatchesService(p, state.selectedService, { side: 'a' }));
+      state.selectedPackId = nextA?.id || null;
+      state.selectedEnv = state.selectedPackId ? defaultEnvFor(state.selectedPackId) : null;
+      state.pack = null;
+      state.conformance = null;
+      state.symbolTable = null;
+    }
+    const currentB = [...(state.catalog || []), ...(state._examplesCache || [])].find(p => p.id === state.compareBId);
+    if (state.compareBId && !packMatchesService(currentB, state.selectedService, { side: 'b' })) clearPackBState();
+    state.diff = null;
+    renderPackSelect();
+    renderPackBSelect();
+    renderEnvSelect();
+    renderEnvBSelect();
+    renderTabs();
+    if (state.selectedPackId && state.mode !== 'home') refresh();
+    else renderMainView();
+  };
+}
+
 function renderPackSelect() {
   const sel = $('#pack-select');
   sel.innerHTML = '';
-  for (const p of state.catalog) {
+  ensureServiceFromPack();
+  const options = state.catalog.filter(p => packMatchesService(p, state.selectedService, { side: 'a' }));
+  for (const p of options) {
     const opt = document.createElement('option');
     opt.value = p.id;
     // Uploaded packs lead with a folder glyph so the user can tell
     // them apart from file-backed catalog entries at a glance. Tier
     // is omitted from the option text — it already renders as a
     // separate badge on the picker chrome.
-    const prefix = p.source === 'uploaded' ? '📂 ' : '';
     opt.textContent = p.ok
-      ? `${prefix}${p.label} · v${p.version || '?'}`
+      ? packSelectLabel(p, { prefixUploaded: true })
       : `${p.label} (error)`;
     if (!p.ok) opt.disabled = true;
     sel.appendChild(opt);
   }
-  sel.value = state.selectedPackId || (state.catalog.find(p => p.ok)?.id ?? '');
+  sel.value = state.selectedPackId || (options.find(p => p.ok)?.id ?? '');
   sel.onchange = () => {
     state.selectedPackId = sel.value;
     state.selectedEnv = defaultEnvFor(state.selectedPackId);
+    const entry = state.catalog.find(p => p.id === state.selectedPackId);
+    const key = serviceKeyForPack(entry);
+    if (key) state.selectedService = key;
+    renderServiceSelect();
     refresh();
   };
 }
@@ -191,6 +368,7 @@ function renderPackBSelect() {
   for (const p of [...cat, ...ex]) {
     if (!p?.id || !p.ok) continue;
     if (p.id === state.selectedPackId) continue;
+    if (!packMatchesService(p, state.selectedService, { side: 'b' })) continue;
     if (seen.has(p.id)) continue;
     seen.add(p.id);
     options.push(p);
@@ -198,7 +376,7 @@ function renderPackBSelect() {
   // Sort by label so the list is stable across re-renders.
   options.sort((a, b) => (a.label || a.id).localeCompare(b.label || b.id));
   sel.innerHTML = '<option value="">— none —</option>'
-    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)} · v${escapeHtml(p.version || '?')}</option>`).join('');
+    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(packSelectLabel(p))}</option>`).join('');
   sel.value = state.compareBId || '';
   sel.onchange = () => {
     const newId = sel.value || null;
@@ -679,7 +857,11 @@ async function handleFile(file) {
       // catalog so it's available there too.
       await loadCatalog();
     }
+    state.selectedService = serviceKeyForPack(state.catalog.find(p => p.id === state.selectedPackId))
+      || normalizeServiceKey(state.pack?.meta?.service)
+      || state.selectedService;
     applyModeChrome();
+    renderServiceSelect();
     renderPackSelect();
     renderPackBSelect();
     renderEnvSelect();
@@ -803,11 +985,13 @@ function setupUpload() {
 
 export async function refresh() {
   try {
+    ensureServiceFromPack();
     await loadPack(state.selectedPackId, state.selectedEnv);
     // Compile catalog is pack/env-specific — invalidate on switch so the
     // tree re-fetches the new pack's artifacts.
     state.compileCatalog = null;
     state.compileContent = null;
+    renderServiceSelect();
     renderEnvSelect();
     renderPackSelect();
     renderPackBSelect();
@@ -995,12 +1179,32 @@ function installObservaChrome() {
   const advToggle = hdr.querySelector('.observa-adv-toggle');
   const advMenu   = hdr.querySelector('.observa-adv-menu');
   const closeAdv = () => { if (advMenu) { advMenu.hidden = true; advToggle?.setAttribute('aria-expanded', 'false'); } };
+  const positionAdv = () => {
+    if (!advToggle || !advMenu) return;
+    const gap = 10;
+    const pad = 12;
+    const rect = advToggle.getBoundingClientRect();
+    const width = Math.min(280, Math.max(180, window.innerWidth - pad * 2));
+    const left = Math.min(
+      Math.max(pad, rect.right - width),
+      Math.max(pad, window.innerWidth - width - pad),
+    );
+    const top = Math.min(
+      rect.bottom + gap,
+      Math.max(pad, window.innerHeight - pad - advMenu.offsetHeight),
+    );
+    advMenu.style.width = `${width}px`;
+    advMenu.style.left = `${left}px`;
+    advMenu.style.top = `${top}px`;
+  };
   advToggle?.addEventListener('click', (e) => {
     e.stopPropagation();
     const willOpen = advMenu.hidden;
     advMenu.hidden = !willOpen;
     advToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    if (willOpen) positionAdv();
   });
+  window.addEventListener('resize', () => { if (advMenu && !advMenu.hidden) positionAdv(); });
   hdr.querySelectorAll('.observa-adv-item').forEach(item => {
     item.addEventListener('click', () => { closeAdv(); routeTo(item.dataset.view); });
   });
@@ -1057,13 +1261,7 @@ async function boot() {
   // Wire the Pack B "×" clear button.
   $('#pack-b-clear')?.addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
-    state.compareBId = null; state.compareBEnv = null;
-    state.packB = null; state.diff = null;
-    // Drop B's parallel state slots + reset focus to A.
-    state.conformanceB = null;
-    state.compileCatalogB = null;
-    state.compileContentB = null;
-    state.viewFocus = 'a';
+    clearPackBState();
     // Compare + Traceability are cross-pack only; Atlas stays available
     // in single mode (Strata / Periodic / Skyline / Arbor work on one pack).
     if (state.view === 'compare' || state.view === 'traceability') state.view = 'layers';
@@ -1071,6 +1269,7 @@ async function boot() {
       state.atlasVariant = 'strata';
     }
     applyModeChrome();
+    renderServiceSelect();
     renderPackBSelect();
     renderTabs();
     renderMainView();
@@ -1079,6 +1278,7 @@ async function boot() {
   setupCrawlPanel();
   setupDraftFromMcpPanel();
   setupDeployModal();
+  installDialogFocusTrap();
   setupHomeAffordance();   // logo click returns home
 
   // Initial live-status load + 60s soft-refresh of the badge so "3m ago"
@@ -1114,6 +1314,7 @@ function goHome() {
   state.compileContent = null;
   // Going home is the user saying "start over" — clear the persisted
   // pack/compare-B IDs so the next reload doesn't re-enter analyze mode.
+  state.selectedService = null;
   state.selectedPackId = null;
   state.selectedEnv = null;
   state.compareBId = null;
@@ -1137,9 +1338,11 @@ function enterAnalyzeMode(packId, env) {
   state.mode = 'single';
   state.selectedPackId = packId;
   state.selectedEnv    = env || defaultEnvFor(packId);
+  state.selectedService = serviceKeyForPack(state.catalog.find(p => p.id === packId)) || state.selectedService;
   state.activeLayer = 'L1';
   state.activeCardKey = null;
   applyModeChrome();
+  renderServiceSelect();
   renderPackSelect();
   refresh();
 }
@@ -1149,10 +1352,12 @@ function enterCompareMode(aId, aEnv, bId, bEnv) {
   state.mode = 'compare';
   state.selectedPackId = aId;
   state.selectedEnv    = aEnv || defaultEnvFor(aId);
+  state.selectedService = serviceKeyForPack(state.catalog.find(p => p.id === aId)) || state.selectedService;
   state.compareBId     = bId;
   state.compareBEnv    = bEnv || defaultEnvFor(bId);
   state.activeLayer    = 'COMPARE';
   applyModeChrome();
+  renderServiceSelect();
   renderPackSelect();
   refresh();
   refreshDiff();
@@ -1176,6 +1381,8 @@ function applyModeChrome() {
   document.body.dataset.view = state.view || '';
   const packSel = $('#pack-select')?.parentElement;
   const envSel  = $('#env-select')?.parentElement;
+  const serviceSel = $('#ctrl-service');
+  if (serviceSel) serviceSel.hidden = isHome || onCompare;
   if (packSel) packSel.hidden = isHome || onCompare;
   if (envSel)  envSel.hidden  = isHome || onCompare;
   // Pack B picker stays visible whenever we're not on home — empty until
@@ -1316,9 +1523,7 @@ function packPickerRowsHtml() {
 // and the FLOW is: load-or-generate a pack first, THEN see its inventory.
 // So with no pack this renders the three ways to GET a pack — crawl a
 // repo, generate live from an MCP server, or upload a manifest — plus a
-// quick picker of packs already on hand. This is deliberately NOT the
-// marketing hero (no giant headline, no Möbius loop); that hero is the
-// separate landing/reset screen.
+// quick picker of packs already on hand.
 // ============================================================
 function renderDiscoverEmpty(view) {
   const pickerRows = packPickerRowsHtml();
@@ -1489,87 +1694,6 @@ function renderHomeView() {
             <span class="home-alt-sub">walks Prom / OTel / Grafana / AM configs · or a GitHub URL</span>
           </button>
         </div>
-      </div>
-
-      <div class="home-cycle">
-        <svg class="home-cycle-svg" viewBox="0 0 960 640" xmlns="http://www.w3.org/2000/svg" role="img" font-family="'IBM Plex Sans', system-ui, sans-serif">
-          <title>The Möbius Loop — Tomograph's continuous assurance cycle</title>
-          <desc>Four stages — Declare, Compile, Observe, Verify — arranged as a closed loop around a single twisted Möbius ribbon, signifying one continuous surface with no first or last step.</desc>
-
-          <defs>
-            <pattern id="cyc-dots" width="24" height="24" patternUnits="userSpaceOnUse">
-              <circle cx="2" cy="2" r="1" fill="#1e2a3b" opacity="0.55"/>
-            </pattern>
-            <linearGradient id="cyc-mobius-grad" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#5dcaa5"/>
-              <stop offset="0.34" stop-color="#54b3d4"/>
-              <stop offset="0.67" stop-color="#8f86e8"/>
-              <stop offset="1" stop-color="#e0703f"/>
-            </linearGradient>
-            <marker id="cyc-ah" markerWidth="9" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="userSpaceOnUse">
-              <path d="M0,0 L8,3 L0,6 Z" fill="#5a6b82"/>
-            </marker>
-          </defs>
-
-          <!-- panel -->
-          <rect x="12" y="12" width="936" height="616" rx="18" fill="#0e1622" stroke="#21314a" stroke-width="1.5"/>
-          <rect x="12" y="12" width="936" height="616" rx="18" fill="url(#cyc-dots)"/>
-
-          <!-- header -->
-          <line x1="330" y1="50" x2="392" y2="50" stroke="#33485f" stroke-width="1"/>
-          <text x="480" y="55" text-anchor="middle" font-size="13" letter-spacing="4" font-weight="600" fill="#7fa9a0">THE MÖBIUS LOOP</text>
-          <line x1="568" y1="50" x2="630" y2="50" stroke="#33485f" stroke-width="1"/>
-
-          <!-- intro -->
-          <g font-family="'Newsreader', Georgia, serif" fill="#aab4c2" font-size="15.5" text-anchor="middle">
-            <text x="480" y="94">Declare once. Compile the platform. Observe it live. Verify the image still matches the system —</text>
-            <text x="480" y="118">then begin again. Like the strip it's named for, the loop is one continuous surface:</text>
-            <text x="480" y="142">no first step, no last, and nowhere for drift to hide.</text>
-          </g>
-
-          <!-- central Möbius ribbon (lemniscate) -->
-          <path d="M 480 399 C 540 329 630 329 630 399 C 630 469 540 469 480 399 C 420 329 330 329 330 399 C 330 469 420 469 480 399 Z"
-                fill="none" stroke="url(#cyc-mobius-grad)" stroke-width="16" stroke-linecap="round" opacity="0.85"/>
-          <path d="M 480 399 C 540 329 630 329 630 399 C 630 469 540 469 480 399 C 420 329 330 329 330 399 C 330 469 420 469 480 399 Z"
-                fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.10"/>
-
-          <!-- connectors (clockwise) — mirror-symmetric about x=480.
-               All four arrows attach to nodes at the same 51px inset
-               from the corner: x=706 on COMPILE (left side), x=254 on
-               VERIFY (right side), and the matching offsets on
-               DECLARE + OBSERVE for the corner-exit arrows. -->
-          <path d="M 588 276 Q 690 300 706 358" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
-          <path d="M 706 442 Q 690 502 590 522" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
-          <path d="M 370 522 Q 270 502 254 442" fill="none" stroke="#4a5b72" stroke-width="2" marker-end="url(#cyc-ah)"/>
-          <!-- closing arc: dashed return = "and again" -->
-          <path d="M 254 358 Q 270 300 372 276" fill="none" stroke="#4a5b72" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#cyc-ah)"/>
-          <text x="207" y="312" font-size="15" fill="#7fa9a0">↺</text>
-          <text x="192" y="300" font-family="'Newsreader', Georgia, serif" font-size="11" font-style="italic" fill="#6f7d90">begin again</text>
-
-          <!-- node: DECLARE (green) -->
-          <rect x="375" y="212" width="210" height="76" rx="12" fill="#141d2c" stroke="#5dcaa5" stroke-width="2"/>
-          <text x="480" y="242" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">DECLARE</text>
-          <text x="480" y="261" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">generate the pack</text>
-          <text x="480" y="277" text-anchor="middle" font-size="10.5" fill="#6f7d90">one service · one contract</text>
-
-          <!-- node: COMPILE (purple) -->
-          <rect x="655" y="362" width="210" height="76" rx="12" fill="#141d2c" stroke="#8f86e8" stroke-width="2"/>
-          <text x="760" y="392" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">COMPILE</text>
-          <text x="760" y="411" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">packc → every backend</text>
-          <text x="760" y="427" text-anchor="middle" font-size="10.5" fill="#6f7d90">Prom · Grafana · OTel · AM</text>
-
-          <!-- node: OBSERVE (cyan) -->
-          <rect x="375" y="510" width="210" height="76" rx="12" fill="#141d2c" stroke="#54b3d4" stroke-width="2"/>
-          <text x="480" y="540" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">OBSERVE</text>
-          <text x="480" y="559" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">live signal via MCP</text>
-          <text x="480" y="575" text-anchor="middle" font-size="10.5" fill="#6f7d90">"declared" becomes "verified"</text>
-
-          <!-- node: VERIFY (amber) -->
-          <rect x="95" y="362" width="210" height="76" rx="12" fill="#141d2c" stroke="#e0703f" stroke-width="2"/>
-          <text x="200" y="392" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="1.5" fill="#e9eef5">VERIFY</text>
-          <text x="200" y="411" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-style="italic" font-size="12.5" fill="#9aa6b8">scan · score · attest</text>
-          <text x="200" y="427" text-anchor="middle" font-size="10.5" fill="#6f7d90">does the image still hold?</text>
-        </svg>
       </div>
     </section>
   `;
@@ -1855,6 +1979,7 @@ async function loadAndCacheExamples() {
     const r = await api('/api/examples');
     state._examplesCache = r.examples || [];
     // Re-render the Pack B picker so the newly available options appear.
+    renderServiceSelect();
     renderPackBSelect();
   } catch (_) { state._examplesCache = []; }
   return state._examplesCache;
@@ -1869,6 +1994,7 @@ export async function loadAndCacheReferences() {
   try {
     const r = await api('/api/references');
     state._referencesCache = r.references || [];
+    renderServiceSelect();
     renderPackBSelect();
   } catch (_) { state._referencesCache = []; }
   return state._referencesCache;
@@ -2011,8 +2137,9 @@ async function refreshLive() {
     } else {
       // Refresh the catalog so the production-live entry's ok-state updates.
       await loadCatalog();
+      renderServiceSelect();
       renderPackSelect();
-    renderPackBSelect();
+      renderPackBSelect();
     }
   } catch (e) {
     setRefreshStatus(`error: ${e.message}`, 'error');
@@ -2039,7 +2166,7 @@ function setRefreshStatus(msg, kind = '') {
 // loads into the active session just like any other pack.
 // ============================================================
 
-const CRAWL_SCAN_EXT = /\.(ya?ml|json)$/i;
+const CRAWL_SCAN_EXT = /\.(ya?ml|json|cjs|mjs|js|jsx|ts|tsx|py|go|java|kt|rs|cs)$/i;
 const CRAWL_IGNORE_DIRS = new Set([
   '.git', '.github', '.gitlab', '.circleci',     // CI and version control
   'node_modules', 'vendor', 'venv', '.venv',
@@ -2098,7 +2225,7 @@ function setupCrawlPanel() {
       multiInput = document.createElement('input');
       multiInput.type = 'file';
       multiInput.multiple = true;
-      multiInput.accept = '.yaml,.yml,.json';
+      multiInput.accept = '.yaml,.yml,.json,.cjs,.mjs,.js,.jsx,.ts,.tsx,.py,.go,.java,.kt,.rs,.cs';
       multiInput.style.display = 'none';
       multiInput.addEventListener('change', () => {
         if (multiInput.files?.length) stageFileList(multiInput.files, null);
@@ -2318,6 +2445,7 @@ async function doCrawl() {
     files,
     repoName:   $('#crawl-name').value.trim() || crawlState.rootName || 'crawled-service',
     environment:$('#crawl-env').value.trim() || 'prod',
+    diffScopeMode: $('#crawl-diff-scope')?.value || 'service',
   };
   const crit = $('#crawl-criticality').value;
   if (crit) body.criticality = crit;
@@ -2369,6 +2497,7 @@ async function doCrawlFromGithub() {
     ref,
     repoName:   $('#crawl-name').value.trim() || undefined,  // server falls back to owner/repo
     environment:$('#crawl-env').value.trim() || 'prod',
+    diffScopeMode: $('#crawl-diff-scope')?.value || 'service',
     // Quick-start cases pass a friendly label via the global so the
     // picker doesn't read "moebiusx-krystalinex" but the human name.
     label:      window._tomographQuickLabel || undefined,
@@ -2432,10 +2561,18 @@ function renderCrawlResult(out) {
 
   // Discovery summary
   const s = out.summary.discovered;
+  const f = out.summary.files || {};
+  const env = out.summary.environment || {};
+  const comparison = out.summary.comparison || {};
   $('#crawl-result-summary').innerHTML = `
     <h4>what we found</h4>
     <table class="crawl-summary-table">
+      <tr><td>environment scope</td><td>${escapeHtml(env.profile || 'none')}${env.scoped ? ` · ${f.excludedByEnvironment || 0} excluded` : ''}</td></tr>
+      <tr><td>live scope</td><td>${escapeHtml(comparison.diffScopeMode || 'service')}</td></tr>
+      <tr><td>files used</td><td>${f.included ?? f.scanned ?? 0} / ${f.scanned ?? 0}</td></tr>
       <tr><td>backends</td><td>${s.backends}</td></tr>
+      <tr><td>metric definitions</td><td>${s.metricDefinitions || 0}</td></tr>
+      <tr><td>telemetry sources</td><td>${s.scrapeJobs || 0}</td></tr>
       <tr><td>recording rules</td><td>${s.recordingRules}</td></tr>
       <tr><td>burn-rate alerts</td><td>${s.burnRateAlerts}</td></tr>
       <tr><td>dashboards</td><td>${s.dashboards}</td></tr>
@@ -2498,7 +2635,9 @@ async function adoptValidatedPack(res, sourceLabel, kind) {
     state.mode = 'single';
     state.view = 'layers';
     state.activeLayer = 'L1';
+    state.selectedService = normalizeServiceKey(state.pack?.meta?.service) || state.selectedService;
     applyModeChrome();
+    renderServiceSelect();
     renderPackSelect();
     renderPackBSelect();
     renderEnvSelect();
@@ -2509,6 +2648,9 @@ async function adoptValidatedPack(res, sourceLabel, kind) {
   }
 
   await loadCatalog();
+  if (kind === 'repo') {
+    state.selectedService = serviceKeyForPack(state.catalog.find(p => p.id === newId)) || state.selectedService;
+  }
 
   const prevA = state.selectedPackId;
   const prevB = state.compareBId;
@@ -2629,8 +2771,11 @@ function setupDeployModal() {
   $('#deploy-manifest-all').onclick     = () => bulkSelectVisibleManifest(true);
   $('#deploy-manifest-none').onclick    = () => bulkSelectVisibleManifest(false);
 
-  // Esc closes
-  modal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDeployModal(); });
+  // Esc closes even when focus is inside a field. The modal itself is
+  // focusable, but target fields usually own focus during deploy.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !modal.hidden) closeDeployModal();
+  });
 }
 
 export function openDeployModal({ packId, packLabel, presetIdentities } = {}) {
@@ -2754,7 +2899,7 @@ async function loadDeployManifest(packId) {
     const params = new URLSearchParams();
     if (state.selectedEnv) params.set('env', state.selectedEnv);
     const cat = await api(`/api/packs/${encodeURIComponent(packId)}/compile-catalog?${params}`);
-    deployModalState.manifest = catalogToManifest(cat);
+    deployModalState.manifest = catalogToDeployManifest(cat);
     // Default-select: when a preset (from the Remediate plan) is present,
     // select only deployable rows whose id matches a preset identity; fall
     // back to all-deployable if nothing matched (safe — never deploys
@@ -2779,65 +2924,6 @@ async function loadDeployManifest(packId) {
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="5" class="error">Could not load manifest: ${escapeHtml(e.message)}</td></tr>`;
   }
-}
-
-// Map a compile catalog (groups → items) to a flat manifest with
-// per-row deploy semantics. Rules' per-SLO items expand into separate
-// recording + alerting rows so the type filter is meaningful.
-function catalogToManifest(catalog) {
-  const out = [];
-  for (const g of (catalog.groups || [])) {
-    const deployable = g.flavors?.some(f => f.deployable);
-    if (g.id === 'rules') {
-      // Per-SLO items: each becomes TWO rows (recording + alerting).
-      // The 'all' bundle becomes one row of each flavor as well.
-      for (const it of g.items) {
-        if (it.kind === 'rules-slo') {
-          out.push({
-            key: `rules:recording:slo:${it.sloId}`,
-            type: 'recording',
-            name: `${it.label} (recording rules)`,
-            id: it.sloId,
-            group: 'rules', flavor: 'prometheus', artifact: `slo:${it.sloId}`, scope: 'recording',
-            deployable, source: 'Repo',
-          });
-          out.push({
-            key: `rules:alert:slo:${it.sloId}`,
-            type: 'alert',
-            name: `${it.label} (burn-rate alerts)`,
-            id: it.sloId,
-            group: 'rules', flavor: 'prometheus', artifact: `slo:${it.sloId}`, scope: 'alerting',
-            deployable, source: 'Repo',
-          });
-        } else if (it.kind === 'rules-declared') {
-          out.push({
-            key: `rules:recording:declared:${it.ruleIndex}`,
-            type: 'recording',
-            name: it.label,
-            id: it.ruleName || it.id,
-            group: 'rules', flavor: 'prometheus', artifact: `declared:${it.ruleIndex}`, scope: 'recording',
-            deployable, source: 'Repo',
-          });
-        }
-      }
-    } else if (g.id === 'dashboards') {
-      for (const it of g.items) {
-        if (it.kind !== 'dashboard') continue;
-        out.push({
-          key: `dashboards:${it.dashboardId}`,
-          type: 'dashboard',
-          name: it.label,
-          id: it.dashboardId,
-          subtitle: it.subtitle,
-          group: 'dashboards', flavor: 'grafana', dashboardId: it.dashboardId,
-          deployable, source: 'Repo',
-        });
-      }
-    }
-    // pipelines + alertmanager are excluded from the Grafana deploy
-    // surface — they're emitted by compile but not deployable here.
-  }
-  return out;
 }
 
 function renderDeployManifestTable() {
@@ -2964,7 +3050,7 @@ function renderDeployBulkResult(body) {
     <tr class="${r.ok ? 'is-ok' : 'is-err'}">
       <td>${r.ok ? '✓' : '✗'}</td>
       <td><code>${escapeHtml(r.item?.group || '')}/${escapeHtml(r.item?.artifact || '')}</code></td>
-      <td>${r.ok ? `${r.bytes || 0} b · ${r.tool || ''}` : escapeHtml(r.error || 'failed')}</td>
+      <td>${r.ok ? `${r.operations || 1} op · ${r.bytes || 0} b · ${r.tool || ''}` : escapeHtml(r.error || 'failed')}</td>
       <td>${r.tookMs || 0} ms</td>
     </tr>
   `).join('');

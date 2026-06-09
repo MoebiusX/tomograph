@@ -38,6 +38,7 @@ import { evaluateConformance, RUBRIC } from '../tools/lib/conformance.mjs';
 import { crawlFiles, crawlToYaml } from '../tools/lib/crawler.mjs';
 import { fetchMcp, buildCanonicalPack, createMcpClient } from '../tools/fetch-live-pack.mjs';
 import { diffPacks } from '../tools/lib/diff.mjs';
+import { comparePackBranches } from '../tools/lib/traceability-graph.mjs';
 import { compile, listTargets, compileCatalog, compileArtifact } from '../tools/lib/compile.mjs';
 import { makeZip } from '../tools/lib/zip.mjs';
 
@@ -75,7 +76,7 @@ const EXAMPLE_PACKS = [
   {
     id: 'payment-service',
     label: 'Payment service (canonical example)',
-    path: 'examples/payment-service.pack.yaml',
+    path: 'vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml',
     description: "The spec repo's reference tier-1 pack — HTTP API + Kafka consumer.",
   },
   {
@@ -221,6 +222,7 @@ function loadPackCanonical(meta) {
 function catalogEntry(meta) {
   try {
     const c = loadPackFile(meta.path);
+    const svc = serviceMetadata(c);
     return {
       id: meta.id,
       label: meta.label,
@@ -229,6 +231,9 @@ function catalogEntry(meta) {
       version: c.metadata?.version,
       binding: c.metadata?.binding,
       criticality: c.metadata?.bindings?.criticality,
+      service: svc.service,
+      namespace: svc.namespace,
+      services: svc.services,
       environments: listEnvironments(c),
       ok: true,
     };
@@ -237,8 +242,90 @@ function catalogEntry(meta) {
   }
 }
 
+function serviceMetadata(canonical) {
+  const bindings = canonical?.metadata?.bindings || {};
+  const annotations = canonical?.metadata?.annotations || {};
+  const services = new Set();
+  const add = (value) => {
+    for (const part of String(value || '').split(',')) {
+      const service = part.trim();
+      if (service) services.add(service);
+    }
+  };
+  add(bindings.service);
+  add(bindings.namespace);
+  add(annotations['mcp.servicesDiscovered']);
+  add(annotations['tomograph.services']);
+  return {
+    service: bindings.service || canonical?.metadata?.name || '',
+    namespace: bindings.namespace || bindings.service || canonical?.metadata?.name || '',
+    services: [...services].sort(),
+  };
+}
+
 function readEnv(query) {
   return typeof query.env === 'string' && query.env ? query.env : null;
+}
+
+// ---------- MCP URL validation (SSRF guard) ----------
+//
+// Every deploy / draft / refresh endpoint fetches a caller-supplied mcpUrl
+// server-side, which is a server-side request forgery vector if the URL is
+// taken on faith. validateMcpUrl() is the single gate:
+//   - only http(s) is accepted (no file:, ftp:, gopher:, ...);
+//   - localhost / private / link-local addresses are allowed by default
+//     (a local MCP server is the normal dev setup) but logged per use;
+//     set TOMOGRAPH_ALLOW_LOCAL_MCP=0 to turn them into 400s when the
+//     studio is exposed beyond the developer's own machine;
+//   - the returned safeUrl has credentials stripped — stderr logs must use
+//     it (or redactCredentials), never the raw URL.
+// Hostnames that RESOLVE to private addresses are not caught (no DNS
+// lookup here); the literal-IP check covers hex/decimal/octal IPv4 forms
+// because the WHATWG URL parser normalises those to dotted-decimal.
+
+const PRIVATE_V4 = [
+  /^127\./, /^10\./, /^192\.168\./, /^169\.254\./, /^0\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+];
+
+function isLocalOrPrivateHost(hostname) {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (PRIVATE_V4.some(re => re.test(host))) return true;
+  // IPv6: loopback/unspecified, unique-local fc00::/7, link-local fe80::/10,
+  // and IPv4-mapped forms of any of the above.
+  if (host === '::1' || host === '::') return true;
+  if (/^f[cd]/.test(host) || /^fe[89ab]/.test(host)) return true;
+  if (host.startsWith('::ffff:')) return isLocalOrPrivateHost(host.slice(7));
+  return false;
+}
+
+function redactCredentials(text) {
+  return String(text).replace(/\/\/[^/\s@]+@/g, '//***@');
+}
+
+// Returns { safeUrl } when the URL is fetchable, { error } when it must be
+// rejected with a 400. safeUrl is the parsed URL with credentials removed.
+function validateMcpUrl(raw) {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { error: `mcpUrl is not a valid URL: ${redactCredentials(raw)}` };
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { error: `mcpUrl must be http or https; got scheme '${url.protocol.replace(/:$/, '')}'` };
+  }
+  url.username = '';
+  url.password = '';
+  const safeUrl = url.href;
+  if (isLocalOrPrivateHost(url.hostname)) {
+    if (process.env.TOMOGRAPH_ALLOW_LOCAL_MCP === '0') {
+      return { error: `mcpUrl targets a local/private address (${url.hostname}), which TOMOGRAPH_ALLOW_LOCAL_MCP=0 forbids` };
+    }
+    process.stderr.write(`[mcp-url] note: ${safeUrl} targets a local/private address; set TOMOGRAPH_ALLOW_LOCAL_MCP=0 to refuse these\n`);
+  }
+  return { safeUrl };
 }
 
 // Returns a canonical object with the env overlay applied to spec.* AND
@@ -318,6 +405,7 @@ function catalogEntryForUpload(id) {
   const meta = uploadedMeta(id);
   if (!meta) return null;
   const c = meta.canonical;
+  const svc = serviceMetadata(c);
   return {
     id,
     label: meta.label,
@@ -326,6 +414,9 @@ function catalogEntryForUpload(id) {
     version: c?.metadata?.version,
     binding: c?.metadata?.binding,
     criticality: c?.metadata?.bindings?.criticality,
+    service: svc.service,
+    namespace: svc.namespace,
+    services: svc.services,
     environments: listEnvironments(c),
     source: 'uploaded',
     ok: true,
@@ -417,12 +508,19 @@ app.get('/api/diff', (req, res) => {
   if (!bMeta) return res.status(404).json({ error: `unknown pack: ${bId}` });
   const aEnv = typeof req.query.aEnv === 'string' && req.query.aEnv ? req.query.aEnv : null;
   const bEnv = typeof req.query.bEnv === 'string' && req.query.bEnv ? req.query.bEnv : null;
+  const requestedScopeMode = typeof req.query.scopeMode === 'string' ? req.query.scopeMode : undefined;
+  const requestedService = typeof req.query.service === 'string' && req.query.service ? req.query.service : undefined;
   try {
     const aCanonical = loadPackCanonical(aMeta);
     const bCanonical = loadPackCanonical(bMeta);
+    const annotatedScopeMode = aCanonical.metadata?.annotations?.['tomograph.diff.scopeMode'];
+    const scopeMode = requestedScopeMode || annotatedScopeMode;
     const aLayered = adapt(aCanonical, { environment: aEnv });
     const bLayered = adapt(bCanonical, { environment: bEnv });
-    res.json(diffPacks(aLayered, bLayered));
+    res.json({
+      ...diffPacks(aLayered, bLayered, { scopeMode, service: requestedService }),
+      traceabilityGraph: comparePackBranches(aLayered, bLayered),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -542,19 +640,45 @@ const DEPLOY_VERSIONS = {
   grafana: ['12', '13'],
 };
 const RULES_SCOPES = ['both', 'recording', 'alerting'];
+const GRAFANA_ALERT_RULE_TOOL = 'grafana_create_alert_rule';
+const GRAFANA_DASHBOARD_TOOL = 'grafana_create_dashboard';
+const GRAFANA_FOLDER_DEFAULT = 'observability-pack';
 
 // (product, target) → default MCP tool name. The server lets the client
 // override via body.mcpTool; this dispatch supplies the convention.
 function defaultDeployTool({ product, target, scope }) {
   if (product === 'grafana') {
     if (target === 'prometheus-rules') {
-      if (scope === 'recording') return 'apply_grafana_recording_rules';
-      if (scope === 'alerting')  return 'apply_grafana_alerting_rules';
-      return 'apply_grafana_rules';   // both
+      return GRAFANA_ALERT_RULE_TOOL;
     }
-    if (target === 'grafana-dashboard') return 'apply_grafana_dashboard';
+    if (target === 'grafana-dashboard') return GRAFANA_DASHBOARD_TOOL;
   }
   return null;   // not deployable
+}
+
+async function discoverMcpToolNames(rpc) {
+  try {
+    const out = await rpc('tools/list');
+    return (out?.tools || []).map(t => t?.name).filter(Boolean).sort();
+  } catch (_) {
+    return null;
+  }
+}
+
+function deployToolMissingError(tool, availableTools) {
+  const related = (availableTools || [])
+    .filter(t => /apply|deploy|create|upsert|write|provision|grafana|rule|dashboard/i.test(t))
+    .slice(0, 18);
+  let hint = 'Configure a Grafana write-capable MCP gateway, or add a compatible deploy adapter before retrying.';
+  if (tool === GRAFANA_ALERT_RULE_TOOL) {
+    hint = 'For otel-mcp-server, set MCP_ENABLE_WRITES=true, configure GRAFANA_URL and GRAFANA_AUTH_TOKEN with alert.provisioning:write on the MCP server, and pass a valid MCP client key in Tomograph when MCP_AUTH_KEYS is configured.';
+  } else if (tool === GRAFANA_DASHBOARD_TOOL) {
+    hint = 'For otel-mcp-server, set MCP_ENABLE_WRITES=true, configure GRAFANA_URL and GRAFANA_AUTH_TOKEN with dashboards:write on the MCP server, and pass a valid MCP client key in Tomograph when MCP_AUTH_KEYS is configured.';
+  }
+  const suffix = related.length
+    ? ` Advertised related tools: ${related.join(', ')}.`
+    : ' No related write-capable tools were advertised.';
+  return `MCP endpoint does not expose required deploy tool '${tool}'.${suffix} ${hint}`;
 }
 
 function targetIsDeployable(target) {
@@ -613,6 +737,89 @@ function filterPromRulesScope(yamlText, scope) {
   return header + emitYaml(obj);
 }
 
+function scopeMatchesGrafanaRule(rule, scope) {
+  if (!scope || scope === 'both') return true;
+  const isRecording = !!rule?.record;
+  return scope === 'recording' ? isRecording : !isRecording;
+}
+
+function normalizeGrafanaProvisioningRule(rule, group = {}, folder = '') {
+  const out = { ...(rule || {}) };
+  if (out.noDataState === undefined && out.no_data_state !== undefined) {
+    out.noDataState = out.no_data_state;
+    delete out.no_data_state;
+  }
+  if (out.execErrState === undefined && out.exec_err_state !== undefined) {
+    out.execErrState = out.exec_err_state;
+    delete out.exec_err_state;
+  }
+  if (out.isPaused === undefined && out.is_paused !== undefined) {
+    out.isPaused = out.is_paused;
+    delete out.is_paused;
+  }
+  if (out.folderUID === undefined) {
+    out.folderUID = folder || group.folderUID || group.folderUid || group.folder || GRAFANA_FOLDER_DEFAULT;
+  }
+  if (out.ruleGroup === undefined) {
+    out.ruleGroup = group.name || 'observability-pack';
+  }
+  return out;
+}
+
+function grafanaRulesFromProvisioningYaml(yamlText, { scope = 'both', folder = '' } = {}) {
+  const obj = parseYaml(String(yamlText || '').replace(/^(\s*#[^\n]*\n)+/, ''));
+  const groups = Array.isArray(obj?.groups) ? obj.groups : [];
+  const rules = [];
+  for (const group of groups) {
+    for (const rule of (Array.isArray(group?.rules) ? group.rules : [])) {
+      if (!scopeMatchesGrafanaRule(rule, scope)) continue;
+      rules.push(normalizeGrafanaProvisioningRule(rule, group, folder));
+    }
+  }
+  return rules;
+}
+
+function dashboardFromCompiledJson(jsonText) {
+  const dashboard = JSON.parse(jsonText);
+  if (!dashboard || typeof dashboard !== 'object' || Array.isArray(dashboard)) {
+    throw new Error('compiled dashboard did not produce a Grafana dashboard object');
+  }
+  return dashboard;
+}
+
+function buildNativeDeployCalls({ target, compiled, scope, folder, tool, mode = 'upsert', dryRun = false, message }) {
+  if (tool === GRAFANA_ALERT_RULE_TOOL) {
+    const rules = grafanaRulesFromProvisioningYaml(compiled.content, { scope, folder });
+    if (!rules.length) {
+      throw new Error(`no Grafana-managed ${scope && scope !== 'both' ? scope + ' ' : ''}rules found in compiled artefact`);
+    }
+    return rules.map(rule => ({
+      tool,
+      args: { rule, mode, dry_run: dryRun },
+      bytes: JSON.stringify(rule).length,
+      name: rule.title || rule.uid || rule.record?.metric || 'rule',
+      kind: rule.record ? 'recording' : 'alerting',
+    }));
+  }
+  if (tool === GRAFANA_DASHBOARD_TOOL) {
+    const dashboard = dashboardFromCompiledJson(compiled.content);
+    return [{
+      tool,
+      args: {
+        dashboard,
+        folder_uid: folder || undefined,
+        message: message || undefined,
+        mode,
+        dry_run: dryRun,
+      },
+      bytes: JSON.stringify(dashboard).length,
+      name: dashboard.title || dashboard.uid || compiled.filename,
+      kind: 'dashboard',
+    }];
+  }
+  return null;
+}
+
 // ----------------------------------------------------------------
 // POST /api/packs/:id/deploy-bulk — multi-artefact deploy.
 // Body: {
@@ -634,10 +841,14 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   const product = (typeof body.targetProduct === 'string' && body.targetProduct.trim()) ? body.targetProduct.trim() : 'grafana';
   const version = (typeof body.targetVersion === 'string' && body.targetVersion.trim()) ? body.targetVersion.trim() : '12';
   const folder  = typeof body.targetFolder === 'string' ? body.targetFolder.trim() : '';
+  const mode = ['create', 'upsert', 'update'].includes(body.mode) ? body.mode : 'upsert';
+  const dryRun = body.dryRun === true || body.dry_run === true;
   const items = Array.isArray(body.items) ? body.items : null;
   const env = readEnv(req.query);
 
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
+  if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
   if (!items || items.length === 0) return res.status(400).json({ ok: false, error: 'items array required and must be non-empty' });
   if (!DEPLOY_PRODUCTS.includes(product)) return res.status(400).json({ ok: false, error: `unsupported target product: ${product}` });
   if (!DEPLOY_VERSIONS[product]?.includes(version)) return res.status(400).json({ ok: false, error: `unsupported ${product} version: ${version}` });
@@ -659,9 +870,11 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
     capabilities: {},
     clientInfo: { name: 'observabilitypack-studio-deploy-bulk', version: '0.3.0' },
   }).catch(() => {});
+  const availableTools = await discoverMcpToolNames(rpc);
+  const missingTools = new Set();
 
   const results = [];
-  process.stderr.write(`[deploy-bulk] ${meta.id} -> ${mcpUrl} (${items.length} item${items.length === 1 ? '' : 's'}, ${product} ${version})\n`);
+  process.stderr.write(`[deploy-bulk] ${meta.id} -> ${safeMcpUrl} (${items.length} item${items.length === 1 ? '' : 's'}, ${product} ${version})\n`);
 
   for (const item of items) {
     const itStart = Date.now();
@@ -669,7 +882,7 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
     try {
       const compiled = compileArtifact(overlaid, {
         group: item.group,
-        flavor: item.flavor,
+        flavor: (product === 'grafana' && item.group === 'rules') ? 'grafana-managed' : item.flavor,
         artifact: item.artifact || 'all',
         dashboardId: item.dashboardId,
       });
@@ -679,26 +892,44 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
         results.push({ item, ok: false, error: `no default deploy tool for (${product}, ${itemTarget})`, tookMs: Date.now() - itStart });
         continue;
       }
-      // Filter rules to scope if applicable.
-      const payload = (itemTarget === 'prometheus-rules' && scope && scope !== 'both')
-        ? filterPromRulesScope(compiled.content, scope)
-        : compiled.content;
-      const result = await callTool(tool, {
-        payload,
-        content_type: compiled.contentType,
-        environment: env || undefined,
-        filename: compiled.filename,
-        pack_source: `${meta.id}@${overlaid?.metadata?.version || '?'}`,
+      if (availableTools && !availableTools.includes(tool)) {
+        missingTools.add(tool);
+        results.push({ item, ok: false, tool, error: deployToolMissingError(tool, availableTools), tookMs: Date.now() - itStart });
+        continue;
+      }
+      const nativeCalls = buildNativeDeployCalls({
         target: itemTarget,
-        target_product: product,
-        target_version: version,
+        compiled,
         scope,
-        folder: folder || undefined,
-        artifact_group: item.group,
-        artifact_flavor: item.flavor,
-        artifact_id: item.artifact,
+        folder,
+        tool,
+        mode,
+        dryRun,
+        message: `Tomograph deploy ${meta.id}@${overlaid?.metadata?.version || '?'}`,
       });
-      results.push({ item, ok: true, tool, bytes: payload.length, tookMs: Date.now() - itStart, result });
+      if (!nativeCalls) {
+        results.push({ item, ok: false, tool, error: `no native deploy adapter for '${tool}'`, tookMs: Date.now() - itStart });
+        continue;
+      }
+      const callResults = [];
+      for (const call of nativeCalls) {
+        callResults.push({
+          name: call.name,
+          kind: call.kind,
+          result: await callTool(call.tool, call.args),
+        });
+      }
+      results.push({
+        item,
+        ok: true,
+        tool,
+        mode,
+        dryRun,
+        operations: nativeCalls.length,
+        bytes: nativeCalls.reduce((sum, c) => sum + c.bytes, 0),
+        tookMs: Date.now() - itStart,
+        result: callResults,
+      });
     } catch (e) {
       results.push({ item, ok: false, error: e.message, tookMs: Date.now() - itStart });
     }
@@ -714,6 +945,10 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
     targetProduct: product,
     targetVersion: version,
     targetFolder: folder || null,
+    mode,
+    dryRun,
+    missingTools: [...missingTools],
+    mcpToolsAvailable: availableTools,
     env,
     tookMs: totalMs,
   });
@@ -738,6 +973,9 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
     ? body.targetProduct.trim() : 'grafana';
   const version = (typeof body.targetVersion === 'string' && body.targetVersion.trim())
     ? body.targetVersion.trim() : '12';
+  const folder = typeof body.targetFolder === 'string' ? body.targetFolder.trim() : '';
+  const mode = ['create', 'upsert', 'update'].includes(body.mode) ? body.mode : 'upsert';
+  const dryRun = body.dryRun === true || body.dry_run === true;
   const scope = (target === 'prometheus-rules' && typeof body.scope === 'string' && RULES_SCOPES.includes(body.scope))
     ? body.scope : (target === 'prometheus-rules' ? 'both' : undefined);
 
@@ -758,20 +996,25 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
   const env = readEnv(req.query);
   const dashboardId = typeof req.query.dashboardId === 'string' ? req.query.dashboardId : undefined;
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
+  if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
 
   const t0 = Date.now();
   try {
     const canonical = loadPackCanonical(meta);
     const { canonical: overlaid } = overlaidCanonical(canonical, env);
-    const compiled = compile(overlaid, target, { dashboardId });
+    const nativeTool = mcpTool === GRAFANA_ALERT_RULE_TOOL || mcpTool === GRAFANA_DASHBOARD_TOOL;
+    const compiled = (mcpTool === GRAFANA_ALERT_RULE_TOOL && product === 'grafana' && target === 'prometheus-rules')
+      ? compileArtifact(overlaid, { group: 'rules', flavor: 'grafana-managed', artifact: 'all' })
+      : compile(overlaid, target, { dashboardId });
 
     // For rules deploy, apply the scope filter (recording-only / alerting-only).
     const payload = (target === 'prometheus-rules')
       ? filterPromRulesScope(compiled.content, scope)
       : compiled.content;
 
-    process.stderr.write(`[deploy] ${meta.id}@${canonical.metadata?.version || '?'} -> ${mcpUrl} via ${mcpTool} ` +
-      `(${product} ${version}, target=${target}, scope=${scope || '—'}, env=${env || 'none'}, ${payload.length}b)\n`);
+    process.stderr.write(`[deploy] ${meta.id}@${canonical.metadata?.version || '?'} -> ${safeMcpUrl} via ${mcpTool} ` +
+      `(${product} ${version}, target=${target}, scope=${scope || '—'}, env=${env || 'none'}, mode=${mode}, ${payload.length}b)\n`);
 
     const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth });
     await rpc('initialize', {
@@ -780,35 +1023,69 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
       clientInfo: { name: 'observabilitypack-studio-deploy', version: '0.3.0' },
     }).catch(() => {});
 
-    const args = {
-      payload,
-      content_type: compiled.contentType,
-      environment: env || undefined,
-      filename: compiled.filename,
-      pack_source: `${meta.id}@${canonical.metadata?.version || '?'}`,
-      target,
-      target_product: product,
-      target_version: version,
-      scope: scope || undefined,
-    };
-    const result = await callTool(mcpTool, args);
+    const availableTools = await discoverMcpToolNames(rpc);
+    if (availableTools && !availableTools.includes(mcpTool)) {
+      throw new Error(deployToolMissingError(mcpTool, availableTools));
+    }
+
+    let result;
+    let bytes = payload.length;
+    let operations = 1;
+    if (nativeTool) {
+      const nativeCalls = buildNativeDeployCalls({
+        target,
+        compiled,
+        scope,
+        folder,
+        tool: mcpTool,
+        mode,
+        dryRun,
+        message: `Tomograph deploy ${meta.id}@${canonical.metadata?.version || '?'}`,
+      });
+      result = [];
+      operations = nativeCalls.length;
+      bytes = nativeCalls.reduce((sum, c) => sum + c.bytes, 0);
+      for (const call of nativeCalls) {
+        result.push({
+          name: call.name,
+          kind: call.kind,
+          result: await callTool(call.tool, call.args),
+        });
+      }
+    } else {
+      const args = {
+        payload,
+        content_type: compiled.contentType,
+        environment: env || undefined,
+        filename: compiled.filename,
+        pack_source: `${meta.id}@${canonical.metadata?.version || '?'}`,
+        target,
+        target_product: product,
+        target_version: version,
+        scope: scope || undefined,
+        folder: folder || undefined,
+      };
+      result = await callTool(mcpTool, args);
+    }
 
     const tookMs = Date.now() - t0;
     process.stderr.write(`[deploy]   ok in ${tookMs}ms\n`);
     res.json({
       ok: true,
       target, env, tool: mcpTool, mcpUrl,
-      targetProduct: product, targetVersion: version, scope: scope || null,
+      targetProduct: product, targetVersion: version, scope: scope || null, targetFolder: folder || null,
+      mode, dryRun, operations,
       filename: compiled.filename,
-      bytes: payload.length,
+      bytes,
       tookMs,
       result,
     });
   } catch (e) {
     const tookMs = Date.now() - t0;
-    process.stderr.write(`[deploy]   error in ${tookMs}ms: ${e.message}\n`);
+    process.stderr.write(`[deploy]   error in ${tookMs}ms: ${redactCredentials(e.message)}\n`);
     res.status(502).json({ ok: false, error: e.message, tool: mcpTool, target,
-      targetProduct: product, targetVersion: version, scope: scope || null, env, tookMs });
+      targetProduct: product, targetVersion: version, scope: scope || null, targetFolder: folder || null,
+      mode, dryRun, env, tookMs });
   }
 });
 
@@ -853,9 +1130,9 @@ app.get('/api/maturity-rubric', (req, res) => {
 // production path. This in-browser endpoint exists so a dev session can
 // kick off an ad-hoc refresh from a local MCP without spawning a process.
 
-// Phase 7q archived the bundled packs to examples/; the cron-driven
-// refresh-live-pack workflow writes there too. Keep this aligned so the
-// live-status badge actually finds the file.
+// Local live refreshes write this ignored runtime file. It is deliberately not
+// a committed example; the live-status badge reports absent until a refresh
+// creates it in the working tree.
 const LIVE_PACK_PATH = 'examples/production-live.pack.yaml';
 
 app.get('/api/live-status', (req, res) => {
@@ -901,10 +1178,12 @@ app.post('/api/draft-from-mcp', async (req, res) => {
     ? body.packName.trim()
     : null;
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
+  if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
 
   const t0 = Date.now();
   try {
-    process.stderr.write(`[draft-from-mcp] POST -> ${mcpUrl}\n`);
+    process.stderr.write(`[draft-from-mcp] POST -> ${safeMcpUrl}\n`);
     const fetched = await fetchMcp({ mcpUrl, mcpAuth });
     const refreshedAt = new Date().toISOString();
     const pack = buildCanonicalPack({ refreshedAt, mcpUrl, packName, ...fetched });
@@ -1030,7 +1309,7 @@ app.post('/api/draft-from-mcp', async (req, res) => {
       tookMs: Date.now() - t0,
     });
   } catch (e) {
-    process.stderr.write(`[draft-from-mcp]   error in ${Date.now() - t0}ms: ${e.message}\n`);
+    process.stderr.write(`[draft-from-mcp]   error in ${Date.now() - t0}ms: ${redactCredentials(e.message)}\n`);
     res.status(502).json({ ok: false, error: e.message, tookMs: Date.now() - t0 });
   }
 });
@@ -1060,10 +1339,12 @@ app.post('/api/refresh-live', async (req, res) => {
   const mcpUrl = typeof body.mcpUrl === 'string' && body.mcpUrl.trim() ? body.mcpUrl.trim() : null;
   const mcpAuth = typeof body.mcpAuth === 'string' && body.mcpAuth ? body.mcpAuth : null;
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
+  if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
 
   const t0 = Date.now();
   try {
-    process.stderr.write(`[refresh-live] POST /api/refresh-live -> ${mcpUrl}\n`);
+    process.stderr.write(`[refresh-live] POST /api/refresh-live -> ${safeMcpUrl}\n`);
     const fetched = await fetchMcp({ mcpUrl, mcpAuth });
     const refreshedAt = new Date().toISOString();
     const pack = buildCanonicalPack({ refreshedAt, mcpUrl, ...fetched });
@@ -1084,7 +1365,7 @@ app.post('/api/refresh-live', async (req, res) => {
       annotations: pack.metadata.annotations,
     });
   } catch (e) {
-    process.stderr.write(`[refresh-live]   error in ${Date.now() - t0}ms: ${e.message}\n`);
+    process.stderr.write(`[refresh-live]   error in ${Date.now() - t0}ms: ${redactCredentials(e.message)}\n`);
     res.status(502).json({ ok: false, error: e.message, details: e.details });
   }
 });
@@ -1136,6 +1417,7 @@ app.post('/api/crawl', (req, res) => {
   const opts = {
     repoName: typeof body.repoName === 'string' ? body.repoName : undefined,
     environment: typeof body.environment === 'string' ? body.environment : undefined,
+    diffScopeMode: typeof body.diffScopeMode === 'string' ? body.diffScopeMode : undefined,
     criticality: typeof body.criticality === 'string' ? body.criticality : undefined,
     binding: typeof body.binding === 'string' ? body.binding : undefined,
     owners: Array.isArray(body.owners) ? body.owners.map(String) : undefined,
@@ -1192,7 +1474,7 @@ app.post('/api/crawl', (req, res) => {
 // Auth: respects GITHUB_TOKEN env var for higher rate limits + private
 // repos. Without it: public-only, 60 req/hr per IP.
 //
-// Bandwidth guards: max 50 files, max 16 MB total, max 1 MB per file.
+// Bandwidth guards: max 200 files, max 16 MB total, max 1 MB per file.
 // ----------------------------------------------------------------
 function parseGithubUrl(input) {
   if (typeof input !== 'string' || !input.trim()) return null;
@@ -1212,7 +1494,13 @@ function isCrawlerFile(path) {
   if (typeof path !== 'string') return false;
   const p = path.toLowerCase();
   if (p.includes('node_modules/') || p.includes('.git/') || p.startsWith('.git/')) return false;
+  const sourceMetricCandidate =
+    /\.(cjs|mjs|js|jsx|ts|tsx|py|go|java|kt|rs|cs)$/.test(p) &&
+    !/(\.test\.|\.spec\.|\.d\.ts$|package-lock|yarn\.lock|pnpm-lock|tokenizer\.json)/.test(p) &&
+    /(metrics?|prometheus|observability|telemetry|instrumentation|monitor|otel|mcp|bayesian|processor)/.test(p);
   return (
+    sourceMetricCandidate ||
+    /(^|\/)(application|bootstrap)[\w.-]*\.ya?ml$/.test(p) ||
     /(^|\/)docker[-_]compose[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
     /(^|\/)compose[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
     /\.rules\.(ya?ml)$/.test(p) ||
@@ -1221,6 +1509,10 @@ function isCrawlerFile(path) {
     /(^|\/)otel[a-z0-9._-]*config[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
     /(^|\/)otelcol[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
     /(^|\/)collector[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)chart\.(ya?ml)$/.test(p) ||
+    /(^|\/)values[\w.-]*\.(ya?ml)$/.test(p) ||
+    /(^|\/)templates\/.*\.(ya?ml)$/.test(p) ||
+    /(^|\/)k8s\/.*\.(ya?ml)$/.test(p) ||
     /(^|\/)dashboards?\/.*\.json$/.test(p) ||
     /(^|\/)grafana\/.*\.json$/.test(p) ||
     /\.dashboard\.json$/.test(p) ||
@@ -1279,7 +1571,7 @@ app.post('/api/crawl-github', async (req, res) => {
     // 3. Filter to crawler-relevant blobs.
     const FILE_CAP_BYTES = 1 * 1024 * 1024;        // 1 MB / file
     const TOTAL_CAP_BYTES = 16 * 1024 * 1024;      // 16 MB total
-    const MAX_FILES = 50;
+    const MAX_FILES = 200;
     const candidates = (treeResp.tree || [])
       .filter(node => node.type === 'blob' && isCrawlerFile(node.path))
       .filter(node => !node.size || node.size <= FILE_CAP_BYTES)
@@ -1340,6 +1632,7 @@ app.post('/api/crawl-github', async (req, res) => {
       repoName: typeof body.repoName === 'string' && body.repoName.trim()
         ? body.repoName.trim() : defaultRepoName,
       environment: typeof body.environment === 'string' ? body.environment : undefined,
+      diffScopeMode: typeof body.diffScopeMode === 'string' ? body.diffScopeMode : undefined,
       criticality: typeof body.criticality === 'string' ? body.criticality : undefined,
       binding: typeof body.binding === 'string' ? body.binding : undefined,
       owners: Array.isArray(body.owners) ? body.owners.map(String) : undefined,

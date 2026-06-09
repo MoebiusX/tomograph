@@ -13,12 +13,13 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml, emit as emitYaml } from './lib/mini-yaml.mjs';
 import { validateCanonical, SPEC_VERSION } from './lib/validator.mjs';
 import { adapt } from './lib/adapter.mjs';
-import { buildCanonicalPack, PROBES } from './fetch-live-pack.mjs';
+import { buildCanonicalPack, fetchMcp, PROBES } from './fetch-live-pack.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA = JSON.parse(readFileSync(
@@ -26,13 +27,8 @@ const SCHEMA = JSON.parse(readFileSync(
   'utf8'
 ));
 
-const failures = [];
-function assert(cond, label, got, want) {
-  if (cond) { process.stdout.write(`✓ ${label}\n`); return; }
-  const detail = got !== undefined ? `\n    got:  ${JSON.stringify(got)}\n    want: ${JSON.stringify(want)}` : '';
-  failures.push(`${label}${detail}`);
-  process.stdout.write(`✗ ${label}${detail}\n`);
-}
+import { createHarness } from './lib/harness.mjs';
+const { assert, report } = createHarness();
 
 const refreshedAt = '2026-06-06T00:00:00Z';
 
@@ -257,6 +253,8 @@ assert(probed.metadata.annotations['mcp.discovered.scrape_jobs'] === 'checkout,p
        'scrape jobs annotated');
 assert(probed.metadata.annotations['mcp.discovered.metric_names_count'] === '3',
        'metric inventory count annotated');
+assert(probed.metadata.annotations['mcp.discovered.metric_names']?.includes('http_requests_total'),
+       'full metric inventory annotated');
 assert(probed.metadata.annotations['mcp.discovered.metric_names_sample']?.includes('http_requests_total'),
        'metric inventory sample annotated');
 
@@ -275,6 +273,8 @@ assert(typeof probed.metadata.annotations['mcp.verified.telemetry.scrape'] === '
        'scrape evidence verified by MCP');
 assert(typeof probed.metadata.annotations['mcp.verified.otel.metrics'] === 'string',
        'metric inventory verified by MCP');
+assert(typeof probed.metadata.annotations['mcp.verified.pipelines.exporters.metrics'] === 'string',
+       'metrics exporter path verified when scrape/metric inventory is observed');
 
 // ---------- case 4: probes attempted but came back empty — honest gap ----------
 //
@@ -362,10 +362,172 @@ assert(altAdapted[0].for === '2m',
 assert(recProbe.adapt({ groups: [] }).length === 0,
        'empty Prometheus ruler payload adapts to zero recording rules');
 
+// ---------- case 6: dashboard search is enriched with dashboard bodies ----------
+
+async function withFakeMcp(handler) {
+  const srv = createServer(async (req, res) => {
+    let raw = '';
+    req.setEncoding('utf8');
+    for await (const chunk of req) raw += chunk;
+    let msg = {};
+    try { msg = JSON.parse(raw || '{}'); } catch (_) {}
+    const send = (result) => {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Mcp-Session-Id': 'fetch-test-session',
+      });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id ?? 1, result }));
+    };
+    if (msg.method === 'initialize') {
+      send({ protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'fake-mcp' } });
+      return;
+    }
+    if (msg.method === 'notifications/initialized') { send({}); return; }
+    if (msg.method === 'tools/list') {
+      send({
+        tools: [
+          'system_health',
+          'system_topology',
+          'anomalies_active',
+          'anomalies_baselines',
+          'grafana_dashboards_search',
+          'grafana_dashboard_get',
+        ].map(name => ({ name })),
+      });
+      return;
+    }
+    if (msg.method === 'tools/call') {
+      const name = msg.params?.name;
+      const result = handler(name, msg.params?.arguments || {});
+      send({ content: [{ type: 'text', text: JSON.stringify(result) }] });
+      return;
+    }
+    send({});
+  });
+  await new Promise(resolveListen => srv.listen(0, '127.0.0.1', resolveListen));
+  const addr = srv.address();
+  return {
+    url: `http://${addr.address}:${addr.port}/mcp`,
+    close: () => new Promise(resolveClose => srv.close(resolveClose)),
+  };
+}
+
+{
+  const fake = await withFakeMcp((name, args) => {
+    if (name === 'system_health') return { services: [] };
+    if (name === 'system_topology') return { dependencies: [] };
+    if (name === 'anomalies_active') return {};
+    if (name === 'anomalies_baselines') return { baselines: [] };
+    if (name === 'grafana_dashboards_search') {
+      return {
+        count: 1,
+        results: [{
+          uid: '123abc',
+          title: 'Checkout Live',
+          type: 'dash-db',
+          url: '/d/123abc/checkout-live',
+          folderTitle: 'Checkout',
+        }],
+      };
+    }
+    if (name === 'grafana_dashboard_get') {
+      assert(args.uid === '123abc', 'dashboard get called with UID from search', args.uid, '123abc');
+      return {
+        meta: { folderTitle: 'Checkout', url: '/d/123abc/checkout-live' },
+        dashboard: {
+          uid: '123abc',
+          title: 'Checkout Live',
+          schemaVersion: 42,
+          version: 7,
+          panelCount: 2,
+          returnedPanels: 2,
+          panels: [
+            { id: 1, title: 'HTTP Success', targets: [{ refId: 'A', expr: 'sum(rate(http_requests_total[5m]))' }] },
+            { id: 2, title: 'Latency P99', targets: [{ refId: 'A', expr: 'slo:http_request_duration:p99_5m' }] },
+          ],
+        },
+        raw: {
+          uid: '123abc',
+          title: 'Checkout Live',
+          schemaVersion: 42,
+          panels: [{ id: 1, title: 'HTTP Success' }, { id: 2, title: 'Latency P99' }],
+        },
+      };
+    }
+    return {};
+  });
+  try {
+    const fetched = await fetchMcp({ mcpUrl: fake.url });
+    const dash = fetched.probeResults.dashboards.adapted[0];
+    assert(dash.id === 'dash-123abc', 'numeric dashboard UID is schema-safe slugged', dash.id, 'dash-123abc');
+    assert(dash.panel_bindings.length === 2, 'dashboard_get panels become panel_bindings', dash.panel_bindings.length, 2);
+    assert(dash.params.raw.uid === '123abc', 'dashboard raw JSON preserved in params.raw', dash.params.raw.uid, '123abc');
+    const enriched = buildCanonicalPack({ refreshedAt, mcpUrl: fake.url, ...fetched });
+    assert(enriched.metadata.annotations['mcp.discovered.dashboard_panels'] === '2',
+           'dashboard panel count annotated', enriched.metadata.annotations['mcp.discovered.dashboard_panels'], '2');
+    assert(enriched.metadata.annotations['mcp.discovered.dashboard_raw_json'] === '1',
+           'dashboard raw-json count annotated', enriched.metadata.annotations['mcp.discovered.dashboard_raw_json'], '1');
+  } finally {
+    await fake.close();
+  }
+}
+
+// ---------- case 7: backend_capabilities materialises L2X extended surfaces ----------
+
+const l2xLive = buildCanonicalPack({
+  refreshedAt,
+  mcpUrl: 'https://fake-mcp.test/observability',
+  health: { services: [{ name: 'svc-checkout' }] },
+  topology: { dependencies: [] },
+  anomaliesActive: {},
+  baselinesData: { baselines: [] },
+  capabilities: {
+    gatingMode: 'warn',
+    protocolModel: 'otel-mcp',
+    skills: [
+      { skill: 'metrics', backends: [{ backend: 'Prometheus', productVersions: { must: ['2.51.0'] }, baselineFeatures: ['query'] }] },
+      { skill: 'logs', backends: [{ backend: 'Grafana Loki', productVersions: { must: ['3.0.0'] }, baselineFeatures: ['query'] }] },
+      { skill: 'traces', backends: [{ backend: 'Jaeger', productVersions: { must: ['1.56.0'] }, baselineFeatures: ['search'] }] },
+      { skill: 'pyroscope', backends: [{ backend: 'Grafana Pyroscope', productVersions: { must: ['1.7.0'] }, baselineFeatures: ['cpu'] }] },
+      { skill: 'cilium', backends: [{ backend: 'Cilium', productVersions: { must: ['1.15.0'] }, baselineFeatures: ['flows'] }] },
+      { skill: 'opa', backends: [{ backend: 'Open Policy Agent', productVersions: { must: ['0.63.0'] }, baselineFeatures: ['decisions'] }] },
+      { skill: 'envoy', backends: [{ backend: 'Envoy', productVersions: { must: ['1.31.0'] }, baselineFeatures: ['stats'] }] },
+      { skill: 'kong', backends: [{ backend: 'Kong', productVersions: { must: ['3.6.0'] }, baselineFeatures: ['admin_api'] }] },
+      { skill: 'pipeline', backends: [{ backend: 'Vector', productVersions: { must: ['0.36.0'] }, baselineFeatures: ['remap'] }] },
+    ],
+  },
+  errors: {},
+});
+{
+  const errors = validateCanonical(l2xLive, SCHEMA);
+  assert(errors.length === 0, 'L2X live pack validates against canonical schema', errors, []);
+}
+assert(l2xLive.spec.profiling?.backend === 'profiles-pyroscope',
+       'live profiling surface materialised from backend_capabilities');
+assert(l2xLive.spec.network?.backend === 'network-cilium',
+       'live network surface materialised from backend_capabilities');
+assert(l2xLive.spec.policy_engine?.backend === 'policy-opa',
+       'live policy engine surface materialised from backend_capabilities');
+assert(l2xLive.spec.mesh?.some(m => m.product === 'envoy' && m.role === 'proxy'),
+       'live envoy mesh surface materialised');
+assert(l2xLive.spec.mesh?.some(m => m.product === 'kong' && m.role === 'gateway'),
+       'live kong gateway surface materialised');
+assert(l2xLive.spec.collection?.some(c => c.product === 'vector' && c.role === 'aggregator'),
+       'live vector collection surface materialised');
+assert(l2xLive.metadata.annotations['mcp.discovered.extended_surfaces'] === '6',
+       'extended surface count annotated');
+assert(typeof l2xLive.metadata.annotations['mcp.verified.profiling'] === 'string',
+       'profiling surface marked verified');
+assert(typeof l2xLive.metadata.annotations['mcp.verified.network'] === 'string',
+       'network surface marked verified');
+assert(typeof l2xLive.metadata.annotations['mcp.verified.policy_engine'] === 'string',
+       'policy engine surface marked verified');
+const l2xLayered = adapt(l2xLive);
+assert(l2xLayered.layers.L2X.length === 6,
+       'adapter renders all live L2X surfaces', l2xLayered.layers.L2X.length, 6);
+assert(l2xLayered.layers.L2X.every(x => x.source === 'Verified'),
+       'adapter surfaces Verified source for live L2X surfaces');
+
 // ---------- summary ----------
 
-if (failures.length) {
-  process.stderr.write(`\n${failures.length} fetcher assertion(s) failed.\n`);
-  process.exit(1);
-}
-process.stdout.write(`\nall fetcher assertions pass.\n`);
+report('fetcher');

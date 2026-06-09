@@ -32,6 +32,10 @@
     <div class="hdr-sub">the observability compiler · canonical spec v1.2</div>
   </div>
   <div class="hdr-controls">
+    <label class="ctrl ctrl-service" id="ctrl-service">
+      <span class="ctrl-key">SERVICE</span>
+      <select id="service-select" aria-label="Select service workspace"></select>
+    </label>
     <label class="ctrl">
       <span class="ctrl-key">PACK A</span>
       <select id="pack-select" aria-label="Select pack A"></select>
@@ -143,13 +147,13 @@
   <div id="drawer-a-panels"></div>
 </aside>
 
-<div class="deploy-modal" id="deploy-modal" role="dialog" aria-labelledby="deploy-modal-title" hidden>
+<div class="deploy-modal" id="deploy-modal" role="dialog" aria-labelledby="deploy-modal-title" tabindex="-1" hidden>
   <div class="deploy-modal-head">
     <div class="deploy-modal-title">
       <span class="deploy-modal-arrow">↑</span>
       <h2 id="deploy-modal-title"><em>Deploy to Grafana</em></h2>
     </div>
-    <button class="drawer-close" id="deploy-modal-close" type="button" aria-label="Close deploy modal">esc</button>
+    <button class="deploy-modal-close" id="deploy-modal-close" type="button" aria-label="Close deploy modal" title="Close">×</button>
   </div>
   <p class="deploy-modal-lede">Select artefacts and target, then deploy to a Grafana instance.</p>
 
@@ -171,16 +175,16 @@
         </label>
       </div>
       <label class="deploy-field">
-        <span class="deploy-field-key">Target URL</span>
+        <span class="deploy-field-key">Target URL <em>(Grafana, for profile notes)</em></span>
         <input id="deploy-target-url" type="url" placeholder="https://grafana.example.net" autocomplete="off">
       </label>
       <div class="deploy-field-grid">
         <label class="deploy-field">
-          <span class="deploy-field-key">Auth <em>(user:password or token, not persisted)</em></span>
-          <input id="deploy-target-auth" type="password" placeholder="bearer token" autocomplete="off">
+          <span class="deploy-field-key">MCP client key <em>(optional, not persisted)</em></span>
+          <input id="deploy-target-auth" type="password" placeholder="sk-..." autocomplete="off">
         </label>
         <label class="deploy-field">
-          <span class="deploy-field-key">Grafana folder</span>
+          <span class="deploy-field-key">Grafana folder UID</span>
           <input id="deploy-target-folder" type="text" placeholder="observability-pack" autocomplete="off">
         </label>
       </div>
@@ -332,7 +336,13 @@
       </label>
       <label class="mcp-field">
         <span class="mcp-field-key">Environment</span>
-        <input id="crawl-env" type="text" placeholder="prod" value="prod" autocomplete="off">
+        <input id="crawl-env" type="text" list="crawl-env-options" placeholder="prod" value="prod" autocomplete="off">
+        <datalist id="crawl-env-options">
+          <option value="local-docker"></option>
+          <option value="local-k8s"></option>
+          <option value="eks"></option>
+          <option value="prod"></option>
+        </datalist>
       </label>
       <label class="mcp-field">
         <span class="mcp-field-key">Criticality <em>(blank = infer)</em></span>
@@ -341,6 +351,14 @@
           <option value="tier-1">tier-1</option>
           <option value="tier-2">tier-2</option>
           <option value="tier-3">tier-3</option>
+        </select>
+      </label>
+      <label class="mcp-field">
+        <span class="mcp-field-key">Live scope</span>
+        <select id="crawl-diff-scope">
+          <option value="service" selected>service scope</option>
+          <option value="family">family only</option>
+          <option value="all">all live</option>
         </select>
       </label>
     </div>

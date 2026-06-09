@@ -12,8 +12,7 @@
  *
  * Pack-specific expectations live in PACK_EXPECTATIONS below. Packs not
  * listed there only need to pass schema validation and adapt without
- * throwing — useful for the cron-managed production-live snapshot whose
- * exact conformance varies with the MCP it was fetched from.
+ * throwing.
  */
 
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
@@ -60,13 +59,8 @@ const PACK_EXPECTATIONS = {
   },
 };
 
-const failures = [];
-function assert(cond, label, got, want) {
-  if (cond) { process.stdout.write(`  ✓ ${label}\n`); return; }
-  const detail = got !== undefined ? `\n      got:  ${JSON.stringify(got)}\n      want: ${JSON.stringify(want)}` : '';
-  failures.push(`${label}${detail}`);
-  process.stdout.write(`  ✗ ${label}${detail}\n`);
-}
+import { createHarness } from './lib/harness.mjs';
+const { assert, failures, report } = createHarness();
 
 if (!existsSync(PACKS_DIR)) {
   process.stderr.write(`examples directory missing: ${PACKS_DIR}\n`);
@@ -141,8 +135,4 @@ for (const { dir, file } of packFiles) {
   );
 }
 
-if (failures.length) {
-  process.stderr.write(`\n${failures.length} pack assertion(s) failed.\n`);
-  process.exit(1);
-}
-process.stdout.write(`\nall ${packFiles.length} pack(s) pass.\n`);
+report('pack', `all ${packFiles.length} pack(s) pass.`);
