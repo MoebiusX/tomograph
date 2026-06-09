@@ -473,6 +473,62 @@ async function withFakeMcp(handler) {
   }
 }
 
+// ---------- case 7: backend_capabilities materialises L2X extended surfaces ----------
+
+const l2xLive = buildCanonicalPack({
+  refreshedAt,
+  mcpUrl: 'https://fake-mcp.test/observability',
+  health: { services: [{ name: 'svc-checkout' }] },
+  topology: { dependencies: [] },
+  anomaliesActive: {},
+  baselinesData: { baselines: [] },
+  capabilities: {
+    gatingMode: 'warn',
+    protocolModel: 'otel-mcp',
+    skills: [
+      { skill: 'metrics', backends: [{ backend: 'Prometheus', productVersions: { must: ['2.51.0'] }, baselineFeatures: ['query'] }] },
+      { skill: 'logs', backends: [{ backend: 'Grafana Loki', productVersions: { must: ['3.0.0'] }, baselineFeatures: ['query'] }] },
+      { skill: 'traces', backends: [{ backend: 'Jaeger', productVersions: { must: ['1.56.0'] }, baselineFeatures: ['search'] }] },
+      { skill: 'pyroscope', backends: [{ backend: 'Grafana Pyroscope', productVersions: { must: ['1.7.0'] }, baselineFeatures: ['cpu'] }] },
+      { skill: 'cilium', backends: [{ backend: 'Cilium', productVersions: { must: ['1.15.0'] }, baselineFeatures: ['flows'] }] },
+      { skill: 'opa', backends: [{ backend: 'Open Policy Agent', productVersions: { must: ['0.63.0'] }, baselineFeatures: ['decisions'] }] },
+      { skill: 'envoy', backends: [{ backend: 'Envoy', productVersions: { must: ['1.31.0'] }, baselineFeatures: ['stats'] }] },
+      { skill: 'kong', backends: [{ backend: 'Kong', productVersions: { must: ['3.6.0'] }, baselineFeatures: ['admin_api'] }] },
+      { skill: 'pipeline', backends: [{ backend: 'Vector', productVersions: { must: ['0.36.0'] }, baselineFeatures: ['remap'] }] },
+    ],
+  },
+  errors: {},
+});
+{
+  const errors = validateCanonical(l2xLive, SCHEMA);
+  assert(errors.length === 0, 'L2X live pack validates against canonical schema', errors, []);
+}
+assert(l2xLive.spec.profiling?.backend === 'profiles-pyroscope',
+       'live profiling surface materialised from backend_capabilities');
+assert(l2xLive.spec.network?.backend === 'network-cilium',
+       'live network surface materialised from backend_capabilities');
+assert(l2xLive.spec.policy_engine?.backend === 'policy-opa',
+       'live policy engine surface materialised from backend_capabilities');
+assert(l2xLive.spec.mesh?.some(m => m.product === 'envoy' && m.role === 'proxy'),
+       'live envoy mesh surface materialised');
+assert(l2xLive.spec.mesh?.some(m => m.product === 'kong' && m.role === 'gateway'),
+       'live kong gateway surface materialised');
+assert(l2xLive.spec.collection?.some(c => c.product === 'vector' && c.role === 'aggregator'),
+       'live vector collection surface materialised');
+assert(l2xLive.metadata.annotations['mcp.discovered.extended_surfaces'] === '6',
+       'extended surface count annotated');
+assert(typeof l2xLive.metadata.annotations['mcp.verified.profiling'] === 'string',
+       'profiling surface marked verified');
+assert(typeof l2xLive.metadata.annotations['mcp.verified.network'] === 'string',
+       'network surface marked verified');
+assert(typeof l2xLive.metadata.annotations['mcp.verified.policy_engine'] === 'string',
+       'policy engine surface marked verified');
+const l2xLayered = adapt(l2xLive);
+assert(l2xLayered.layers.L2X.length === 6,
+       'adapter renders all live L2X surfaces', l2xLayered.layers.L2X.length, 6);
+assert(l2xLayered.layers.L2X.every(x => x.source === 'Verified'),
+       'adapter surfaces Verified source for live L2X surfaces');
+
 // ---------- summary ----------
 
 if (failures.length) {

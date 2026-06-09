@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url';
 import { emit as emitYaml } from './lib/mini-yaml.mjs';
 import { validateCanonical, SPEC_VERSION } from './lib/validator.mjs';
 import { inferSlisFromRecordingRules } from './lib/sli-inference.mjs';
+import { materializeL2XFromBackends } from './lib/l2x.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = resolve(__dirname, '..', 'vendor', 'observability-pack-spec', `v${SPEC_VERSION}`, 'observability-pack.schema.json');
@@ -640,6 +641,13 @@ export function buildCanonicalPack({
     markVerified(`telemetry.backends.versions.${product}`);
   }
 
+  const l2x = materializeL2XFromBackends(backends, { markVerified });
+  annotations['mcp.discovered.extended_surfaces'] = String(l2x.evidence.length);
+  if (l2x.evidence.length) {
+    annotations['mcp.discovered.extended_surface_refs'] =
+      l2x.evidence.map((e) => `${e.artifactId}:${e.backendId}`).join(',');
+  }
+
   // Probes drive multiple downstream sections — hoist their results.
   const discoveredRules = probeResults?.recording_rules?.adapted || [];
 
@@ -888,6 +896,7 @@ export function buildCanonicalPack({
     spec: {
       otel: otelSection,
       telemetry: { backends },
+      ...l2x.sections,
       slis,
       slos,
       pipelines,

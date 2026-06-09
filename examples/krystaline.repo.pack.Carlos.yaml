@@ -1,0 +1,662 @@
+# =============================================================================
+# ObservabilityPack: krysaline  (drafted by the crawler)
+# Discovered at 2026-06-09T09:01:22.023Z
+# Files scanned: 97, classified: 52
+# Tier inferred: tier-2
+# Warnings: 3 (see metadata.annotations + the summary report)
+# -----------------------------------------------------------------------------
+# This is a DRAFT. Review every section before deploying. Annotations marked
+# "REPLACE WITH REAL QUERY" need a real PromQL expression that matches your
+# service. The tier was inferred from what was found in the repo — if your
+# service is tier-1, set metadata.bindings.criticality: tier-1 and fill the
+# missing chaos_experiments + per-SLO multi-window alerts.
+# =============================================================================
+apiVersion: observability.platform/v1
+kind: ObservabilityPack
+metadata:
+  name: krysaline
+  version: 0.1.0-crawled
+  binding: otel-elastic-prometheus-grafana
+  owners:
+    - team-platform
+  bindings:
+    service: krysaline
+    environments:
+      - prod
+    criticality: tier-2
+  labels:
+    source: crawler
+  annotations:
+    crawler.discoveredAt: 2026-06-09T09:01:22.023Z
+    crawler.filesScanned: "97"
+    crawler.filesIncluded: "53"
+    crawler.filesExcludedByEnvironment: "44"
+    crawler.filesClassified: "52"
+    crawler.environmentProfile: prod
+    crawler.tierInferred: tier-2
+    crawler.warningCount: "3"
+    crawler.syntheticRecordingRulesSkipped: "13"
+    crawler.extendedSurfaces: "1"
+spec:
+  otel:
+    semconv: 1.26.0
+    resource_attributes:
+      required:
+        - service.name
+    sdk:
+      languages:
+        - go
+      sampling:
+        policy: parentbased_traceidratio
+        ratio: 0.1
+      propagators:
+        - tracecontext
+  slis:
+    - id: slo_http_requests
+      description: Inferred from recording rule slo:http_requests:error_ratio_5m.
+      type: ratio
+      good: |
+        (sum(rate(http_request_errors_total{status_code=~"5.."}[5m])) or vector(0))
+        /
+        (sum(rate(http_requests_total[5m])) > 0)
+        or vector(0)
+      total: "1"
+    - id: slo_http_request_duration
+      description: Inferred from recording rule slo:http_request_duration:ratio_below_500ms_5m.
+      type: ratio
+      good: |
+        sum(rate(http_request_duration_seconds_bucket{le="0.5"}[5m]))
+        /
+        (sum(rate(http_request_duration_seconds_count[5m])) > 0)
+        or vector(1)
+      total: "1"
+    - id: slo_server
+      description: Inferred from recording rule slo:server:probe_success_ratio_5m.
+      type: threshold
+      query: |
+        max(avg_over_time(up{job="krystalinex-server"}[5m]))
+        or vector(1)
+      threshold: 1
+      unit: ratio
+    - id: slo_availability
+      description: Inferred from recording rule slo:availability:composite_1h.
+      type: threshold
+      query: |
+        (1 - (slo:http_requests:error_ratio_1h or vector(0)))
+        *
+        (slo:server:probe_success_ratio_1h or vector(1))
+      threshold: 1
+      unit: ratio
+    - id: slo_latency
+      description: Inferred from recording rule slo:latency:error_budget_remaining.
+      type: threshold
+      query: |
+        1 - (
+          (1 - slo:http_request_duration:ratio_below_500ms_1d)
+          / (1 - 0.95)
+        )
+      threshold: 1
+      unit: ratio
+    - id: finops_requests
+      description: Inferred from recording rule finops:requests:rate_per_service_5m.
+      type: threshold
+      query: |
+        sum(rate(http_requests_total[5m])) by (job)
+      threshold: 1
+      unit: ratio
+    - id: finops_errors
+      description: Inferred from recording rule finops:errors:rate_per_service_5m.
+      type: threshold
+      query: |
+        sum(rate(http_request_errors_total[5m])) by (job)
+      threshold: 1
+      unit: ratio
+    - id: finops_spans
+      description: Inferred from recording rule finops:spans:exported_rate_5m.
+      type: threshold
+      query: |
+        sum(rate(otelcol_exporter_sent_spans_total[5m]))
+      threshold: 1
+      unit: ratio
+    - id: finops_logs
+      description: Inferred from recording rule finops:logs:bytes_rate_per_component_5m.
+      type: threshold
+      query: |
+        sum(rate(promtail_read_bytes_total[5m])) by (filename)
+      threshold: 1
+      unit: ratio
+    - id: finops_cost
+      description: Inferred from recording rule finops:cost:request_units_per_service_1h.
+      type: threshold
+      query: |
+        (
+          sum(increase(http_requests_total[1h])) by (job)
+          * 0.000001
+        )
+      threshold: 1
+      unit: ratio
+    - id: finops_cpu
+      description: Inferred from recording rule finops:cpu:usage_per_pod_5m.
+      type: threshold
+      query: |
+        sum(rate(container_cpu_usage_seconds_total{namespace="krystalinex", container!=""}[5m])) by (pod) * 3600
+      threshold: 1
+      unit: ratio
+    - id: finops_memory
+      description: Inferred from recording rule finops:memory:usage_per_pod_gb_hours.
+      type: threshold
+      query: |
+        sum(container_memory_working_set_bytes{namespace="krystalinex", container!=""}) by (pod) / 1073741824
+      threshold: 1
+      unit: ratio
+    - id: finops_kong
+      description: Inferred from recording rule finops:kong:overhead_seconds.
+      type: threshold
+      query: |
+        histogram_quantile(0.99,
+          sum(rate(kong_kong_latency_ms_bucket[5m])) by (le)
+        ) / 1000
+      threshold: 1
+      unit: ratio
+  slos:
+    - id: slo_http_requests_99
+      sli: slo_http_requests
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: slo_http_request_duration_99
+      sli: slo_http_request_duration
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: slo_server_99
+      sli: slo_server
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: slo_availability_99
+      sli: slo_availability
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: slo_latency_99
+      sli: slo_latency
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: finops_requests_99
+      sli: finops_requests
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: finops_errors_99
+      sli: finops_errors
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: finops_spans_99
+      sli: finops_spans
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: finops_logs_99
+      sli: finops_logs
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: finops_cost_99
+      sli: finops_cost
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: finops_cpu_99
+      sli: finops_cpu
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: finops_memory_99
+      sli: finops_memory
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: finops_kong_99
+      sli: finops_kong
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+  pipelines:
+    receivers:
+      - name: otlp
+      - name: otlp
+    processors:
+      - name: batch
+      - name: memory_limiter
+      - name: tail_sampling
+      - name: batch
+    exporters:
+      metrics:
+        kind: prometheusremotewrite
+      logs:
+        kind: elasticsearch
+      traces:
+        kind: jaeger
+  queries:
+    recording_rules:
+      - name: slo:http_requests:error_ratio_5m
+        expr: |
+          (sum(rate(http_request_errors_total{status_code=~"5.."}[5m])) or vector(0))
+          /
+          (sum(rate(http_requests_total[5m])) > 0)
+          or vector(0)
+        interval: 30s
+      - name: slo:http_requests:error_ratio_30m
+        expr: |
+          (sum(rate(http_request_errors_total{status_code=~"5.."}[30m])) or vector(0))
+          /
+          (sum(rate(http_requests_total[30m])) > 0)
+          or vector(0)
+        interval: 30s
+      - name: slo:http_requests:error_ratio_1h
+        expr: |
+          (sum(rate(http_request_errors_total{status_code=~"5.."}[1h])) or vector(0))
+          /
+          (sum(rate(http_requests_total[1h])) > 0)
+          or vector(0)
+        interval: 30s
+      - name: slo:http_requests:error_ratio_2h
+        expr: |
+          (sum(rate(http_request_errors_total{status_code=~"5.."}[2h])) or vector(0))
+          /
+          (sum(rate(http_requests_total[2h])) > 0)
+          or vector(0)
+        interval: 30s
+      - name: slo:http_requests:error_ratio_6h
+        expr: |
+          (sum(rate(http_request_errors_total{status_code=~"5.."}[6h])) or vector(0))
+          /
+          (sum(rate(http_requests_total[6h])) > 0)
+          or vector(0)
+        interval: 30s
+      - name: slo:http_requests:error_ratio_1d
+        expr: |
+          (sum(rate(http_request_errors_total{status_code=~"5.."}[1d])) or vector(0))
+          /
+          (sum(rate(http_requests_total[1d])) > 0)
+          or vector(0)
+        interval: 30s
+      - name: slo:http_requests:error_ratio_3d
+        expr: |
+          (sum(rate(http_request_errors_total{status_code=~"5.."}[3d])) or vector(0))
+          /
+          (sum(rate(http_requests_total[3d])) > 0)
+          or vector(0)
+        interval: 30s
+      - name: slo:http_request_duration:ratio_below_500ms_5m
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{le="0.5"}[5m]))
+          /
+          (sum(rate(http_request_duration_seconds_count[5m])) > 0)
+          or vector(1)
+        interval: 30s
+      - name: slo:http_request_duration:ratio_below_500ms_1h
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{le="0.5"}[1h]))
+          /
+          (sum(rate(http_request_duration_seconds_count[1h])) > 0)
+          or vector(1)
+        interval: 30s
+      - name: slo:http_request_duration:ratio_below_500ms_1d
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{le="0.5"}[1d]))
+          /
+          (sum(rate(http_request_duration_seconds_count[1d])) > 0)
+          or vector(1)
+        interval: 30s
+      - name: slo:http_request_duration:ratio_below_2s_5m
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{le="2"}[5m]))
+          /
+          (sum(rate(http_request_duration_seconds_count[5m])) > 0)
+          or vector(1)
+        interval: 30s
+      - name: slo:http_request_duration:p95_5m
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))
+        interval: 30s
+      - name: slo:http_request_duration:p99_5m
+        expr: |
+          histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))
+        interval: 30s
+      - name: slo:http_request_duration:p95_1h
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[1h])) by (le))
+        interval: 30s
+      - name: slo:http_request_duration:p99_1h
+        expr: |
+          histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[1h])) by (le))
+        interval: 30s
+      - name: slo:server:probe_success_ratio_5m
+        expr: |
+          max(avg_over_time(up{job="krystalinex-server"}[5m]))
+          or vector(1)
+        interval: 30s
+      - name: slo:server:probe_success_ratio_1h
+        expr: |
+          max(avg_over_time(up{job="krystalinex-server"}[1h]))
+          or vector(1)
+        interval: 30s
+      - name: slo:server:probe_success_ratio_1d
+        expr: |
+          max(avg_over_time(up{job="krystalinex-server"}[1d]))
+          or vector(1)
+        interval: 30s
+      - name: slo:availability:composite_1h
+        expr: |
+          (1 - (slo:http_requests:error_ratio_1h or vector(0)))
+          *
+          (slo:server:probe_success_ratio_1h or vector(1))
+        interval: 30s
+      - name: slo:availability:composite_1d
+        expr: |
+          (1 - (slo:http_requests:error_ratio_1d or vector(0)))
+          *
+          (slo:server:probe_success_ratio_1d or vector(1))
+        interval: 30s
+      - name: slo:availability:error_budget_remaining
+        expr: |
+          1 - (
+            (1 - (slo:availability:composite_1d or vector(1)))
+            / (1 - 0.999)
+          )
+        interval: 1m
+      - name: slo:latency:error_budget_remaining
+        expr: |
+          1 - (
+            (1 - slo:http_request_duration:ratio_below_500ms_1d)
+            / (1 - 0.95)
+          )
+        interval: 1m
+      - name: finops:requests:rate_per_service_5m
+        expr: |
+          sum(rate(http_requests_total[5m])) by (job)
+        interval: 1m
+      - name: finops:errors:rate_per_service_5m
+        expr: |
+          sum(rate(http_request_errors_total[5m])) by (job)
+        interval: 1m
+      - name: finops:spans:exported_rate_5m
+        expr: |
+          sum(rate(otelcol_exporter_sent_spans_total[5m]))
+        interval: 1m
+      - name: finops:spans:dropped_rate_5m
+        expr: |
+          sum(rate(otelcol_processor_dropped_spans_total[5m]))
+        interval: 1m
+      - name: finops:spans:sampling_ratio
+        expr: |
+          (
+            sum(rate(otelcol_exporter_sent_spans_total[5m]))
+            / (
+              sum(rate(otelcol_exporter_sent_spans_total[5m]))
+              + sum(rate(otelcol_processor_dropped_spans_total[5m]))
+            )
+          ) or vector(1)
+        interval: 1m
+      - name: finops:logs:bytes_rate_per_component_5m
+        expr: |
+          sum(rate(promtail_read_bytes_total[5m])) by (filename)
+        interval: 1m
+      - name: finops:cost:request_units_per_service_1h
+        expr: |
+          (
+            sum(increase(http_requests_total[1h])) by (job)
+            * 0.000001
+          )
+        interval: 1m
+      - name: finops:cost:telemetry_index_1h
+        expr: |
+          (
+            sum(increase(http_requests_total[1h])) * 0.000001
+          )
+          +
+          (
+            sum(rate(otelcol_exporter_sent_spans_total[5m])) * 3600 * 0.00001
+          )
+        interval: 1m
+      - name: finops:cpu:usage_per_pod_5m
+        expr: |
+          sum(rate(container_cpu_usage_seconds_total{namespace="krystalinex", container!=""}[5m])) by (pod) * 3600
+        interval: 5m
+      - name: finops:memory:usage_per_pod_gb_hours
+        expr: |
+          sum(container_memory_working_set_bytes{namespace="krystalinex", container!=""}) by (pod) / 1073741824
+        interval: 5m
+      - name: finops:kong:overhead_seconds
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(kong_kong_latency_ms_bucket[5m])) by (le)
+          ) / 1000
+        interval: 5m
+  dashboards:
+    - id: adz2hpb
+      provider:
+        kind: grafana
+        version: "7"
+        schemaVersion: 42
+      folder: Prometheus
+      source: file://k8s/charts/krystalinex/dashboards/k8s-cluster.json
+    - id: kx-predictive-finops
+      provider:
+        kind: grafana
+        version: "1"
+        schemaVersion: 39
+      folder: krystalinex
+      source: file://k8s/charts/krystalinex/dashboards/predictive-finops.json
+    - id: krystalinex-unified
+      provider:
+        kind: grafana
+        version: "3"
+        schemaVersion: 42
+      folder: krystalinex
+      source: file://k8s/charts/krystalinex/dashboards/unified-observability.json
+  policy:
+    burn_rate_alerts:
+      - slo: slo_http_requests_99
+        windows:
+          - short: 2m
+            long: 6h
+            factor: 6
+            severity: SEV2
+          - short: 5m
+            long: 6h
+            factor: 6
+            severity: SEV2
+          - short: 15m
+            long: 6h
+            factor: 6
+            severity: SEV2
+          - short: 10m
+            long: 6h
+            factor: 6
+            severity: SEV2
+      - slo: slo_http_request_duration_99
+        windows:
+          - short: 2m
+            long: 6h
+            factor: 6
+            severity: SEV2
+          - short: 15m
+            long: 6h
+            factor: 6
+            severity: SEV2
+      - slo: slo_availability_99
+        windows:
+          - short: 5m
+            long: 1h
+            factor: 14
+            severity: SEV1
+          - short: 30m
+            long: 6h
+            factor: 6
+            severity: SEV2
+      - slo: slo_latency_99
+        windows:
+          - short: 5m
+            long: 1h
+            factor: 14
+            severity: SEV1
+          - short: 30m
+            long: 6h
+            factor: 6
+            severity: SEV2
+  alerting:
+    routes:
+      - severity: SEV2
+        channels:
+          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=helmvalue
+      - severity: SEV2
+        channels:
+          - webhook: https://www.krystaline.io/
+      - severity: SEV2
+        channels:
+          - webhook: http://helmvalue-server:5000/api/v1/monitor/webhook/remediation
+      - severity: SEV1
+        channels:
+          - email: carlos@krystaline.io
+          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=helmvalue
+      - severity: SEV1
+        channels:
+          - webhook: https://ntfy.sh/krystalinex-alerts?priority=urgent&tags=rotating_light,critical&title=CRITICAL+Alert
+      - severity: SEV2
+        channels:
+          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=helmvalue
+      - severity: SEV2
+        channels:
+          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=helmvalue
+      - severity: SEV2
+        channels:
+          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/generic/incoming?token=helmvalue
+  baselines:
+    mttd_target_p50: 15m
+    mttr_target_p50: 1d
+    review_cadence: monthly
+  validation:
+    synthetic_checks:
+      - id: krysaline-health-canary
+        kind: blackbox-exporter
+        target: https://krysaline.example.com/health
+        interval: 1m
+        on_fail_severity: SEV3
+  telemetry:
+    backends:
+      - id: traces-jaeger
+        signal: traces
+        product: jaeger
+        endpoints:
+          - http://jaeger:80
+        auth:
+          kind: none
+        version:
+          declared: 2.18.0
+          gating: "off"
+      - id: alerting-alertmanager
+        signal: alerting
+        product: alertmanager
+        endpoints:
+          - http://alertmanager:80
+        auth:
+          kind: none
+        version:
+          declared: 0.27.0
+          gating: "off"
+      - id: metrics-node-exporter
+        signal: metrics
+        product: node-exporter
+        endpoints:
+          - http://node-exporter:80
+        auth:
+          kind: none
+        version:
+          declared: 1.7.0
+          gating: "off"
+      - id: logs-loki
+        signal: logs
+        product: loki
+        endpoints:
+          - http://loki:80
+        auth:
+          kind: none
+        version:
+          declared: 3.0.0
+          gating: "off"
+      - id: logs-promtail
+        signal: logs
+        product: promtail
+        endpoints:
+          - http://promtail:80
+        auth:
+          kind: none
+        version:
+          declared: 3.0.0
+          gating: "off"
+      - id: collection-opentelemetry-collector
+        signal: collection
+        product: opentelemetry-collector
+        endpoints:
+          - http://opentelemetry-collector:80
+        auth:
+          kind: none
+      - id: metrics-victoriametrics
+        signal: metrics
+        product: victoriametrics
+        endpoints:
+          - http://victoriametrics:80
+        auth:
+          kind: none
+        version:
+          declared: 1.113.0
+          gating: "off"
+      - id: alerting-vmalert
+        signal: alerting
+        product: vmalert
+        endpoints:
+          - http://vmalert:80
+        auth:
+          kind: none
+        version:
+          declared: 1.113.0
+          gating: "off"
+      - id: gateway-kong
+        signal: gateway
+        product: kong
+        endpoints:
+          - http://kong:80
+        auth:
+          kind: none
+        version:
+          declared: "3.9"
+          gating: "off"
+      - id: dashboards-grafana
+        signal: dashboards
+        product: grafana
+        endpoints:
+          - http://grafana:80
+        auth:
+          kind: none
+      - id: metrics-kube-state-metrics
+        signal: metrics
+        product: kube-state-metrics
+        endpoints:
+          - http://kube-state-metrics:80
+        auth:
+          kind: none
+        version:
+          declared: 2.13.0
+          gating: "off"
+  mesh:
+    - product: kong
+      role: gateway
+      backend: gateway-kong
+      version:
+        declared: "3.9"
+        gating: "off"

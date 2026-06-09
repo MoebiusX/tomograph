@@ -1438,8 +1438,8 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
 
   // Single binary verdict in audit terms. No "Almost diagnostic-grade",
   // no "Critical" — just PASS or FAIL with the threshold stated.
-  const PASS_THRESHOLD = 7; // 7 of 8 to pass — graded against contract
-  const passes = overall.passed >= PASS_THRESHOLD && overall.liveDriftFree !== false;
+  const PASS_THRESHOLD_PCT = 85;
+  const passes = overallPct > PASS_THRESHOLD_PCT;
   const status = passes ? 'PASS' : 'FAIL';
 
   // Coverage-only when no Pack B is loaded: the coverage criteria are
@@ -1448,6 +1448,13 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const coverageOnly = !packB;
   const contractName = packB?.meta?.name || packB?.metadata?.name || packB?.id || '—';
   const contractMode = cov.contractMode;
+  const gradeContext = coverageOnly
+    ? '<span class="diag-report-mode">Observability Contract · coverage only</span>'
+    : (contractMode
+        ? '<span class="diag-report-mode">Observability Contract' +
+          (contractName && contractName !== '—' ? ' · ' + escapeHtml(contractName) : '') +
+          '</span>'
+        : '');
 
   // Compact mono row builder for the summary block.
   const summaryRow = (label, value, hint, state) => `
@@ -1566,13 +1573,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
     <header class="diag-report-head">
       <div class="diag-report-head-line">
         <span class="diag-report-eyebrow">DIAGNOSTIC GRADE</span>
-        <span class="diag-report-vs">
-          ${coverageOnly
-            ? 'vs <strong>Observability Contract</strong> <span class="diag-report-mode">· coverage only</span>'
-            : (contractMode
-                ? 'vs <strong>Observability Contract</strong>' + (contractName && contractName !== '—' ? ' (' + escapeHtml(contractName) + ')' : '')
-                : 'vs <strong>' + escapeHtml(contractName) + '</strong>')}
-        </span>
+        ${gradeContext ? `<span class="diag-report-vs">${gradeContext}</span>` : ''}
         <span class="diag-report-status diag-${passes ? 'pass' : 'fail'}">${status}</span>
       </div>
       <table class="diag-summary">

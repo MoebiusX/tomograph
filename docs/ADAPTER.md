@@ -36,7 +36,7 @@ const { spec, effective } = applyEnvironmentOverlay(canonical.spec, 'staging');
   layers: {
     L1: artefact[],
     L2: artefact[],
-    L2X: artefact[],                     // extended surfaces
+    L2X: artefact[],                     // canonical §5.12.4 extended surfaces
     L3: artefact[],
     L4: { policy: artefact[], alerting: artefact[], healing: artefact[] },
     L5: artefact[],
@@ -76,7 +76,7 @@ The adapter walks each top-level spec section into a deterministic family of lay
 | `spec.pipelines.processors[]` | L2 | `PIP-PRC-{NN}` | |
 | `spec.pipelines.exporters.{metrics\|logs\|traces}` | L2 | `PIP-EXP-{MET\|LOG\|TRC}` | |
 | `spec.storage.{metrics\|logs\|traces}` | L2 | `STO-{MET\|LOG\|TRC}-01` | |
-| `spec.profiling` | **L2X** | `PROF-01` | RFC-0001 sibling layer |
+| `spec.profiling` | **L2X** | `PROF-01` | Extended surface from spec §5.12.4 |
 | `spec.network` | **L2X** | `NET-01` | |
 | `spec.policy_engine` | **L2X** | `POE-01` | |
 | `spec.mesh[]` | **L2X** | `MESH-{NN}` | |

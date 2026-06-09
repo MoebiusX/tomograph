@@ -1,174 +1,135 @@
-# Diff — structural artefact matching
+# Diff — Behavioural Artefact Matching
 
-`tools/lib/diff.mjs` performs **pack arithmetic**: set operations over the
-artefact symbols of two adapted, layered packs. The studio consumes it as the
-drift / gap view, and the server exposes it via
-`GET /api/diff?a=<packId>&b=<packId>`.
+`tools/lib/diff.mjs` compares two adapted, layered packs and powers the
+drift/gap view exposed by `GET /api/diff?a=<packId>&b=<packId>`.
 
-The headline idea: comparing two packs is not "do they share the same names?"
-It is "do the artefacts that share a name actually **agree**?" Identity is the
-name on the door; **alignment** is the contents of the room. Diff answers both
-questions, in that order.
+The comparison is directional: **A is the declared pack under review, B is the
+reference or live pack**. Tomograph reports in-scope drift for A against B and
+keeps unrelated live inventory in a separate `outOfScope` bucket.
 
-## Two stages: identity, then agreement
+## The Claim
 
-### 1. Identity — `keyOf(artefact)`
+Tomograph separates two questions:
 
-Two artefacts "are the same artefact" when they share a **canonical key**. The
-key is derived from canonical content, **not** from the positional `id` the
-adapter assigns (those are pack-local — `SLI-01` in one pack and `SLI-07` in
-another can be the same SLI).
+1. **Identity:** is this the same control?
+2. **Agreement:** do both sides declare the same contract for that control?
 
-- Artefacts the adapter already tagged with a `defines` symbol (SLIs, SLOs,
-  backends, dashboards, derived views) reuse it directly.
-- The rest synthesise a key from the canonical spec fields the adapter
-  preserved on `artefact.spec` — e.g. a recording rule keys on
-  `recording_rule:<name>`, an alert route on `alerting.route:<severity>`, a
-  backend on `telemetry.backends.<id>`.
-- Anything unrecognised falls back to `_unknown:<id>` so it stays pack-local
-  and surfaces in `onlyInA` / `onlyInB` rather than crashing the comparison.
+This is the core matcher claim that is safe to repeat: a shared identity does
+not receive credit unless the comparable contract also aligns.
 
-`keyOf` is the single source of truth for identity — extend it as the adapter
-grows.
+## Identity
 
-### 2. Agreement — `projectOf(artefact)` + `deltasOf(a, b)`
+`keyOf(artefact)` delegates to `tools/lib/artefact-model.mjs`, which classifies
+each artefact family and builds a behavioural identity object. The adapter's
+positional ids (`SLI-01`, `BAK-03`, `ALR-02`) are never identity.
 
-A shared key proves identity, not agreement. Two SLOs both named
-`slos.api_availability_99` are the same contract; whether they're *aligned*
-depends on whether their `objective`, `window` and SLI binding actually match.
+Representative identities:
 
-`projectOf(artefact)` reifies an artefact into its **canonical comparable
-projection** — the semantic spec definition with volatile, environment-specific
-wiring removed. Two artefacts are **aligned** only when their projections are
-structurally equal; otherwise they are **drifted**, and `deltasOf(a, b)` reports
-exactly which top-level fields diverged, with each side's value.
+| Family | Identity |
+|---|---|
+| SLI / SLO | declared contract id, because other controls bind to it |
+| Backend | `product + signal` |
+| Metric | series name |
+| Recording rule | output series name |
+| Dashboard | declared dashboard id |
+| Panel | dashboard parent + `binds_to` target |
+| Pipeline receiver/processor | stage name |
+| Pipeline exporter | signal + exporter kind |
+| Alert route | severity, with duplicate identities preserved |
+| L2X profiling/network/policy | product |
+| L2X mesh/collection | product + role |
 
-#### Canonicalisation rules
+The precise phrasing matters: Tomograph matches on behaviour. For reliability
+contract artefacts, the declared id is the behavioural handle by design.
 
-`projectOf` runs the spec through `canonicalize`, which makes comparison
-order-independent and contract-focused:
+## Collision Handling
 
-- **Object keys are sorted** so key order never masquerades as drift.
-- **Arrays are normalised element-wise then sorted** so declaration order
-  doesn't either.
-- **Empty values are dropped** (`null`, `undefined`, `''`, `{}`) so an omitted
-  field and an empty field compare equal.
-- **`version` blocks collapse to `{ declared }`** — `gating` is an operational
-  toggle, not part of the contract.
-- **Volatile fields are stripped** before comparison (see below).
+Multiple artefacts in one pack can share the same identity key: multiple SEV2
+routes, duplicate dashboard ids, or more than one Prometheus metrics backend.
+`diffPacks` groups by identity instead of using a last-write-wins `Map`.
 
-#### Volatile fields (`VOLATILE_SPEC_KEYS`)
+Within each identity group it:
 
-These legitimately differ between a repo manifest and a live reconstruction of
-the same artefact — they are deployment coordinates and presentation, not the
-contract — so stripping them means "aligned" reflects the **semantic
-definition**, not whether the URLs happen to agree:
+1. Pairs exact behavioural matches first.
+2. Pairs remaining same-identity artefacts as drifted, choosing the closest
+   remaining contract.
+3. Leaves surplus controls visible as `onlyInA` or `onlyInB`.
 
-```
-endpoints, endpoint, url, address, host, auth,
-description, desc, title, summary, annotations,
-source, evidence, mcp, default
-```
+Duplicate entries receive stable occurrence suffixes such as
+`alert_route::{"severity":"sev2"}#02`, so counts preserve artefacts instead of
+collapsing them to identity classes.
 
-## Set operations
+## Agreement
 
-For each layer (`L1, L2, L2X, L3, L4, L5, GOV`) diff produces three buckets:
-
-| Bucket     | Meaning                              | Set op  |
-| ---------- | ------------------------------------ | ------- |
-| `onlyInA`  | present in A, not B                  | A − B   |
-| `onlyInB`  | present in B, not A                  | B − A   |
-| `inBoth`   | matched pairs (shared key)           | A ∩ B   |
-
-`inBoth` entries carry **both** sides plus the agreement verdict:
+`projectOf(artefact)` returns the canonical comparable contract, and
+`deltasOf(a, b)` reports top-level fields that differ. A matched pair is:
 
 ```js
-{ key, a, b, match: 'aligned' | 'drifted', deltas: [{ field, a, b }] }
+{ key, a, b, match: 'aligned' | 'drifted', deltas }
 ```
 
-- `match: 'aligned'` — projections are structurally equal; nothing to do.
-- `match: 'drifted'` — same identity, divergent content; `deltas` names the
-  diverging fields and shows each side's value.
+`aligned` means the declared contract matches after normalisation. It does not
+mean byte-identical source.
 
-The classic identities still hold:
+Normalisation rules:
 
-```
-A ∪ B = onlyInA ∪ inBoth ∪ onlyInB
-A ∩ B = inBoth
-A − B = onlyInA
-B − A = onlyInB
-```
+- Object keys are sorted.
+- Arrays are normalised element-wise, sorted, and empty arrays are treated like
+  absent fields.
+- Empty `null`, `undefined`, `''`, `{}`, and `[]` values are dropped.
+- Expressions in `expr`, `query`, `promql`, and `expression` collapse
+  whitespace only. Tomograph does not do semantic PromQL equivalence.
+- `version` blocks compare by `declared` when present.
+- Deployment/presentation fields are stripped:
 
-## Output shape
-
-Example: `examples/target-advanced.pack.yaml` (A) vs
-`examples/production-curated.pack.yaml` (B). Of the 18 artefacts that share a
-key, only 3 actually agree — the other 15 carry the same identity but divergent
-content, which `jaccard` alone would have hidden.
-
-```jsonc
-{
-  "a": { /* pack meta */ },
-  "b": { /* pack meta */ },
-  "summary": {
-    "onlyInA":  37,
-    "onlyInB":  14,
-    "inBoth":   18,    // shared identity (aligned + drifted)
-    "aligned":  3,     // structurally equal pairs
-    "drifted":  15,    // same identity, divergent content
-    "union":    69,
-    "aTotal":   55,    // onlyInA + inBoth
-    "bTotal":   32,    // onlyInB + inBoth
-    "jaccard":  0.26,  // inBoth / union — identity overlap (back-compat)
-    "alignment": 0.04  // aligned / union — true agreement ratio
-  },
-  "layers": {
-    "L2": {
-      "onlyInA": [ { "key", "artefact" }, ... ],
-      "onlyInB": [ { "key", "artefact" }, ... ],
-      "inBoth":  [ { "key", "a", "b", "match", "deltas" }, ... ],
-      "aligned": 3,    // count of aligned pairs in this layer
-      "drifted": 10    // count of drifted pairs in this layer
-    },
-    // ... one entry per layer
-  }
-}
+```text
+endpoints, endpoint, url, address, host, auth,
+description, desc, title, summary, annotations,
+source, evidence, mcp, default, folder, provider
 ```
 
-### `jaccard` vs `alignment`
+## Buckets
 
-Both are ratios over the union, and the difference is the whole point:
+Each layer (`L1`, `L2`, `L2X`, `L3`, `L4`, `L5`, `GOV`) contains:
 
-- **`jaccard` = `inBoth / union`** measures **identity overlap** — how many
-  artefacts share a name. It treats a drifted pair as a match.
-- **`alignment` = `aligned / union`** measures **true agreement** — how many
-  shared artefacts actually have matching definitions.
+| Bucket | Meaning |
+|---|---|
+| `onlyInA` | A declares it; B does not have an in-scope counterpart |
+| `onlyInB` | B has it in a family A participates in; A does not |
+| `inBoth` | same identity on both sides, with `aligned` or `drifted` verdict |
+| `outOfScope` | B has it, but A declares nothing in that artefact family |
 
-A pack compared against itself scores `alignment: 1.0`. Two packs that share
-many names but few definitions score a high `jaccard` and a low `alignment` —
-which is exactly the drift signal you want.
+`outOfScope` prevents a single-service drift view from being flooded by the
+rest of a platform's live inventory. It is reported, but excluded from the
+in-scope ratios.
 
-## Backward compatibility
+## Summary Ratios
 
-`inBoth` and `summary.jaccard` are unchanged in meaning and retained for
-existing consumers (e.g. `server/test-smoke.mjs`). The structural verdict is
-**additive**: `match` / `deltas` on each `inBoth` entry, and
-`aligned` / `drifted` / `alignment` on the summary and per-layer buckets.
+`union = onlyInA + onlyInB + inBoth` is the **in-scope** union. `outOfScope` is
+reported separately.
 
-## Studio rendering
+- `jaccard = inBoth / union`: identity overlap.
+- `alignment = aligned / union`: true agreement ratio.
 
-The drift view splits the matched column into **Aligned** and **Drifted**. The
-Aligned% headline counts only structurally-equal matches, and the Drifted
-column names the diverging fields per artefact so a reader sees not just *which*
-artefacts drifted but *which fields* diverged.
+The strongest diagnostic signal is the gap between them: high Jaccard and low
+alignment means Tomograph found the same controls, but their definitions drift.
 
 ## Public API
 
 ```js
 import { keyOf, projectOf, deltasOf, diffPacks } from './tools/lib/diff.mjs';
 
-keyOf(artefact);        // → canonical identity key (or null)
-projectOf(artefact);    // → canonical comparable projection of artefact.spec
-deltasOf(a, b);         // → [{ field, a, b }] of diverging projection fields
-diffPacks(aLayered, bLayered); // → full diff (summary + per-layer buckets)
+keyOf(artefact);              // behavioural identity key
+projectOf(artefact);          // comparable contract projection
+deltasOf(a, b);               // top-level contract deltas
+diffPacks(aLayered, bLayered); // directional drift report
 ```
+
+## Regression Coverage
+
+`tools/test-diff.mjs` verifies:
+
+- pack-vs-self preserves every artefact, including duplicate identity keys;
+- duplicate SEV2 routes survive as distinct controls;
+- surplus duplicate controls are reported as drift rather than dropped;
+- empty arrays normalise like absent fields.

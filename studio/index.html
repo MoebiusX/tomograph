@@ -332,7 +332,13 @@
       </label>
       <label class="mcp-field">
         <span class="mcp-field-key">Environment</span>
-        <input id="crawl-env" type="text" placeholder="prod" value="prod" autocomplete="off">
+        <input id="crawl-env" type="text" list="crawl-env-options" placeholder="prod" value="prod" autocomplete="off">
+        <datalist id="crawl-env-options">
+          <option value="local-docker"></option>
+          <option value="local-k8s"></option>
+          <option value="eks"></option>
+          <option value="prod"></option>
+        </datalist>
       </label>
       <label class="mcp-field">
         <span class="mcp-field-key">Criticality <em>(blank = infer)</em></span>
