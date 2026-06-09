@@ -238,6 +238,8 @@ a:hover { color: var(--ink); }
 }
 .ctrl select:focus { outline: 2px solid var(--ink-2); outline-offset: 2px; }
 .ctrl[hidden] { display: none; }
+.ctrl-service { border-color: color-mix(in srgb, var(--BLD) 45%, var(--line)); }
+.ctrl-service .ctrl-key { color: var(--BLD); }
 .ctrl-pack-b { border-left: 1px dashed var(--line); padding-left: 12px; }
 .ctrl-pack-b .ctrl-key { color: var(--CMP); }
 .ctrl-key-clear {
@@ -5486,6 +5488,8 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
 .remediate-tile.is-total { border-left-color: var(--ink-4); }
 .remediate-tile.is-deployable { border-left-color: var(--ok, #16a34a); }
 .remediate-tile.is-author { border-left-color: rgb(180, 120, 0); }
+.remediate-tile.is-retrofeed { border-left-color: var(--CMP); }
+.remediate-tile.is-drift { border-left-color: rgb(180, 120, 0); }
 
 .remediate-empty, .remediate-loading {
   padding: 16px 18px;
@@ -5529,6 +5533,15 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
 .remediate-item-row input[type=checkbox] { flex: none; }
 .remediate-item-name { color: var(--ink-2); font-family: var(--mono); font-size: 12px; }
 .remediate-item.is-author .remediate-item-name { color: var(--ink-4); }
+.remediate-item-delta {
+  margin-left: auto;
+  font: 10.5px/1.2 var(--mono);
+  color: var(--ink-5);
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .remediate-item-tag {
   margin-left: auto;
   flex: none;
@@ -5540,6 +5553,32 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
 }
 .remediate-item-tag.is-deploy { color: var(--ok, #16a34a); background: rgba(22,163,74,0.1); }
 .remediate-item-tag.is-author { color: rgb(150, 100, 0); background: rgba(180,120,0,0.1); }
+.remediate-item.is-retrofeed .remediate-item-tag.is-author { color: var(--CMP); background: color-mix(in srgb, var(--CMP) 12%, transparent); }
+.remediate-item.is-drift .remediate-item-tag.is-author { color: var(--CONF); background: color-mix(in srgb, var(--CONF) 12%, transparent); }
+
+.remediate-patch {
+  margin: 12px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: rgba(0,0,0,0.08);
+}
+.remediate-patch summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  font: 700 11px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--CMP);
+}
+.remediate-patch pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  border-top: 1px solid var(--line-2);
+  padding: 12px;
+  font: 11px/1.45 var(--mono);
+  color: var(--ink-3);
+}
 
 .remediate-action {
   display: flex;

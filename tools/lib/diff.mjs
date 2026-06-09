@@ -83,7 +83,7 @@ export function diffPacks(aLayered, bLayered, opts = {}) {
   if (!aLayered || !bLayered) throw new Error('diffPacks: both packs required');
 
   const scopeMode = normalizeScopeMode(opts.scopeMode);
-  const serviceScope = buildServiceScope(aLayered);
+  const serviceScope = buildServiceScope(aLayered, opts.service);
   const layers = {};
   let onlyInA = 0, onlyInB = 0, inBoth = 0, aligned = 0, drifted = 0, outOfScope = 0;
 
@@ -186,6 +186,7 @@ function normalizeScopeMode(value) {
 function diffScopeMeta(mode, scope) {
   return {
     mode,
+    service: scope.service || null,
     serviceTokens: [...(scope.explicit || [])].sort(),
     declaredMetricCount: scope.declaredMetrics?.size || 0,
     metricPrefixes: [...(scope.metricPrefixes || [])].sort(),
@@ -215,9 +216,10 @@ const GENERIC_METRIC_PREFIXES = new Set([
   'pushgateway', 'rabbitmq', 'redis', 'tempo', 'vm',
 ]);
 
-function buildServiceScope(layered) {
+function buildServiceScope(layered, serviceOverride) {
   const explicit = new Set();
   const addExplicit = (value) => addNameTokens(explicit, value, { allowShort: false });
+  addExplicit(serviceOverride);
   addExplicit(layered?.meta?.service);
   addExplicit(layered?.meta?.name);
   addExplicit(layered?.name);
@@ -242,7 +244,7 @@ function buildServiceScope(layered) {
     }
   }
 
-  return { explicit, declaredMetrics, metricPrefixes };
+  return { service: serviceOverride || layered?.meta?.service || layered?.meta?.name || layered?.name || layered?.id || '', explicit, declaredMetrics, metricPrefixes };
 }
 
 function isOutsideServiceScope(group, scope) {

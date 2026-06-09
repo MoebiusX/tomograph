@@ -16,6 +16,7 @@ export const state = {
   // and the header bar + tabs appear. Logo click returns to 'home'.
   mode: 'home',
   catalog: [],
+  selectedService: null,
   selectedPackId: null,
   selectedEnv: null,
   pack: null,
@@ -95,9 +96,9 @@ export const state = {
   deployProduct: 'grafana',    // chosen target product
   deployVersion: '12',         // chosen target version (string — matches matrix.versions)
   deployScope: 'both',         // for prometheus-rules: both | recording | alerting
-  // Remediate set-operation: which artefacts to deploy. null → resolves to
-  // 'A-B' when Pack B is loaded (the delta to close), else 'A'.
-  remediateOp: null,           // 'A' | 'B' | 'AUB' | 'A-B'
+  // Reconcile mode. null → bidirectional when Pack B is loaded, otherwise
+  // deploy-only. Legacy values (A/B/AUB/A-B) are migrated in compile-view.
+  remediateOp: null,           // 'all' | 'deploy' | 'retrofeed' | 'drift'
   remediateDeselected: null,   // Set<string> of identities the user unchecked
   mcpStatus: null,
 };
@@ -112,6 +113,7 @@ export const state = {
 // pack that vanished from the catalog just drops silently.
 const PERSIST_KEY = 'studioState.v1';
 const PERSIST_FIELDS = [
+  'selectedService',
   'selectedPackId', 'selectedEnv',
   'compareBId', 'compareBEnv',
   'view', 'layerFilter', 'diagnoseSub',

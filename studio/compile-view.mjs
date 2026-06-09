@@ -218,30 +218,26 @@ function parseCdFilename(cd) {
 // ============================================================
 
 // ============================================================
-// REMEDIATION PLAN — the set-operation band that leads Remediate.
+// RECONCILIATION PLAN — the bidirectional band that leads Remediate.
 //
-// "Fix the gaps" starts by deciding WHAT to deploy. Four set
-// operations over the two packs' artefacts:
+// "Fix the gaps" starts by deciding which direction each gap flows:
 //
-//   A      — everything in your pack (the default with no Pack B)
-//   B      — everything in the reference / target pack
-//   A ∪ B  — union: your pack plus anything B adds
-//   A − B  — the delta: artefacts in A but not B (the gap to close)
+//   repo → live   — Pack A declares it, live does not; deploy or delete intent
+//   live → repo   — live has it, Pack A does not; retrofeed or mark out of scope
+//   drifted       — both sides have it but behaviour differs; choose source of truth
 //
-// A−B is the default when Pack B is loaded because it answers the
-// remediation question directly: "what do I need to push that isn't
-// already there?" The resolved set is shown per-layer with each item
-// selectable; deployable artefacts (the Grafana surface — rules from
-// SLOs, declared recording rules, dashboards) carry a checkbox and a
-// "deploy" affordance, while everything else is flagged "author in
-// pack" (you fix it by editing the manifest, not by pushing).
+// The default with Pack B loaded is bidirectional: deployment rows for
+// repo→live plus a generated ReconcilePatch for live→repo. That models
+// the real operating loop: close production gaps and bring production
+// truth back into code.
 // ============================================================
 
 // The active set operation, resolving the null default by Pack-B
 // presence. B / ∪ / − require Pack B; without it we clamp to 'A'.
 function effectiveRemediateOp() {
-  const op = state.remediateOp || (state.packB ? 'A-B' : 'A');
-  if (!state.packB && op !== 'A') return 'A';
+  const legacy = { A: 'deploy', B: 'retrofeed', AUB: 'all', 'A-B': 'deploy' };
+  const op = legacy[state.remediateOp] || state.remediateOp || (state.packB ? 'all' : 'deploy');
+  if (!state.packB && op !== 'deploy') return 'deploy';
   return op;
 }
 
@@ -252,31 +248,44 @@ function effectiveRemediateOp() {
 function resolveRemediationSet(op) {
   const haveB = !!state.packB;
   const diff = (state.diff && !state.diff.error && state.diff.layers) ? state.diff : null;
-  const out = { byLayer: {}, total: 0, deployable: 0, author: 0, needsDiff: false };
+  const out = { byLayer: {}, total: 0, deployable: 0, author: 0, retrofeed: 0, drift: 0, needsDiff: false };
 
   for (const L of LAYERS_FOR_DIFF) {
     let entries = [];
-    if (op === 'A' || !haveB) {
-      entries = layerItemsFor(state.pack, L).map(a => ({ art: a }));
-    } else if (op === 'B') {
-      entries = layerItemsFor(state.packB, L).map(a => ({ art: a }));
-    } else if (op === 'A-B') {
+    if (op === 'deploy' || !haveB) {
       if (!diff) { out.needsDiff = true; entries = layerItemsFor(state.pack, L).map(a => ({ art: a })); }
-      else entries = (diff.layers[L]?.onlyInA || []).map(e => ({ art: e.artefact }));
-    } else if (op === 'AUB') {
-      const aItems = layerItemsFor(state.pack, L).map(a => ({ art: a }));
-      let bExtra;
-      if (!diff) { out.needsDiff = true; bExtra = layerItemsFor(state.packB, L).map(a => ({ art: a })); }
-      else bExtra = (diff.layers[L]?.onlyInB || []).map(e => ({ art: e.artefact }));
-      entries = [...aItems, ...bExtra];
+      else entries = (diff.layers[L]?.onlyInA || []).map(e => ({ art: e.artefact, direction: 'deploy', identity: e.key }));
+    } else if (op === 'retrofeed') {
+      if (!diff) { out.needsDiff = true; entries = []; }
+      else entries = (diff.layers[L]?.onlyInB || []).map(e => ({ art: e.artefact, direction: 'retrofeed', identity: e.key }));
+    } else if (op === 'drift') {
+      if (!diff) { out.needsDiff = true; entries = []; }
+      else entries = (diff.layers[L]?.inBoth || [])
+        .filter(e => e.match === 'drifted')
+        .map(e => ({ art: e.a, artB: e.b, deltas: e.deltas || [], direction: 'drift', identity: e.key }));
+    } else if (op === 'all') {
+      if (!diff) { out.needsDiff = true; entries = []; }
+      else entries = [
+        ...(diff.layers[L]?.onlyInA || []).map(e => ({ art: e.artefact, direction: 'deploy', identity: e.key })),
+        ...(diff.layers[L]?.onlyInB || []).map(e => ({ art: e.artefact, direction: 'retrofeed', identity: e.key })),
+        ...(diff.layers[L]?.inBoth || [])
+          .filter(e => e.match === 'drifted')
+          .map(e => ({ art: e.a, artB: e.b, deltas: e.deltas || [], direction: 'drift', identity: e.key })),
+      ];
     }
     const enriched = entries
       .filter(e => e.art)
-      .map(e => ({ ...e, ...deploySurfaceForArtefact(e.art) }));
+      .map(e => {
+        const deploySurface = deploySurfaceForArtefact(e.art);
+        const deployable = e.direction === 'deploy' ? deploySurface.deployable : false;
+        return { ...e, ...deploySurface, deployable };
+      });
     if (enriched.length) {
       out.byLayer[L] = enriched;
       out.total += enriched.length;
       out.deployable += enriched.filter(e => e.deployable).length;
+      out.retrofeed += enriched.filter(e => e.direction === 'retrofeed').length;
+      out.drift += enriched.filter(e => e.direction === 'drift').length;
       out.author += enriched.filter(e => !e.deployable).length;
     }
   }
@@ -296,10 +305,10 @@ function remediationSelectedDeployment(resolved) {
 }
 
 const REMEDIATE_OPS = [
-  { id: 'A',   label: 'A', sub: 'your pack',        needsB: false },
-  { id: 'B',   label: 'B', sub: 'reference',        needsB: true  },
-  { id: 'AUB', label: 'A ∪ B', sub: 'union',        needsB: true  },
-  { id: 'A-B', label: 'A − B', sub: 'delta to push', needsB: true  },
+  { id: 'all',       label: 'Bidirectional', sub: 'repo ↔ live',  needsB: true  },
+  { id: 'deploy',    label: 'Deploy',        sub: 'repo → live',  needsB: false },
+  { id: 'retrofeed', label: 'Retrofeed',     sub: 'live → repo',  needsB: true  },
+  { id: 'drift',     label: 'Reconcile',     sub: 'field drift',  needsB: true  },
 ];
 
 const REMEDIATE_LAYER_NAMES = { L1:'Contract', L2:'Telemetry', L2X:'Extended', L3:'Insight', L4:'Action', L5:'Validation', GOV:'Governance' };
@@ -327,10 +336,10 @@ function renderRemediationPlan(host) {
 
   wrap.innerHTML = `
     <div class="remediate-plan-head">
-      <span class="remediate-plan-eyebrow">PLAN</span>
-      What do we deploy?
+      <span class="remediate-plan-eyebrow">RECONCILE</span>
+      How do we close the loop?
       ${haveB ? `<span class="remediate-plan-vs">A = your pack · B = <strong>${escapeHtml(bName)}</strong></span>`
-              : `<span class="remediate-plan-vs">Load a <strong>Pack B</strong> from the header to unlock B · A∪B · A−B</span>`}
+              : `<span class="remediate-plan-vs">Load a <strong>Pack B</strong> from the header to unlock live→repo retrofeed and drift decisions</span>`}
     </div>
     <div class="remediate-ops">${opsHtml}</div>
   `;
@@ -364,17 +373,18 @@ function renderRemediationPlan(host) {
   const summary = document.createElement('div');
   summary.className = 'remediate-summary';
   const opMeaning = {
-    'A':   'Every artefact in your pack.',
-    'B':   `Every artefact in ${escapeHtml(bName || 'Pack B')}.`,
-    'AUB': `Your pack combined with everything ${escapeHtml(bName || 'Pack B')} adds.`,
-    'A-B': `Artefacts in your pack but not in ${escapeHtml(bName || 'Pack B')} — the delta to push.`,
+    all:       'Bidirectional plan: deploy repo-only intent, retrofeed live-only evidence, and decide drifted fields.',
+    deploy:    `Artefacts in your pack but not in ${escapeHtml(bName || 'Pack B')} — deploy delta or delete stale intent.`,
+    retrofeed: `Artefacts live in ${escapeHtml(bName || 'Pack B')} but missing from your pack — generate a repo retrofeed patch.`,
+    drift:     'Matched artefacts whose decision-bearing fields diverge — choose repo or live as source of truth.',
   };
   summary.innerHTML = `
     <div class="remediate-summary-lede">${opMeaning[op] || ''}</div>
     <div class="remediate-tiles">
       <div class="remediate-tile is-total"><div class="remediate-tile-n">${resolved.total}</div><div class="remediate-tile-l">in set</div></div>
       <div class="remediate-tile is-deployable"><div class="remediate-tile-n">${selectedDeployment.rows}</div><div class="remediate-tile-l">deploy rows selected</div></div>
-      <div class="remediate-tile is-author"><div class="remediate-tile-n">${resolved.author}</div><div class="remediate-tile-l">manual follow-up</div></div>
+      <div class="remediate-tile is-retrofeed"><div class="remediate-tile-n">${resolved.retrofeed}</div><div class="remediate-tile-l">repo patch items</div></div>
+      <div class="remediate-tile is-drift"><div class="remediate-tile-n">${resolved.drift}</div><div class="remediate-tile-l">field decisions</div></div>
     </div>
   `;
   wrap.appendChild(summary);
@@ -382,12 +392,24 @@ function renderRemediationPlan(host) {
   if (resolved.total === 0) {
     const empty = document.createElement('div');
     empty.className = 'remediate-empty';
-    empty.textContent = op === 'A-B'
-      ? 'Nothing to close — your pack has no artefacts beyond Pack B.'
+    empty.textContent = op === 'deploy'
+      ? 'Nothing to deploy — your pack has no artefacts beyond Pack B.'
       : 'This set is empty.';
     wrap.appendChild(empty);
     host.appendChild(wrap);
     return;
+  }
+
+  const patchText = buildRetrofeedPatchText(resolved, bName);
+  if (patchText) {
+    const patch = document.createElement('details');
+    patch.className = 'remediate-patch';
+    patch.open = true;
+    patch.innerHTML = `
+      <summary>Repo retrofeed patch (${resolved.retrofeed} item${resolved.retrofeed === 1 ? '' : 's'})</summary>
+      <pre>${escapeHtml(patchText)}</pre>
+    `;
+    wrap.appendChild(patch);
   }
 
   // ---- Per-layer, per-item checklist ----
@@ -412,7 +434,7 @@ function renderRemediationPlan(host) {
     for (const e of entries) {
       const li = document.createElement('li');
       const checked = e.deployable && e.identity && !deselected.has(e.identity);
-      li.className = 'remediate-item' + (e.deployable ? '' : ' is-author');
+      li.className = `remediate-item is-${e.direction || 'deploy'}` + (e.deployable ? '' : ' is-author');
       const labelText = artefactLabel(e.art, e.identity || '—');
       if (e.deployable) {
         li.innerHTML = `
@@ -429,10 +451,17 @@ function renderRemediationPlan(host) {
           renderMainView();
         };
       } else {
+        const tag = e.direction === 'retrofeed' ? 'repo patch'
+          : e.direction === 'drift' ? 'field decision'
+          : 'manual fix';
+        const driftText = e.direction === 'drift' && e.deltas?.length
+          ? `<span class="remediate-item-delta">${escapeHtml(e.deltas.slice(0, 3).map(d => d.path || d.field || 'field').join(' · '))}</span>`
+          : '';
         li.innerHTML = `
           <div class="remediate-item-row">
             <span class="remediate-item-name">${escapeHtml(labelText)}</span>
-            <span class="remediate-item-tag is-author">manual fix</span>
+            ${driftText}
+            <span class="remediate-item-tag is-author">${escapeHtml(tag)}</span>
           </div>
         `;
       }
@@ -447,7 +476,7 @@ function renderRemediationPlan(host) {
   const action = document.createElement('div');
   action.className = 'remediate-action';
   const n = selectedDeployment.rows;
-  const deployPackId = (op === 'B') ? state.compareBId : state.selectedPackId;
+  const deployPackId = state.selectedPackId;
   action.innerHTML = `
     <button type="button" class="remediate-deploy-btn" ${n === 0 ? 'disabled' : ''}>
       Deploy ${n} selected →
@@ -465,10 +494,58 @@ function renderRemediationPlan(host) {
   host.appendChild(wrap);
 }
 
+function buildRetrofeedPatchText(resolved, bName) {
+  const changes = [];
+  for (const L of LAYERS_FOR_DIFF) {
+    for (const e of resolved.byLayer[L] || []) {
+      if (e.direction !== 'retrofeed') continue;
+      changes.push({ layer: L, identity: e.identity || '', artefact: e.art });
+    }
+  }
+  if (!changes.length) return '';
+  const lines = [
+    'apiVersion: tomograph.dev/v1alpha1',
+    'kind: ReconcilePatch',
+    'metadata:',
+    `  service: ${yamlScalar(state.pack?.meta?.service || state.pack?.meta?.name || 'unknown')}`,
+    `  source: ${yamlScalar(bName || 'Pack B')}`,
+    'spec:',
+    '  direction: live_to_repo',
+    '  changes:',
+  ];
+  for (const change of changes) {
+    const label = artefactLabel(change.artefact, change.identity);
+    lines.push(`    - layer: ${yamlScalar(change.layer)}`);
+    lines.push('      action: add_to_pack');
+    lines.push(`      identity: ${yamlScalar(change.identity)}`);
+    lines.push(`      title: ${yamlScalar(label)}`);
+    lines.push('      artifact_json: |');
+    for (const line of JSON.stringify(cleanPatchArtefact(change.artefact), null, 2).split('\n')) {
+      lines.push(`        ${line}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function cleanPatchArtefact(artefact) {
+  if (!artefact || typeof artefact !== 'object') return artefact;
+  const rest = { ...artefact };
+  delete rest.domId;
+  delete rest._sub;
+  return rest;
+}
+
+function yamlScalar(value) {
+  const s = String(value ?? '');
+  if (!s) return "''";
+  if (/^[A-Za-z0-9_.:/@-]+$/.test(s)) return s;
+  return JSON.stringify(s);
+}
+
 export function renderCompileView(host) {
-  // The remediation PLAN leads the view — set-operation (A | B | A∪B |
-  // A−B) → resolved set → per-item select → deploy. The per-artefact
-  // compiler below is the drill-down: inspect/emit one artefact at a time.
+  // The reconciliation plan leads the view: repo→live deployment,
+  // live→repo retrofeed, and drift field decisions. The per-artefact
+  // compiler below remains the drill-down to inspect/emit one artefact.
   renderRemediationPlan(host);
 
   const section = document.createElement('section');

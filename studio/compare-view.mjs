@@ -39,6 +39,7 @@ export async function loadDiff() {
   if (state.selectedEnv) params.set('aEnv', state.selectedEnv);
   if (state.compareBEnv) params.set('bEnv', state.compareBEnv);
   params.set('scopeMode', activeDiffScopeMode());
+  if (state.selectedService) params.set('service', state.selectedService);
   try {
     const result = await api(`/api/diff?${params}`);
     // Sanity-check the shape so a stale server returning some other JSON
@@ -2935,7 +2936,8 @@ function renderLiveScopeControl({ standalone = false } = {}) {
     note.className = 'compare-scope-note';
     const tokenCount = Array.isArray(meta.serviceTokens) ? meta.serviceTokens.length : 0;
     const prefixCount = Array.isArray(meta.metricPrefixes) ? meta.metricPrefixes.length : 0;
-    note.textContent = `${meta.mode} · ${tokenCount} service token${tokenCount === 1 ? '' : 's'} · ${prefixCount} metric prefix${prefixCount === 1 ? '' : 'es'}`;
+    const service = meta.service ? `${meta.service} · ` : '';
+    note.textContent = `${service}${meta.mode} · ${tokenCount} service token${tokenCount === 1 ? '' : 's'} · ${prefixCount} metric prefix${prefixCount === 1 ? '' : 'es'}`;
     wrap.appendChild(note);
   }
   return wrap;

@@ -71,6 +71,7 @@ async function rehydrateFromPersistence() {
   }
 
   // Restore non-pack UI fields up-front so the first render shows them.
+  if (typeof saved.selectedService === 'string') state.selectedService = saved.selectedService;
   if (typeof saved.view === 'string')          state.view = saved.view;
   // Migrate persisted state from prior nav layouts to the three-tab
   // model (Layers · Compare · Compile). Anything outside those three
@@ -164,10 +165,159 @@ function packSelectLabel(p, { prefixUploaded = false } = {}) {
   return `${prefix}${p.label} · v${version}${source ? ` · from ${source}` : ''}`;
 }
 
+function normalizeServiceKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function serviceNamesForPack(p) {
+  const names = new Set();
+  const add = (value) => {
+    const v = String(value || '').trim();
+    if (v) names.add(v);
+  };
+  add(p?.service);
+  add(p?.namespace);
+  add(p?.name);
+  if (Array.isArray(p?.services)) p.services.forEach(add);
+  return [...names];
+}
+
+function primaryServiceName(p) {
+  return String(p?.service || p?.namespace || p?.name || p?.label || '').trim();
+}
+
+function serviceKeyForPack(p) {
+  return normalizeServiceKey(primaryServiceName(p));
+}
+
+function isLiveAggregatePack(p) {
+  const text = [
+    p?.id, p?.label, p?.name, p?.description, p?.source,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return /\b(live|mcp|production-live|draft-from-mcp)\b/.test(text);
+}
+
+function serviceCatalogue() {
+  const byKey = new Map();
+  const add = (name, p) => {
+    const key = normalizeServiceKey(name);
+    if (!key) return;
+    if (!byKey.has(key)) byKey.set(key, {
+      key,
+      label: String(name).trim(),
+      packCount: 0,
+      liveCount: 0,
+    });
+    const item = byKey.get(key);
+    if (p) {
+      if (isLiveAggregatePack(p)) item.liveCount += 1;
+      else item.packCount += 1;
+    }
+  };
+  for (const p of [...(state.catalog || []), ...(state._examplesCache || [])]) {
+    if (!p?.ok) continue;
+    const aggregate = isLiveAggregatePack(p);
+    const primaryKey = serviceKeyForPack(p);
+    if (!aggregate) add(primaryServiceName(p), p);
+    for (const svc of p.services || []) {
+      if (aggregate && normalizeServiceKey(svc) === primaryKey) continue;
+      add(svc, p);
+    }
+  }
+  const current = state.pack?.meta?.service;
+  if (current) add(current);
+  return [...byKey.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function packMatchesService(p, serviceKey, { side = 'a' } = {}) {
+  if (!serviceKey) return true;
+  if (!p?.ok) return false;
+  const keys = new Set(serviceNamesForPack(p).map(normalizeServiceKey).filter(Boolean));
+  if (keys.has(serviceKey)) return true;
+  // Pack B is often an aggregate live snapshot from a multitenant platform.
+  // Keep it available; the diff's selected service scope keeps unrelated
+  // live inventory out of the grade.
+  return side === 'b' && isLiveAggregatePack(p);
+}
+
+function ensureServiceFromPack() {
+  if (state.selectedService) return;
+  const entry = state.catalog.find(p => p.id === state.selectedPackId);
+  const key = serviceKeyForPack(entry) || normalizeServiceKey(state.pack?.meta?.service);
+  if (key) state.selectedService = key;
+}
+
+function clearPackBState() {
+  state.compareBId = null;
+  state.compareBEnv = null;
+  state.packB = null;
+  state.diff = null;
+  state.conformanceB = null;
+  state.compileCatalogB = null;
+  state.compileContentB = null;
+  state.viewFocus = 'a';
+}
+
+function renderServiceSelect() {
+  const sel = $('#service-select');
+  if (!sel) return;
+  const services = serviceCatalogue();
+  sel.innerHTML = '';
+  if (!services.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '— service —';
+    sel.appendChild(opt);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  if (!state.selectedService || !services.some(s => s.key === state.selectedService)) {
+    ensureServiceFromPack();
+    if (!state.selectedService || !services.some(s => s.key === state.selectedService)) {
+      state.selectedService = services[0].key;
+    }
+  }
+  for (const service of services) {
+    const opt = document.createElement('option');
+    opt.value = service.key;
+    opt.textContent = service.label;
+    sel.appendChild(opt);
+  }
+  sel.value = state.selectedService || '';
+  sel.onchange = () => {
+    state.selectedService = sel.value || null;
+    const currentA = state.catalog.find(p => p.id === state.selectedPackId);
+    if (state.selectedPackId && !packMatchesService(currentA, state.selectedService, { side: 'a' })) {
+      const nextA = state.catalog.find(p => p.ok && packMatchesService(p, state.selectedService, { side: 'a' }));
+      state.selectedPackId = nextA?.id || null;
+      state.selectedEnv = state.selectedPackId ? defaultEnvFor(state.selectedPackId) : null;
+      state.pack = null;
+      state.conformance = null;
+      state.symbolTable = null;
+    }
+    const currentB = [...(state.catalog || []), ...(state._examplesCache || [])].find(p => p.id === state.compareBId);
+    if (state.compareBId && !packMatchesService(currentB, state.selectedService, { side: 'b' })) clearPackBState();
+    state.diff = null;
+    renderPackSelect();
+    renderPackBSelect();
+    renderEnvSelect();
+    renderEnvBSelect();
+    renderTabs();
+    if (state.selectedPackId && state.mode !== 'home') refresh();
+    else renderMainView();
+  };
+}
+
 function renderPackSelect() {
   const sel = $('#pack-select');
   sel.innerHTML = '';
-  for (const p of state.catalog) {
+  ensureServiceFromPack();
+  const options = state.catalog.filter(p => packMatchesService(p, state.selectedService, { side: 'a' }));
+  for (const p of options) {
     const opt = document.createElement('option');
     opt.value = p.id;
     // Uploaded packs lead with a folder glyph so the user can tell
@@ -180,10 +330,14 @@ function renderPackSelect() {
     if (!p.ok) opt.disabled = true;
     sel.appendChild(opt);
   }
-  sel.value = state.selectedPackId || (state.catalog.find(p => p.ok)?.id ?? '');
+  sel.value = state.selectedPackId || (options.find(p => p.ok)?.id ?? '');
   sel.onchange = () => {
     state.selectedPackId = sel.value;
     state.selectedEnv = defaultEnvFor(state.selectedPackId);
+    const entry = state.catalog.find(p => p.id === state.selectedPackId);
+    const key = serviceKeyForPack(entry);
+    if (key) state.selectedService = key;
+    renderServiceSelect();
     refresh();
   };
 }
@@ -207,6 +361,7 @@ function renderPackBSelect() {
   for (const p of [...cat, ...ex]) {
     if (!p?.id || !p.ok) continue;
     if (p.id === state.selectedPackId) continue;
+    if (!packMatchesService(p, state.selectedService, { side: 'b' })) continue;
     if (seen.has(p.id)) continue;
     seen.add(p.id);
     options.push(p);
@@ -695,7 +850,11 @@ async function handleFile(file) {
       // catalog so it's available there too.
       await loadCatalog();
     }
+    state.selectedService = serviceKeyForPack(state.catalog.find(p => p.id === state.selectedPackId))
+      || normalizeServiceKey(state.pack?.meta?.service)
+      || state.selectedService;
     applyModeChrome();
+    renderServiceSelect();
     renderPackSelect();
     renderPackBSelect();
     renderEnvSelect();
@@ -819,11 +978,13 @@ function setupUpload() {
 
 export async function refresh() {
   try {
+    ensureServiceFromPack();
     await loadPack(state.selectedPackId, state.selectedEnv);
     // Compile catalog is pack/env-specific — invalidate on switch so the
     // tree re-fetches the new pack's artifacts.
     state.compileCatalog = null;
     state.compileContent = null;
+    renderServiceSelect();
     renderEnvSelect();
     renderPackSelect();
     renderPackBSelect();
@@ -1093,13 +1254,7 @@ async function boot() {
   // Wire the Pack B "×" clear button.
   $('#pack-b-clear')?.addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
-    state.compareBId = null; state.compareBEnv = null;
-    state.packB = null; state.diff = null;
-    // Drop B's parallel state slots + reset focus to A.
-    state.conformanceB = null;
-    state.compileCatalogB = null;
-    state.compileContentB = null;
-    state.viewFocus = 'a';
+    clearPackBState();
     // Compare + Traceability are cross-pack only; Atlas stays available
     // in single mode (Strata / Periodic / Skyline / Arbor work on one pack).
     if (state.view === 'compare' || state.view === 'traceability') state.view = 'layers';
@@ -1107,6 +1262,7 @@ async function boot() {
       state.atlasVariant = 'strata';
     }
     applyModeChrome();
+    renderServiceSelect();
     renderPackBSelect();
     renderTabs();
     renderMainView();
@@ -1150,6 +1306,7 @@ function goHome() {
   state.compileContent = null;
   // Going home is the user saying "start over" — clear the persisted
   // pack/compare-B IDs so the next reload doesn't re-enter analyze mode.
+  state.selectedService = null;
   state.selectedPackId = null;
   state.selectedEnv = null;
   state.compareBId = null;
@@ -1173,9 +1330,11 @@ function enterAnalyzeMode(packId, env) {
   state.mode = 'single';
   state.selectedPackId = packId;
   state.selectedEnv    = env || defaultEnvFor(packId);
+  state.selectedService = serviceKeyForPack(state.catalog.find(p => p.id === packId)) || state.selectedService;
   state.activeLayer = 'L1';
   state.activeCardKey = null;
   applyModeChrome();
+  renderServiceSelect();
   renderPackSelect();
   refresh();
 }
@@ -1185,10 +1344,12 @@ function enterCompareMode(aId, aEnv, bId, bEnv) {
   state.mode = 'compare';
   state.selectedPackId = aId;
   state.selectedEnv    = aEnv || defaultEnvFor(aId);
+  state.selectedService = serviceKeyForPack(state.catalog.find(p => p.id === aId)) || state.selectedService;
   state.compareBId     = bId;
   state.compareBEnv    = bEnv || defaultEnvFor(bId);
   state.activeLayer    = 'COMPARE';
   applyModeChrome();
+  renderServiceSelect();
   renderPackSelect();
   refresh();
   refreshDiff();
@@ -1212,6 +1373,8 @@ function applyModeChrome() {
   document.body.dataset.view = state.view || '';
   const packSel = $('#pack-select')?.parentElement;
   const envSel  = $('#env-select')?.parentElement;
+  const serviceSel = $('#ctrl-service');
+  if (serviceSel) serviceSel.hidden = isHome || onCompare;
   if (packSel) packSel.hidden = isHome || onCompare;
   if (envSel)  envSel.hidden  = isHome || onCompare;
   // Pack B picker stays visible whenever we're not on home — empty until
@@ -1808,6 +1971,7 @@ async function loadAndCacheExamples() {
     const r = await api('/api/examples');
     state._examplesCache = r.examples || [];
     // Re-render the Pack B picker so the newly available options appear.
+    renderServiceSelect();
     renderPackBSelect();
   } catch (_) { state._examplesCache = []; }
   return state._examplesCache;
@@ -1822,6 +1986,7 @@ export async function loadAndCacheReferences() {
   try {
     const r = await api('/api/references');
     state._referencesCache = r.references || [];
+    renderServiceSelect();
     renderPackBSelect();
   } catch (_) { state._referencesCache = []; }
   return state._referencesCache;
@@ -1964,8 +2129,9 @@ async function refreshLive() {
     } else {
       // Refresh the catalog so the production-live entry's ok-state updates.
       await loadCatalog();
+      renderServiceSelect();
       renderPackSelect();
-    renderPackBSelect();
+      renderPackBSelect();
     }
   } catch (e) {
     setRefreshStatus(`error: ${e.message}`, 'error');
@@ -2461,7 +2627,9 @@ async function adoptValidatedPack(res, sourceLabel, kind) {
     state.mode = 'single';
     state.view = 'layers';
     state.activeLayer = 'L1';
+    state.selectedService = normalizeServiceKey(state.pack?.meta?.service) || state.selectedService;
     applyModeChrome();
+    renderServiceSelect();
     renderPackSelect();
     renderPackBSelect();
     renderEnvSelect();
@@ -2472,6 +2640,9 @@ async function adoptValidatedPack(res, sourceLabel, kind) {
   }
 
   await loadCatalog();
+  if (kind === 'repo') {
+    state.selectedService = serviceKeyForPack(state.catalog.find(p => p.id === newId)) || state.selectedService;
+  }
 
   const prevA = state.selectedPackId;
   const prevB = state.compareBId;

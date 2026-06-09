@@ -222,6 +222,7 @@ function loadPackCanonical(meta) {
 function catalogEntry(meta) {
   try {
     const c = loadPackFile(meta.path);
+    const svc = serviceMetadata(c);
     return {
       id: meta.id,
       label: meta.label,
@@ -230,12 +231,36 @@ function catalogEntry(meta) {
       version: c.metadata?.version,
       binding: c.metadata?.binding,
       criticality: c.metadata?.bindings?.criticality,
+      service: svc.service,
+      namespace: svc.namespace,
+      services: svc.services,
       environments: listEnvironments(c),
       ok: true,
     };
   } catch (e) {
     return { id: meta.id, label: meta.label, ok: false, error: e.message };
   }
+}
+
+function serviceMetadata(canonical) {
+  const bindings = canonical?.metadata?.bindings || {};
+  const annotations = canonical?.metadata?.annotations || {};
+  const services = new Set();
+  const add = (value) => {
+    for (const part of String(value || '').split(',')) {
+      const service = part.trim();
+      if (service) services.add(service);
+    }
+  };
+  add(bindings.service);
+  add(bindings.namespace);
+  add(annotations['mcp.servicesDiscovered']);
+  add(annotations['tomograph.services']);
+  return {
+    service: bindings.service || canonical?.metadata?.name || '',
+    namespace: bindings.namespace || bindings.service || canonical?.metadata?.name || '',
+    services: [...services].sort(),
+  };
 }
 
 function readEnv(query) {
@@ -319,6 +344,7 @@ function catalogEntryForUpload(id) {
   const meta = uploadedMeta(id);
   if (!meta) return null;
   const c = meta.canonical;
+  const svc = serviceMetadata(c);
   return {
     id,
     label: meta.label,
@@ -327,6 +353,9 @@ function catalogEntryForUpload(id) {
     version: c?.metadata?.version,
     binding: c?.metadata?.binding,
     criticality: c?.metadata?.bindings?.criticality,
+    service: svc.service,
+    namespace: svc.namespace,
+    services: svc.services,
     environments: listEnvironments(c),
     source: 'uploaded',
     ok: true,
@@ -419,6 +448,7 @@ app.get('/api/diff', (req, res) => {
   const aEnv = typeof req.query.aEnv === 'string' && req.query.aEnv ? req.query.aEnv : null;
   const bEnv = typeof req.query.bEnv === 'string' && req.query.bEnv ? req.query.bEnv : null;
   const requestedScopeMode = typeof req.query.scopeMode === 'string' ? req.query.scopeMode : undefined;
+  const requestedService = typeof req.query.service === 'string' && req.query.service ? req.query.service : undefined;
   try {
     const aCanonical = loadPackCanonical(aMeta);
     const bCanonical = loadPackCanonical(bMeta);
@@ -427,7 +457,7 @@ app.get('/api/diff', (req, res) => {
     const aLayered = adapt(aCanonical, { environment: aEnv });
     const bLayered = adapt(bCanonical, { environment: bEnv });
     res.json({
-      ...diffPacks(aLayered, bLayered, { scopeMode }),
+      ...diffPacks(aLayered, bLayered, { scopeMode, service: requestedService }),
       traceabilityGraph: comparePackBranches(aLayered, bLayered),
     });
   } catch (e) {
