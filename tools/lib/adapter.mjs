@@ -9,6 +9,8 @@
 //   adapt(canonicalPack, opts?)         -> layeredDisplayPack
 //   listEnvironments(canonicalPack)     -> string[]
 //   applyEnvironmentOverlay(spec, env)  -> { spec, effective }
+
+import { buildRequirementTraceability } from './traceability.mjs';
 //
 // LAYERED DISPLAY OBJECT shape:
 //   {
@@ -74,6 +76,44 @@ export function adapt(canonical, opts = {}) {
     mcpEvidence: (id) => annotations[`${verifyPrefix}${id}`] ?? undefined,
   };
 
+  const layers = {
+    L1: [...adaptSLIs(ctx), ...adaptSLOs(ctx)],
+    L2: [
+      ...adaptOtel(ctx),
+      ...adaptBackends(ctx),
+      ...adaptPipelines(ctx),
+      ...adaptStorage(ctx),
+      ...adaptScrapeJobs(ctx),
+      ...adaptMetricInventory(ctx),
+    ],
+    L2X: [
+      ...adaptProfiling(ctx),
+      ...adaptNetwork(ctx),
+      ...adaptPolicyEngine(ctx),
+      ...adaptMesh(ctx),
+      ...adaptCollection(ctx),
+    ],
+    L3: [
+      ...adaptQueries(ctx),
+      ...adaptDashboards(ctx),
+      ...adaptDashboardPanels(ctx),
+    ],
+    L4: {
+      policy: [
+        ...adaptBurnRateAlerts(ctx),
+        ...adaptForecasts(ctx),
+      ],
+      alerting: adaptAlertingRoutes(ctx),
+      healing: adaptRemediation(ctx),
+    },
+    L5: [
+      ...adaptBaselines(ctx),
+      ...adaptChaos(ctx),
+      ...adaptSynthetic(ctx),
+    ],
+    GOV: adaptImports(canonical),
+  };
+
   const metaBindings = canonical.metadata?.bindings || {};
   return {
     id: canonical.metadata?.name ?? '(unnamed)',
@@ -100,42 +140,8 @@ export function adapt(canonical, opts = {}) {
       // view + lens rely on them to score and source-tag artefacts.
       annotations: { ...annotations },
     },
-    layers: {
-      L1: [...adaptSLIs(ctx), ...adaptSLOs(ctx)],
-      L2: [
-        ...adaptOtel(ctx),
-        ...adaptBackends(ctx),
-        ...adaptPipelines(ctx),
-        ...adaptStorage(ctx),
-        ...adaptMetricInventory(ctx),
-      ],
-      L2X: [
-        ...adaptProfiling(ctx),
-        ...adaptNetwork(ctx),
-        ...adaptPolicyEngine(ctx),
-        ...adaptMesh(ctx),
-        ...adaptCollection(ctx),
-      ],
-      L3: [
-        ...adaptQueries(ctx),
-        ...adaptDashboards(ctx),
-        ...adaptDashboardPanels(ctx),
-      ],
-      L4: {
-        policy: [
-          ...adaptBurnRateAlerts(ctx),
-          ...adaptForecasts(ctx),
-        ],
-        alerting: adaptAlertingRoutes(ctx),
-        healing: adaptRemediation(ctx),
-      },
-      L5: [
-        ...adaptBaselines(ctx),
-        ...adaptChaos(ctx),
-        ...adaptSynthetic(ctx),
-      ],
-      GOV: adaptImports(canonical),
-    },
+    layers,
+    traceability: buildRequirementTraceability({ spec, annotations, layers }),
   };
 }
 
@@ -312,6 +318,30 @@ function adaptStorage(ctx) {
     });
   }
   return out;
+}
+
+// L2 EXPAND: live scrape jobs projected from metadata annotations. The
+// canonical v1.2 schema does not have a first-class scrape_jobs field, so the
+// MCP fetcher stores them in annotations. Projecting them here makes scrape
+// evidence visible and comparable without changing the pack schema.
+function adaptScrapeJobs(ctx) {
+  const ann = ctx.canonical?.metadata?.annotations || {};
+  const jobs = (ann['mcp.discovered.scrape_jobs'] || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  return jobs.map((job, i) => ({
+    id: `SCRAPE-${pad(i + 1)}`,
+    title: `scrape: ${job}`,
+    desc: 'live scrape job (MCP)',
+    tool: 'Prometheus scrape',
+    tags: ['scrape', 'target'],
+    source: 'Verified',
+    expand: true,
+    parent: 'telemetry.scrape',
+    spec: { job, source: 'mcp.discovered.scrape_jobs' },
+    mcp: { tool: 'scrape_configs', when: ann['mcp.refreshedAt'] },
+  }));
 }
 
 function adaptProfiling(ctx) {

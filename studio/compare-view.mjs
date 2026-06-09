@@ -200,8 +200,19 @@ export function renderTraceabilityView(host) {
   section.className = 'section trace-view';
   section.dataset.layer = 'TRACE';
 
-  if (!state.pack || !state.packB) {
-    section.innerHTML = '<div class="placeholder">Load Pack A and Pack B first.</div>';
+  if (!state.pack) {
+    section.innerHTML = '<div class="placeholder">Load a pack first.</div>';
+    host.appendChild(section);
+    return;
+  }
+
+  const requirementBlock = renderRequirementTraceabilityBlock(state.pack);
+  if (requirementBlock) section.appendChild(requirementBlock);
+
+  if (!state.packB) {
+    if (!requirementBlock) {
+      section.innerHTML = '<div class="placeholder">No SLI/SLO requirements found in this pack.</div>';
+    }
     host.appendChild(section);
     return;
   }
@@ -312,6 +323,163 @@ export function renderTraceabilityView(host) {
   }
 
   host.appendChild(section);
+}
+
+function renderRequirementTraceabilityBlock(pack) {
+  const trace = pack?.traceability;
+  const chains = Array.isArray(trace?.chains) ? trace.chains : [];
+  if (!chains.length) return null;
+
+  const block = document.createElement('div');
+  block.className = 'rt-block';
+
+  const summary = trace.summary || {};
+  const head = document.createElement('div');
+  head.className = 'section-head rt-head';
+  head.innerHTML = `
+    <span class="section-num">REQ</span>
+    <span class="section-name">Requirements Traceability · SLO/SLI proof chain</span>
+    <span class="section-count">${chains.length} requirement${chains.length === 1 ? '' : 's'}</span>
+  `;
+  block.appendChild(head);
+
+  const lede = document.createElement('div');
+  lede.className = 'trace-lede rt-lede';
+  lede.innerHTML = `
+    Each row follows the diagnostic chain from <em>SLO/SLI</em> to the metrics, recording rules,
+    exporters, scrape evidence, dashboards, and alerts that prove it in production.
+  `;
+  block.appendChild(lede);
+
+  const cards = document.createElement('div');
+  cards.className = 'rt-summary-grid';
+  const cardData = [
+    ['requirements', summary.requirements ?? chains.length],
+    ['complete', summary.complete ?? chains.filter(c => !c.gaps?.length).length],
+    ['metrics', summary.withMetrics ?? 0],
+    ['dashboards', summary.withDashboards ?? 0],
+    ['alerts', summary.withAlerts ?? 0],
+  ];
+  for (const [label, value] of cardData) {
+    const card = document.createElement('div');
+    card.className = 'rt-summary-card';
+    card.innerHTML = `
+      <div class="rt-summary-key">${escapeHtml(label)}</div>
+      <div class="rt-summary-val">${escapeHtml(String(value))}</div>
+    `;
+    cards.appendChild(card);
+  }
+  block.appendChild(cards);
+
+  const list = document.createElement('div');
+  list.className = 'rt-chain-list';
+  for (const chain of chains) list.appendChild(renderRequirementChain(chain));
+  block.appendChild(list);
+
+  return block;
+}
+
+function renderRequirementChain(chain) {
+  const row = document.createElement('article');
+  row.className = 'rt-chain';
+  row.dataset.complete = String(!chain.gaps?.length);
+
+  const sloLabel = chain.slo
+    ? `${chain.slo.id}${chain.slo.objective != null ? ` · ${formatPct(chain.slo.objective)}` : ''}${chain.slo.window ? ` / ${chain.slo.window}` : ''}`
+    : '(no SLO)';
+  const title = chain.slo?.id || chain.sli?.id || chain.id;
+
+  const head = document.createElement('div');
+  head.className = 'rt-chain-head';
+  head.innerHTML = `
+    <div>
+      <div class="rt-chain-title">${escapeHtml(title)}</div>
+      <div class="rt-chain-sub">${escapeHtml(sloLabel)}${chain.sli?.id ? ` · SLI ${escapeHtml(chain.sli.id)}` : ''}</div>
+    </div>
+    <div class="rt-chain-status">${chain.gaps?.length ? `${chain.gaps.length} gap${chain.gaps.length === 1 ? '' : 's'}` : 'complete'}</div>
+  `;
+  row.appendChild(head);
+
+  const lanes = document.createElement('div');
+  lanes.className = 'rt-lanes';
+  lanes.appendChild(renderRtLane('metric', chain.metrics?.map(m => metricTraceLabel(m)), 'missing'));
+  lanes.appendChild(renderRtLane('rule', chain.recordingRules?.map(r => r.name), 'none'));
+  lanes.appendChild(renderRtLane('exporter', chain.exporters?.map(e => e.title || e.id), 'missing'));
+  lanes.appendChild(renderRtLane('scrape', scrapeTraceLabels(chain.scrapeJobs), 'missing'));
+  lanes.appendChild(renderRtLane('dashboard', dashboardTraceLabels(chain.dashboards), 'missing'));
+  lanes.appendChild(renderRtLane('alert', chain.alerts?.map(a => a.name), 'missing'));
+  row.appendChild(lanes);
+
+  if (chain.gaps?.length || chain.notes?.length) {
+    const meta = document.createElement('div');
+    meta.className = 'rt-chain-meta';
+    for (const gap of chain.gaps || []) {
+      const code = document.createElement('code');
+      code.className = 'rt-gap';
+      code.textContent = gap;
+      meta.appendChild(code);
+    }
+    for (const note of chain.notes || []) {
+      const code = document.createElement('code');
+      code.className = 'rt-note';
+      code.textContent = note;
+      meta.appendChild(code);
+    }
+    row.appendChild(meta);
+  }
+  return row;
+}
+
+function renderRtLane(label, items = [], emptyLabel = 'missing') {
+  const lane = document.createElement('div');
+  lane.className = 'rt-lane';
+  const clean = (items || []).filter(Boolean);
+  lane.dataset.empty = String(clean.length === 0);
+  lane.innerHTML = `<div class="rt-lane-key">${escapeHtml(label)}</div>`;
+  const list = document.createElement('div');
+  list.className = 'rt-lane-items';
+  if (!clean.length) {
+    const item = document.createElement('span');
+    item.className = 'rt-lane-empty';
+    item.textContent = emptyLabel;
+    list.appendChild(item);
+  } else {
+    for (const value of clean.slice(0, 6)) {
+      const item = document.createElement('span');
+      item.className = 'rt-lane-item';
+      item.textContent = value;
+      list.appendChild(item);
+    }
+    if (clean.length > 6) {
+      const more = document.createElement('span');
+      more.className = 'rt-lane-more';
+      more.textContent = `+${clean.length - 6}`;
+      list.appendChild(more);
+    }
+  }
+  lane.appendChild(list);
+  return lane;
+}
+
+function metricTraceLabel(metric) {
+  if (!metric) return '';
+  return `${metric.name}${metric.verified === false ? ' (unverified)' : ''}`;
+}
+
+function scrapeTraceLabels(scrape) {
+  if (!scrape) return [];
+  if (Array.isArray(scrape.items) && scrape.items.length) return scrape.items.map(j => j.name);
+  if (scrape.observedCount) return [`${scrape.observedCount} jobs observed`];
+  return [];
+}
+
+function dashboardTraceLabels(dashboards = []) {
+  return dashboards.map(d => `${d.title || d.id}${d.panels?.length ? ` (${d.panels.length} panel${d.panels.length === 1 ? '' : 's'})` : ''}`);
+}
+
+function formatPct(value) {
+  if (typeof value !== 'number') return String(value ?? '');
+  return `${(value * 100).toFixed(2).replace(/\.?0+$/, '')}%`;
 }
 
 function renderTraceRow(bucketKey, finding, resolvedSet) {

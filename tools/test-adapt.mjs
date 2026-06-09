@@ -118,6 +118,94 @@ const prod2 = adapt(canonical);
 assert(prod2.layers.L2.find(a => a.id === 'OTEL-01').spec.sdk.sampling.ratio === 0.1,
        'prod sampling unchanged after a staging call (no shared mutable spec)');
 
+// ---------- requirement traceability pass ----------
+
+const traceFixture = {
+  apiVersion: 'observability.platform/v1',
+  kind: 'ObservabilityPack',
+  metadata: {
+    name: 'trace-fixture',
+    version: '0.1.0',
+    binding: 'otel-prometheus-grafana',
+    annotations: {
+      'mcp.discovered.scrape_jobs': 'checkout-api,node-exporter',
+      'mcp.discovered.metric_names_count': '3',
+      'mcp.discovered.metric_names_sample': 'checkout_latency_seconds_bucket,checkout_latency_seconds_count,process_cpu_seconds_total',
+      'mcp.discovered.alert_rule_names': 'CheckoutLatencyBudgetBurn,NodeDown',
+      'mcp.refreshedAt': '2026-06-09T00:00:00.000Z',
+    },
+  },
+  spec: {
+    slis: [{
+      id: 'slo_checkout_latency',
+      type: 'ratio',
+      good: 'sum(rate(checkout_latency_seconds_bucket{le="2"}[5m]))',
+      total: 'sum(rate(checkout_latency_seconds_count[5m]))',
+    }],
+    slos: [{
+      id: 'slo_checkout_latency_99',
+      sli: 'slo_checkout_latency',
+      objective: 0.99,
+      window: '30d',
+    }],
+    pipelines: {
+      exporters: {
+        metrics: { kind: 'prometheusremotewrite' },
+      },
+    },
+    queries: {
+      recording_rules: [{
+        name: 'slo:checkout_latency:ratio_below_2s_5m',
+        expr: 'sum(rate(checkout_latency_seconds_bucket{le="2"}[5m])) / sum(rate(checkout_latency_seconds_count[5m]))',
+      }],
+    },
+    dashboards: [{
+      id: 'checkout-slo',
+      provider: { kind: 'grafana', version: '12.0', schemaVersion: 41 },
+      params: {
+        panels: [{
+          title: 'Checkout latency SLO',
+          targets: [{ expr: 'slo:checkout_latency:ratio_below_2s_5m' }],
+        }],
+      },
+      panel_bindings: [{
+        panel: 'Checkout latency SLO',
+        binds_to: 'slis.slo_checkout_latency',
+      }],
+    }],
+    policy: {
+      burn_rate_alerts: [{
+        slo: 'slo_checkout_latency_99',
+        windows: [{ short: '5m', long: '1h', factor: 14, severity: 'SEV1' }],
+      }],
+    },
+  },
+};
+
+const traced = adapt(traceFixture);
+const scrape = traced.layers.L2.find(a => a.id === 'SCRAPE-01');
+assert(scrape?.spec?.job === 'checkout-api', 'L2 projects live scrape jobs from annotations', scrape?.spec?.job, 'checkout-api');
+assert(traced.traceability?.summary?.requirements === 1, 'traceability summary counts one requirement',
+       traced.traceability?.summary?.requirements, 1);
+const chain = traced.traceability?.chains?.[0];
+assert(chain?.slo?.id === 'slo_checkout_latency_99', 'traceability chain binds SLO',
+       chain?.slo?.id, 'slo_checkout_latency_99');
+assert(chain?.sli?.id === 'slo_checkout_latency', 'traceability chain binds SLI',
+       chain?.sli?.id, 'slo_checkout_latency');
+assert(chain?.metrics?.some(m => m.name === 'checkout_latency_seconds_bucket' && m.verified),
+       'traceability extracts and verifies SLI metric');
+assert(chain?.recordingRules?.some(r => r.name === 'slo:checkout_latency:ratio_below_2s_5m'),
+       'traceability links recording rule');
+assert(chain?.exporters?.some(e => e.id === 'PIP-EXP-MET'),
+       'traceability links metrics exporter');
+assert(chain?.scrapeJobs?.items?.some(j => j.name === 'checkout-api'),
+       'traceability links matching scrape job');
+assert(chain?.dashboards?.some(d => d.id === 'checkout-slo' && d.panels?.some(p => p.title === 'Checkout latency SLO')),
+       'traceability links dashboard panel by binding/query');
+assert(chain?.alerts?.some(a => a.name === 'CheckoutLatencyBudgetBurn'),
+       'traceability links live alert rule by requirement tokens');
+assert(chain?.gaps?.length === 0, 'traceability chain is complete', chain?.gaps, []);
+
 // ---------- summary ----------
 
 if (failures.length) {

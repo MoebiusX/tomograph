@@ -996,12 +996,32 @@ function installObservaChrome() {
   const advToggle = hdr.querySelector('.observa-adv-toggle');
   const advMenu   = hdr.querySelector('.observa-adv-menu');
   const closeAdv = () => { if (advMenu) { advMenu.hidden = true; advToggle?.setAttribute('aria-expanded', 'false'); } };
+  const positionAdv = () => {
+    if (!advToggle || !advMenu) return;
+    const gap = 10;
+    const pad = 12;
+    const rect = advToggle.getBoundingClientRect();
+    const width = Math.min(280, Math.max(180, window.innerWidth - pad * 2));
+    const left = Math.min(
+      Math.max(pad, rect.right - width),
+      Math.max(pad, window.innerWidth - width - pad),
+    );
+    const top = Math.min(
+      rect.bottom + gap,
+      Math.max(pad, window.innerHeight - pad - advMenu.offsetHeight),
+    );
+    advMenu.style.width = `${width}px`;
+    advMenu.style.left = `${left}px`;
+    advMenu.style.top = `${top}px`;
+  };
   advToggle?.addEventListener('click', (e) => {
     e.stopPropagation();
     const willOpen = advMenu.hidden;
     advMenu.hidden = !willOpen;
     advToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    if (willOpen) positionAdv();
   });
+  window.addEventListener('resize', () => { if (advMenu && !advMenu.hidden) positionAdv(); });
   hdr.querySelectorAll('.observa-adv-item').forEach(item => {
     item.addEventListener('click', () => { closeAdv(); routeTo(item.dataset.view); });
   });
