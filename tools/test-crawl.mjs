@@ -19,12 +19,8 @@ import { diffPacks } from './lib/diff.mjs';
 const SCHEMA_PATH = new URL('../vendor/observability-pack-spec/v1.2/observability-pack.schema.json', import.meta.url);
 const SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'));
 
-let failures = 0;
-function assert(cond, label) {
-  if (cond) { process.stdout.write(`✓ ${label}\n`); return; }
-  process.stdout.write(`✗ ${label}\n`);
-  failures++;
-}
+import { createHarness } from './lib/harness.mjs';
+const { assert, failures, report } = createHarness();
 
 // ---------- synthetic fixture ----------
 const FIXTURE = {
@@ -374,7 +370,7 @@ const validationErrors = validateCanonical(canonical, SCHEMA);
 if (validationErrors.length) {
   process.stdout.write(`✗ canonical pack passes v1.2 schema — got ${validationErrors.length} errors:\n`);
   for (const e of validationErrors.slice(0, 8)) process.stdout.write(`    · ${e}\n`);
-  failures++;
+  failures.push('canonical pack passes v1.2 schema');
 } else {
   process.stdout.write(`✓ canonical pack passes v1.2 schema\n`);
 }
@@ -408,7 +404,7 @@ try {
          'repo-vs-live L2X diff reports missing live network surface');
 } catch (e) {
   process.stdout.write(`✗ downstream failed: ${e.message}\n`);
-  failures++;
+  failures.push(`downstream failed: ${e.message}`);
 }
 
 // ---------- yaml emission round-trip ----------
@@ -781,5 +777,4 @@ assert(togProdProducts.has('prometheus'),
 assert(togProdProducts.has('victoriametrics'),
   'prod scan still reads base-values backends');
 
-process.stdout.write(`\n${failures === 0 ? 'all crawler assertions pass.' : failures + ' failure(s).'}\n`);
-process.exit(failures === 0 ? 0 : 1);
+report('crawler');

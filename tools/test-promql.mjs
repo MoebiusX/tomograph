@@ -10,13 +10,8 @@
 import { extractPromqlMetricNames as extractCore, parsePromqlDependencies as parseCore } from './lib/promql.mjs';
 import { extractPromqlMetricNames as extractLezer, parsePromqlDependencies as parseLezer } from './lib/promql-lezer.mjs';
 
-const failures = [];
-function assert(cond, label, got, want) {
-  if (cond) { process.stdout.write(`✓ ${label}\n`); return; }
-  const detail = got !== undefined ? `\n    got:  ${JSON.stringify(got)}\n    want: ${JSON.stringify(want)}` : '';
-  failures.push(`${label}${detail}`);
-  process.stdout.write(`✗ ${label}${detail}\n`);
-}
+import { createHarness } from './lib/harness.mjs';
+const { assert, report } = createHarness();
 
 function eq(actual, expected, label) {
   assert(JSON.stringify(actual) === JSON.stringify(expected), label, actual, expected);
@@ -72,8 +67,4 @@ assert(grafanaHelper.parseOk === false,
        'Grafana helper is marked parse-warning, not clean PromQL',
        grafanaHelper.parseOk, false);
 
-if (failures.length) {
-  process.stderr.write(`\n${failures.length} PromQL assertion(s) failed.\n`);
-  process.exit(1);
-}
-process.stdout.write('\nall PromQL assertions pass.\n');
+report('PromQL');

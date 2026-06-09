@@ -12,13 +12,8 @@
 import { adapt } from './lib/adapter.mjs';
 import { diffPacks, deltasOf } from './lib/diff.mjs';
 
-const failures = [];
-function assert(cond, label, got, want) {
-  if (cond) { process.stdout.write(`✓ ${label}\n`); return; }
-  const detail = got !== undefined ? `\n    got:  ${JSON.stringify(got)}\n    want: ${JSON.stringify(want)}` : '';
-  failures.push(`${label}${detail}`);
-  process.stdout.write(`✗ ${label}${detail}\n`);
-}
+import { createHarness } from './lib/harness.mjs';
+const { assert, report } = createHarness();
 
 const collisionPack = {
   apiVersion: 'observability.platform/v1',
@@ -431,8 +426,4 @@ assert(allLiveDiff.summary.outOfScope === 0,
        'all-live mode counts every unmatched live artefact as live-not-declared',
        allLiveDiff.summary.outOfScope, 0);
 
-if (failures.length) {
-  process.stderr.write(`\n${failures.length} diff assertion(s) failed.\n`);
-  process.exit(1);
-}
-process.stdout.write('\nall diff assertions pass.\n');
+report('diff');

@@ -60,7 +60,7 @@
     "test:profiles": "node tools/test-profiles.mjs",
     "test:server": "node server/test-smoke.mjs",
     "test:zip": "node tools/test-zip.mjs",
-    "test": "npm run test:adapt && npm run test:fetch && npm run test:packs && npm run test:compile && npm run test:profiles && npm run test:promql && npm run test:crawl && npm run test:diff && npm run test:diagnostic && npm run test:traceability && npm run test:zip && npm run test:server",
+    "test": "node --test tools/test-adapt.mjs tools/test-compile.mjs tools/test-crawl.mjs tools/test-diagnostic-grade.mjs tools/test-diff.mjs tools/test-fetch-live.mjs tools/test-packs.mjs tools/test-profiles.mjs tools/test-promql.mjs tools/test-traceability-graph.mjs tools/test-zip.mjs server/test-smoke.mjs",
     "lint": "eslint .",
     "coverage": "c8 npm test",
     "sync-spec": "node tools/sync-spec.mjs",

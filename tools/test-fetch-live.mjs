@@ -27,13 +27,8 @@ const SCHEMA = JSON.parse(readFileSync(
   'utf8'
 ));
 
-const failures = [];
-function assert(cond, label, got, want) {
-  if (cond) { process.stdout.write(`✓ ${label}\n`); return; }
-  const detail = got !== undefined ? `\n    got:  ${JSON.stringify(got)}\n    want: ${JSON.stringify(want)}` : '';
-  failures.push(`${label}${detail}`);
-  process.stdout.write(`✗ ${label}${detail}\n`);
-}
+import { createHarness } from './lib/harness.mjs';
+const { assert, report } = createHarness();
 
 const refreshedAt = '2026-06-06T00:00:00Z';
 
@@ -535,8 +530,4 @@ assert(l2xLayered.layers.L2X.every(x => x.source === 'Verified'),
 
 // ---------- summary ----------
 
-if (failures.length) {
-  process.stderr.write(`\n${failures.length} fetcher assertion(s) failed.\n`);
-  process.exit(1);
-}
-process.stdout.write(`\nall fetcher assertions pass.\n`);
+report('fetcher');
