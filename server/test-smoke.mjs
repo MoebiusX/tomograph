@@ -464,6 +464,59 @@ try {
   });
   assert(verify400.status === 400, 'verify with malformed deployId → 400');
 
+  // --- write-route auth (10B) — token read lazily per request, so the
+  // posture can be flipped mid-suite. ---
+  const authRaw = await getJson(base, '/api/packs/payment-service/canonical');
+  delete authRaw.__effectiveEnvironment;
+  delete authRaw.__effective;
+  process.env.TOMOGRAPH_API_TOKEN = 'smoke-secret';
+  process.env.TOMOGRAPH_API_TOKEN_LABEL = 'smoke-ci';
+  const openRead = await fetch(`${base}/api/packs`);
+  assert(openRead.status === 200, 'token set: GET routes stay open without auth');
+  const denied = await fetch(`${base}/api/validate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(authRaw),
+  });
+  assert(denied.status === 401, 'token set: mutating route without bearer → 401');
+  assert((denied.headers.get('www-authenticate') || '').includes('Bearer'), '401 carries WWW-Authenticate: Bearer');
+  assert(/TOMOGRAPH_API_TOKEN/.test((await denied.json()).error || ''), '401 error names the env var to set');
+  const wrongTok = await fetch(`${base}/api/validate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer not-the-secret' },
+    body: JSON.stringify(authRaw),
+  });
+  assert(wrongTok.status === 401, 'wrong bearer token → 401');
+  const rightTok = await fetch(`${base}/api/validate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer smoke-secret' },
+    body: JSON.stringify(authRaw),
+  }).then(r => r.json());
+  assert(rightTok.ok === true, 'correct bearer token → mutating route works');
+  // The audit actor becomes the token's ownership label, never the secret.
+  const authedDeploy = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer smoke-secret' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no-mcp' }),
+  }).then(r => r.json());
+  const authedAudit = await getJson(base, `/api/deploys?pack=payment-service&limit=5`);
+  const authedRec = authedAudit.deploys.find(d => d.deployId === authedDeploy.deployId);
+  assert(authedRec?.actor === 'smoke-ci', 'audit actor is the token label', authedRec?.actor, 'smoke-ci');
+  assert(!JSON.stringify(authedRec).includes('smoke-secret'), 'the token secret never lands in the audit log');
+  delete process.env.TOMOGRAPH_API_TOKEN;
+  delete process.env.TOMOGRAPH_API_TOKEN_LABEL;
+  const reopened = await fetch(`${base}/api/validate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(authRaw),
+  });
+  assert(reopened.status === 200, 'token removed: loopback posture is auth-free again');
+
+  // --- fail-closed startup (10B): exposed bind without a token refuses to boot. ---
+  let exposedRefused = null;
+  try { await start({ host: '0.0.0.0', port: 0, silent: true }); exposedRefused = false; }
+  catch (e) { exposedRefused = /TOMOGRAPH_API_TOKEN/.test(e.message); }
+  assert(exposedRefused === true, 'binding 0.0.0.0 without a token fails closed with a clear message');
+  process.env.TOMOGRAPH_INSECURE_NO_AUTH = '1';
+  const insecureSrv = await start({ host: '0.0.0.0', port: 0, silent: true });
+  assert(!!insecureSrv.address(), 'TOMOGRAPH_INSECURE_NO_AUTH=1 overrides knowingly (with a loud warning)');
+  await new Promise(r => insecureSrv.close(r));
+  delete process.env.TOMOGRAPH_INSECURE_NO_AUTH;
+
   // Deploy v2 — target product / version / scope wiring
   const matrix = await getJson(base, '/api/deploy/matrix');
   assert(Array.isArray(matrix.products) && matrix.products.includes('grafana'),
@@ -604,7 +657,7 @@ try {
   const validateRes = await fetch(`${base}/api/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(raw),
+    body: JSON.stringify(authRaw),
   }).then(r => r.json());
   assert(validateRes.ok === true, 'POST /api/validate accepts a valid canonical pack', validateRes.errors, []);
   assert(validateRes.adapted?.meta?.apiVersion === 'observability.platform/v1', 'validate response includes adapted layered pack');

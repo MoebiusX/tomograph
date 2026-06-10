@@ -30,7 +30,7 @@ import express from 'express';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { parse as parseYaml, emit as emitYaml } from '../tools/lib/mini-yaml.mjs';
 import { adapt, listEnvironments, applyEnvironmentOverlay } from '../tools/lib/adapter.mjs';
 import { validateCanonical, SPEC_VERSION } from '../tools/lib/validator.mjs';
@@ -367,6 +367,53 @@ function overlaidCanonical(canonical, envName) {
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', false);
+
+// ---------- write-route auth (VALUE_BACKLOG item 10B) ----------
+//
+// One token, three postures:
+//   1. Local (default): loopback bind, no token, no auth — zero friction.
+//   2. Exposed + TOMOGRAPH_API_TOKEN set: mutating /api/* routes require
+//      `Authorization: Bearer <token>`. Reads stay open. Once a token is
+//      set it is enforced regardless of bind address — a reverse proxy
+//      makes everything look local, so a loopback bypass would undermine
+//      the token exactly when it matters.
+//   3. Exposed + no token: the server REFUSES TO START (fail closed; see
+//      start()). TOMOGRAPH_INSECURE_NO_AUTH=1 is the explicit, loudly
+//      logged override for trusted-network demos.
+// MCP write tokens are unrelated and never stored here — they pass
+// through per request. The audit log records the token's ownership label
+// (TOMOGRAPH_API_TOKEN_LABEL), never the secret.
+
+function apiToken() { return (process.env.TOMOGRAPH_API_TOKEN || '').trim(); }
+function apiTokenLabel() { return (process.env.TOMOGRAPH_API_TOKEN_LABEL || '').trim() || 'token'; }
+
+function tokenEquals(candidate, token) {
+  // Constant-time compare over digests so length differences leak nothing.
+  const a = createHash('sha256').update(String(candidate)).digest();
+  const b = createHash('sha256').update(String(token)).digest();
+  return timingSafeEqual(a, b);
+}
+
+// Who performed a mutating request — the audit log's actor field.
+function actorForRequest(req) { return req?.tomographActor || 'local'; }
+
+app.use((req, res, next) => {
+  const token = apiToken();
+  if (!token) return next();   // posture 1/3 — enforced at start(), not here
+  const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+  if (!mutating || !req.path.startsWith('/api/')) return next();
+  const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+  if (m && tokenEquals(m[1].trim(), token)) {
+    req.tomographActor = apiTokenLabel();
+    return next();
+  }
+  res.set('WWW-Authenticate', 'Bearer realm="tomograph"');
+  return res.status(401).json({
+    ok: false,
+    error: 'unauthorized: mutating /api routes require `Authorization: Bearer <TOMOGRAPH_API_TOKEN>`',
+  });
+});
+
 app.use(express.json({ limit: '16mb' }));   // /api/crawl can carry a whole repo's worth of YAML
 app.use(express.text({ type: ['application/x-yaml', 'text/yaml', 'text/plain'], limit: '4mb' }));
 
@@ -1006,7 +1053,7 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
     appendDeployRecord({
       deployId,
       at: new Date().toISOString(),
-      actor: 'local',   // becomes the token-ownership label once 10B lands
+      actor: actorForRequest(req),
       pack: { id: meta.id, version: canonical?.metadata?.version || null, contentHash: contentHash(canonical) },
       env: env || null,
       mcpUrl: safeMcpUrl,
@@ -1163,6 +1210,7 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
     process.stderr.write(`[deploy]   ok in ${tookMs}ms\n`);
     const deployId = auditSingleDeploy({
       meta, canonical, env, safeMcpUrl, product, version, folder, mode, dryRun,
+      actor: actorForRequest(req),
       item: { target, scope: scope || null, ok: true, tool: mcpTool, operations, bytes, tookMs },
     });
     res.json({
@@ -1181,6 +1229,7 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
     process.stderr.write(`[deploy]   error in ${tookMs}ms: ${redactCredentials(e.message)}\n`);
     const deployId = auditSingleDeploy({
       meta, canonical, env, safeMcpUrl, product, version, folder, mode, dryRun,
+      actor: actorForRequest(req),
       item: { target, scope: scope || null, ok: false, tool: mcpTool, tookMs, error: redactCredentials(String(e.message)) },
     });
     res.status(502).json({ ok: false, deployId, error: e.message, tool: mcpTool, target,
@@ -1192,13 +1241,13 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
 // One audit record for the single-artefact deploy route — same shape as a
 // bulk record with exactly one item, so /api/deploys consumers see a
 // uniform stream. Audit failures never fail the deploy response.
-function auditSingleDeploy({ meta, canonical, env, safeMcpUrl, product, version, folder, mode, dryRun, item }) {
+function auditSingleDeploy({ meta, canonical, env, safeMcpUrl, product, version, folder, mode, dryRun, item, actor }) {
   const deployId = newDeployId();
   try {
     appendDeployRecord({
       deployId,
       at: new Date().toISOString(),
-      actor: 'local',   // becomes the token-ownership label once 10B lands
+      actor: actor || 'local',
       pack: { id: meta.id, version: canonical?.metadata?.version || null, contentHash: contentHash(canonical) },
       env: env || null,
       mcpUrl: safeMcpUrl,
@@ -1858,7 +1907,9 @@ app.get(/^(?!\/api\/).*/, (req, res, next) => {
 // ---------- entrypoint ----------
 
 const PORT = Number(process.env.PORT || 8000);
-const HOST = process.env.HOST || '0.0.0.0';
+// Loopback by default — matching the documented contract. Exposing the
+// studio (HOST=0.0.0.0) requires TOMOGRAPH_API_TOKEN; see start().
+const HOST = process.env.HOST || '127.0.0.1';
 
 export { app };
 // Rehydrate the upload registry from the .tomograph/ workspace. Runs once
@@ -1882,7 +1933,26 @@ function rehydrateUploadsFromWorkspace(silent) {
   if (restored && !silent) process.stdout.write(`[studio] restored ${restored} pack${restored === 1 ? '' : 's'} from workspace\n`);
 }
 
+function isLoopbackHost(h) {
+  const host = String(h || '').toLowerCase();
+  return host === 'localhost' || host === '::1' || host.startsWith('127.');
+}
+
 export function start({ port = PORT, host = HOST, silent = false } = {}) {
+  // Fail closed (10B): binding beyond loopback with no API token would
+  // expose every write route — crawl, draft, deploy — to the network.
+  if (!isLoopbackHost(host) && !apiToken()) {
+    if (process.env.TOMOGRAPH_INSECURE_NO_AUTH === '1') {
+      process.stderr.write(
+        `[studio] WARNING: bound to ${host} with NO auth (TOMOGRAPH_INSECURE_NO_AUTH=1). ` +
+        `Every write route is open to the network. Do not run this posture outside a trusted network.\n`);
+    } else {
+      return Promise.reject(new Error(
+        `refusing to bind to ${host} without auth: mutating /api routes would be open to the network.\n` +
+        `  Set TOMOGRAPH_API_TOKEN=<secret> (clients send Authorization: Bearer <secret>),\n` +
+        `  or bind to loopback (HOST=127.0.0.1), or set TOMOGRAPH_INSECURE_NO_AUTH=1 to override knowingly.`));
+    }
+  }
   rehydrateUploadsFromWorkspace(silent);
   return new Promise((resolveListen, reject) => {
     const srv = app.listen(port, host, () => {
