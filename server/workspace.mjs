@@ -22,7 +22,7 @@
 //   - Sync fs on the write paths (files are tens of KB); lastUsedAt touches
 //     are debounced and the timer is unref'd so the process can still exit.
 
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, rmSync, existsSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { parse as parseYaml, emit as emitYaml } from '../tools/lib/mini-yaml.mjs';
 
@@ -154,6 +154,55 @@ export function clearWorkspacePacks() {
   pendingIndex = {};
   flushIndexNow();
   return dropped;
+}
+
+// ---------- deploy audit (VALUE_BACKLOG item 10C) ----------
+//
+// Append-only JSONL: audit history is never rewritten. Two record types —
+// { type: 'deploy', deployId, ... } written when a deploy is attempted, and
+// { type: 'verify', deployId, ... } appended later by post-deploy re-verify
+// (item 9). readDeployRecords() merges the latest verify into its deploy
+// record at read time, so consumers see one object per deploy while the
+// on-disk log stays a faithful, immutable sequence of events.
+//
+// Deliberately NOT cleared by DELETE /api/uploads: resetting the pack
+// registry must not erase the record of what was pushed to production.
+
+function deploysPath() { return join(workspaceRoot(), 'deploys.jsonl'); }
+
+export function appendDeployRecord(record) {
+  mkdirSync(workspaceRoot(), { recursive: true });
+  appendFileSync(deploysPath(), JSON.stringify({ type: 'deploy', ...record }) + '\n');
+}
+
+export function appendDeployVerify(deployId, verify) {
+  mkdirSync(workspaceRoot(), { recursive: true });
+  appendFileSync(deploysPath(), JSON.stringify({ type: 'verify', deployId, at: new Date().toISOString(), ...verify }) + '\n');
+}
+
+// Newest-first deploy records with the latest verify (if any) merged in.
+// Unparseable lines are skipped — a torn write must not poison the log.
+export function readDeployRecords({ packId, limit = 50 } = {}) {
+  let raw = '';
+  try { raw = readFileSync(deploysPath(), 'utf8'); } catch (_) { return []; }
+  const deploys = [];
+  const verifies = new Map();   // deployId → latest verify record
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch (_) { continue; }
+    if (rec.type === 'deploy' && rec.deployId) deploys.push(rec);
+    else if (rec.type === 'verify' && rec.deployId) verifies.set(rec.deployId, rec);
+  }
+  let out = deploys.map(d => {
+    const v = verifies.get(d.deployId);
+    if (!v) return d;
+    const { type: _t, deployId: _id, ...verify } = v;
+    return { ...d, verify };
+  });
+  if (packId) out = out.filter(d => d.pack?.id === packId);
+  out.reverse();   // appended oldest-first → serve newest-first
+  return limit > 0 ? out.slice(0, limit) : out;
 }
 
 // Test hook: force any debounced index write to land now.

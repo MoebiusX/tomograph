@@ -9,7 +9,7 @@
  * clear. Exit 0 = pass.
  */
 
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -25,6 +25,7 @@ const {
   saveWorkspacePack, deleteWorkspacePack, touchWorkspacePack,
   loadWorkspacePacks, clearWorkspacePacks, flushWorkspaceIndex,
   resetWorkspaceCache, workspaceInfo,
+  appendDeployRecord, appendDeployVerify, readDeployRecords,
 } = await import('./workspace.mjs');
 
 try {
@@ -97,10 +98,48 @@ try {
   packs = loadWorkspacePacks();
   assert(!packs.find(p => p.id === 'uploaded-broken-dddd4444'), 'unparseable pack file is skipped');
 
-  // --- clear wipes everything ---
+  // --- deploy audit (10C): append-only JSONL, merge-at-read ---
+  appendDeployRecord({ deployId: 'dep_t1', at: '2026-06-10T01:00:00Z', actor: 'local',
+    pack: { id: 'uploaded-ws-test-aaaa1111', version: '1.2.3', contentHash: 'aaaa1111' },
+    env: 'prod', mcpUrl: 'https://mcp.example/x', target: { product: 'grafana', version: '12', folder: null },
+    mode: 'upsert', dryRun: false,
+    items: [{ group: 'rules', artifact: 'all', ok: true, tool: 't', operations: 3, bytes: 100, tookMs: 5 }],
+    summary: { total: 1, ok: 1, failed: 0 }, tookMs: 5 });
+  appendDeployRecord({ deployId: 'dep_t2', at: '2026-06-10T02:00:00Z', actor: 'local',
+    pack: { id: 'uploaded-other-ffff9999', version: '0.1.0', contentHash: 'ffff9999' },
+    env: null, mcpUrl: 'https://mcp.example/y', target: { product: 'grafana', version: '13', folder: 'obs' },
+    mode: 'upsert', dryRun: true, items: [], summary: { total: 0, ok: 0, failed: 0 }, tookMs: 1 });
+
+  let recs = readDeployRecords();
+  assert(recs.length === 2, 'two deploy records read back', recs.length, 2);
+  assert(recs[0].deployId === 'dep_t2', 'records come back newest first', recs[0].deployId, 'dep_t2');
+  assert(recs[0].dryRun === true, 'dry runs are audited too');
+  assert(recs[1].items[0].operations === 3, 'item detail round-trips');
+
+  recs = readDeployRecords({ packId: 'uploaded-ws-test-aaaa1111' });
+  assert(recs.length === 1 && recs[0].deployId === 'dep_t1', '?pack filter scopes to one pack', recs.map(r => r.deployId), ['dep_t1']);
+
+  // Verify write-back (item 9's contract): a later verify record merges into
+  // its deploy at read time — the deploy line itself is never rewritten.
+  appendDeployVerify('dep_t1', { outcome: 'verified', transitions: { aligned: 1, pending: 0 } });
+  recs = readDeployRecords({ packId: 'uploaded-ws-test-aaaa1111' });
+  assert(recs[0].verify?.outcome === 'verified', 'verify record merges into its deploy at read time');
+  assert(recs[0].verify?.transitions?.aligned === 1, 'verify payload round-trips');
+
+  // Torn/garbage line is skipped, not fatal.
+  appendFileSync(join(TMP, 'deploys.jsonl'), '{"type":"deploy","deployId":"dep_torn"');
+  recs = readDeployRecords();
+  assert(recs.length === 2 && !recs.find(r => r.deployId === 'dep_torn'), 'torn JSONL line is skipped');
+
+  // limit caps the result set (newest kept).
+  recs = readDeployRecords({ limit: 1 });
+  assert(recs.length === 1 && recs[0].deployId === 'dep_t2', 'limit keeps the newest record');
+
+  // --- clear wipes packs but NEVER the audit log ---
   const dropped = clearWorkspacePacks();
   assert(dropped >= 2, 'clear reports dropped pack files', dropped, '>=2');
   assert(loadWorkspacePacks().length === 0, 'workspace is empty after clear');
+  assert(readDeployRecords().length === 2, 'deploy audit survives a registry clear — reset is not amnesia');
 
   // --- cache reset honors a re-pointed workspace ---
   const TMP2 = mkdtempSync(join(tmpdir(), 'tomograph-ws2-'));

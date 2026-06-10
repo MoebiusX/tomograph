@@ -44,6 +44,7 @@ import { makeZip } from '../tools/lib/zip.mjs';
 import {
   saveWorkspacePack, deleteWorkspacePack, touchWorkspacePack,
   loadWorkspacePacks, clearWorkspacePacks,
+  appendDeployRecord, readDeployRecords,
 } from './workspace.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -845,6 +846,26 @@ function buildNativeDeployCalls({ target, compiled, scope, folder, tool, mode = 
 // Returns per-item ok/error so the UI can show partial success
 // instead of failing the whole batch.
 // ----------------------------------------------------------------
+// Deploy ids — sortable, unique-enough handles for the audit log and the
+// post-deploy verify write-back. Not a secret, not a content hash.
+function newDeployId() {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  return `dep_${ts}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// GET /api/deploys — the audit trail (VALUE_BACKLOG 10C). Newest first;
+// ?pack=<id> filters, ?limit=N caps (default 50). Records include the
+// post-deploy verify outcome once item 9 writes it back.
+app.get('/api/deploys', (req, res) => {
+  const packId = typeof req.query.pack === 'string' && req.query.pack ? req.query.pack : undefined;
+  const limit = Math.max(1, Math.min(500, parseInt(req.query.limit, 10) || 50));
+  try {
+    res.json({ deploys: readDeployRecords({ packId, limit }) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
@@ -951,8 +972,35 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   const okCount = results.filter(r => r.ok).length;
   const failCount = results.length - okCount;
   process.stderr.write(`[deploy-bulk]   done in ${totalMs}ms: ${okCount} ok / ${failCount} failed\n`);
+  const deployId = newDeployId();
+  try {
+    appendDeployRecord({
+      deployId,
+      at: new Date().toISOString(),
+      actor: 'local',   // becomes the token-ownership label once 10B lands
+      pack: { id: meta.id, version: canonical?.metadata?.version || null, contentHash: contentHash(canonical) },
+      env: env || null,
+      mcpUrl: safeMcpUrl,
+      target: { product, version, folder: folder || null },
+      mode, dryRun,
+      items: results.map(r => ({
+        ...(r.item || {}),
+        ok: !!r.ok,
+        tool: r.tool || null,
+        operations: r.operations || 0,
+        bytes: r.bytes || 0,
+        tookMs: r.tookMs || 0,
+        ...(r.error ? { error: redactCredentials(String(r.error)) } : {}),
+      })),
+      summary: { total: results.length, ok: okCount, failed: failCount },
+      tookMs: totalMs,
+    });
+  } catch (e) {
+    process.stderr.write(`[deploy-bulk]   audit append failed: ${e.message}\n`);
+  }
   res.status(failCount > 0 && okCount === 0 ? 502 : 200).json({
     ok: failCount === 0,
+    deployId,
     results,
     summary: { total: results.length, ok: okCount, failed: failCount },
     targetProduct: product,
@@ -1013,8 +1061,9 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
   if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
 
   const t0 = Date.now();
+  let canonical = null;   // hoisted: the catch-path audit record reads it
   try {
-    const canonical = loadPackCanonical(meta);
+    canonical = loadPackCanonical(meta);
     const { canonical: overlaid } = overlaidCanonical(canonical, env);
     const nativeTool = mcpTool === GRAFANA_ALERT_RULE_TOOL || mcpTool === GRAFANA_DASHBOARD_TOOL;
     const compiled = (mcpTool === GRAFANA_ALERT_RULE_TOOL && product === 'grafana' && target === 'prometheus-rules')
@@ -1083,8 +1132,13 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
 
     const tookMs = Date.now() - t0;
     process.stderr.write(`[deploy]   ok in ${tookMs}ms\n`);
+    const deployId = auditSingleDeploy({
+      meta, canonical, env, safeMcpUrl, product, version, folder, mode, dryRun,
+      item: { target, scope: scope || null, ok: true, tool: mcpTool, operations, bytes, tookMs },
+    });
     res.json({
       ok: true,
+      deployId,
       target, env, tool: mcpTool, mcpUrl,
       targetProduct: product, targetVersion: version, scope: scope || null, targetFolder: folder || null,
       mode, dryRun, operations,
@@ -1096,11 +1150,40 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
   } catch (e) {
     const tookMs = Date.now() - t0;
     process.stderr.write(`[deploy]   error in ${tookMs}ms: ${redactCredentials(e.message)}\n`);
-    res.status(502).json({ ok: false, error: e.message, tool: mcpTool, target,
+    const deployId = auditSingleDeploy({
+      meta, canonical, env, safeMcpUrl, product, version, folder, mode, dryRun,
+      item: { target, scope: scope || null, ok: false, tool: mcpTool, tookMs, error: redactCredentials(String(e.message)) },
+    });
+    res.status(502).json({ ok: false, deployId, error: e.message, tool: mcpTool, target,
       targetProduct: product, targetVersion: version, scope: scope || null, targetFolder: folder || null,
       mode, dryRun, env, tookMs });
   }
 });
+
+// One audit record for the single-artefact deploy route — same shape as a
+// bulk record with exactly one item, so /api/deploys consumers see a
+// uniform stream. Audit failures never fail the deploy response.
+function auditSingleDeploy({ meta, canonical, env, safeMcpUrl, product, version, folder, mode, dryRun, item }) {
+  const deployId = newDeployId();
+  try {
+    appendDeployRecord({
+      deployId,
+      at: new Date().toISOString(),
+      actor: 'local',   // becomes the token-ownership label once 10B lands
+      pack: { id: meta.id, version: canonical?.metadata?.version || null, contentHash: contentHash(canonical) },
+      env: env || null,
+      mcpUrl: safeMcpUrl,
+      target: { product, version, folder: folder || null },
+      mode, dryRun,
+      items: [item],
+      summary: { total: 1, ok: item.ok ? 1 : 0, failed: item.ok ? 0 : 1 },
+      tookMs: item.tookMs || 0,
+    });
+  } catch (err) {
+    process.stderr.write(`[deploy]   audit append failed: ${err.message}\n`);
+  }
+  return deployId;
+}
 
 app.get('/api/packs/:id/compile/:target', (req, res) => {
   const meta = findPackMeta(req.params.id);

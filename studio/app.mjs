@@ -2841,6 +2841,41 @@ export function openDeployModal({ packId, packLabel, presetIdentities } = {}) {
   $('#deploy-modal-result').hidden = true;
   loadDeployManifest(packId || state.selectedPackId);
   updateDeployTargetSummary();
+  loadDeployHistory(packId || state.selectedPackId);
+}
+
+// Deploy history — the audit trail for this pack (VALUE_BACKLOG 10C).
+// Read-only context above the Go button: when this pack was last pushed,
+// where, and whether it stuck. Failures here never block deploying.
+async function loadDeployHistory(packId) {
+  const host = $('#deploy-modal-history');
+  if (!host) return;
+  host.hidden = true;
+  if (!packId) return;
+  try {
+    const { deploys } = await api(`/api/deploys?pack=${encodeURIComponent(packId)}&limit=5`);
+    if (!deploys?.length) return;
+    const rows = deploys.map(d => {
+      const when = d.at ? new Date(d.at).toLocaleString() : '?';
+      const ok = d.summary?.failed === 0;
+      const verify = d.verify
+        ? `<span class="deploy-hist-verify">verify: ${escapeHtml(d.verify.outcome || '?')}</span>`
+        : '';
+      return `<tr class="${ok ? 'is-ok' : 'is-err'}">
+        <td>${ok ? '✓' : '✗'}</td>
+        <td>${escapeHtml(when)}</td>
+        <td>${escapeHtml(d.target?.product || '?')}@${escapeHtml(d.target?.version || '?')}${d.dryRun ? ' · dry-run' : ''}</td>
+        <td>${d.summary?.ok ?? 0}/${d.summary?.total ?? 0} ok ${verify}</td>
+      </tr>`;
+    }).join('');
+    host.innerHTML = `
+      <h4 class="deploy-hist-title">Deploy history</h4>
+      <table class="deploy-result-table">
+        <thead><tr><th></th><th>When</th><th>Target</th><th>Result</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    host.hidden = false;
+  } catch (_) { /* history is optional context — never block the modal */ }
 }
 
 function closeDeployModal() {
@@ -3081,6 +3116,8 @@ async function doDeployBulk() {
       setStatus(`${ok}/${total} deployed in ${body.tookMs}ms · ${failed} failed`, failed === 0 ? 'ok' : 'error');
     }
     renderDeployBulkResult(body);
+    // The attempt is in the audit log now (ok or not) — refresh the trail.
+    loadDeployHistory(deployModalState.packId);
   } catch (e) {
     setStatus(`error: ${e.message}`, 'error');
   } finally {

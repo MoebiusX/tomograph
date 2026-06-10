@@ -424,6 +424,20 @@ try {
   assert(deployErr.targetVersion === '12', 'deploy 502 echoes targetVersion');
   assert(deployErr.scope === 'both', 'deploy 502 echoes scope (both)');
 
+  // Deploy audit (10C): every attempt — including this failure — lands in
+  // the workspace audit log with a deployId, and /api/deploys serves it.
+  assert(typeof deployErr.deployId === 'string' && deployErr.deployId.startsWith('dep_'),
+         'deploy 502 returns a deployId for the audit trail');
+  const audit = await getJson(base, '/api/deploys?pack=payment-service&limit=10');
+  assert(Array.isArray(audit.deploys), 'GET /api/deploys returns deploys[]');
+  const auditRec = audit.deploys.find(d => d.deployId === deployErr.deployId);
+  assert(!!auditRec, 'the failed deploy attempt is audited');
+  assert(auditRec?.summary?.failed === 1, 'audit record counts the failure', auditRec?.summary, { total: 1, ok: 0, failed: 1 });
+  assert(auditRec?.actor === 'local', 'audit record carries the actor');
+  assert(auditRec?.items?.[0]?.error && !/Bearer|token=/i.test(auditRec.items[0].error),
+         'audited error is present and credential-free');
+  assert(!('verify' in (auditRec || {})), 'no verify field until re-verify writes one back');
+
   // Deploy v2 — target product / version / scope wiring
   const matrix = await getJson(base, '/api/deploy/matrix');
   assert(Array.isArray(matrix.products) && matrix.products.includes('grafana'),
