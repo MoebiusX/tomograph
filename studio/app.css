@@ -1138,6 +1138,30 @@ a:hover { color: var(--ink); }
   font-family: var(--mono); color: var(--ink-4); font-size: 12px;
   text-transform: uppercase; letter-spacing: 0.1em;
 }
+
+/* Comparison-in-flight — the diff over big packs takes real seconds;
+   motion says "working", a static line says "hung". */
+.loading-compare {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+}
+.loading-compare strong { color: var(--ink-1); font-weight: 600; }
+.loading-compare-sub { font-size: 11px; color: var(--ink-4); }
+.compare-spinner {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 3px solid var(--line-2);
+  border-top-color: var(--CMP, #A77BFB);
+  animation: compare-spin 0.8s linear infinite;
+}
+@keyframes compare-spin { to { transform: rotate(360deg); } }
+.loading-compare-retry { margin-top: 4px; }
 #layer-view .error {
   padding: 16px 18px;
   border-left: 3px solid var(--src-Missing);
@@ -1918,27 +1942,17 @@ a:hover { color: var(--ink); }
   letter-spacing: 0.1em;
 }
 
-/* The grade ladder — every rung visible, current one highlighted.
-   Lives inside .diag-report-head so the drift/posture bands (inserted
-   right after the header) can never push it below the fold. ------ */
-.diag-grade-scale {
-  margin-top: 14px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line-2);
+/* The grade ladder — sits BESIDE the verdict summary (no clog, no
+   repetition: the highlighted rung IS the verdict; blurbs live in row
+   tooltips). Inside .diag-report-head so the drift/posture bands —
+   inserted right after the header — can never push it below the fold. */
+.diag-report-head {
+  display: flex;
+  gap: 28px;
+  align-items: flex-start;
 }
-.diag-scale-caption {
-  margin-bottom: 4px;
-  font: 600 10.5px/1.2 var(--mono);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-4);
-}
-.diag-scale-current {
-  float: right;
-  color: var(--ink-3);
-  text-transform: none;
-  letter-spacing: 0.04em;
-}
+.diag-head-main { flex: 1 1 auto; min-width: 0; }
+.diag-grade-scale { flex: 0 0 360px; }
 .grade-ladder {
   list-style: none;
   margin: 0;
@@ -1946,35 +1960,28 @@ a:hover { color: var(--ink); }
 }
 .grade-rung {
   display: grid;
-  grid-template-columns: 44px 200px 64px 1fr 70px;
+  grid-template-columns: 36px 1fr auto;
   align-items: baseline;
-  column-gap: 12px;
-  padding: 6px 8px;
+  column-gap: 10px;
+  padding: 5px 8px;
   border-bottom: 1px solid var(--line-2);
+  cursor: default;
 }
 .grade-rung:last-child { border-bottom: 0; }
 .grade-rung-letter {
-  font: 800 14px/1 var(--mono);
+  font: 800 13.5px/1 var(--mono);
   color: rgb(var(--tier));
 }
 .grade-rung-label {
   font: 600 12.5px/1.3 var(--sans);
   color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .grade-rung-range {
   font: 11px/1.3 var(--mono);
   color: var(--ink-3);
-  white-space: nowrap;
-}
-.grade-rung-blurb {
-  font: 11.5px/1.4 var(--sans);
-  color: var(--ink-3);
-}
-.grade-rung-req { font-style: italic; color: var(--ink-4); }
-.grade-rung-marker {
-  font: 700 11px/1 var(--mono);
-  color: rgb(var(--tier));
-  text-align: right;
   white-space: nowrap;
 }
 .grade-rung.is-current {
@@ -1983,17 +1990,11 @@ a:hover { color: var(--ink); }
   padding-left: 5px;
 }
 .grade-rung.is-current .grade-rung-label { color: var(--ink-1); font-weight: 700; }
-.grade-rung.is-unreachable { opacity: 0.55; }
-.grade-ladder-note {
-  margin: 8px 2px 0;
-  max-width: 940px;
-  font: 11.5px/1.45 var(--mono);
-  color: var(--ink-3);
-}
-@media (max-width: 860px) {
-  .grade-rung { grid-template-columns: 40px 1fr 60px; }
-  .grade-rung-blurb { grid-column: 2 / -1; }
-  .grade-rung-marker { grid-column: 3; grid-row: 1; }
+.grade-rung.is-current .grade-rung-range { color: rgb(var(--tier)); font-weight: 700; }
+.grade-rung.is-unreachable { opacity: 0.5; }
+@media (max-width: 900px) {
+  .diag-report-head { flex-direction: column; gap: 14px; }
+  .diag-grade-scale { flex: 1 1 auto; width: 100%; }
 }
 
 /* Summary table — Score / Coverage / Trust / Verified rows ------ */

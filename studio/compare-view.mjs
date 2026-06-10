@@ -649,15 +649,30 @@ export function renderBenchmarkView(view) {
 
   // If the user picked a Pack B but it (or the diff) hasn't loaded yet,
   // fetch them and re-render so the comparison enriches the verdict.
+  // The diff over big packs takes real seconds — show motion so it reads
+  // as "working", not "hung". And NEVER hang on failure: a rejected fetch
+  // renders an honest error with a retry instead of an eternal spinner.
   if (state.compareBId && (!haveB || (!state.diff && !state.diff?.error))) {
     const loading = document.createElement('div');
-    loading.className = 'placeholder';
-    loading.textContent = 'Loading comparison pack…';
+    loading.className = 'placeholder loading-compare';
+    loading.innerHTML = `
+      <span class="compare-spinner" aria-hidden="true"></span>
+      <span>Comparing <strong>${escapeHtml(state.pack?.name || 'pack A')}</strong> against <strong>${escapeHtml(String(state.compareBId))}</strong>…</span>
+      <span class="loading-compare-sub">matching artefacts by behavioural identity — large packs take a few seconds</span>
+    `;
     scaffold.appendChild(loading);
     Promise.all([
       haveB ? Promise.resolve() : loadPackB(),
       (state.diff && !state.diff.error) ? Promise.resolve() : loadDiff(),
-    ]).then(() => { renderTabs(); renderMainView(); });
+    ]).then(() => { renderTabs(); renderMainView(); })
+      .catch((e) => {
+        loading.classList.remove('loading-compare');
+        loading.innerHTML = `
+          <span>Comparison failed to load: ${escapeHtml(e?.message || 'unknown error')}</span>
+          <button type="button" class="ctrl-btn loading-compare-retry">retry</button>
+        `;
+        loading.querySelector('.loading-compare-retry')?.addEventListener('click', () => renderMainView());
+      });
     return;
   }
 
@@ -1435,52 +1450,51 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   `;
 
   // The instrument-grade ladder: every rung rendered top (best) → bottom,
-  // the rung the score lands on highlighted. A++ has no score band — it
-  // requires external reference evidence, so it renders dimmed with that
-  // requirement stated rather than pretending the score can reach it.
+  // the rung the score lands on highlighted — the highlight IS the
+  // verdict, so nothing else repeats the letter. Compact: letter, class,
+  // band; the blurb (and A++'s external-evidence requirement) live in the
+  // row tooltip instead of clogging the card.
   const ladderHtml = `
     <ul class="grade-ladder">
       ${INSTRUMENT_GRADE_SCALE.map(g => {
         const current = g.letter === ig.letter;
         const unreachable = g.minPct === null;
+        const tip = g.blurb + (unreachable ? ` Requires ${g.requires}.` : '') + (current ? ` ← this pack: ${overallPct}%.` : '');
         return `
-        <li class="grade-rung tier-${g.tier} ${current ? 'is-current' : ''} ${unreachable ? 'is-unreachable' : ''}">
+        <li class="grade-rung tier-${g.tier} ${current ? 'is-current' : ''} ${unreachable ? 'is-unreachable' : ''}" title="${escapeHtml(tip)}">
           <span class="grade-rung-letter">${escapeHtml(g.letter)}</span>
           <span class="grade-rung-label">${escapeHtml(g.label)}</span>
           <span class="grade-rung-range">${escapeHtml(g.range)}</span>
-          <span class="grade-rung-blurb">${escapeHtml(g.blurb)}${unreachable ? ` <em class="grade-rung-req">${escapeHtml(g.requires)}</em>` : ''}</span>
-          <span class="grade-rung-marker">${current ? `◀ ${overallPct}%` : ''}</span>
         </li>`;
       }).join('')}
     </ul>
-    <p class="grade-ladder-note">Grades derive from the verification score — A starts strictly above the ${audit.threshold}% audit bar, so the letter and the machine PASS/FAIL always agree. Verification evidence, not incident-validation. A++ needs external reference benchmarking this instrument cannot produce alone.</p>
   `;
 
   wrap.innerHTML = `
     <header class="diag-report-head">
-      <div class="diag-report-head-line">
-        <span class="diag-report-eyebrow">DIAGNOSTIC GRADE</span>
-        <span class="diag-report-status grade-chip tier-${ig.tier}">${escapeHtml(ig.letter)} · ${escapeHtml(ig.label)}</span>
+      <div class="diag-head-main">
+        <div class="diag-report-head-line">
+          <span class="diag-report-eyebrow">DIAGNOSTIC GRADE</span>
+        </div>
+        <table class="diag-summary">
+          <colgroup><col><col><col></colgroup>
+          <tbody>
+            ${summaryRow('Score',    `<span class="diag-pct">${overallPct}%</span> <span class="diag-frac">${fmtScore(overall.passed)}/${overall.total}</span>`, bar(overallPct))}
+            ${summaryRow('Coverage', `<span class="diag-pct">${covPct}%</span> <span class="diag-frac">${fmtScore(cov.passed)}/${cov.total}</span>`,       bar(covPct))}
+            ${summaryRow('Trust',    `<span class="diag-pct">${trustPct}%</span> <span class="diag-frac">${fmtScore(trust.passed)}/${trust.total}</span>`, bar(trustPct))}
+            ${summaryRow('Audit',    `<span class="${passes ? 'diag-yes' : 'diag-no'}">${audit.status}</span>`, `gate contract: PASS above ${audit.threshold}% (A and better)`)}
+            ${summaryRow('Verified', trust.hasMcpSource ? '<span class="diag-yes">YES</span>' : '<span class="diag-no">NO</span>',
+                         trust.hasMcpSource ? 'live signal present' : 'connect MCP or scan live to verify',
+                         trust.hasMcpSource ? '' : 'is-warn')}
+          </tbody>
+        </table>
       </div>
-      <table class="diag-summary">
-        <colgroup><col><col><col></colgroup>
-        <tbody>
-          ${summaryRow('Score',    `<span class="diag-pct">${overallPct}%</span> <span class="diag-frac">${fmtScore(overall.passed)}/${overall.total}</span>`, bar(overallPct))}
-          ${summaryRow('Coverage', `<span class="diag-pct">${covPct}%</span> <span class="diag-frac">${fmtScore(cov.passed)}/${cov.total}</span>`,       bar(covPct))}
-          ${summaryRow('Trust',    `<span class="diag-pct">${trustPct}%</span> <span class="diag-frac">${fmtScore(trust.passed)}/${trust.total}</span>`, bar(trustPct))}
-          ${summaryRow('Audit',    `<span class="${passes ? 'diag-yes' : 'diag-no'}">${audit.status}</span>`, `gate contract: PASS above ${audit.threshold}% (A and better)`)}
-          ${summaryRow('Verified', trust.hasMcpSource ? '<span class="diag-yes">YES</span>' : '<span class="diag-no">NO</span>',
-                       trust.hasMcpSource ? 'live signal present' : 'connect MCP or scan live to verify',
-                       trust.hasMcpSource ? '' : 'is-warn')}
-        </tbody>
-      </table>
-      <!-- The scale lives INSIDE the header block, glued to the score —
+      <!-- The scale sits BESIDE the summary, inside the header block —
            other bands (drift drill, posture) are inserted directly after
            the header, so anything below it gets pushed off-screen. -->
-      <div class="diag-grade-scale">
-        <div class="diag-scale-caption">INSTRUMENT GRADE SCALE <span class="diag-scale-current">current: ${escapeHtml(ig.letter)} · ${overallPct}%</span></div>
+      <aside class="diag-grade-scale">
         ${ladderHtml}
-      </div>
+      </aside>
     </header>
 
     <section class="diag-section">
