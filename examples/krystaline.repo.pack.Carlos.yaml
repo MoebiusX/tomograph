@@ -1,7 +1,7 @@
 # =============================================================================
 # ObservabilityPack: krystaline  (drafted by the crawler)
-# Discovered at 2026-06-10T13:16:21.846Z
-# Files scanned: 484, classified: 106
+# Discovered at 2026-06-10T17:18:43.943Z
+# Files scanned: 490, classified: 109
 # Tier inferred: tier-2
 # Warnings: 5 (see metadata.annotations + the summary report)
 # -----------------------------------------------------------------------------
@@ -27,16 +27,16 @@ metadata:
   labels:
     source: crawler
   annotations:
-    crawler.discoveredAt: 2026-06-10T13:16:21.846Z
-    crawler.filesScanned: "484"
-    crawler.filesIncluded: "421"
-    crawler.filesExcludedByEnvironment: "63"
-    crawler.filesClassified: "106"
+    crawler.discoveredAt: 2026-06-10T17:18:43.943Z
+    crawler.filesScanned: "490"
+    crawler.filesIncluded: "424"
+    crawler.filesExcludedByEnvironment: "66"
+    crawler.filesClassified: "109"
     crawler.environmentProfile: prod
     tomograph.diff.scopeMode: service
     crawler.tierInferred: tier-2
     crawler.warningCount: "5"
-    crawler.syntheticRecordingRulesSkipped: "13"
+    crawler.syntheticRecordingRulesSkipped: "18"
     crawler.extendedSurfaces: "1"
     crawler.scaffoldCount: "3"
     crawler.unresolvedChannelCount: "1"
@@ -82,10 +82,20 @@ metadata:
         "finops:spans:exported_rate_5m",
         "finops:spans:sampling_ratio",
         "gen_ai_client_operation_duration_seconds",
+        "gen_ai_client_operation_duration_seconds_bucket",
         "gen_ai_client_operation_time_per_output_chunk_seconds",
+        "gen_ai_client_operation_time_per_output_chunk_seconds_bucket",
         "gen_ai_client_operation_time_to_first_chunk_seconds",
+        "gen_ai_client_operation_time_to_first_chunk_seconds_bucket",
         "gen_ai_client_operations_total",
         "gen_ai_client_token_usage",
+        "gen_ai_client_token_usage_sum",
+        "genai:client_operation:error_ratio_5m",
+        "genai:client_operation_duration:p95_5m",
+        "genai:client_operation_duration:p99_5m",
+        "genai:client_token_usage:rate_1h",
+        "genai:rca_analysis:failure_ratio_5m",
+        "genai:rca_analysis_duration:p95_5m",
         "http_active_connections",
         "http_request_duration_seconds",
         "http_request_duration_seconds_bucket",
@@ -136,9 +146,11 @@ metadata:
         "mcp_active_sessions",
         "mcp_auth_attempts_total",
         "mcp_backend_duration_seconds",
+        "mcp_backend_duration_seconds_bucket",
         "mcp_backend_requests_total",
         "mcp_server_info",
         "mcp_server_operation_duration_seconds",
+        "mcp_server_operation_duration_seconds_count",
         "mcp_tool_calls_total",
         "mcp_tool_duration_seconds",
         "mcp_tool_errors_total",
@@ -153,6 +165,7 @@ metadata:
         "order_processing_duration_seconds",
         "orders_failed_total",
         "orders_processed_total",
+        "otelcol_exporter_send_failed_spans_total",
         "otelcol_exporter_sent_spans_total",
         "otelcol_processor_dropped_spans_total",
         "pg_database_size_bytes",
@@ -207,11 +220,11 @@ metadata:
         "slo:server:probe_success_ratio_5m",
         "up"
       ]
-    crawler.discovered.metric_names_count: "163"
+    crawler.discovered.metric_names_count: "176"
     crawler.discovered.metric_origins: |
       {
         "ALERTS": {
-          "file": "k8s/charts/krystalinex/dashboards/predictive-finops.json#predictive_alert_status",
+          "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#current_alert_state",
           "service": "",
           "type": "promql-reference",
           "help": "",
@@ -220,8 +233,9 @@ metadata:
           "origin_kind": "promql-reference",
           "confidence": "declared",
           "candidate": false,
-          "query": "ALERTS{alertname=~\".*Forecast.*|.*Trend.*\", alertstate=\"firing\"}",
+          "query": "ALERTS{alertname=~\"GenAi.*\",alertstate=\"firing\"}",
           "used_by": [
+            "dashboard:kx-ai-rca-reliability/current_alert_state",
             "dashboard:kx-predictive-finops/predictive_alert_status",
             "dashboard:krystalinex-unified/firing_alerts",
             "dashboard:krystalinex-unified/pending_alerts",
@@ -230,6 +244,11 @@ metadata:
             "dashboard:krystalinex-unified/active_alerts"
           ],
           "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "current_alert_state",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#current_alert_state"
+            },
             {
               "kind": "dashboard-panel",
               "name": "predictive_alert_status",
@@ -1320,6 +1339,62 @@ metadata:
           "used_by": [],
           "references": []
         },
+        "gen_ai_client_operation_duration_seconds_bucket": {
+          "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#p99_generate_latency",
+          "service": "",
+          "type": "promql-reference",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "promql-reference",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "max(genai:client_operation_duration:p99_5m{job=~\"$service\",model=~\"$model\"}) or max(histogram_quantile(0.99, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~\"$service\",model=~\"$model\"}[5m])) by (le, provider, model, operation)))",
+          "used_by": [
+            "dashboard:kx-ai-rca-reliability/p99_generate_latency",
+            "dashboard:kx-ai-rca-reliability/genai_operation_duration",
+            "dashboard:kx-genai-operations/raw_genai_duration_p95_by_model",
+            "recording_rule:genai:client_operation_duration:p95_5m",
+            "recording_rule:genai:client_operation_duration:p99_5m"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "p99_generate_latency",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#p99_generate_latency"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "genai_operation_duration",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#genai_operation_duration"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "genai_operation_duration",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#genai_operation_duration"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "genai_operation_duration",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#genai_operation_duration"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "raw_genai_duration_p95_by_model",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#raw_genai_duration_p95_by_model"
+            },
+            {
+              "kind": "recording-rule",
+              "name": "genai:client_operation_duration:p95_5m",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_operation_duration:p95_5m"
+            },
+            {
+              "kind": "recording-rule",
+              "name": "genai:client_operation_duration:p99_5m",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_operation_duration:p99_5m"
+            }
+          ]
+        },
         "gen_ai_client_operation_time_per_output_chunk_seconds": {
           "file": "server/observability/genai-metrics.ts",
           "service": "krystalinex-server",
@@ -1339,6 +1414,44 @@ metadata:
           "query": "",
           "used_by": [],
           "references": []
+        },
+        "gen_ai_client_operation_time_per_output_chunk_seconds_bucket": {
+          "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#time_per_output_chunk",
+          "service": "",
+          "type": "promql-reference",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "promql-reference",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~\"$service\",model=~\"$model\"}[5m])) by (le))",
+          "used_by": [
+            "dashboard:kx-ai-rca-reliability/time_per_output_chunk",
+            "dashboard:kx-genai-operations/streaming_latency_p95"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "time_per_output_chunk",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#time_per_output_chunk"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "time_per_output_chunk",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#time_per_output_chunk"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "time_per_output_chunk",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#time_per_output_chunk"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "streaming_latency_p95",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#streaming_latency_p95"
+            }
+          ]
         },
         "gen_ai_client_operation_time_to_first_chunk_seconds": {
           "file": "server/observability/genai-metrics.ts",
@@ -1360,6 +1473,44 @@ metadata:
           "used_by": [],
           "references": []
         },
+        "gen_ai_client_operation_time_to_first_chunk_seconds_bucket": {
+          "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#time_to_first_chunk",
+          "service": "",
+          "type": "promql-reference",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "promql-reference",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~\"$service\",model=~\"$model\"}[5m])) by (le))",
+          "used_by": [
+            "dashboard:kx-ai-rca-reliability/time_to_first_chunk",
+            "dashboard:kx-genai-operations/streaming_latency_p95"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "time_to_first_chunk",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#time_to_first_chunk"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "time_to_first_chunk",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#time_to_first_chunk"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "time_to_first_chunk",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#time_to_first_chunk"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "streaming_latency_p95",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#streaming_latency_p95"
+            }
+          ]
+        },
         "gen_ai_client_operations_total": {
           "file": "server/observability/genai-metrics.ts",
           "service": "krystalinex-server",
@@ -1377,8 +1528,45 @@ metadata:
           "confidence": "declared",
           "candidate": false,
           "query": "",
-          "used_by": [],
-          "references": []
+          "used_by": [
+            "dashboard:kx-ai-rca-reliability/timeout_ratio",
+            "dashboard:kx-ai-rca-reliability/timeouts_and_errors",
+            "dashboard:kx-genai-operations/genai_operations_6h",
+            "dashboard:kx-genai-operations/operations_by_status",
+            "recording_rule:genai:client_operation:error_ratio_5m"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "timeout_ratio",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#timeout_ratio"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "timeouts_and_errors",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#timeouts_and_errors"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "timeouts_and_errors",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#timeouts_and_errors"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "genai_operations_6h",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#genai_operations_6h"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "operations_by_status",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#operations_by_status"
+            },
+            {
+              "kind": "recording-rule",
+              "name": "genai:client_operation:error_ratio_5m",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_operation:error_ratio_5m"
+            }
+          ]
         },
         "gen_ai_client_token_usage": {
           "file": "server/observability/genai-metrics.ts",
@@ -1398,6 +1586,232 @@ metadata:
           "query": "",
           "used_by": [],
           "references": []
+        },
+        "gen_ai_client_token_usage_sum": {
+          "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#token_usage_rate",
+          "service": "",
+          "type": "promql-reference",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "promql-reference",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "sum by (model, direction) (rate(gen_ai_client_token_usage_sum[5m]))",
+          "used_by": [
+            "dashboard:kx-genai-operations/token_usage_rate",
+            "recording_rule:genai:client_token_usage:rate_1h"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "token_usage_rate",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#token_usage_rate"
+            },
+            {
+              "kind": "recording-rule",
+              "name": "genai:client_token_usage:rate_1h",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_token_usage:rate_1h"
+            }
+          ]
+        },
+        "genai:client_operation:error_ratio_5m": {
+          "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_operation:error_ratio_5m",
+          "service": "",
+          "type": "recording-rule-output",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "recording-rule-output",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "sum(rate(gen_ai_client_operations_total{status=~\"error|timeout\"}[5m]))\n  by (provider, model, operation)\n/\nclamp_min(\n  sum(rate(gen_ai_client_operations_total[5m]))\n    by (provider, model, operation),\n  0.000001\n)\n",
+          "used_by": [
+            "alert:GenAiClientHighErrorRatio",
+            "recording_rule:genai:client_operation:error_ratio_5m"
+          ],
+          "references": [
+            {
+              "kind": "alert-rule",
+              "name": "GenAiClientHighErrorRatio",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#alerting-rules.yml#krystalinex.genai/GenAiClientHighErrorRatio"
+            },
+            {
+              "kind": "recording-rule-output",
+              "name": "genai:client_operation:error_ratio_5m",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_operation:error_ratio_5m"
+            }
+          ]
+        },
+        "genai:client_operation_duration:p95_5m": {
+          "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_operation_duration:p95_5m",
+          "service": "",
+          "type": "recording-rule-output",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "recording-rule-output",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "histogram_quantile(\n  0.95,\n  sum(rate(gen_ai_client_operation_duration_seconds_bucket[5m]))\n    by (le, provider, model, operation)\n)\n",
+          "used_by": [
+            "dashboard:kx-genai-operations/genai_client_latency",
+            "alert:GenAiClientHighLatencyP95",
+            "recording_rule:genai:client_operation_duration:p95_5m"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "genai_client_latency",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#genai_client_latency"
+            },
+            {
+              "kind": "alert-rule",
+              "name": "GenAiClientHighLatencyP95",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#alerting-rules.yml#krystalinex.genai/GenAiClientHighLatencyP95"
+            },
+            {
+              "kind": "recording-rule-output",
+              "name": "genai:client_operation_duration:p95_5m",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_operation_duration:p95_5m"
+            }
+          ]
+        },
+        "genai:client_operation_duration:p99_5m": {
+          "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_operation_duration:p99_5m",
+          "service": "",
+          "type": "recording-rule-output",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "recording-rule-output",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "histogram_quantile(\n  0.99,\n  sum(rate(gen_ai_client_operation_duration_seconds_bucket[5m]))\n    by (le, provider, model, operation)\n)\n",
+          "used_by": [
+            "dashboard:kx-ai-rca-reliability/p99_generate_latency",
+            "dashboard:kx-genai-operations/genai_client_latency",
+            "recording_rule:genai:client_operation_duration:p99_5m"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "p99_generate_latency",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#p99_generate_latency"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "genai_client_latency",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#genai_client_latency"
+            },
+            {
+              "kind": "recording-rule-output",
+              "name": "genai:client_operation_duration:p99_5m",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_operation_duration:p99_5m"
+            }
+          ]
+        },
+        "genai:client_token_usage:rate_1h": {
+          "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_token_usage:rate_1h",
+          "service": "",
+          "type": "recording-rule-output",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "recording-rule-output",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "sum(rate(gen_ai_client_token_usage_sum[1h]))\n  by (model, direction)\n",
+          "used_by": [
+            "dashboard:kx-genai-operations/token_usage_rate",
+            "alert:GenAiTokenBurnRateHigh",
+            "recording_rule:genai:client_token_usage:rate_1h"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "token_usage_rate",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#token_usage_rate"
+            },
+            {
+              "kind": "alert-rule",
+              "name": "GenAiTokenBurnRateHigh",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#alerting-rules.yml#krystalinex.genai/GenAiTokenBurnRateHigh"
+            },
+            {
+              "kind": "recording-rule-output",
+              "name": "genai:client_token_usage:rate_1h",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:client_token_usage:rate_1h"
+            }
+          ]
+        },
+        "genai:rca_analysis:failure_ratio_5m": {
+          "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:rca_analysis:failure_ratio_5m",
+          "service": "",
+          "type": "recording-rule-output",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "recording-rule-output",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "sum(rate(kx_llm_analysis_total{status=~\"failure|timeout\"}[5m]))\n  by (use_case)\n/\nclamp_min(\n  sum(rate(kx_llm_analysis_total[5m])) by (use_case),\n  0.000001\n)\n",
+          "used_by": [
+            "dashboard:kx-genai-operations/rca_failure_ratio",
+            "alert:GenAiRcaHighFailureRatio",
+            "recording_rule:genai:rca_analysis:failure_ratio_5m"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "rca_failure_ratio",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#rca_failure_ratio"
+            },
+            {
+              "kind": "alert-rule",
+              "name": "GenAiRcaHighFailureRatio",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#alerting-rules.yml#krystalinex.genai/GenAiRcaHighFailureRatio"
+            },
+            {
+              "kind": "recording-rule-output",
+              "name": "genai:rca_analysis:failure_ratio_5m",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:rca_analysis:failure_ratio_5m"
+            }
+          ]
+        },
+        "genai:rca_analysis_duration:p95_5m": {
+          "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:rca_analysis_duration:p95_5m",
+          "service": "",
+          "type": "recording-rule-output",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "recording-rule-output",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "histogram_quantile(\n  0.95,\n  sum(rate(kx_llm_analysis_duration_seconds_bucket[5m])) by (le)\n)\n",
+          "used_by": [
+            "dashboard:kx-ai-rca-reliability/p95_analysis_duration",
+            "dashboard:kx-genai-operations/rca_analysis_duration",
+            "recording_rule:genai:rca_analysis_duration:p95_5m"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "p95_analysis_duration",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#p95_analysis_duration"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "rca_analysis_duration",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#rca_analysis_duration"
+            },
+            {
+              "kind": "recording-rule-output",
+              "name": "genai:rca_analysis_duration:p95_5m",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:rca_analysis_duration:p95_5m"
+            }
+          ]
         },
         "http_active_connections": {
           "file": "server/metrics/prometheus.ts",
@@ -2570,7 +2984,7 @@ metadata:
           "references": []
         },
         "kx_llm_analysis_duration_seconds_bucket": {
-          "file": "k8s/charts/krystalinex/dashboards/unified-observability.json#llm_analysis_duration",
+          "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#p95_analysis_duration",
           "service": "",
           "type": "promql-reference",
           "help": "",
@@ -2579,11 +2993,40 @@ metadata:
           "origin_kind": "promql-reference",
           "confidence": "declared",
           "candidate": false,
-          "query": "histogram_quantile(0.95, sum(rate(kx_llm_analysis_duration_seconds_bucket[5m])) by (le))",
+          "query": "genai:rca_analysis_duration:p95_5m or histogram_quantile(0.95, sum(rate(kx_llm_analysis_duration_seconds_bucket{job=~\"$service\"}[5m])) by (le))",
           "used_by": [
-            "dashboard:krystalinex-unified/llm_analysis_duration"
+            "dashboard:kx-ai-rca-reliability/p95_analysis_duration",
+            "dashboard:kx-ai-rca-reliability/analysis_duration_quantiles",
+            "dashboard:kx-genai-operations/rca_analysis_duration",
+            "dashboard:krystalinex-unified/llm_analysis_duration",
+            "recording_rule:genai:rca_analysis_duration:p95_5m"
           ],
           "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "p95_analysis_duration",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#p95_analysis_duration"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "analysis_duration_quantiles",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#analysis_duration_quantiles"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "analysis_duration_quantiles",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#analysis_duration_quantiles"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "analysis_duration_quantiles",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#analysis_duration_quantiles"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "rca_analysis_duration",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#rca_analysis_duration"
+            },
             {
               "kind": "dashboard-panel",
               "name": "llm_analysis_duration",
@@ -2593,6 +3036,11 @@ metadata:
               "kind": "dashboard-panel",
               "name": "llm_analysis_duration",
               "file": "k8s/charts/krystalinex/dashboards/unified-observability.json#llm_analysis_duration"
+            },
+            {
+              "kind": "recording-rule",
+              "name": "genai:rca_analysis_duration:p95_5m",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:rca_analysis_duration:p95_5m"
             }
           ]
         },
@@ -2611,13 +3059,55 @@ metadata:
           "candidate": false,
           "query": "",
           "used_by": [
-            "dashboard:krystalinex-unified/analysis_by_use_case"
+            "dashboard:kx-ai-rca-reliability/rca_failure_ratio",
+            "dashboard:kx-ai-rca-reliability/rca_failure_ratio_over_time",
+            "dashboard:kx-ai-rca-reliability/timeouts_and_errors",
+            "dashboard:kx-ai-rca-reliability/pipeline_saturation",
+            "dashboard:kx-genai-operations/rca_analyses_6h",
+            "dashboard:kx-genai-operations/rca_use_case_volume",
+            "dashboard:krystalinex-unified/analysis_by_use_case",
+            "recording_rule:genai:rca_analysis:failure_ratio_5m"
           ],
           "references": [
             {
               "kind": "dashboard-panel",
+              "name": "rca_failure_ratio",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#rca_failure_ratio"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "rca_failure_ratio_over_time",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#rca_failure_ratio_over_time"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "timeouts_and_errors",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#timeouts_and_errors"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "pipeline_saturation",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#pipeline_saturation"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "rca_analyses_6h",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#rca_analyses_6h"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "rca_use_case_volume",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#rca_use_case_volume"
+            },
+            {
+              "kind": "dashboard-panel",
               "name": "analysis_by_use_case",
               "file": "k8s/charts/krystalinex/dashboards/unified-observability.json#analysis_by_use_case"
+            },
+            {
+              "kind": "recording-rule",
+              "name": "genai:rca_analysis:failure_ratio_5m",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#recording-rules.yml#genai:operations/genai:rca_analysis:failure_ratio_5m"
             }
           ]
         },
@@ -2635,13 +3125,49 @@ metadata:
           "candidate": false,
           "query": "",
           "used_by": [
-            "dashboard:krystalinex-unified/dropped_events_1h"
+            "dashboard:kx-ai-rca-reliability/dropped_events_rate",
+            "dashboard:kx-ai-rca-reliability/dropped_llm_analysis_events",
+            "dashboard:kx-ai-rca-reliability/pipeline_saturation",
+            "dashboard:kx-genai-operations/dropped_rca_events_1h",
+            "dashboard:kx-genai-operations/rca_queue_and_drops",
+            "dashboard:krystalinex-unified/dropped_events_1h",
+            "alert:GenAiRcaDroppedEvents"
           ],
           "references": [
             {
               "kind": "dashboard-panel",
+              "name": "dropped_events_rate",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#dropped_events_rate"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "dropped_llm_analysis_events",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#dropped_llm_analysis_events"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "pipeline_saturation",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#pipeline_saturation"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "dropped_rca_events_1h",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#dropped_rca_events_1h"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "rca_queue_and_drops",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#rca_queue_and_drops"
+            },
+            {
+              "kind": "dashboard-panel",
               "name": "dropped_events_1h",
               "file": "k8s/charts/krystalinex/dashboards/unified-observability.json#dropped_events_1h"
+            },
+            {
+              "kind": "alert-rule",
+              "name": "GenAiRcaDroppedEvents",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#alerting-rules.yml#krystalinex.genai/GenAiRcaDroppedEvents"
             }
           ]
         },
@@ -2691,13 +3217,43 @@ metadata:
           "candidate": false,
           "query": "",
           "used_by": [
-            "dashboard:krystalinex-unified/queue_depth_saturation"
+            "dashboard:kx-ai-rca-reliability/current_queue_depth",
+            "dashboard:kx-ai-rca-reliability/queue_depth",
+            "dashboard:kx-ai-rca-reliability/pipeline_saturation",
+            "dashboard:kx-genai-operations/rca_queue_and_drops",
+            "dashboard:krystalinex-unified/queue_depth_saturation",
+            "alert:GenAiRcaQueueBacklog"
           ],
           "references": [
             {
               "kind": "dashboard-panel",
+              "name": "current_queue_depth",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#current_queue_depth"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "queue_depth",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#queue_depth"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "pipeline_saturation",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#pipeline_saturation"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "rca_queue_and_drops",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#rca_queue_and_drops"
+            },
+            {
+              "kind": "dashboard-panel",
               "name": "queue_depth_saturation",
               "file": "k8s/charts/krystalinex/dashboards/unified-observability.json#queue_depth_saturation"
+            },
+            {
+              "kind": "alert-rule",
+              "name": "GenAiRcaQueueBacklog",
+              "file": "k8s/charts/krystalinex/templates/configmaps.yaml#alerting-rules.yml#krystalinex.genai/GenAiRcaQueueBacklog"
             }
           ]
         },
@@ -3056,8 +3612,16 @@ metadata:
           "confidence": "declared",
           "candidate": false,
           "query": "",
-          "used_by": [],
-          "references": []
+          "used_by": [
+            "dashboard:kx-mcp-observability-trace-coverage/backend_requests_and_sessions"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "backend_requests_and_sessions",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#backend_requests_and_sessions"
+            }
+          ]
         },
         "mcp_auth_attempts_total": {
           "file": "otel-mcp-server/src/metrics.ts",
@@ -3070,8 +3634,16 @@ metadata:
           "confidence": "declared",
           "candidate": false,
           "query": "",
-          "used_by": [],
-          "references": []
+          "used_by": [
+            "dashboard:kx-mcp-observability-trace-coverage/backend_requests_and_sessions"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "backend_requests_and_sessions",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#backend_requests_and_sessions"
+            }
+          ]
         },
         "mcp_backend_duration_seconds": {
           "file": "otel-mcp-server/src/metrics.ts",
@@ -3087,6 +3659,38 @@ metadata:
           "used_by": [],
           "references": []
         },
+        "mcp_backend_duration_seconds_bucket": {
+          "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency",
+          "service": "",
+          "type": "promql-reference",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "promql-reference",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "histogram_quantile(0.50, sum(rate(mcp_backend_duration_seconds_bucket{job=~\"$mcp_job\"}[5m])) by (le, backend))",
+          "used_by": [
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_operation_latency"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_operation_latency",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_operation_latency",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_operation_latency",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency"
+            }
+          ]
+        },
         "mcp_backend_requests_total": {
           "file": "otel-mcp-server/src/metrics.ts",
           "service": "otel-mcp-server",
@@ -3098,8 +3702,34 @@ metadata:
           "confidence": "declared",
           "candidate": false,
           "query": "",
-          "used_by": [],
-          "references": []
+          "used_by": [
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_requests_sec",
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_error_rate",
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_request_volume",
+            "dashboard:kx-mcp-observability-trace-coverage/backend_requests_and_sessions"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_requests_sec",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_requests_sec"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_error_rate",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_error_rate"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_request_volume",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_request_volume"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "backend_requests_and_sessions",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#backend_requests_and_sessions"
+            }
+          ]
         },
         "mcp_server_info": {
           "file": "otel-mcp-server/src/metrics.ts",
@@ -3128,6 +3758,34 @@ metadata:
           "query": "",
           "used_by": [],
           "references": []
+        },
+        "mcp_server_operation_duration_seconds_count": {
+          "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#missing_trace_gap",
+          "service": "",
+          "type": "promql-reference",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "promql-reference",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "absent(mcp_server_operation_duration_seconds_count) or vector(0)",
+          "used_by": [
+            "dashboard:kx-mcp-observability-trace-coverage/missing_trace_gap",
+            "dashboard:kx-mcp-observability-trace-coverage/trace_coverage_by_service"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "missing_trace_gap",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#missing_trace_gap"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "trace_coverage_by_service",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#trace_coverage_by_service"
+            }
+          ]
         },
         "mcp_tool_calls_total": {
           "file": "otel-mcp-server/src/metrics.ts",
@@ -3495,6 +4153,28 @@ metadata:
               "kind": "dashboard-panel",
               "name": "orders_processed",
               "file": "k8s/charts/krystalinex/dashboards/unified-observability.json#orders_processed"
+            }
+          ]
+        },
+        "otelcol_exporter_send_failed_spans_total": {
+          "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#collector_pipeline_health",
+          "service": "",
+          "type": "promql-reference",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "promql-reference",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "sum(rate(otelcol_exporter_send_failed_spans_total[5m]))",
+          "used_by": [
+            "dashboard:kx-mcp-observability-trace-coverage/collector_pipeline_health"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "collector_pipeline_health",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#collector_pipeline_health"
             }
           ]
         },
@@ -4873,7 +5553,7 @@ metadata:
           ]
         },
         "up": {
-          "file": "k8s/charts/krystalinex/dashboards/unified-observability.json#services_up",
+          "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_metrics_coverage",
           "service": "",
           "type": "promql-reference",
           "help": "",
@@ -4882,8 +5562,12 @@ metadata:
           "origin_kind": "promql-reference",
           "confidence": "declared",
           "candidate": false,
-          "query": "count(up == 1)",
+          "query": "100 * count(up{job=~\"otel-mcp-server|mcp-public\"} == 1) / 2",
           "used_by": [
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_metrics_coverage",
+            "dashboard:kx-mcp-observability-trace-coverage/visible_mcp_services",
+            "dashboard:kx-mcp-observability-trace-coverage/trace_coverage_by_service",
+            "dashboard:kx-mcp-observability-trace-coverage/collector_pipeline_health",
             "dashboard:krystalinex-unified/services_up",
             "alert:ServiceDown",
             "recording_rule:slo:server:probe_success_ratio_5m",
@@ -4891,6 +5575,26 @@ metadata:
             "recording_rule:slo:server:probe_success_ratio_1d"
           ],
           "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_metrics_coverage",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_metrics_coverage"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "visible_mcp_services",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#visible_mcp_services"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "trace_coverage_by_service",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#trace_coverage_by_service"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "collector_pipeline_health",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#collector_pipeline_health"
+            },
             {
               "kind": "dashboard-panel",
               "name": "services_up",
@@ -4985,6 +5689,61 @@ spec:
         )
       threshold: 1
       unit: ratio
+    - id: genai_client_operation_duration
+      description: Inferred from recording rule genai:client_operation_duration:p95_5m.
+      type: threshold
+      query: |
+        histogram_quantile(
+          0.95,
+          sum(rate(gen_ai_client_operation_duration_seconds_bucket[5m]))
+            by (le, provider, model, operation)
+        )
+      threshold: 1
+      unit: ratio
+    - id: genai_client_operation
+      description: Inferred from recording rule genai:client_operation:error_ratio_5m.
+      type: ratio
+      good: |
+        sum(rate(gen_ai_client_operations_total{status=~"error|timeout"}[5m]))
+          by (provider, model, operation)
+        /
+        clamp_min(
+          sum(rate(gen_ai_client_operations_total[5m]))
+            by (provider, model, operation),
+          0.000001
+        )
+      total: "1"
+    - id: genai_client_token_usage
+      description: Inferred from recording rule genai:client_token_usage:rate_1h.
+      type: threshold
+      query: |
+        sum(rate(gen_ai_client_token_usage_sum[1h]))
+          by (model, direction)
+      threshold: 1
+      unit: ratio
+    - id: genai_rca_analysis_duration
+      description: Inferred from recording rule genai:rca_analysis_duration:p95_5m.
+      type: threshold
+      query: |
+        histogram_quantile(
+          0.95,
+          sum(rate(kx_llm_analysis_duration_seconds_bucket[5m])) by (le)
+        )
+      threshold: 1
+      unit: ratio
+    - id: genai_rca_analysis
+      description: Inferred from recording rule genai:rca_analysis:failure_ratio_5m.
+      type: threshold
+      query: |
+        sum(rate(kx_llm_analysis_total{status=~"failure|timeout"}[5m]))
+          by (use_case)
+        /
+        clamp_min(
+          sum(rate(kx_llm_analysis_total[5m])) by (use_case),
+          0.000001
+        )
+      threshold: 1
+      unit: ratio
     - id: finops_requests
       description: Inferred from recording rule finops:requests:rate_per_service_5m.
       type: threshold
@@ -5069,6 +5828,31 @@ spec:
       error_budget_policy: ref:platform/default-budget
     - id: slo_latency_99
       sli: slo_latency
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: genai_client_operation_duration_99
+      sli: genai_client_operation_duration
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: genai_client_operation_99
+      sli: genai_client_operation
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: genai_client_token_usage_99
+      sli: genai_client_token_usage
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: genai_rca_analysis_duration_99
+      sli: genai_rca_analysis_duration
+      objective: 0.99
+      window: 30d
+      error_budget_policy: ref:platform/default-budget
+    - id: genai_rca_analysis_99
+      sli: genai_rca_analysis
       objective: 0.99
       window: 30d
       error_budget_policy: ref:platform/default-budget
@@ -5264,6 +6048,55 @@ spec:
             / (1 - 0.95)
           )
         interval: 1m
+      - name: genai:client_operation_duration:p95_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(gen_ai_client_operation_duration_seconds_bucket[5m]))
+              by (le, provider, model, operation)
+          )
+        interval: 30s
+      - name: genai:client_operation_duration:p99_5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum(rate(gen_ai_client_operation_duration_seconds_bucket[5m]))
+              by (le, provider, model, operation)
+          )
+        interval: 30s
+      - name: genai:client_operation:error_ratio_5m
+        expr: |
+          sum(rate(gen_ai_client_operations_total{status=~"error|timeout"}[5m]))
+            by (provider, model, operation)
+          /
+          clamp_min(
+            sum(rate(gen_ai_client_operations_total[5m]))
+              by (provider, model, operation),
+            0.000001
+          )
+        interval: 30s
+      - name: genai:client_token_usage:rate_1h
+        expr: |
+          sum(rate(gen_ai_client_token_usage_sum[1h]))
+            by (model, direction)
+        interval: 30s
+      - name: genai:rca_analysis_duration:p95_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(kx_llm_analysis_duration_seconds_bucket[5m])) by (le)
+          )
+        interval: 30s
+      - name: genai:rca_analysis:failure_ratio_5m
+        expr: |
+          sum(rate(kx_llm_analysis_total{status=~"failure|timeout"}[5m]))
+            by (use_case)
+          /
+          clamp_min(
+            sum(rate(kx_llm_analysis_total[5m])) by (use_case),
+            0.000001
+          )
+        interval: 30s
       - name: finops:requests:rate_per_service_5m
         expr: |
           sum(rate(http_requests_total[5m])) by (job)
@@ -5326,6 +6159,463 @@ spec:
           ) / 1000
         interval: 5m
   dashboards:
+    - id: kx-ai-rca-reliability
+      provider:
+        kind: grafana
+        version: "1"
+        schemaVersion: 39
+      folder: krystalinex
+      source: file://k8s/charts/krystalinex/dashboards/ai-rca-reliability.json
+      params:
+        title: AI RCA Reliability & Queue Health
+        uid: kx-ai-rca-reliability
+        panel_count: 17
+        query_panel_count: 28
+        panels:
+          - panel: rca_failure_ratio
+            title: RCA Failure Ratio
+            expr: 100 * sum(rate(kx_llm_analysis_total{job=~"$service",status=~"failure|timeout"}[5m])) / clamp_min(sum(rate(kx_llm_analysis_total{job=~"$service"}[5m])), 0.000001)
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_analysis_total
+            binds_to: slis.genai_rca_analysis
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_total, keywords:analysis|failure|ratio|total
+          - panel: timeout_ratio
+            title: Timeout Ratio
+            expr: 100 * sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model",status="timeout"}[5m])) / clamp_min(sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model"}[5m])), 0.000001)
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operations_total
+            binds_to: slis.genai_client_operation
+            binding_confidence: inferred
+            binding_reason: shared metrics:gen_ai_client_operations_total, keywords:client|operation|ratio|operations
+          - panel: p95_analysis_duration
+            title: p95 Analysis Duration
+            expr: genai:rca_analysis_duration:p95_5m or histogram_quantile(0.95, sum(rate(kx_llm_analysis_duration_seconds_bucket{job=~"$service"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - genai:rca_analysis_duration:p95_5m
+              - kx_llm_analysis_duration_seconds_bucket
+            binds_to: slis.genai_rca_analysis_duration
+            binding_confidence: declared-inferred
+            binding_reason: recording rule name, shared metrics:kx_llm_analysis_duration_seconds_bucket, keywords:genai|analysis|duration|histogram
+          - panel: p99_generate_latency
+            title: p99 Generate Latency
+            expr: max(genai:client_operation_duration:p99_5m{job=~"$service",model=~"$model"}) or max(histogram_quantile(0.99, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le, provider, model, operation)))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_duration_seconds_bucket
+              - genai:client_operation_duration:p99_5m
+            binds_to: slis.genai_client_operation_duration
+            binding_confidence: declared-inferred
+            binding_reason: recording rule name, shared metrics:gen_ai_client_operation_duration_seconds_bucket, keywords:genai|client|operation|duration
+          - panel: current_queue_depth
+            title: Current Queue Depth
+            expr: max(kx_llm_queue_depth{job=~"$service"})
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_queue_depth
+          - panel: dropped_events_rate
+            title: Dropped Events Rate
+            expr: sum(rate(kx_llm_dropped_events_total{job=~"$service"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_dropped_events_total
+          - panel: rca_failure_ratio_over_time
+            title: RCA Failure Ratio Over Time
+            expr: 100 * sum(rate(kx_llm_analysis_total{job=~"$service",status=~"failure|timeout"}[5m])) / clamp_min(sum(rate(kx_llm_analysis_total{job=~"$service"}[5m])), 0.000001)
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_analysis_total
+            binds_to: slis.genai_rca_analysis
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_total, keywords:analysis|failure|ratio|total
+          - panel: analysis_duration_quantiles
+            title: Analysis Duration Quantiles
+            expr: histogram_quantile(0.50, sum(rate(kx_llm_analysis_duration_seconds_bucket{job=~"$service"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_analysis_duration_seconds_bucket
+            binds_to: slis.genai_rca_analysis_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_duration_seconds_bucket, keywords:analysis|duration|histogram|seconds
+          - panel: analysis_duration_quantiles
+            title: Analysis Duration Quantiles
+            expr: histogram_quantile(0.95, sum(rate(kx_llm_analysis_duration_seconds_bucket{job=~"$service"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_analysis_duration_seconds_bucket
+            binds_to: slis.genai_rca_analysis_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_duration_seconds_bucket, keywords:analysis|duration|histogram|seconds
+          - panel: analysis_duration_quantiles
+            title: Analysis Duration Quantiles
+            expr: histogram_quantile(0.99, sum(rate(kx_llm_analysis_duration_seconds_bucket{job=~"$service"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_analysis_duration_seconds_bucket
+            binds_to: slis.genai_rca_analysis_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_duration_seconds_bucket, keywords:analysis|duration|histogram|seconds
+          - panel: timeouts_and_errors
+            title: Timeouts and Errors
+            expr: sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model",status="timeout"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operations_total
+            binds_to: slis.genai_client_operation
+            binding_confidence: inferred
+            binding_reason: shared metrics:gen_ai_client_operations_total, keywords:client|operation|error|ratio
+          - panel: timeouts_and_errors
+            title: Timeouts and Errors
+            expr: sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model",status="error"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operations_total
+            binds_to: slis.genai_client_operation
+            binding_confidence: inferred
+            binding_reason: shared metrics:gen_ai_client_operations_total, keywords:client|operation|error|ratio
+          - panel: timeouts_and_errors
+            title: Timeouts and Errors
+            expr: sum(rate(kx_llm_analysis_total{job=~"$service",status=~"failure|timeout"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_analysis_total
+            binds_to: slis.genai_rca_analysis
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_total, keywords:analysis|failure|total|status
+          - panel: queue_depth
+            title: Queue Depth
+            expr: kx_llm_queue_depth{job=~"$service"}
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_queue_depth
+          - panel: dropped_llm_analysis_events
+            title: Dropped LLM Analysis Events
+            expr: sum by (reason) (rate(kx_llm_dropped_events_total{job=~"$service"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_dropped_events_total
+          - panel: pipeline_saturation
+            title: Pipeline Saturation
+            expr: kx_llm_queue_depth{job=~"$service"}
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_queue_depth
+          - panel: pipeline_saturation
+            title: Pipeline Saturation
+            expr: 10 * sum(rate(kx_llm_dropped_events_total{job=~"$service"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_dropped_events_total
+          - panel: pipeline_saturation
+            title: Pipeline Saturation
+            expr: sum(rate(kx_llm_analysis_total{job=~"$service"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_analysis_total
+            binds_to: slis.genai_rca_analysis
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_total, keywords:analysis|ratio|total
+          - panel: time_to_first_chunk
+            title: Time to First Chunk
+            expr: histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_time_to_first_chunk_seconds_bucket
+          - panel: time_to_first_chunk
+            title: Time to First Chunk
+            expr: histogram_quantile(0.95, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_time_to_first_chunk_seconds_bucket
+          - panel: time_to_first_chunk
+            title: Time to First Chunk
+            expr: histogram_quantile(0.99, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_time_to_first_chunk_seconds_bucket
+          - panel: time_per_output_chunk
+            title: Time per Output Chunk
+            expr: histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_time_per_output_chunk_seconds_bucket
+          - panel: time_per_output_chunk
+            title: Time per Output Chunk
+            expr: histogram_quantile(0.95, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_time_per_output_chunk_seconds_bucket
+          - panel: time_per_output_chunk
+            title: Time per Output Chunk
+            expr: histogram_quantile(0.99, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_time_per_output_chunk_seconds_bucket
+          - panel: genai_operation_duration
+            title: GenAI Operation Duration
+            expr: histogram_quantile(0.50, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_duration_seconds_bucket
+            binds_to: slis.genai_client_operation_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:gen_ai_client_operation_duration_seconds_bucket, keywords:genai|client|operation|duration
+          - panel: genai_operation_duration
+            title: GenAI Operation Duration
+            expr: histogram_quantile(0.95, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_duration_seconds_bucket
+            binds_to: slis.genai_client_operation_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:gen_ai_client_operation_duration_seconds_bucket, keywords:genai|client|operation|duration
+          - panel: genai_operation_duration
+            title: GenAI Operation Duration
+            expr: histogram_quantile(0.99, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_duration_seconds_bucket
+            binds_to: slis.genai_client_operation_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:gen_ai_client_operation_duration_seconds_bucket, keywords:genai|client|operation|duration
+          - panel: current_alert_state
+            title: Current Alert State
+            expr: ALERTS{alertname=~"GenAi.*",alertstate="firing"}
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - ALERTS
+      panel_bindings:
+        - panel: RCA Failure Ratio
+          binds_to: slis.genai_rca_analysis
+        - panel: Timeout Ratio
+          binds_to: slis.genai_client_operation
+        - panel: p95 Analysis Duration
+          binds_to: slis.genai_rca_analysis_duration
+        - panel: p99 Generate Latency
+          binds_to: slis.genai_client_operation_duration
+        - panel: RCA Failure Ratio Over Time
+          binds_to: slis.genai_rca_analysis
+        - panel: Analysis Duration Quantiles
+          binds_to: slis.genai_rca_analysis_duration
+        - panel: Timeouts and Errors
+          binds_to: slis.genai_client_operation
+        - panel: Pipeline Saturation
+          binds_to: slis.genai_rca_analysis
+        - panel: GenAI Operation Duration
+          binds_to: slis.genai_client_operation_duration
+    - id: kx-genai-operations
+      provider:
+        kind: grafana
+        version: "1"
+        schemaVersion: 39
+      folder: krystalinex
+      source: file://k8s/charts/krystalinex/dashboards/genai-operations.json
+      params:
+        title: GenAI Operations Overview
+        uid: kx-genai-operations
+        panel_count: 12
+        query_panel_count: 17
+        panels:
+          - panel: genai_operations_6h
+            title: GenAI Operations (6h)
+            expr: sum(increase(gen_ai_client_operations_total[6h]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operations_total
+            binds_to: slis.genai_client_operation
+            binding_confidence: inferred
+            binding_reason: shared metrics:gen_ai_client_operations_total, keywords:genai|client|operation|ratio
+          - panel: rca_analyses_6h
+            title: RCA Analyses (6h)
+            expr: sum(increase(kx_llm_analysis_total[6h]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_analysis_total
+          - panel: rca_failure_ratio
+            title: RCA Failure Ratio
+            expr: sum(genai:rca_analysis:failure_ratio_5m) * 100
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - genai:rca_analysis:failure_ratio_5m
+            binds_to: slis.genai_rca_analysis
+            binding_confidence: declared-inferred
+            binding_reason: recording rule name, keywords:genai|analysis|failure|ratio
+          - panel: dropped_rca_events_1h
+            title: Dropped RCA Events (1h)
+            expr: sum(increase(kx_llm_dropped_events_total[1h]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_dropped_events_total
+          - panel: genai_client_latency
+            title: GenAI Client Latency
+            expr: genai:client_operation_duration:p95_5m
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - genai:client_operation_duration:p95_5m
+            binds_to: slis.genai_client_operation_duration
+            binding_confidence: declared-inferred
+            binding_reason: recording rule name, keywords:genai|client|operation|duration
+          - panel: genai_client_latency
+            title: GenAI Client Latency
+            expr: genai:client_operation_duration:p99_5m
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - genai:client_operation_duration:p99_5m
+            binds_to: slis.genai_client_operation_duration
+            binding_confidence: declared-inferred
+            binding_reason: recording rule name, keywords:genai|client|operation|duration
+          - panel: raw_genai_duration_p95_by_model
+            title: Raw GenAI Duration P95 by Model
+            expr: histogram_quantile(0.95, sum by (le, provider, model, operation) (rate(gen_ai_client_operation_duration_seconds_bucket[5m])))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_duration_seconds_bucket
+            binds_to: slis.genai_client_operation_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:gen_ai_client_operation_duration_seconds_bucket, keywords:genai|client|operation|duration
+          - panel: streaming_latency_p95
+            title: Streaming Latency P95
+            expr: histogram_quantile(0.95, sum by (le, provider, model, operation) (rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket[5m])))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_time_to_first_chunk_seconds_bucket
+          - panel: streaming_latency_p95
+            title: Streaming Latency P95
+            expr: histogram_quantile(0.95, sum by (le, provider, model, operation) (rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket[5m])))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_time_per_output_chunk_seconds_bucket
+          - panel: token_usage_rate
+            title: Token Usage Rate
+            expr: genai:client_token_usage:rate_1h
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - genai:client_token_usage:rate_1h
+            binds_to: slis.genai_client_token_usage
+            binding_confidence: declared-inferred
+            binding_reason: recording rule name, keywords:genai|client|token|usage
+          - panel: token_usage_rate
+            title: Token Usage Rate
+            expr: sum by (model, direction) (rate(gen_ai_client_token_usage_sum[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_token_usage_sum
+            binds_to: slis.genai_client_token_usage
+            binding_confidence: inferred
+            binding_reason: shared metrics:gen_ai_client_token_usage_sum, keywords:client|token|usage|model
+          - panel: operations_by_status
+            title: Operations by Status
+            expr: sum by (provider, model, operation, status) (rate(gen_ai_client_operations_total[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operations_total
+            binds_to: slis.genai_client_operation
+            binding_confidence: inferred
+            binding_reason: shared metrics:gen_ai_client_operations_total, keywords:client|operation|ratio|operations
+          - panel: rca_analysis_duration
+            title: RCA Analysis Duration
+            expr: genai:rca_analysis_duration:p95_5m
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - genai:rca_analysis_duration:p95_5m
+            binds_to: slis.genai_rca_analysis_duration
+            binding_confidence: declared-inferred
+            binding_reason: recording rule name, keywords:genai|analysis|duration
+          - panel: rca_analysis_duration
+            title: RCA Analysis Duration
+            expr: histogram_quantile(0.50, sum by (le) (rate(kx_llm_analysis_duration_seconds_bucket[5m])))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_analysis_duration_seconds_bucket
+            binds_to: slis.genai_rca_analysis_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_duration_seconds_bucket, keywords:analysis|duration|histogram|seconds
+          - panel: rca_use_case_volume
+            title: RCA Use Case Volume
+            expr: sum by (status, use_case) (rate(kx_llm_analysis_total[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_analysis_total
+            binds_to: slis.genai_rca_analysis
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_total, keywords:analysis|total|status|case
+          - panel: rca_queue_and_drops
+            title: RCA Queue and Drops
+            expr: kx_llm_queue_depth
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_queue_depth
+          - panel: rca_queue_and_drops
+            title: RCA Queue and Drops
+            expr: sum by (reason) (rate(kx_llm_dropped_events_total[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_dropped_events_total
+      panel_bindings:
+        - panel: GenAI Operations (6h)
+          binds_to: slis.genai_client_operation
+        - panel: RCA Failure Ratio
+          binds_to: slis.genai_rca_analysis
+        - panel: GenAI Client Latency
+          binds_to: slis.genai_client_operation_duration
+        - panel: Raw GenAI Duration P95 by Model
+          binds_to: slis.genai_client_operation_duration
+        - panel: Token Usage Rate
+          binds_to: slis.genai_client_token_usage
+        - panel: Operations by Status
+          binds_to: slis.genai_client_operation
+        - panel: RCA Analysis Duration
+          binds_to: slis.genai_rca_analysis_duration
+        - panel: RCA Use Case Volume
+          binds_to: slis.genai_rca_analysis
     - id: adz2hpb
       provider:
         kind: grafana
@@ -6272,6 +7562,131 @@ spec:
           binds_to: slis.finops_cpu
         - panel: Microservices (Container Name) Overall Memory Usage
           binds_to: slis.finops_memory
+    - id: kx-mcp-observability-trace-coverage
+      provider:
+        kind: grafana
+        version: "1"
+        schemaVersion: 39
+      folder: krystalinex
+      source: file://k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json
+      params:
+        title: MCP Observability & Trace Coverage
+        uid: kx-mcp-observability-trace-coverage
+        panel_count: 15
+        query_panel_count: 16
+        panels:
+          - panel: mcp_requests_sec
+            title: MCP Requests/sec
+            expr: sum(rate(mcp_backend_requests_total{job=~"$mcp_job"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_backend_requests_total
+          - panel: mcp_error_rate
+            title: MCP Error Rate
+            expr: 100 * sum(rate(mcp_backend_requests_total{job=~"$mcp_job",status="error"}[5m])) / clamp_min(sum(rate(mcp_backend_requests_total{job=~"$mcp_job"}[5m])), 0.000001)
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_backend_requests_total
+          - panel: mcp_metrics_coverage
+            title: MCP Metrics Coverage
+            expr: 100 * count(up{job=~"otel-mcp-server|mcp-public"} == 1) / 2
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - up
+          - panel: visible_mcp_services
+            title: Visible MCP Services
+            expr: count(up{job=~"otel-mcp-server|mcp-public"} == 1)
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - up
+          - panel: missing_trace_gap
+            title: Missing Trace Gap
+            expr: absent(mcp_server_operation_duration_seconds_count) or vector(0)
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_server_operation_duration_seconds_count
+          - panel: mcp_request_volume
+            title: MCP Request Volume
+            expr: sum by (job, status) (rate(mcp_backend_requests_total{job=~"$mcp_job"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_backend_requests_total
+          - panel: trace_coverage_by_service
+            title: Trace Coverage by Service
+            expr: 100 * up{job=~"otel-mcp-server|mcp-public|jaeger|otel-collector"}
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - up
+          - panel: trace_coverage_by_service
+            title: Trace Coverage by Service
+            expr: 0 * absent(mcp_server_operation_duration_seconds_count)
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_server_operation_duration_seconds_count
+          - panel: mcp_operation_latency
+            title: MCP Operation Latency
+            expr: histogram_quantile(0.50, sum(rate(mcp_backend_duration_seconds_bucket{job=~"$mcp_job"}[5m])) by (le, backend))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_backend_duration_seconds_bucket
+          - panel: mcp_operation_latency
+            title: MCP Operation Latency
+            expr: histogram_quantile(0.95, sum(rate(mcp_backend_duration_seconds_bucket{job=~"$mcp_job"}[5m])) by (le, backend))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_backend_duration_seconds_bucket
+          - panel: mcp_operation_latency
+            title: MCP Operation Latency
+            expr: histogram_quantile(0.99, sum(rate(mcp_backend_duration_seconds_bucket{job=~"$mcp_job"}[5m])) by (le, backend))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_backend_duration_seconds_bucket
+          - panel: backend_requests_and_sessions
+            title: Backend Requests and Sessions
+            expr: sum by (backend) (rate(mcp_backend_requests_total{job=~"$mcp_job"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_backend_requests_total
+          - panel: backend_requests_and_sessions
+            title: Backend Requests and Sessions
+            expr: mcp_active_sessions{job=~"$mcp_job"}
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_active_sessions
+          - panel: backend_requests_and_sessions
+            title: Backend Requests and Sessions
+            expr: sum by (result) (rate(mcp_auth_attempts_total{job=~"$mcp_job"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_auth_attempts_total
+          - panel: collector_pipeline_health
+            title: Collector / Pipeline Health
+            expr: 100 * up{job=~"otel-collector|otel-mcp-server|mcp-public|jaeger"}
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - up
+          - panel: collector_pipeline_health
+            title: Collector / Pipeline Health
+            expr: sum(rate(otelcol_exporter_send_failed_spans_total[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - otelcol_exporter_send_failed_spans_total
     - id: kx-predictive-finops
       provider:
         kind: grafana
@@ -6844,6 +8259,9 @@ spec:
             datasource: prometheus
             metrics:
               - kx_llm_analysis_total
+            binds_to: slis.genai_rca_analysis
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_total, keywords:analysis|total|status|case
           - panel: llm_analysis_duration
             title: LLM Analysis Duration
             expr: histogram_quantile(0.95, sum(rate(kx_llm_analysis_duration_seconds_bucket[5m])) by (le))
@@ -6851,6 +8269,9 @@ spec:
             datasource: prometheus
             metrics:
               - kx_llm_analysis_duration_seconds_bucket
+            binds_to: slis.genai_rca_analysis_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_duration_seconds_bucket, keywords:analysis|duration|histogram|seconds
           - panel: llm_analysis_duration
             title: LLM Analysis Duration
             expr: histogram_quantile(0.50, sum(rate(kx_llm_analysis_duration_seconds_bucket[5m])) by (le))
@@ -6858,6 +8279,9 @@ spec:
             datasource: prometheus
             metrics:
               - kx_llm_analysis_duration_seconds_bucket
+            binds_to: slis.genai_rca_analysis_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_duration_seconds_bucket, keywords:analysis|duration|histogram|seconds
           - panel: queue_depth_saturation
             title: Queue Depth (Saturation)
             expr: kx_llm_queue_depth
@@ -7068,6 +8492,10 @@ spec:
           binds_to: slis.slo_http_requests
         - panel: Client Errors (4xx)
           binds_to: slis.slo_http_requests
+        - panel: Analysis by Use Case
+          binds_to: slis.genai_rca_analysis
+        - panel: LLM Analysis Duration
+          binds_to: slis.genai_rca_analysis_duration
         - panel: Availability (99.9% SLO)
           binds_to: slis.slo_availability
         - panel: Latency SLO (95% < 500ms)
@@ -7103,6 +8531,46 @@ spec:
             factor: 6
             severity: SEV2
           - short: 15m
+            long: 6h
+            factor: 6
+            severity: SEV2
+      - slo: genai_client_operation_duration_99
+        windows:
+          - short: 5m
+            long: 1h
+            factor: 14
+            severity: SEV1
+          - short: 30m
+            long: 6h
+            factor: 6
+            severity: SEV2
+      - slo: genai_client_operation_99
+        windows:
+          - short: 5m
+            long: 1h
+            factor: 14
+            severity: SEV1
+          - short: 30m
+            long: 6h
+            factor: 6
+            severity: SEV2
+      - slo: genai_rca_analysis_99
+        windows:
+          - short: 5m
+            long: 1h
+            factor: 14
+            severity: SEV1
+          - short: 30m
+            long: 6h
+            factor: 6
+            severity: SEV2
+      - slo: genai_client_token_usage_99
+        windows:
+          - short: 5m
+            long: 1h
+            factor: 14
+            severity: SEV1
+          - short: 30m
             long: 6h
             factor: 6
             severity: SEV2
