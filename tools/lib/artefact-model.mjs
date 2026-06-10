@@ -25,6 +25,8 @@
 //
 // Pure ESM, no Node APIs — the studio imports this same file in the browser.
 
+import { canonicalizePromql } from './promql-canon.mjs';
+
 // ---------------------------------------------------------------------------
 // Normalisation primitives
 // ---------------------------------------------------------------------------
@@ -63,7 +65,12 @@ const EXPR_KEYS = new Set(['expr', 'query', 'promql', 'expression']);
 const SLI_EXPR_KEYS = new Set(['good', 'total', 'query']);
 
 function normalizeExpr(s) {
-  return String(s).replace(/\s+/g, ' ').trim();
+  // Whitespace collapse (the long-standing baseline) plus the ratified
+  // Workstream B orderings — selector matcher order, by/without label
+  // order — applied only when the expression parses cleanly. Parse
+  // failures fall back to the conservative comparison; see
+  // tools/lib/promql-canon.mjs for the contract and its fences.
+  return canonicalizePromql(s).text;
 }
 
 function stripRef(s) {
