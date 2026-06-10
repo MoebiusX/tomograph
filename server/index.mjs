@@ -28,7 +28,7 @@
 
 import express from 'express';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { resolve, dirname, extname } from 'node:path';
+import { resolve, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { parse as parseYaml, emit as emitYaml } from '../tools/lib/mini-yaml.mjs';
@@ -45,8 +45,11 @@ import {
   saveWorkspacePack, deleteWorkspacePack, touchWorkspacePack,
   loadWorkspacePacks, clearWorkspacePacks,
   appendDeployRecord, appendDeployVerify, readDeployRecords,
-  saveDeploySnapshot, readDeploySnapshot,
+  saveDeploySnapshot, readDeploySnapshot, workspaceInfo,
 } from './workspace.mjs';
+import {
+  listJourneys, loadJourneyDef, runJourney, readJourneyRuns, saveJourneyDef,
+} from '../tools/lib/journey.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -1001,6 +1004,114 @@ app.post('/api/deploys/:deployId/verify', (req, res) => {
     res.json({ ok: true, deployId });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ---------- saved journeys (VALUE_BACKLOG item 11, studio surface) ----------
+
+// GET /api/journeys — every saved journey with its definition summary and
+// last-run outcome, for the studio panel.
+app.get('/api/journeys', (req, res) => {
+  try {
+    const journeys = listJourneys().map(name => {
+      let def = null;
+      try { def = loadJourneyDef(name); } catch (_) {}
+      const lastRun = readJourneyRuns(name, { limit: 1 })[0] || null;
+      return {
+        name,
+        packA: def?.packA?.crawl ? `crawl: ${def.packA.crawl.path}` : (def?.packA?.file || null),
+        packB: def?.packB?.mcp ? `mcp: ${def.packB.mcp.url}` : (def?.packB?.file || null),
+        gate: def?.gate || {},
+        scope: { env: def?.env || null, service: def?.service || null, scopeMode: def?.scopeMode || null },
+        lastRun: lastRun && {
+          startedAt: lastRun.startedAt,
+          outcome: lastRun.outcome,
+          alignmentPct: lastRun.drift?.alignmentPct ?? null,
+          gradeScore: lastRun.grade?.score ?? null,
+          breaches: lastRun.gate?.breaches?.length ?? 0,
+        },
+      };
+    });
+    res.json({ journeys });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/journeys/:name/runs — run history newest first (the
+// drift-over-time series behind the panel's trend sparkline).
+app.get('/api/journeys/:name/runs', (req, res) => {
+  const limit = Math.max(1, Math.min(200, parseInt(req.query.limit, 10) || 30));
+  try {
+    res.json({ runs: readJourneyRuns(req.params.name, { limit }) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/journeys/:name/run — execute now. HTTP 200 even when the gate
+// fails: the run succeeded, the outcome is data. 404 for unknown names,
+// 502 when a pack source can't be resolved (live MCP down etc.).
+app.post('/api/journeys/:name/run', async (req, res) => {
+  let def;
+  try { def = loadJourneyDef(req.params.name); }
+  catch (e) { return res.status(404).json({ ok: false, error: e.message }); }
+  try {
+    const record = await runJourney(def);
+    res.json({ ok: true, record });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: redactCredentials(String(e.message)) });
+  }
+});
+
+// POST /api/journeys/capture — "save this comparison as a journey". The
+// server resolves the session's pack ids to durable sources: file-backed
+// packs keep their path; uploaded/crawled/drafted packs point at their
+// persisted workspace copy (10A); a Pack B that came from a live MCP draft
+// is saved as a live mcp: source via its mcp.url annotation, so re-runs
+// re-draft instead of comparing against a frozen snapshot.
+app.post('/api/journeys/capture', (req, res) => {
+  const b = req.body || {};
+  const name = typeof b.name === 'string' ? b.name.trim() : '';
+  if (!name) return res.status(400).json({ ok: false, error: 'name required' });
+  const metaA = findPackMeta(String(b.packAId || ''));
+  const metaB = findPackMeta(String(b.packBId || ''));
+  if (!metaA) return res.status(404).json({ ok: false, error: `unknown pack A: ${b.packAId}` });
+  if (!metaB) return res.status(404).json({ ok: false, error: `unknown pack B: ${b.packBId}` });
+
+  const sourceFor = (meta) => {
+    // Journey-relative paths resolve against the journeys/ dir, so the
+    // captured definition always stores absolute paths: catalog packs'
+    // repo-relative meta.path is absolutized, and uploaded packs point at
+    // their persisted workspace copy (10A).
+    if (meta.path) return { file: resolve(meta.path).replaceAll('\\', '/') };
+    return { file: join(workspaceInfo().packs, `${meta.id}.pack.yaml`).replaceAll('\\', '/') };
+  };
+  const packA = sourceFor(metaA);
+  let packB;
+  let bAnn = {};
+  try { bAnn = loadPackCanonical(metaB)?.metadata?.annotations || {}; } catch (_) {}
+  if (bAnn['mcp.url']) {
+    packB = { mcp: { url: bAnn['mcp.url'] } };
+  } else {
+    packB = sourceFor(metaB);
+  }
+
+  const def = {
+    packA, packB,
+    ...(b.env ? { env: String(b.env) } : {}),
+    ...(b.service ? { service: String(b.service) } : {}),
+    ...(b.scopeMode ? { scopeMode: String(b.scopeMode) } : {}),
+    gate: (b.gate && typeof b.gate === 'object') ? b.gate : { minAlignmentPct: 85 },
+  };
+  try {
+    const saved = saveJourneyDef(name, def, {
+      banner: [
+        `Captured from a studio session on ${new Date().toISOString()}.`,
+        `Pack A: ${metaA.label || metaA.id} · Pack B: ${metaB.label || metaB.id}`,
+        `Edit freely — e.g. swap a frozen pack file for a crawl: source,`,
+        `or add authEnv under packB.mcp for authenticated MCPs.`,
+      ],
+    });
+    res.json({ ok: true, name: saved.name });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
   }
 });
 
