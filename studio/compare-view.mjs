@@ -1005,7 +1005,7 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
 // outcome: what was adopted, what was skipped (with reasons), and the two
 // downloads — the additions fragment and the full updated pack — ready to
 // commit back to the service repo.
-async function runRetrofeed(btn, host) {
+async function runRetrofeed(btn, host, { keys, scopeMode } = {}) {
   btn.disabled = true;
   try {
     const r = await api(`/api/packs/${encodeURIComponent(state.selectedPackId)}/retrofeed`, {
@@ -1015,8 +1015,11 @@ async function runRetrofeed(btn, host) {
         packBId: state.compareBId,
         aEnv: state.selectedEnv || undefined,
         bEnv: state.compareBEnv || undefined,
-        scopeMode: activeDiffScopeMode(),
+        // Branch-scoped calls pass explicit keys — the keys ARE the scope,
+        // so the diff runs unscoped lest scope-mode park them out of reach.
+        scopeMode: scopeMode || activeDiffScopeMode(),
         service: state.selectedService || undefined,
+        keys: Array.isArray(keys) && keys.length ? keys : undefined,
       }),
     });
     const dl = (label, text, filename) => {
@@ -1455,6 +1458,57 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   return wrap;
 }
 
+// ---------- requirement-branch reconciliation (item 6) ----------
+
+// Branches rendered in the current chain block, keyed by a per-render ref.
+// The block is a static HTML string inside the grade view, so its buttons
+// resolve their branch through this index via one delegated listener.
+const chainBranchIndex = new Map();
+let chainActionsWired = false;
+
+// Families the retrofeed engine can re-declare (mirrors
+// tools/lib/retrofeed.mjs FAMILIES). Branch adopt buttons only count these
+// — offering panels/metrics would honestly skip, but offering nothing
+// adoptable at all is just noise.
+const ADOPTABLE_KINDS = new Set(['sli', 'slo', 'backend', 'recording_rule', 'derived_view', 'dashboard', 'alert_route', 'burn_rate']);
+const adoptableLiveOnly = (branch) =>
+  (branch.nodes || []).filter(n => n.status === 'live_only' && !n.virtual && ADOPTABLE_KINDS.has(n.kind));
+
+// Find a layered artefact by its positional id (SLO-03, QRY-07, DASH-01 …)
+// across every layer, including L4's keyed subgroups.
+function layeredArtefactById(pack, id) {
+  if (!id || !pack?.layers) return null;
+  for (const v of Object.values(pack.layers)) {
+    const arr = Array.isArray(v) ? v : Object.values(v || {}).flat();
+    const hit = arr.find(a => a?.id === id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function wireChainActions() {
+  if (chainActionsWired) return;
+  chainActionsWired = true;
+  document.addEventListener('click', (ev) => {
+    const deployBtn = ev.target.closest?.('.diag-chain-deploy');
+    const adoptBtn = ev.target.closest?.('.diag-chain-adopt');
+    if (!deployBtn && !adoptBtn) return;
+    const btn = deployBtn || adoptBtn;
+    const branch = chainBranchIndex.get(btn.dataset.branch);
+    if (!branch) return;
+    if (deployBtn) {
+      const declaredOnly = (branch.nodes || []).filter(n => n.status === 'declared_only' && !n.virtual);
+      const deployable = deploySelectionFromEntries(
+        declaredOnly.map(n => deploySurfaceForArtefact(layeredArtefactById(state.pack, n.aId))));
+      openDeployModal({ packId: state.selectedPackId, presetIdentities: deployable.identities });
+    } else {
+      const keys = adoptableLiveOnly(branch).map(n => n.key);
+      const host = btn.closest('.diag-chain-card')?.querySelector('.diag-chain-result');
+      if (host) runRetrofeed(btn, host, { keys, scopeMode: 'off' });
+    }
+  });
+}
+
 function renderDiagnosticTraceabilityGraph(graph) {
   const branches = Array.isArray(graph?.branches) ? graph.branches : [];
   const rollup = graph?.rollup;
@@ -1485,7 +1539,28 @@ function renderDiagnosticTraceabilityGraph(graph) {
       return `${node.kind}: ${node.label} · ${status}${fields}`;
     }).join(' · ') + (interesting.length > 5 ? ` · +${interesting.length - 5}` : '');
   };
-  const cards = branches.map((branch) => `
+  // Requirement-branch reconciliation (item 6): each chain card carries the
+  // two remediation arrows scoped to ITS OWN nodes — deploy the branch's
+  // declared-not-live artefacts, adopt its live-only ones. Buttons are
+  // data-driven (the chain block is a static HTML string) and resolved
+  // through chainBranchIndex by a delegated listener.
+  chainBranchIndex.clear();
+  const cards = branches.map((branch, bi) => {
+    const ref = `b${bi}`;
+    chainBranchIndex.set(ref, branch);
+    const liveOnly = adoptableLiveOnly(branch);
+    const declaredOnly = (branch.nodes || []).filter(n => n.status === 'declared_only' && !n.virtual);
+    const deployable = deploySelectionFromEntries(
+      declaredOnly.map(n => deploySurfaceForArtefact(layeredArtefactById(state.pack, n.aId))));
+    const actions = (deployable.identities.size || liveOnly.length) ? `
+      <div class="diag-chain-actions">
+        ${deployable.identities.size ? `<button type="button" class="ctrl-btn diag-chain-deploy" data-branch="${ref}"
+            title="Deploy this requirement's declared-not-live artefacts (${deployable.rows} row${deployable.rows === 1 ? '' : 's'})">⇪ deploy missing (${deployable.identities.size})</button>` : ''}
+        ${liveOnly.length ? `<button type="button" class="ctrl-btn diag-chain-adopt" data-branch="${ref}"
+            title="Adopt this requirement's live-only artefacts back into the declared pack">⤵ adopt live-only (${liveOnly.length})</button>` : ''}
+      </div>
+      <div class="drift-retrofeed-result diag-chain-result" hidden></div>` : '';
+    return `
     <article class="diag-chain-card diag-chain-${escapeHtml(branch.verdict)}">
       <div class="diag-chain-head">
         <span class="diag-chain-title">${escapeHtml(branch.title || branch.rootKey || 'requirement')}</span>
@@ -1497,8 +1572,11 @@ function renderDiagnosticTraceabilityGraph(graph) {
         <span>${escapeHtml(`${branch.counts?.aligned || 0} aligned`)}</span>
       </div>
       <div class="diag-chain-evidence">${escapeHtml(evidenceFor(branch))}</div>
+      ${actions}
     </article>
-  `).join('');
+  `;
+  }).join('');
+  wireChainActions();
   return `
     <section class="diag-section diag-chain-section">
       <header class="diag-section-head">

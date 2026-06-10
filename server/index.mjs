@@ -1038,8 +1038,13 @@ app.post('/api/packs/:id/retrofeed', (req, res) => {
     );
     let entries = Object.values(diff.layers || {}).flatMap(l => l.onlyInB || []);
     if (Array.isArray(b.keys) && b.keys.length) {
-      const want = new Set(b.keys.map(String));
-      entries = entries.filter(e => want.has(e.key));
+      // Suffix-tolerant: diff entries and traceability-branch nodes both use
+      // identity keys, but each applies its own `#NN` occurrence suffixing —
+      // match on the base identity so branch-scoped retrofeed always finds
+      // its entries.
+      const baseOf = (k) => String(k).replace(/#\d+$/, '');
+      const want = new Set(b.keys.map(baseOf));
+      entries = entries.filter(e => want.has(baseOf(e.key)));
     }
     const { adopted, skipped, updatedCanonical, fragment } =
       retrofeedShadowSignals(canonicalA, entries, { now: new Date().toISOString() });

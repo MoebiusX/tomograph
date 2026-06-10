@@ -597,6 +597,14 @@ try {
     body: JSON.stringify({ packBId: 'nope' }),
   });
   assert(rf404.status === 404, 'retrofeed with unknown pack B → 404');
+  // Branch-scoped keys arrive from the traceability graph, which applies
+  // its own #NN occurrence suffixing — matching must be suffix-tolerant.
+  const rfSuffixed = await fetch(`${base}/api/packs/payment-service/retrofeed`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ packBId: 'production-curated', scopeMode: 'off', keys: [`${oneKey}#07`] }),
+  }).then(r => r.json());
+  assert(rfSuffixed.ok === true && rfSuffixed.summary.candidates === 1,
+         'keys[] matching tolerates #NN occurrence suffixes (traceability keyspace)', rfSuffixed.summary);
 
   // Deploy v2 — target product / version / scope wiring
   const matrix = await getJson(base, '/api/deploy/matrix');

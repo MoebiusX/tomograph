@@ -6131,6 +6131,11 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
 }
 .deploy-hist-verify { color: var(--ink-3); margin-left: 6px; }
 
+/* Requirement-branch reconciliation actions on chain cards (item 6). */
+.diag-chain-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.diag-chain-actions .ctrl-btn { font-size: 11px; padding: 3px 9px; }
+.diag-chain-result { margin-top: 8px; }
+
 /* Bidirectional remediation actions on the drift drill (item 4). */
 .drift-actions {
   display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
