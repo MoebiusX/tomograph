@@ -55,6 +55,27 @@ Every commit must:
    (render the affected view, exercise the interaction, check the console);
 4. carry a `Co-Authored-By` trailer when an agent wrote it.
 
+## The end-of-turn bar (handover contract)
+
+The maintainer tests immediately after every agent cycle. A turn is not
+finished until the app is **proven working and the tree is clean** — a
+broken handover wastes the next person's session. Before ending a turn:
+
+1. **Full suite green** (`npm run lint` 0 errors + `npm test`), run as the
+   LAST thing — not before the final edit.
+2. **The app demonstrably works**: boot it and exercise the flows the turn
+   touched (and the main journey if engine semantics changed). "The tests
+   pass" is not "the app works".
+3. **Output-semantics changes carry an output-space proof**: anything that
+   alters what the crawler/adapter/diff/grade *produce* runs the golden
+   gate (`npm run test:golden`) and, for intended changes, updates the
+   golden in the same commit so its diff documents exactly what moved.
+4. **Working tree clean**: everything committed and pushed, or any
+   intentionally-unfinished work named explicitly in the handover note.
+   No untracked half-built files, no stray dev servers or ports held.
+5. **Docs updated in the same turn** when a contract changed (API, CLI
+   flags, env vars, this file).
+
 ## Multi-writer rules
 
 Several writers (maintainer, lead agent, task agents) share this repo:
