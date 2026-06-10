@@ -41,6 +41,10 @@ import { diffPacks } from '../tools/lib/diff.mjs';
 import { comparePackBranches } from '../tools/lib/traceability-graph.mjs';
 import { compile, listTargets, compileCatalog, compileArtifact } from '../tools/lib/compile.mjs';
 import { makeZip } from '../tools/lib/zip.mjs';
+import {
+  saveWorkspacePack, deleteWorkspacePack, touchWorkspacePack,
+  loadWorkspacePacks, clearWorkspacePacks,
+} from './workspace.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -142,11 +146,12 @@ function loadPackFile(relPath) {
 // server can't refer back to.
 //
 // Capped at MAX_UPLOADS to bound memory; oldest entry evicted on overflow.
-// Process-scoped — restart clears the map. Persistence on the client side
-// gracefully drops unknown ids on rehydrate (rehydrateFromPersistence
-// validates against catalog ∪ examples ∪ uploads).
+// Backed by the .tomograph/ workspace (server/workspace.mjs): every
+// registration writes through to disk and start() rehydrates the map, so
+// crawled / drafted / uploaded packs survive restarts. Eviction at the cap
+// prunes both the map and the disk copy (retention by least-recently-used).
 const UPLOADED_PACKS = new Map();   // id → { canonical, source, createdAt }
-const MAX_UPLOADS = 20;
+const MAX_UPLOADS = 200;
 
 function slugify(s) {
   return String(s || 'pack')
@@ -182,14 +187,20 @@ function registerUploadedPack(canonical, source, label) {
   // accumulating clones in the picker.
   if (label) {
     for (const [otherId, rec] of [...UPLOADED_PACKS.entries()]) {
-      if (rec.label === label && otherId !== id) UPLOADED_PACKS.delete(otherId);
+      if (rec.label === label && otherId !== id) {
+        UPLOADED_PACKS.delete(otherId);
+        deleteWorkspacePack(otherId);
+      }
     }
   }
-  UPLOADED_PACKS.set(id, { canonical, source: source || 'upload', label, createdAt: Date.now() });
-  // Evict the oldest if we've blown the cap.
+  const rec = { canonical, source: source || 'upload', label, createdAt: Date.now() };
+  UPLOADED_PACKS.set(id, rec);
+  saveWorkspacePack(id, rec);
+  // Evict the oldest if we've blown the cap — disk copy goes with it.
   while (UPLOADED_PACKS.size > MAX_UPLOADS) {
     const oldestKey = UPLOADED_PACKS.keys().next().value;
     UPLOADED_PACKS.delete(oldestKey);
+    deleteWorkspacePack(oldestKey);
   }
   return id;
 }
@@ -197,6 +208,7 @@ function registerUploadedPack(canonical, source, label) {
 function uploadedMeta(id) {
   const upl = UPLOADED_PACKS.get(id);
   if (!upl) return null;
+  touchWorkspacePack(id);   // keeps lastUsedAt-based retention honest (debounced)
   return {
     id,
     path: null,        // signal: not file-backed
@@ -390,6 +402,7 @@ app.get('/healthz', (req, res) => {
 app.delete('/api/uploads', (req, res) => {
   const dropped = UPLOADED_PACKS.size;
   UPLOADED_PACKS.clear();
+  clearWorkspacePacks();   // reset means reset — the disk copies go too
   res.json({ ok: true, dropped });
 });
 
@@ -1736,7 +1749,29 @@ const PORT = Number(process.env.PORT || 8000);
 const HOST = process.env.HOST || '0.0.0.0';
 
 export { app };
+// Rehydrate the upload registry from the .tomograph/ workspace. Runs once
+// per process, inside start() (not at module load) so tests can point
+// TOMOGRAPH_WORKSPACE at a temp dir before booting. Entries arrive oldest
+// lastUsedAt first, preserving the map's LRU insertion order.
+let workspaceRehydrated = false;
+function rehydrateUploadsFromWorkspace(silent) {
+  if (workspaceRehydrated) return;
+  workspaceRehydrated = true;
+  let restored = 0;
+  try {
+    for (const p of loadWorkspacePacks()) {
+      if (UPLOADED_PACKS.has(p.id)) continue;
+      UPLOADED_PACKS.set(p.id, { canonical: p.canonical, source: p.source, label: p.label, createdAt: p.createdAt });
+      restored++;
+    }
+  } catch (e) {
+    process.stderr.write(`[workspace] rehydrate failed: ${e.message}\n`);
+  }
+  if (restored && !silent) process.stdout.write(`[studio] restored ${restored} pack${restored === 1 ? '' : 's'} from workspace\n`);
+}
+
 export function start({ port = PORT, host = HOST, silent = false } = {}) {
+  rehydrateUploadsFromWorkspace(silent);
   return new Promise((resolveListen, reject) => {
     const srv = app.listen(port, host, () => {
       // When bind fails the listening callback can still fire with the

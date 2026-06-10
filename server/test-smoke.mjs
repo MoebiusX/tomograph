@@ -6,6 +6,17 @@
  * route, asserts response shape, then kills the server. Exit 0 = pass.
  */
 
+import { mkdtempSync, rmSync, readdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
+// Redirect the pack workspace to a temp dir BEFORE the server boots, so
+// smoke-test registrations never pollute the repo's .tomograph/. Workspace
+// resolution is lazy (read at start(), not at import), which is what makes
+// this ordering work despite the hoisted import below.
+const SMOKE_WORKSPACE = mkdtempSync(join(tmpdir(), 'tomograph-smoke-ws-'));
+process.env.TOMOGRAPH_WORKSPACE = SMOKE_WORKSPACE;
+
 import { start } from './index.mjs';
 import { createServer } from 'node:http';
 
@@ -559,6 +570,22 @@ try {
   assert(validateRes.adapted?.meta?.apiVersion === 'observability.platform/v1', 'validate response includes adapted layered pack');
   assert(typeof validateRes.conformance?.scorePercent === 'number', 'validate response includes conformance report');
 
+  // Workspace persistence (10A): registering a pack writes it through to
+  // the .tomograph/ workspace as an inspectable YAML file + index entry.
+  const registeredId = validateRes.registered?.id;
+  assert(typeof registeredId === 'string' && registeredId.length > 0, 'validate returns a registered pack id');
+  const wsPackFile = join(SMOKE_WORKSPACE, 'packs', `${registeredId}.pack.yaml`);
+  assert(existsSync(wsPackFile), 'registered pack is persisted to the workspace', wsPackFile, 'exists');
+  assert(existsSync(join(SMOKE_WORKSPACE, 'packs', 'index.json')), 'workspace index.json exists after registration');
+
+  // DELETE /api/uploads clears the disk copies too — reset means reset.
+  const cleared = await fetch(`${base}/api/uploads`, { method: 'DELETE' }).then(r => r.json());
+  assert(cleared.ok === true, 'DELETE /api/uploads responds ok');
+  const wsLeft = existsSync(join(SMOKE_WORKSPACE, 'packs'))
+    ? readdirSync(join(SMOKE_WORKSPACE, 'packs')).filter(f => f.endsWith('.pack.yaml')).length
+    : 0;
+  assert(wsLeft === 0, 'DELETE /api/uploads clears persisted workspace packs', wsLeft, 0);
+
   // POST /api/validate — pre-1.2 should fail gatekeeper
   const bad = await fetch(`${base}/api/validate`, {
     method: 'POST',
@@ -710,6 +737,7 @@ try {
   }
 } finally {
   await new Promise(r => srv.close(r));
+  rmSync(SMOKE_WORKSPACE, { recursive: true, force: true });
 }
 
 if (failures.length) {
