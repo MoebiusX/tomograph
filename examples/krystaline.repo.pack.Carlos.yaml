@@ -1,9 +1,9 @@
 # =============================================================================
 # ObservabilityPack: krystaline  (drafted by the crawler)
-# Discovered at 2026-06-10T08:22:35.728Z
-# Files scanned: 464, classified: 106
+# Discovered at 2026-06-10T10:24:39.842Z
+# Files scanned: 484, classified: 106
 # Tier inferred: tier-2
-# Warnings: 4 (see metadata.annotations + the summary report)
+# Warnings: 5 (see metadata.annotations + the summary report)
 # -----------------------------------------------------------------------------
 # This is a DRAFT. Review every section before deploying. Annotations marked
 # "REPLACE WITH REAL QUERY" need a real PromQL expression that matches your
@@ -27,18 +27,20 @@ metadata:
   labels:
     source: crawler
   annotations:
-    crawler.discoveredAt: 2026-06-10T08:22:35.728Z
-    crawler.filesScanned: "464"
-    crawler.filesIncluded: "418"
-    crawler.filesExcludedByEnvironment: "46"
+    crawler.discoveredAt: 2026-06-10T10:24:39.842Z
+    crawler.filesScanned: "484"
+    crawler.filesIncluded: "421"
+    crawler.filesExcludedByEnvironment: "63"
     crawler.filesClassified: "106"
     crawler.environmentProfile: prod
     tomograph.diff.scopeMode: service
     crawler.tierInferred: tier-2
-    crawler.warningCount: "4"
+    crawler.warningCount: "5"
     crawler.syntheticRecordingRulesSkipped: "13"
     crawler.extendedSurfaces: "1"
     crawler.scaffoldCount: "3"
+    crawler.unresolvedChannelCount: "1"
+    crawler.unresolved.alerting: SEV2:${AUTO_REMEDIATION_WEBHOOK_URL} (k8s/charts/krystalinex/templates/configmap-alertmanager.yaml#alertmanager.yml)
     crawler.discovered.metric_names: |
       [
         "ALERTS",
@@ -7128,29 +7130,26 @@ spec:
     routes:
       - severity: SEV2
         channels:
-          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=helmvalue
+          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=${ALERTMANAGER_GOALERT_GENERAL_TOKEN}
       - severity: SEV2
         channels:
           - webhook: https://www.krystaline.io/
-      - severity: SEV2
-        channels:
-          - webhook: http://helmvalue-server:5000/api/v1/monitor/webhook/remediation
       - severity: SEV1
         channels:
           - email: carlos@krystaline.io
-          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=helmvalue
+          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=${ALERTMANAGER_GOALERT_CRITICAL_TOKEN}
       - severity: SEV1
         channels:
-          - webhook: https://ntfy.sh/krystalinex-alerts?priority=urgent&tags=rotating_light,critical&title=CRITICAL+Alert
+          - webhook: https://ntfy.sh/${NTFY_TOPIC}?priority=urgent&tags=rotating_light,critical&title=CRITICAL+Alert
       - severity: SEV2
         channels:
-          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=helmvalue
+          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=${ALERTMANAGER_GOALERT_GENERAL_TOKEN}
       - severity: SEV2
         channels:
-          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=helmvalue
+          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/prometheusalertmanager/incoming?token=${ALERTMANAGER_GOALERT_GENERAL_TOKEN}
       - severity: SEV2
         channels:
-          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/generic/incoming?token=helmvalue
+          - webhook: http://helmvalue-goalert:8081/goalert/api/v2/generic/incoming?token=${ALERTMANAGER_GOALERT_SECURITY_TOKEN}
   baselines:
     mttd_target_p50: 15m
     mttr_target_p50: 1d
@@ -7269,4 +7268,3 @@ spec:
       version:
         declared: "3.9"
         gating: "off"
-
