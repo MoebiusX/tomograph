@@ -6131,6 +6131,37 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
 }
 .deploy-hist-verify { color: var(--ink-3); margin-left: 6px; }
 
+/* Journeys view (item 11) — saved drift checks with trend sparklines. */
+.journeys-capture-bar { display: flex; gap: 10px; align-items: center; margin: 0 0 16px; }
+.journeys-capture-bar .layers-search-input { max-width: 320px; }
+.journey-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--card);
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+.journey-card-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.journey-name { font: 700 14px/1.2 var(--mono); color: var(--ink-1); }
+.journey-outcome { font: 12px/1.2 var(--mono); color: var(--ink-3); }
+.journey-outcome.is-pass { color: var(--ok, #16a34a); }
+.journey-outcome.is-fail { color: var(--err, #b91c1c); }
+.journey-spark { width: 120px; height: 28px; flex: none; }
+.journey-run-btn { margin-left: auto; }
+.journey-card-meta {
+  display: flex; gap: 18px; flex-wrap: wrap;
+  margin-top: 6px;
+  font: 11px/1.4 var(--mono);
+  color: var(--ink-4);
+}
+.journey-runs { margin-top: 10px; }
+.journey-runs-table { font: 11px/1.4 var(--mono); }
+.journey-result-pre {
+  margin: 8px 0 0; padding: 8px 10px;
+  background: var(--code-bg); border: 1px solid var(--line); border-radius: var(--r-md);
+  font: 11px/1.5 var(--mono); max-height: 200px; overflow: auto;
+}
+
 /* Post-deploy verification (item 9) — read-path confirmation phase. */
 .deploy-modal-verify {
   margin: 0 22px 12px;

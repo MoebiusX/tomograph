@@ -34,6 +34,7 @@ import { renderCompileView, loadDeployMatrix } from './compile-view.mjs';
 import { openDrawer, closeDrawer } from './drawer.mjs';
 import { renderDiscoverDashboard, renderLayersView, renderCard, cardKey } from './layers-view.mjs';
 import { renderAtlasView } from './atlas-view.mjs';
+import { renderJourneysView } from './journeys-view.mjs';
 import { renderBenchmarkView, renderComparePicker, renderTraceabilityView, refreshDiff, loadDiff, LENS_PRODUCTS, activeDiffScopeMode } from './compare-view.mjs';
 import { catalogToDeployManifest } from './artifact-model.mjs';
 import { computeDeployTransitions } from './verify-deploy.mjs';
@@ -82,7 +83,7 @@ async function rehydrateFromPersistence() {
   // Permitted views: the three workflow tabs + the Advanced deep tools.
   // Anything else (legacy 'benchmark', the removed 'compare-artefacts')
   // routes to the compliance report so we never strand the user.
-  const PERMITTED_VIEWS = new Set(['layers', 'compare', 'compile', 'conformance', 'schema', 'otlp', 'traceability', 'atlas', 'references']);
+  const PERMITTED_VIEWS = new Set(['layers', 'compare', 'compile', 'conformance', 'schema', 'otlp', 'traceability', 'atlas', 'references', 'journeys']);
   if (state.view && !PERMITTED_VIEWS.has(state.view)) {
     state.view = 'compare';
   }
@@ -712,6 +713,7 @@ export function renderMainView() {
     case 'schema':             renderSchemaView(view); return;
     case 'otlp':               renderOtlpView(view); return;
     case 'references':         renderReferencesView(view); return;
+    case 'journeys':           renderJourneysView(view); return;
     case 'layers':
     default:
       // Discover ("What Do We Have?") IS the real layer inventory —
@@ -1088,6 +1090,7 @@ const OBSERVA_ADV = [
   { id: 'otlp',         label: 'OTLP Coverage', sub: 'receiver protocols · per-signal exporters' },
   { id: 'traceability', label: 'Traceability', sub: 'repo vs live · declared / verified / stale' },
   { id: 'atlas',        label: 'Atlas',        sub: 'visual atlases · strata · periodic · skyline' },
+  { id: 'journeys',     label: 'Journeys',     sub: 'saved drift checks · run history · trends' },
 ];
 const OBSERVA_ADV_VIEWS = new Set(OBSERVA_ADV.map(a => a.id));
 

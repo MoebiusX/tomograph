@@ -6,8 +6,8 @@
  * route, asserts response shape, then kills the server. Exit 0 = pass.
  */
 
-import { mkdtempSync, rmSync, readdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, rmSync, readdirSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve as resolvePath } from 'node:path';
 import { tmpdir } from 'node:os';
 
 // Redirect the pack workspace to a temp dir BEFORE the server boots, so
@@ -516,6 +516,58 @@ try {
   assert(!!insecureSrv.address(), 'TOMOGRAPH_INSECURE_NO_AUTH=1 overrides knowingly (with a loud warning)');
   await new Promise(r => insecureSrv.close(r));
   delete process.env.TOMOGRAPH_INSECURE_NO_AUTH;
+
+  // --- saved journeys API (item 11, studio surface) ---
+  const PAY = resolvePath('vendor/observability-pack-spec/v1.2/examples/payment-service.pack.yaml');
+  const CUR = resolvePath('examples/production-curated.pack.yaml');
+  mkdirSync(join(SMOKE_WORKSPACE, 'journeys'), { recursive: true });
+  writeFileSync(join(SMOKE_WORKSPACE, 'journeys', 'smoke-journey.journey.yaml'), [
+    'name: smoke-journey',
+    `packA: { file: ${PAY.replaceAll('\\', '/')} }`,
+    `packB: { file: ${CUR.replaceAll('\\', '/')} }`,
+    'gate: { minAlignmentPct: 1 }',
+  ].join('\n'));
+  const jList = await getJson(base, '/api/journeys');
+  const jEntry = jList.journeys.find(j => j.name === 'smoke-journey');
+  assert(!!jEntry, 'GET /api/journeys lists the saved journey');
+  assert(jEntry.lastRun === null, 'never-run journey reports lastRun null');
+  assert(/payment-service/.test(jEntry.packA || ''), 'journey listing summarizes the pack A source');
+
+  const jRun = await fetch(`${base}/api/journeys/smoke-journey/run`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  }).then(r => r.json());
+  assert(jRun.ok === true && jRun.record?.journey === 'smoke-journey', 'POST /api/journeys/:name/run executes the journey');
+  assert(typeof jRun.record.drift?.alignmentPct === 'number', 'run record carries drift facts');
+  assert(jRun.record.outcome === 'pass', 'permissive gate passes', jRun.record.gate?.breaches, []);
+
+  const jRuns = await getJson(base, '/api/journeys/smoke-journey/runs?limit=5');
+  assert(jRuns.runs.length === 1 && jRuns.runs[0].startedAt === jRun.record.startedAt,
+         'GET /api/journeys/:name/runs returns the history');
+  const jList2 = await getJson(base, '/api/journeys');
+  assert(jList2.journeys.find(j => j.name === 'smoke-journey')?.lastRun?.outcome === 'pass',
+         'journey listing reflects the last run');
+
+  const jRun404 = await fetch(`${base}/api/journeys/never-saved/run`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert(jRun404.status === 404, 'running an unknown journey → 404');
+
+  // Capture: freeze a comparison of two known packs as a journey.
+  const cap = await fetch(`${base}/api/journeys/capture`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'captured-pair', packAId: 'payment-service', packBId: 'production-curated', env: 'prod' }),
+  }).then(r => r.json());
+  assert(cap.ok === true && cap.name === 'captured-pair', 'POST /api/journeys/capture saves a journey');
+  const capRun = await fetch(`${base}/api/journeys/captured-pair/run`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  }).then(r => r.json());
+  assert(capRun.ok === true && capRun.record?.scope?.env === 'prod',
+         'captured journey runs end-to-end with its captured scope');
+  const capBad = await fetch(`${base}/api/journeys/capture`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'x', packAId: 'does-not-exist', packBId: 'production-curated' }),
+  });
+  assert(capBad.status === 404, 'capture with an unknown pack → 404');
 
   // Deploy v2 — target product / version / scope wiring
   const matrix = await getJson(base, '/api/deploy/matrix');

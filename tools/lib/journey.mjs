@@ -35,7 +35,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parse as parseYaml } from './mini-yaml.mjs';
+import { parse as parseYaml, emit as emitYaml } from './mini-yaml.mjs';
 import { validateCanonical } from './validator.mjs';
 import { adapt } from './adapter.mjs';
 import { evaluateConformance } from './conformance.mjs';
@@ -58,6 +58,20 @@ export function listJourneys() {
       .filter(f => f.endsWith('.journey.yaml'))
       .map(f => f.slice(0, -'.journey.yaml'.length));
   } catch (_) { return []; }
+}
+
+// Persist a journey definition into the workspace. Used by the studio's
+// "save this comparison as a journey" capture; the file is plain YAML the
+// user can edit (e.g. swap a frozen pack file for a crawl: source).
+export function saveJourneyDef(name, def, { banner } = {}) {
+  const safe = sanitizeName(name);
+  if (!safe) throw new Error('journey name required');
+  if (!def?.packA || !def?.packB) throw new Error('journey def needs packA and packB');
+  mkdirSync(journeysDir(), { recursive: true });
+  const path = join(journeysDir(), `${safe}.journey.yaml`);
+  const head = (banner || []).map(l => `# ${l}`).join('\n');
+  writeFileSync(path, (head ? head + '\n' : '') + emitYaml({ name: safe, ...def }));
+  return { name: safe, path };
 }
 
 // Resolve a journey by name (workspace journeys/) or by literal file path.
