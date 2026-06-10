@@ -190,6 +190,29 @@ export function instrumentGradeFor(scorePctExact) {
   return INSTRUMENT_GRADE_SCALE[INSTRUMENT_GRADE_SCALE.length - 1];
 }
 
+// Partial-live-evidence detector. A live MCP draft can be built even when
+// some probes fail outright (e.g. the endpoint 503s mid-fetch during a
+// deploy) — the fetcher records that honestly in mcp.probesFailed, but a
+// thin Pack B silently inflates "declared, not live" into garbage drift.
+// Pure so it's unit-testable; the drift drill renders a loud banner from it.
+export function partialLiveEvidence(packB) {
+  const ann = packB?.meta?.annotations || packB?.metadata?.annotations || {};
+  const list = (k) => String(ann[k] || '').split(',').map(s => s.trim()).filter(Boolean);
+  const failed = list('mcp.probesFailed');
+  const empty = list('mcp.probesEmpty');
+  const attempted = list('mcp.probesAttempted');
+  const isLiveDraft = !!ann['mcp.url'];
+  return {
+    isLiveDraft,
+    failed,
+    empty,
+    attempted,
+    // Only outright failures make the evidence PARTIAL — an empty probe is
+    // an honest zero, a failed probe is a hole of unknown size.
+    partial: isLiveDraft && failed.length > 0,
+  };
+}
+
 export function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff, opts = {}) {
   const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
   const ann = packA?.meta?.annotations || packA?.metadata?.annotations || {};
