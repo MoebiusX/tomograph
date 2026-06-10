@@ -314,6 +314,6 @@ To get the loop going without front-loading curation work:
 
 ## See also
 
-- [`docs/USER_JOURNEY.md`](USER_JOURNEY.md) — north-star flow the catalogue plugs into
-- [`docs/ADAPTER.md`](ADAPTER.md) — how canonical packs project to layered display
-- [`docs/CONFORMANCE.md`](CONFORMANCE.md) — the rubric every catalogue pack is scored against
+- [`docs/USER_JOURNEY.md`](../USER_JOURNEY.md) — north-star flow the catalogue plugs into
+- [`docs/ADAPTER.md`](../ADAPTER.md) — how canonical packs project to layered display
+- [`docs/CONFORMANCE.md`](../CONFORMANCE.md) — the rubric every catalogue pack is scored against

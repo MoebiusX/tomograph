@@ -15,11 +15,16 @@ import { LENS_PRODUCTS } from './compare-view.mjs';
 
 export function renderReferencesView(view) {
   const refs = state._referencesCache || [];
-  // Cache may not be warm yet (boot race / failed fetch) — kick a load
-  // and re-render when it lands.
-  if (!refs.length) {
-    loadAndCacheReferences().then(list => {
-      if (list?.length && state.view === 'references') renderMainView();
+  const loadFailed = !!state._referencesError;
+  const loading = !!state._referencesPromise;
+  // Cache may not be warm yet (boot race) — kick a load and re-render when
+  // it settles, success OR failure, so a failed fetch shows its error state
+  // instead of sitting behind "Loading…" forever. Neither a standing error
+  // nor a settled-empty catalogue is auto-retried (that would refetch on
+  // every render); the user retries explicitly via the button below.
+  if (!refs.length && !loadFailed && !loading && !state._referencesLoaded) {
+    loadAndCacheReferences().then(() => {
+      if (state.view === 'references') renderMainView();
     });
   }
 
@@ -66,13 +71,35 @@ export function renderReferencesView(view) {
       ${hasPackA ? '' : '<p class="refs-note">Load a pack in <strong>Discover</strong> first to enable benchmarking.</p>'}
     </div>
     <div class="refs-grid">
-      ${cards || '<div class="refs-empty">Loading reference packs…</div>'}
+      ${cards || referencesEmptyState()}
     </div>
   `;
 
   section.querySelectorAll('.refs-bench-btn').forEach(b => {
     b.addEventListener('click', () => runBenchmark(b.dataset.product, b.dataset.refPack));
   });
+  section.querySelector('.refs-retry-btn')?.addEventListener('click', () => {
+    state._referencesError = null;
+    state._referencesLoaded = false;
+    renderMainView(); // empty cache + cleared error → render kicks a fresh load
+  });
 
   view.appendChild(section);
+}
+
+// The three no-cards states, read from live state (the load kick above runs
+// before the grid renders, so _referencesPromise is already set on a first
+// paint): failed load (explicit retry — never auto-looped), in-flight load,
+// and a genuinely empty catalogue.
+function referencesEmptyState() {
+  if (state._referencesError) {
+    return `
+      <div class="refs-empty refs-error">
+        <p>Couldn't load the reference catalogue: ${escapeHtml(state._referencesError)}</p>
+        <button type="button" class="ctrl-btn refs-retry-btn">Retry</button>
+      </div>
+    `;
+  }
+  if (state._referencesPromise) return '<div class="refs-empty">Loading reference packs…</div>';
+  return '<div class="refs-empty">No reference packs are available on this server.</div>';
 }

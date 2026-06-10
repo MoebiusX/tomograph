@@ -191,7 +191,7 @@ this feature to the arbor view the user already values.
 
 ## See also
 
-- [`docs/USER_JOURNEY.md`](USER_JOURNEY.md) — north-star flow
+- [`docs/USER_JOURNEY.md`](../USER_JOURNEY.md) — north-star flow
 - [`docs/REFERENCE_CATALOGUE_PLAN.md`](REFERENCE_CATALOGUE_PLAN.md) — the
   catalogue is the long-term source of reference packs the user benchmarks
   against; once the bucket view is renamed to "Drift", "Traceability"

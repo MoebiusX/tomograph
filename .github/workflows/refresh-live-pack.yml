@@ -57,3 +57,6 @@ jobs:
           name: production-live-pack
           path: .tmp-production-live.pack.yaml
           if-no-files-found: error
+          # The output is dot-prefixed (matches the repo's .tmp-* scratch
+          # convention); v4 skips hidden files unless told otherwise.
+          include-hidden-files: true

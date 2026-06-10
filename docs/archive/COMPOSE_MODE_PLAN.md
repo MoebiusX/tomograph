@@ -304,4 +304,4 @@ shape valid as you go."*
 
 - [`docs/REFERENCE_CATALOGUE_PLAN.md`](REFERENCE_CATALOGUE_PLAN.md) — the catalogue Compose mode draws from
 - [`docs/CATALOGUE_SEED_SPRINT.md`](CATALOGUE_SEED_SPRINT.md) — the first 5 packs that seed the library
-- [`docs/USER_JOURNEY.md`](USER_JOURNEY.md) — Compose mode is a new entry point into the journey, sitting between Introspect and Validate
+- [`docs/USER_JOURNEY.md`](../USER_JOURNEY.md) — Compose mode is a new entry point into the journey, sitting between Introspect and Validate
