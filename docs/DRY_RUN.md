@@ -147,11 +147,14 @@ Expected current shape:
 
 ```text
 DIAGNOSTIC GRADE PASS
-Score    88% 7.04/8
-Coverage 100% 5/5
+Score    86% 6.04/7
+Coverage 100% 4/4
 Trust    68% 2.04/3
 Verified YES live signal present
 ```
+
+(Grade schema 2: seven scored criteria; the Actionable check renders
+separately under 2C Operability as informational.)
 
 The exact live snapshot may change. The interpretation remains:
 
