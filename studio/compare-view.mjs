@@ -28,6 +28,7 @@ import {
   INSTRUMENT_GRADE_SCALE,
   instrumentGradeFor,
   isScaffoldDiffEntry,
+  partialLiveEvidence,
 } from './diagnostic-grade.mjs';
 
 // ---------- compare view ----------
@@ -927,11 +928,24 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
     ? ` <span class="drift-lens-note">· lens: ${escapeHtml(LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens)}</span>`
     : '';
 
+  // A thin live draft (some probes 503'd) silently inflates declared-not-
+  // live into garbage. Say so LOUDLY before anyone reads the numbers.
+  const liveEvidence = partialLiveEvidence(packB);
+  const partialBanner = liveEvidence.partial ? `
+    <div class="drift-partial-banner">
+      <span class="drift-partial-key">⚠ PARTIAL LIVE EVIDENCE</span>
+      ${liveEvidence.failed.length} of ${liveEvidence.attempted.length} probe${liveEvidence.failed.length === 1 ? '' : 's'} failed during the live draft
+      (<code>${escapeHtml(liveEvidence.failed.join(', '))}</code>) — the live endpoint was likely mid-deploy or overloaded.
+      Pack B may be missing whole surfaces, so <strong>"${escapeHtml(frame.aLabel)}" is probably overstated</strong>.
+      Redraft from MCP before acting on this drift.
+    </div>` : '';
+
   wrap.innerHTML = `
     <div class="benchmark-block-head">
       <span class="benchmark-block-eyebrow">${frame.eyebrow}</span>
       ${frame.lede}${lensNote}
     </div>
+    ${partialBanner}
     <div class="drift-charts">
       <figure class="drift-chart">
         ${donut([{ value: totAligned, color: C_ALIGNED }, { value: weighted.totalBadness, color: 'var(--ink-4)' }], weighted.healthPct + '%')}

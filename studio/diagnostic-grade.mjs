@@ -145,49 +145,27 @@ export function diagnosticAuditStatus(passed, total) {
   };
 }
 
-// ---------- instrument grade scale ----------
-//
-// The metrology-style rating users actually read — a raw percentage with a
-// PASS/FAIL stamp doesn't land. The anchor is fixed by contract: A
-// (Diagnostic / Clinical) begins strictly above the audit bar (>85%), so
-// the letter and the PASS verdict can never disagree. Bands below reuse
-// the verdict-word fractions (62.5 / 37.5); B+ marks the upper half of the
-// almost-band; A+ is reserved for near-perfect scores.
-//
-// HONESTY FENCE: A++ is rendered on the ladder but is NOT score-reachable
-// (minPct: null). "Calibrates other instruments" is a claim about external
-// reference evidence — benchmarking against other instruments — that the
-// seven verification criteria cannot attest. It stays visible (dimmed,
-// requirement stated) because curated reference packs play exactly that
-// role in-context. The metrology scale's S / Primary Standard rung was
-// deliberately dropped (maintainer call, 2026-06-10): national-standards-
-// lab framing has no pragmatic meaning for an observability instrument.
-// Ordered top (best) → bottom.
-export const INSTRUMENT_GRADE_SCALE = [
-  { letter: 'A++', tier: 'ref', label: 'Calibration / Reference Grade', minPct: null, range: '—',
-    blurb: 'Used to verify, calibrate, or benchmark other instruments. Very low uncertainty and strong traceability requirements.',
-    requires: 'external reference benchmarking — beyond this instrument’s evidence' },
-  { letter: 'A+',  tier: 'a',   label: 'Laboratory / Research Grade',   minPct: 95,   range: '≥ 95%',
-    blurb: 'Higher precision, stability, sensitivity, and documentation than clinical-grade tools; suited to controlled lab or research environments.' },
-  { letter: 'A',   tier: 'a',   label: 'Diagnostic / Clinical Grade',   minPct: DIAGNOSTIC_PASS_SCORE_THRESHOLD, exclusiveMin: true, range: '> 85%',
-    blurb: 'Fit for professional diagnostic, clinical, or decision-critical use.' },
-  { letter: 'B+',  tier: 'b',   label: 'Inspection Grade',              minPct: 75,   range: '≥ 75%',
-    blurb: 'Suitable for QA/QC, accept-reject decisions, and formal inspection workflows.' },
-  { letter: 'B',   tier: 'b',   label: 'Industrial Grade',              minPct: 62.5, range: '≥ 62.5%',
-    blurb: 'Suitable for production, maintenance, process control, and routine professional use.' },
-  { letter: 'C',   tier: 'c',   label: 'Field Grade',                   minPct: 37.5, range: '≥ 37.5%',
-    blurb: 'Portable, rugged, and practical for on-site measurement, but not the highest accuracy.' },
-  { letter: 'D',   tier: 'd',   label: 'Consumer Grade',                minPct: 0,    range: '< 37.5%',
-    blurb: 'Everyday use; useful for rough readings, trends, or casual decisions.' },
-];
-
-export function instrumentGradeFor(scorePctExact) {
-  const pct = Number.isFinite(scorePctExact) ? scorePctExact : 0;
-  for (const g of INSTRUMENT_GRADE_SCALE) {
-    if (g.minPct === null) continue;   // not score-reachable — see honesty fence above
-    if (g.exclusiveMin ? pct > g.minPct : pct >= g.minPct) return g;
-  }
-  return INSTRUMENT_GRADE_SCALE[INSTRUMENT_GRADE_SCALE.length - 1];
+// Partial-live-evidence detector. A live MCP draft can be built even when
+// some probes fail outright (e.g. the endpoint 503s mid-fetch during a
+// deploy) — the fetcher records that honestly in mcp.probesFailed, but a
+// thin Pack B silently inflates "declared, not live" into garbage drift.
+// Pure so it's unit-testable; the drift drill renders a loud banner from it.
+export function partialLiveEvidence(packB) {
+  const ann = packB?.meta?.annotations || packB?.metadata?.annotations || {};
+  const list = (k) => String(ann[k] || '').split(',').map(s => s.trim()).filter(Boolean);
+  const failed = list('mcp.probesFailed');
+  const empty = list('mcp.probesEmpty');
+  const attempted = list('mcp.probesAttempted');
+  const isLiveDraft = !!ann['mcp.url'];
+  return {
+    isLiveDraft,
+    failed,
+    empty,
+    attempted,
+    // Only outright failures make the evidence PARTIAL — an empty probe is
+    // an honest zero, a failed probe is a hole of unknown size.
+    partial: isLiveDraft && failed.length > 0,
+  };
 }
 
 export function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff, opts = {}) {

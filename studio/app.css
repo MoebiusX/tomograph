@@ -2280,6 +2280,28 @@ a:hover { color: var(--ink); }
   color: var(--ink-3);
 }
 
+/* Partial live evidence — a thin Pack B (failed MCP probes) makes every
+   drift number below suspect; this must be impossible to miss. */
+.drift-partial-banner {
+  margin: 0 0 14px;
+  max-width: 940px;
+  padding: 10px 14px;
+  border: 1.5px solid rgb(205, 92, 8);
+  border-left-width: 5px;
+  border-radius: var(--r-md);
+  background: rgba(205, 92, 8, 0.08);
+  font: 12.5px/1.5 var(--sans);
+  color: var(--ink-1);
+}
+.drift-partial-banner code { font: 11.5px var(--mono); color: rgb(205, 92, 8); }
+.drift-partial-key {
+  display: inline-block;
+  margin-right: 8px;
+  font: 800 11px/1 var(--mono);
+  letter-spacing: 0.1em;
+  color: rgb(205, 92, 8);
+}
+
 .drift-table {
   width: 100%;
   border-collapse: collapse;
