@@ -4,6 +4,8 @@ import {
   computeDiagnosticGrade,
   computeWeightedDeltaRisk,
   diagnosticAuditStatus,
+  INSTRUMENT_GRADE_SCALE,
+  instrumentGradeFor,
   partialLiveEvidence,
 } from '../studio/diagnostic-grade.mjs';
 
