@@ -26,6 +26,7 @@ const {
   loadWorkspacePacks, clearWorkspacePacks, flushWorkspaceIndex,
   resetWorkspaceCache, workspaceInfo,
   appendDeployRecord, appendDeployVerify, readDeployRecords,
+  saveDeploySnapshot, readDeploySnapshot,
 } = await import('./workspace.mjs');
 
 try {
@@ -134,6 +135,19 @@ try {
   // limit caps the result set (newest kept).
   recs = readDeployRecords({ limit: 1 });
   assert(recs.length === 1 && recs[0].deployId === 'dep_t2', 'limit keeps the newest record');
+
+  // --- pre-deploy snapshots (10D) ---
+  const snapMeta = { deployId: 'dep_snap1', at: '2026-06-10T03:00:00Z', folder: 'obs', status: 'captured',
+    items: [{ ref: 'payment-overview', kind: 'dashboard', preState: 'captured', file: 'dashboard-payment-overview', restore: 'redeploy' }] };
+  saveDeploySnapshot('dep_snap1', snapMeta, { 'dashboard-payment-overview': { dashboard: { uid: 'payment-overview', title: 'Pay' } } });
+  const snap = readDeploySnapshot('dep_snap1');
+  assert(snap?.meta?.status === 'captured', 'snapshot meta round-trips');
+  assert(snap.readFile('dashboard-payment-overview')?.dashboard?.title === 'Pay', 'snapshot file round-trips');
+  assert(snap.readFile('no-such-file') === null, 'missing snapshot file reads as null, never throws');
+  assert(readDeploySnapshot('dep_never-happened') === null, 'unknown deployId has no snapshot');
+  saveDeploySnapshot('../escape', { status: 'x' }, {});
+  assert(!existsSync(join(TMP, 'escape')) && existsSync(join(TMP, 'snapshots', 'escape', 'meta.json')),
+         'path-traversal snapshot ids are sanitized inside the workspace');
 
   // --- clear wipes packs but NEVER the audit log ---
   const dropped = clearWorkspacePacks();

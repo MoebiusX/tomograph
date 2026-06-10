@@ -45,6 +45,7 @@ import {
   saveWorkspacePack, deleteWorkspacePack, touchWorkspacePack,
   loadWorkspacePacks, clearWorkspacePacks,
   appendDeployRecord, appendDeployVerify, readDeployRecords,
+  saveDeploySnapshot, readDeploySnapshot,
 } from './workspace.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -900,6 +901,67 @@ function newDeployId() {
   return `dep_${ts}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
+// Pre-deploy snapshot capture (10D). Reads the live state of everything the
+// deploy is about to touch, through the SAME MCP session that will write:
+//   - dashboards: grafana_dashboard_get per uid — fully restorable later
+//     (restore = upsert the captured JSON back). A read error most likely
+//     means the dashboard doesn't exist yet (this deploy CREATES it), whose
+//     rollback is a delete — recorded honestly, never guessed.
+//   - rules: one grafana_alert_rules listing as evidence. Per-rule restore
+//     is not yet automated (the listing shape isn't contractual across
+//     backends), so rules roll back manually WITH receipts.
+// Snapshot problems never block the deploy unless strictSnapshot is on.
+async function captureDeploySnapshot({ deployId, callTool, availableTools, items, dryRun, folder, safeMcpUrl }) {
+  if (dryRun) return { status: 'skipped', itemCount: 0 };
+  const meta = { deployId, at: new Date().toISOString(), mcpUrl: safeMcpUrl, folder: folder || null, items: [] };
+  const files = {};
+  let captured = 0, problems = 0;
+
+  if (items.some(i => i.group === 'rules')) {
+    if (availableTools && availableTools.includes('grafana_alert_rules')) {
+      try {
+        files['alert-rules'] = await callTool('grafana_alert_rules', {});
+        meta.items.push({ ref: 'rules', kind: 'rules-listing', preState: 'captured', file: 'alert-rules', restore: 'manual' });
+        captured++;
+      } catch (e) {
+        meta.items.push({ ref: 'rules', kind: 'rules-listing', preState: 'error', error: redactCredentials(String(e.message)), restore: 'manual' });
+        problems++;
+      }
+    } else {
+      meta.items.push({ ref: 'rules', kind: 'rules-listing', preState: 'unavailable', restore: 'manual' });
+      problems++;
+    }
+  }
+
+  for (const item of items.filter(i => i.group === 'dashboards' && i.dashboardId)) {
+    const uid = String(item.dashboardId);
+    if (!(availableTools && availableTools.includes('grafana_dashboard_get'))) {
+      meta.items.push({ ref: uid, kind: 'dashboard', preState: 'unavailable', restore: 'manual' });
+      problems++;
+      continue;
+    }
+    try {
+      files[`dashboard-${uid}`] = await callTool('grafana_dashboard_get', { uid, include_json: true });
+      meta.items.push({ ref: uid, kind: 'dashboard', preState: 'captured', file: `dashboard-${uid}`, restore: 'redeploy' });
+      captured++;
+    } catch (e) {
+      // A create, not a capture failure: rollback of a create is a delete.
+      meta.items.push({ ref: uid, kind: 'dashboard', preState: 'absent', error: redactCredentials(String(e.message)), restore: 'delete' });
+    }
+  }
+
+  meta.status = meta.items.length === 0 ? 'empty'
+    : problems === 0 ? 'captured'
+    : captured > 0 ? 'partial'
+    : 'unavailable';
+  try { saveDeploySnapshot(deployId, meta, files); }
+  catch (e) {
+    meta.status = 'failed';
+    process.stderr.write(`[deploy-bulk]   snapshot write failed: ${e.message}\n`);
+  }
+  return { status: meta.status, itemCount: meta.items.length };
+}
+
 // GET /api/deploys — the audit trail (VALUE_BACKLOG 10C). Newest first;
 // ?pack=<id> filters, ?limit=N caps (default 50). Records include the
 // post-deploy verify outcome once item 9 writes it back.
@@ -940,6 +1002,131 @@ app.post('/api/deploys/:deployId/verify', (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
+});
+
+// GET /api/deploys/:deployId/rollback-plan — what a rollback WOULD do
+// (10D). No MCP contact: derived from the snapshot taken at deploy time.
+app.get('/api/deploys/:deployId/rollback-plan', (req, res) => {
+  const deployId = String(req.params.deployId || '');
+  if (!/^dep_[A-Za-z0-9_-]+$/.test(deployId)) return res.status(400).json({ ok: false, error: 'malformed deployId' });
+  const snap = readDeploySnapshot(deployId);
+  if (!snap) return res.json({ ok: true, deployId, canRollback: false, reason: 'no snapshot was taken for this deploy (dry run, or pre-10D record)', plan: [] });
+  const plan = (snap.meta.items || []).map(it => {
+    if (it.kind === 'dashboard' && it.preState === 'captured') {
+      return { ref: it.ref, kind: it.kind, action: 'restore', detail: 'upsert the captured pre-deploy dashboard JSON' };
+    }
+    if (it.kind === 'dashboard' && it.restore === 'delete') {
+      return { ref: it.ref, kind: it.kind, action: 'delete', detail: 'created by this deploy — removed via grafana_delete_dashboard when the MCP advertises it, manual otherwise' };
+    }
+    return { ref: it.ref, kind: it.kind, action: 'manual', detail: it.kind === 'rules-listing' ? 'pre-deploy rule listing saved as evidence; per-rule restore is not yet automated' : `pre-state ${it.preState}` };
+  });
+  res.json({ ok: true, deployId, canRollback: plan.some(p => p.action === 'restore'), snapshotStatus: snap.meta.status, plan });
+});
+
+// POST /api/deploys/:deployId/rollback — restore the pre-deploy snapshot
+// (10D). Updates restore by re-upserting captured state through the same
+// write tools; creates need delete tools the MCP doesn't expose yet and are
+// returned as manual steps with exact identities. The rollback is itself a
+// deploy-shaped act and lands in the audit log with `rollbackOf`.
+app.post('/api/deploys/:deployId/rollback', async (req, res) => {
+  const rollbackOf = String(req.params.deployId || '');
+  if (!/^dep_[A-Za-z0-9_-]+$/.test(rollbackOf)) return res.status(400).json({ ok: false, error: 'malformed deployId' });
+  const original = readDeployRecords({ limit: 0 }).find(d => d.deployId === rollbackOf);
+  if (!original) return res.status(404).json({ ok: false, error: `unknown deployId: ${rollbackOf}` });
+  const snap = readDeploySnapshot(rollbackOf);
+  if (!snap || !['captured', 'partial'].includes(snap.meta.status)) {
+    return res.status(409).json({ ok: false, error: `no usable snapshot for ${rollbackOf} (status: ${snap?.meta?.status || 'none'}) — nothing to restore from` });
+  }
+  const b = req.body || {};
+  const mcpUrl = typeof b.mcpUrl === 'string' ? b.mcpUrl.trim() : '';
+  if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
+  if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
+  const dryRun = b.dryRun === true || b.dry_run === true;
+
+  const t0 = Date.now();
+  const { rpc, callTool } = createMcpClient({ mcpUrl, mcpAuth: typeof b.mcpAuth === 'string' ? b.mcpAuth : null });
+  await rpc('initialize', {
+    protocolVersion: '2025-06-18',
+    capabilities: {},
+    clientInfo: { name: 'observabilitypack-studio-rollback', version: '0.3.0' },
+  }).catch(() => {});
+  const availableTools = await discoverMcpToolNames(rpc);
+
+  const results = [];
+  const manual = [];
+  for (const it of snap.meta.items || []) {
+    if (it.kind === 'dashboard' && it.preState === 'captured') {
+      const itStart = Date.now();
+      const raw = snap.readFile(it.file);
+      // Defensive unwrap: tools differ in whether they wrap the dashboard.
+      const dashboard = raw?.dashboard || raw?.json || raw;
+      if (!dashboard || typeof dashboard !== 'object') {
+        results.push({ ref: it.ref, action: 'restore', ok: false, error: 'snapshot file unreadable' });
+        continue;
+      }
+      try {
+        if (availableTools && !availableTools.includes(GRAFANA_DASHBOARD_TOOL)) throw new Error(`${GRAFANA_DASHBOARD_TOOL} not advertised by this MCP`);
+        const result = await callTool(GRAFANA_DASHBOARD_TOOL, {
+          dashboard,
+          folder_uid: snap.meta.folder || undefined,
+          message: `Tomograph rollback of ${rollbackOf}`,
+          mode: 'upsert',
+          dry_run: dryRun,
+        });
+        results.push({ ref: it.ref, action: 'restore', ok: true, tookMs: Date.now() - itStart, result });
+      } catch (e) {
+        results.push({ ref: it.ref, action: 'restore', ok: false, error: redactCredentials(String(e.message)), tookMs: Date.now() - itStart });
+      }
+    } else if (it.kind === 'dashboard' && it.restore === 'delete') {
+      if (availableTools && availableTools.includes('grafana_delete_dashboard')) {
+        const itStart = Date.now();
+        try {
+          const result = await callTool('grafana_delete_dashboard', { uid: it.ref, dry_run: dryRun });
+          results.push({ ref: it.ref, action: 'delete', ok: true, tookMs: Date.now() - itStart, result });
+        } catch (e) {
+          results.push({ ref: it.ref, action: 'delete', ok: false, error: redactCredentials(String(e.message)), tookMs: Date.now() - itStart });
+        }
+      } else {
+        manual.push({ ref: it.ref, kind: it.kind, why: 'created by the deploy; the MCP does not advertise grafana_delete_dashboard — remove it by hand' });
+      }
+    } else {
+      manual.push({ ref: it.ref, kind: it.kind, why: it.kind === 'rules-listing' ? 'per-rule restore is not yet automated — the pre-deploy listing is saved as evidence in the snapshot' : `pre-state ${it.preState}` });
+    }
+  }
+
+  const okCount = results.filter(r => r.ok).length;
+  const failCount = results.length - okCount;
+  const deployId = newDeployId();
+  try {
+    appendDeployRecord({
+      deployId,
+      at: new Date().toISOString(),
+      actor: actorForRequest(req),
+      rollbackOf,
+      pack: original.pack || null,
+      env: original.env || null,
+      mcpUrl: safeMcpUrl,
+      target: original.target || null,
+      mode: 'rollback',
+      dryRun,
+      items: results.map(r => ({ artifact: r.ref, group: r.action, ok: r.ok, tookMs: r.tookMs || 0, ...(r.error ? { error: r.error } : {}) })),
+      summary: { total: results.length, ok: okCount, failed: failCount },
+      tookMs: Date.now() - t0,
+    });
+  } catch (e) {
+    process.stderr.write(`[rollback]   audit append failed: ${e.message}\n`);
+  }
+  res.status(failCount > 0 && okCount === 0 && results.length > 0 ? 502 : 200).json({
+    ok: failCount === 0,
+    deployId,
+    rollbackOf,
+    dryRun,
+    results,
+    manual,
+    summary: { total: results.length, ok: okCount, failed: failCount, manual: manual.length },
+    tookMs: Date.now() - t0,
+  });
 });
 
 app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
@@ -983,17 +1170,38 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   const availableTools = await discoverMcpToolNames(rpc);
   const missingTools = new Set();
 
+  // Pre-deploy snapshot (10D): capture the live state of everything we are
+  // about to overwrite BEFORE the first write, so rollback always has a
+  // pre-state — or an honest record that the artefact didn't exist yet.
+  const deployId = newDeployId();
+  const strictSnapshot = body.strictSnapshot === true || process.env.TOMOGRAPH_STRICT_SNAPSHOT === '1';
+  const snapshot = await captureDeploySnapshot({ deployId, callTool, availableTools, items, dryRun, folder, safeMcpUrl });
+  if (strictSnapshot && !['captured', 'empty', 'skipped'].includes(snapshot.status)) {
+    return res.status(412).json({
+      ok: false, deployId,
+      error: `pre-deploy snapshot is '${snapshot.status}' and strict snapshot mode is on — refusing to deploy without a rollback point. ` +
+             `Fix the read path (grafana_dashboard_get / grafana_alert_rules) or retry without strictSnapshot.`,
+      snapshot: { status: snapshot.status, items: snapshot.itemCount },
+    });
+  }
+
   const results = [];
-  process.stderr.write(`[deploy-bulk] ${meta.id} -> ${safeMcpUrl} (${items.length} item${items.length === 1 ? '' : 's'}, ${product} ${version})\n`);
+  process.stderr.write(`[deploy-bulk] ${meta.id} -> ${safeMcpUrl} (${items.length} item${items.length === 1 ? '' : 's'}, ${product} ${version}, snapshot ${snapshot.status})\n`);
 
   for (const item of items) {
     const itStart = Date.now();
     const itemTarget = targetFor(item.group);
     try {
+      // The deploy modal's dashboard rows carry only dashboardId; the
+      // compiler addresses single dashboards as `dash:<id>` (bare 'all'
+      // would compile the comment-annotated multi-dashboard bundle, which
+      // is not deployable JSON).
+      const artifact = item.artifact
+        || (item.group === 'dashboards' && item.dashboardId ? `dash:${item.dashboardId}` : 'all');
       const compiled = compileArtifact(overlaid, {
         group: item.group,
         flavor: (product === 'grafana' && item.group === 'rules') ? 'grafana-managed' : item.flavor,
-        artifact: item.artifact || 'all',
+        artifact,
         dashboardId: item.dashboardId,
       });
       const scope = item.scope || (itemTarget === 'prometheus-rules' ? 'both' : undefined);
@@ -1048,7 +1256,6 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   const okCount = results.filter(r => r.ok).length;
   const failCount = results.length - okCount;
   process.stderr.write(`[deploy-bulk]   done in ${totalMs}ms: ${okCount} ok / ${failCount} failed\n`);
-  const deployId = newDeployId();
   try {
     appendDeployRecord({
       deployId,
@@ -1059,6 +1266,7 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
       mcpUrl: safeMcpUrl,
       target: { product, version, folder: folder || null },
       mode, dryRun,
+      snapshot: { status: snapshot.status, items: snapshot.itemCount },
       items: results.map(r => ({
         ...(r.item || {}),
         ok: !!r.ok,

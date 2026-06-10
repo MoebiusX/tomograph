@@ -2865,11 +2865,20 @@ async function loadDeployHistory(packId) {
       const verify = d.verify
         ? `<span class="deploy-hist-verify">verify: ${escapeHtml(d.verify.outcome || '?')}</span>`
         : '';
+      const what = d.rollbackOf
+        ? `↩ rollback of <code>${escapeHtml(d.rollbackOf)}</code>`
+        : `${escapeHtml(d.target?.product || '?')}@${escapeHtml(d.target?.version || '?')}${d.dryRun ? ' · dry-run' : ''}`;
+      // A rollback point exists when the pre-deploy snapshot captured state.
+      const canRollback = !d.rollbackOf && !d.dryRun
+        && ['captured', 'partial'].includes(d.snapshot?.status);
+      const rbBtn = canRollback
+        ? `<button type="button" class="ctrl-btn deploy-hist-rollback" data-deploy-id="${escapeHtml(d.deployId)}" title="Restore the pre-deploy snapshot through the same MCP write tools">↩ roll back</button>`
+        : '';
       return `<tr class="${ok ? 'is-ok' : 'is-err'}">
         <td>${ok ? '✓' : '✗'}</td>
         <td>${escapeHtml(when)}</td>
-        <td>${escapeHtml(d.target?.product || '?')}@${escapeHtml(d.target?.version || '?')}${d.dryRun ? ' · dry-run' : ''}</td>
-        <td>${d.summary?.ok ?? 0}/${d.summary?.total ?? 0} ok ${verify}</td>
+        <td>${what}</td>
+        <td>${d.summary?.ok ?? 0}/${d.summary?.total ?? 0} ok ${verify} ${rbBtn}</td>
       </tr>`;
     }).join('');
     host.innerHTML = `
@@ -2878,8 +2887,37 @@ async function loadDeployHistory(packId) {
         <thead><tr><th></th><th>When</th><th>Target</th><th>Result</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
+    host.querySelectorAll('.deploy-hist-rollback').forEach(btn => {
+      btn.addEventListener('click', () => doRollback(btn.dataset.deployId, packId, btn));
+    });
     host.hidden = false;
   } catch (_) { /* history is optional context — never block the modal */ }
+}
+
+// Roll a deploy back to its pre-deploy snapshot (10D). Reuses the MCP
+// target fields already in the modal; the result lands in the audit log
+// as its own record (rollbackOf) and the history refreshes to show it.
+async function doRollback(deployId, packId, btn) {
+  const url = $('#deploy-target-mcp')?.value.trim();
+  const auth = $('#deploy-target-auth')?.value;
+  if (!url) { toast('Enter the MCP URL in the target form first', 'error'); return; }
+  if (!confirm(`Roll back ${deployId}?\n\nRestorable artefacts are re-upserted from the pre-deploy snapshot. Anything this deploy created is listed for manual removal.`)) return;
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/deploys/${encodeURIComponent(deployId)}/rollback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
+    });
+    const manualNote = r.manual?.length ? ` · ${r.manual.length} manual step${r.manual.length === 1 ? '' : 's'}` : '';
+    toast(r.ok
+      ? `Rolled back: ${r.summary.ok}/${r.summary.total} restored${manualNote}`
+      : `Rollback incomplete: ${r.summary.failed} failed${manualNote}`, r.ok ? '' : 'error');
+    loadDeployHistory(packId);
+  } catch (e) {
+    toast(`Rollback failed: ${e.message}`, 'error');
+    btn.disabled = false;
+  }
 }
 
 function closeDeployModal() {

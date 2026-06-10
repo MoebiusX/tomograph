@@ -579,7 +579,10 @@ try {
 
   // Bulk deploy → converts Grafana-managed provisioning YAML into the JSON
   // shape expected by otel-mcp-server's write tool.
-  const fakeMcp = await startFakeMcp(['grafana_create_alert_rule', 'grafana_create_dashboard']);
+  const fakeMcp = await startFakeMcp([
+    'grafana_create_alert_rule', 'grafana_create_dashboard',
+    'grafana_alert_rules', 'grafana_dashboard_get',
+  ]);
   try {
     const deployBulk = await fetch(`${base}/api/packs/payment-service/deploy-bulk`, {
       method: 'POST',
@@ -589,28 +592,75 @@ try {
         targetProduct: 'grafana',
         targetVersion: '12',
         targetFolder: 'observability-pack',
-        items: [{ group: 'rules', flavor: 'prometheus', artifact: 'declared:0', scope: 'recording' }],
+        items: [
+          { group: 'rules', flavor: 'prometheus', artifact: 'declared:0', scope: 'recording' },
+          { group: 'dashboards', flavor: 'grafana', dashboardId: 'payment-overview' },
+        ],
       }),
     });
     assert(deployBulk.status === 200, 'deploy-bulk to fake MCP → 200');
     const bulkBody = await deployBulk.json();
-    assert(bulkBody.ok === true && bulkBody.summary?.ok === 1,
-           'deploy-bulk reports the selected artefact as deployed');
-    assert(fakeMcp.calls.length === 1, 'deploy-bulk made one MCP tool call for one declared rule',
-           fakeMcp.calls.length, 1);
-    const call = fakeMcp.calls[0];
-    assert(call.name === 'grafana_create_alert_rule',
-           'deploy-bulk calls grafana_create_alert_rule');
-    assert(call.arguments?.mode === 'upsert',
+    assert(bulkBody.ok === true && bulkBody.summary?.ok === 2,
+           'deploy-bulk reports both artefacts as deployed', bulkBody.summary, { ok: 2 });
+
+    // Pre-deploy snapshot (10D): the read calls land BEFORE the writes.
+    const callNames = fakeMcp.calls.map(c => c.name);
+    assert(callNames.indexOf('grafana_alert_rules') !== -1 &&
+           callNames.indexOf('grafana_alert_rules') < callNames.indexOf('grafana_create_alert_rule'),
+           'snapshot captures the rule listing before the first write', callNames, 'reads before writes');
+    assert(callNames.indexOf('grafana_dashboard_get') !== -1 &&
+           callNames.indexOf('grafana_dashboard_get') < callNames.indexOf('grafana_create_dashboard'),
+           'snapshot captures the dashboard before overwriting it');
+    const ruleCall = fakeMcp.calls.find(c => c.name === 'grafana_create_alert_rule');
+    assert(ruleCall.arguments?.mode === 'upsert',
            'deploy-bulk uses idempotent upsert mode by default');
-    assert(call.arguments?.rule?.folderUID === 'observability-pack',
+    assert(ruleCall.arguments?.rule?.folderUID === 'observability-pack',
            'deploy-bulk maps targetFolder to rule.folderUID');
-    assert(call.arguments?.rule?.ruleGroup,
+    assert(ruleCall.arguments?.rule?.ruleGroup,
            'deploy-bulk populates rule.ruleGroup from the provisioning group');
-    assert(call.arguments?.rule?.record?.metric,
+    assert(ruleCall.arguments?.rule?.record?.metric,
            'deploy-bulk sends recording rule record.metric');
-    assert(call.arguments?.rule?.noDataState === 'OK' && !('no_data_state' in call.arguments.rule),
+    assert(ruleCall.arguments?.rule?.noDataState === 'OK' && !('no_data_state' in ruleCall.arguments.rule),
            'deploy-bulk converts Grafana YAML snake_case fields to API camelCase');
+
+    // The audit record carries the snapshot status; the files exist on disk.
+    const snapAudit = await getJson(base, `/api/deploys?pack=payment-service&limit=3`);
+    const snapRec = snapAudit.deploys.find(d => d.deployId === bulkBody.deployId);
+    assert(snapRec?.snapshot?.status === 'captured', 'audit records snapshot status captured', snapRec?.snapshot, 'captured');
+    const snapDir = join(SMOKE_WORKSPACE, 'snapshots', bulkBody.deployId);
+    assert(existsSync(join(snapDir, 'meta.json')), 'snapshot meta.json exists on disk');
+    assert(existsSync(join(snapDir, 'dashboard-payment-overview.json')), 'snapshot stores the pre-deploy dashboard');
+    assert(existsSync(join(snapDir, 'alert-rules.json')), 'snapshot stores the pre-deploy rule listing');
+
+    // Rollback plan: dashboards restore automatically; rules are manual-with-receipts.
+    const plan = await getJson(base, `/api/deploys/${bulkBody.deployId}/rollback-plan`);
+    assert(plan.canRollback === true, 'rollback-plan says the deploy is rollbackable');
+    assert(plan.plan.find(p => p.ref === 'payment-overview')?.action === 'restore',
+           'plan restores the captured dashboard');
+    assert(plan.plan.find(p => p.kind === 'rules-listing')?.action === 'manual',
+           'plan marks rules manual (per-rule restore not yet automated)');
+
+    // Execute the rollback against the same fake MCP.
+    const preRollbackCalls = fakeMcp.calls.length;
+    const rb = await fetch(`${base}/api/deploys/${bulkBody.deployId}/rollback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpUrl: fakeMcp.url }),
+    }).then(r => r.json());
+    assert(rb.ok === true && rb.rollbackOf === bulkBody.deployId, 'rollback runs and references the original deploy');
+    const rbCall = fakeMcp.calls.slice(preRollbackCalls).find(c => c.name === 'grafana_create_dashboard');
+    assert(!!rbCall && rbCall.arguments?.mode === 'upsert' && /rollback/i.test(rbCall.arguments?.message || ''),
+           'rollback re-upserts the snapshotted dashboard with a rollback message');
+    assert(rb.manual.some(m => m.kind === 'rules-listing'), 'rollback returns rules as manual with receipts');
+    const rbAudit = await getJson(base, `/api/deploys?pack=payment-service&limit=3`);
+    assert(rbAudit.deploys.find(d => d.deployId === rb.deployId)?.rollbackOf === bulkBody.deployId,
+           'the rollback lands in the audit log with rollbackOf');
+
+    // A deploy with no snapshot (the earlier single-route 502) can't roll back.
+    const rb409 = await fetch(`${base}/api/deploys/${deployErr.deployId}/rollback`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mcpUrl: fakeMcp.url }),
+    });
+    assert(rb409.status === 409, 'rollback without a usable snapshot → 409');
   } finally {
     await fakeMcp.close();
   }

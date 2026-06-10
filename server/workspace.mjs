@@ -205,6 +205,48 @@ export function readDeployRecords({ packId, limit = 50 } = {}) {
   return limit > 0 ? out.slice(0, limit) : out;
 }
 
+// ---------- pre-deploy snapshots (VALUE_BACKLOG item 10D) ----------
+//
+// One directory per deploy: snapshots/<deployId>/meta.json plus one JSON
+// file per captured artefact. The snapshot is taken BEFORE the first write
+// so rollback always has a pre-state to restore — or an honest record that
+// the artefact did not exist (a create, whose rollback is a delete).
+
+function snapshotDir(deployId) {
+  // deployIds are server-minted (dep_<ts>_<rand>), but never trust a path
+  // component: strip anything that isn't filename-safe.
+  const safe = String(deployId).replace(/[^A-Za-z0-9_-]/g, '');
+  if (!safe) throw new Error('workspace: empty snapshot id');
+  return join(workspaceRoot(), 'snapshots', safe);
+}
+
+export function saveDeploySnapshot(deployId, meta, files = {}) {
+  const dir = snapshotDir(deployId);
+  mkdirSync(dir, { recursive: true });
+  for (const [name, data] of Object.entries(files)) {
+    const safeName = String(name).replace(/[^A-Za-z0-9._-]/g, '_');
+    writeFileSync(join(dir, safeName + '.json'), JSON.stringify(data, null, 2));
+  }
+  writeFileSync(join(dir, 'meta.json'), JSON.stringify(meta, null, 2));
+  return dir;
+}
+
+// → { meta, readFile(name) } or null when no snapshot was taken.
+export function readDeploySnapshot(deployId) {
+  const dir = snapshotDir(deployId);
+  let meta;
+  try { meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')); }
+  catch (_) { return null; }
+  return {
+    meta,
+    readFile(name) {
+      const safeName = String(name).replace(/[^A-Za-z0-9._-]/g, '_');
+      try { return JSON.parse(readFileSync(join(dir, safeName + '.json'), 'utf8')); }
+      catch (_) { return null; }
+    },
+  };
+}
+
 // Test hook: force any debounced index write to land now.
 export function flushWorkspaceIndex() { flushIndexNow(); }
 
