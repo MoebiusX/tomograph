@@ -146,12 +146,19 @@ Open **Diagnose - Can We Trust It?**
 Expected current shape:
 
 ```text
-DIAGNOSTIC GRADE PASS
-Score    88% 7.04/8
-Coverage 100% 5/5
+DIAGNOSTIC GRADE    A · DIAGNOSTIC / CLINICAL GRADE
+Score    86% 6.04/7
+Coverage 100% 4/4
 Trust    68% 2.04/3
+Audit    PASS (bar: above 85% — A and better)
 Verified YES live signal present
 ```
+
+(Grade schema 2: seven scored criteria; the Actionable check renders
+separately under 2C Operability as informational. The headline stamp is
+the instrument grade — D/C/B/B+/A/A+ with A++ shown as a reference-only
+rung — and the full ladder renders below the summary with the current
+rung highlighted.)
 
 The exact live snapshot may change. The interpretation remains:
 
@@ -164,12 +171,14 @@ Explain the two diagnostic questions:
 1. Are we monitoring the right things?
 2. Is what we say we monitor actually active in production?
 
-Name the eight checks when asked how the grade is calculated:
+Name the checks when asked how the grade is calculated (seven scored, one
+informational):
 
-| Area | Checks |
-|---|---|
-| Coverage | Multi-modal, Correlated, Calibrated, Comprehensive, Actionable |
-| Trust | Chaos-validated, Drift-free, Fresh |
+| Area | Checks | Scored |
+|---|---|---|
+| Coverage | Multi-modal, Correlated, Calibrated, Comprehensive | yes |
+| Trust | Chaos-validated, Drift-free, Fresh | yes |
+| Operability | Actionable | no — informational |
 
 Then explain the drift buckets:
 

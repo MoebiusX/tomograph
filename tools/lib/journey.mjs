@@ -249,7 +249,16 @@ export async function runJourney(def, { baseDir } = {}) {
     packA: { source: a.source, name: a.canonical?.metadata?.name || null, version: a.canonical?.metadata?.version || null },
     packB: { source: b.source, name: b.canonical?.metadata?.name || null, version: b.canonical?.metadata?.version || null, refreshedAt: liveRefreshedAt },
     scope: { env: def.env || null, service: def.service || null, scopeMode: def.scopeMode || null },
-    grade: { score: facts.gradeScore, pass: facts.gradePass, threshold: DIAGNOSTIC_PASS_SCORE_THRESHOLD },
+    // schema identifies which scoring construct produced the score, so a
+    // step in the gradeScore series is explainable as re-scoring vs reality
+    // (schema 1: 8 scored criteria incl. Actionable; schema 2: 7 — Actionable
+    // is informational operability).
+    grade: {
+      score: facts.gradeScore, pass: facts.gradePass, threshold: DIAGNOSTIC_PASS_SCORE_THRESHOLD,
+      schema: grade.gradeSchema ?? 1,
+      letter: grade.overall?.instrumentGrade?.letter ?? null,
+      letterLabel: grade.overall?.instrumentGrade?.label ?? null,
+    },
     conformance: { scorePercent: conformance.scorePercent, mustPercent: conformance.mustPercent, conformant: conformance.conformant, declaredTier: conformance.declaredTier },
     drift: {
       alignmentPct: facts.alignmentPct,
@@ -298,7 +307,7 @@ export function renderJourneyMarkdown(r) {
     `| Declared (A) | \`${r.packA.name || '?'}@${r.packA.version || '?'}\` — ${r.packA.source} |`,
     `| Live/reference (B) | \`${r.packB.name || '?'}@${r.packB.version || '?'}\` — ${r.packB.source} |`,
     `| Scope | env=${r.scope.env || '-'} service=${r.scope.service || '-'} mode=${r.scope.scopeMode || 'default'} |`,
-    `| Diagnostic grade | **${r.grade.score}%** (${r.grade.pass ? 'PASS' : 'FAIL'}, bar ${r.grade.threshold}%) |`,
+    `| Diagnostic grade | **${r.grade.letter ? `${r.grade.letter} · ${r.grade.letterLabel} · ` : ''}${r.grade.score}%** (${r.grade.pass ? 'PASS' : 'FAIL'}, bar ${r.grade.threshold}%) |`,
     `| Conformance | ${r.conformance.scorePercent}% (${r.conformance.declaredTier}, ${r.conformance.conformant ? 'conformant' : 'not conformant'}) |`,
     `| Alignment | **${r.drift.alignmentPct}%** — ${r.drift.aligned} aligned · ${r.drift.drifted} drifted · ${r.drift.declaredNotLive} declared-not-live · ${r.drift.liveNotDeclared} live-not-declared |`,
     `| Live freshness | ${r.freshness.liveAgeHours === null ? 'no refresh timestamp' : r.freshness.liveAgeHours.toFixed(1) + 'h old'} |`,

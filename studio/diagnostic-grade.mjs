@@ -245,8 +245,19 @@ export function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff, 
       pass: comprehensive,
       detail: `${avgObservedPct}% average observed across infra · platform · app · ux`,
     },
+  ];
+
+  // Operability is observed and displayed but NOT scored (grade schema 2,
+  // maintainer-ratified 2026-06-10). Runbooks measure response readiness of
+  // the overall observability solution; the diagnostic grade answers only
+  // "can the instrument detect, localise, and explain?" — a perfectly
+  // diagnostic system tells you what is wrong even when nobody wrote the
+  // treatment protocol. The signal keeps a scored home in the posture
+  // matrix (runbook mechanism column).
+  const operabilityCriteria = [
     { key: 'actionable',    label: 'Actionable',    sub: 'alerts lead to a response path',
       pass: actionable,
+      informational: true,
       detail: actionableCount > 0
         ? `${actionableCount} remediation runbook${actionableCount === 1 ? '' : 's'} declared`
         : 'no runbooks linked - when an alert fires, oncall has no scripted response',
@@ -378,14 +389,25 @@ export function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff, 
   const trustPassed = sumScore(trustCriteria);
   const overallPassed = coveragePassed + trustPassed;
   const overallTotal = coverageCriteria.length + trustCriteria.length;
+  // Verdict words band on percentage, not raw counts, so they keep their
+  // meaning across grade schemas (schema 1 had 8 scored criteria, schema 2
+  // has 7). The bands preserve schema 1's fractions: grade was 7/8 = 87.5%
+  // — now aligned with the audit PASS threshold (>85%) so the word and the
+  // PASS stamp can never disagree; almost was 5/8 = 62.5%; not-yet 3/8 = 37.5%.
+  const overallPctExact = diagnosticScorePercent(overallPassed, overallTotal);
   const verdict =
-    overallPassed >= 7 ? { word: 'Diagnostic-grade',          level: 'is-grade' } :
-    overallPassed >= 5 ? { word: 'Almost diagnostic-grade',   level: 'is-almost' } :
-    overallPassed >= 3 ? { word: 'Not yet diagnostic-grade',  level: 'is-not-yet' } :
-                         { word: 'Far from diagnostic-grade', level: 'is-far' };
+    overallPctExact > DIAGNOSTIC_PASS_SCORE_THRESHOLD ? { word: 'Diagnostic-grade',          level: 'is-grade' } :
+    overallPctExact >= 62.5                           ? { word: 'Almost diagnostic-grade',   level: 'is-almost' } :
+    overallPctExact >= 37.5                           ? { word: 'Not yet diagnostic-grade',  level: 'is-not-yet' } :
+                                                        { word: 'Far from diagnostic-grade', level: 'is-far' };
   const audit = diagnosticAuditStatus(overallPassed, overallTotal);
 
   return {
+    // Bump when the set of scored criteria or the scoring rule changes, so
+    // persisted run records can explain score discontinuities honestly.
+    // Schema 2 (2026-06-10): Actionable reclassified from scored coverage
+    // criterion to informational operability — 7 scored criteria (4+3).
+    gradeSchema: 2,
     coverage: {
       criteria: coverageCriteria,
       passed:   coveragePassed,
@@ -399,11 +421,17 @@ export function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff, 
       total:    trustCriteria.length,
       hasMcpSource,
     },
+    operability: {
+      criteria: operabilityCriteria,
+      informational: true,
+      note: 'response readiness, not diagnostic capability — observed, displayed, never scored',
+    },
     overall: {
       passed: overallPassed,
       total:  overallTotal,
       verdict,
       audit,
+      instrumentGrade: instrumentGradeFor(overallPctExact),
       liveDriftFree: driftFree,
     },
     traceabilityGraph: diff?.traceabilityGraph || null,

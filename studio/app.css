@@ -1902,6 +1902,80 @@ a:hover { color: var(--ink); }
   background: rgba(178, 34, 34, 0.08);
 }
 
+/* Instrument-grade tiers — shared by the head chip and the ladder.
+   a = clinical-and-above (green), b = professional (amber),
+   c = field (orange), d = consumer (red), ref = reference grades
+   the score can't reach (neutral). */
+.tier-a   { --tier: 46, 110, 50; }
+.tier-b   { --tier: 180, 120, 0; }
+.tier-c   { --tier: 205, 92, 8; }
+.tier-d   { --tier: 178, 34, 34; }
+.tier-ref { --tier: 110, 120, 140; }
+.diag-report-status.grade-chip {
+  color: rgb(var(--tier));
+  border-color: rgb(var(--tier));
+  background: rgba(var(--tier), 0.08);
+  letter-spacing: 0.1em;
+}
+
+/* The grade ladder — every rung visible, current one highlighted ------ */
+.grade-ladder {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.grade-rung {
+  display: grid;
+  grid-template-columns: 44px 200px 64px 1fr 70px;
+  align-items: baseline;
+  column-gap: 12px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-2);
+}
+.grade-rung:last-child { border-bottom: 0; }
+.grade-rung-letter {
+  font: 800 14px/1 var(--mono);
+  color: rgb(var(--tier));
+}
+.grade-rung-label {
+  font: 600 12.5px/1.3 var(--sans);
+  color: var(--ink-2);
+}
+.grade-rung-range {
+  font: 11px/1.3 var(--mono);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.grade-rung-blurb {
+  font: 11.5px/1.4 var(--sans);
+  color: var(--ink-3);
+}
+.grade-rung-req { font-style: italic; color: var(--ink-4); }
+.grade-rung-marker {
+  font: 700 11px/1 var(--mono);
+  color: rgb(var(--tier));
+  text-align: right;
+  white-space: nowrap;
+}
+.grade-rung.is-current {
+  background: rgba(var(--tier), 0.07);
+  border-left: 3px solid rgb(var(--tier));
+  padding-left: 5px;
+}
+.grade-rung.is-current .grade-rung-label { color: var(--ink-1); font-weight: 700; }
+.grade-rung.is-unreachable { opacity: 0.55; }
+.grade-ladder-note {
+  margin: 8px 2px 0;
+  max-width: 940px;
+  font: 11.5px/1.45 var(--mono);
+  color: var(--ink-3);
+}
+@media (max-width: 860px) {
+  .grade-rung { grid-template-columns: 40px 1fr 60px; }
+  .grade-rung-blurb { grid-column: 2 / -1; }
+  .grade-rung-marker { grid-column: 3; grid-row: 1; }
+}
+
 /* Summary table — Score / Coverage / Trust / Verified rows ------ */
 .diag-summary {
   width: 100%;
@@ -2385,6 +2459,14 @@ a:hover { color: var(--ink); }
 .diag-evidence-table tr.is-partial .e-status { color: rgb(180, 120, 0); }
 .diag-evidence-table tr.is-fail .e-status { color: rgb(178, 34, 34); }
 .diag-evidence-table tr:hover { background: var(--ink-bg); }
+
+/* Informational rows/sections (grade schema 2: operability is observed,
+   never scored) — neutral ink so a missing runbook doesn't read as grade
+   damage, while the observation itself stays fully visible. */
+.diag-evidence-table tr.is-info .e-status { color: var(--ink-3); }
+.diag-section-info .diag-crit-table tr.is-fail .c-pip,
+.diag-section-info .diag-crit-table tr.is-pass .c-pip { color: var(--ink-3); }
+.diag-section-info .diag-section-meta { color: var(--ink-3); }
 
 
 /* Legacy diagnostic-grade-* rules retained below for safety while
