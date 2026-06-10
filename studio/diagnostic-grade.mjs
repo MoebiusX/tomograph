@@ -145,6 +145,52 @@ export function diagnosticAuditStatus(passed, total) {
   };
 }
 
+// ---------- instrument grade scale ----------
+//
+// The metrology-style rating users actually read — a raw percentage with a
+// PASS/FAIL stamp doesn't land. The anchor is fixed by contract: A
+// (Diagnostic / Clinical) begins strictly above the audit bar (>85%), so
+// the letter and the PASS verdict can never disagree. Bands below reuse
+// the verdict-word fractions (62.5 / 37.5); B+ marks the upper half of the
+// almost-band; A+ is reserved for near-perfect scores.
+//
+// HONESTY FENCE: A++ and S are rendered on the ladder but are NOT
+// score-reachable (minPct: null). "Calibrates other instruments" and
+// "primary standard" are claims about external reference evidence —
+// benchmarking against other instruments, metrology-grade traceability —
+// that the seven verification criteria cannot attest. They appear so the
+// ceiling is visible, dimmed, with what they would require stated.
+// Ordered top (best) → bottom.
+export const INSTRUMENT_GRADE_SCALE = [
+  { letter: 'S',   tier: 'ref', label: 'Primary Standard',              minPct: null, range: '—',
+    blurb: 'Highest-level standard; maintained by national metrology institutes or top-level standards labs.',
+    requires: 'external metrology traceability — beyond this instrument’s evidence' },
+  { letter: 'A++', tier: 'ref', label: 'Calibration / Reference Grade', minPct: null, range: '—',
+    blurb: 'Used to verify, calibrate, or benchmark other instruments. Very low uncertainty and strong traceability requirements.',
+    requires: 'external reference benchmarking — beyond this instrument’s evidence' },
+  { letter: 'A+',  tier: 'a',   label: 'Laboratory / Research Grade',   minPct: 95,   range: '≥ 95%',
+    blurb: 'Higher precision, stability, sensitivity, and documentation than clinical-grade tools; suited to controlled lab or research environments.' },
+  { letter: 'A',   tier: 'a',   label: 'Diagnostic / Clinical Grade',   minPct: DIAGNOSTIC_PASS_SCORE_THRESHOLD, exclusiveMin: true, range: '> 85%',
+    blurb: 'Fit for professional diagnostic, clinical, or decision-critical use.' },
+  { letter: 'B+',  tier: 'b',   label: 'Inspection Grade',              minPct: 75,   range: '≥ 75%',
+    blurb: 'Suitable for QA/QC, accept-reject decisions, and formal inspection workflows.' },
+  { letter: 'B',   tier: 'b',   label: 'Industrial Grade',              minPct: 62.5, range: '≥ 62.5%',
+    blurb: 'Suitable for production, maintenance, process control, and routine professional use.' },
+  { letter: 'C',   tier: 'c',   label: 'Field Grade',                   minPct: 37.5, range: '≥ 37.5%',
+    blurb: 'Portable, rugged, and practical for on-site measurement, but not the highest accuracy.' },
+  { letter: 'D',   tier: 'd',   label: 'Consumer Grade',                minPct: 0,    range: '< 37.5%',
+    blurb: 'Everyday use; useful for rough readings, trends, or casual decisions.' },
+];
+
+export function instrumentGradeFor(scorePctExact) {
+  const pct = Number.isFinite(scorePctExact) ? scorePctExact : 0;
+  for (const g of INSTRUMENT_GRADE_SCALE) {
+    if (g.minPct === null) continue;   // not score-reachable — see honesty fence above
+    if (g.exclusiveMin ? pct > g.minPct : pct >= g.minPct) return g;
+  }
+  return INSTRUMENT_GRADE_SCALE[INSTRUMENT_GRADE_SCALE.length - 1];
+}
+
 export function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff, opts = {}) {
   const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
   const ann = packA?.meta?.annotations || packA?.metadata?.annotations || {};
@@ -408,6 +454,7 @@ export function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff, 
       total:  overallTotal,
       verdict,
       audit,
+      instrumentGrade: instrumentGradeFor(overallPctExact),
       liveDriftFree: driftFree,
     },
     traceabilityGraph: diff?.traceabilityGraph || null,

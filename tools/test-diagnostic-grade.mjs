@@ -4,6 +4,8 @@ import {
   computeDiagnosticGrade,
   computeWeightedDeltaRisk,
   diagnosticAuditStatus,
+  INSTRUMENT_GRADE_SCALE,
+  instrumentGradeFor,
 } from '../studio/diagnostic-grade.mjs';
 
 function assert(condition, message, details) {
@@ -113,6 +115,30 @@ const nowMs = Date.parse('2026-06-09T12:00:00Z');
   assert(overEightyFive.status === 'PASS', 'scores above 85% should pass', overEightyFive);
 }
 
+// Instrument-grade scale: the letter the score lands on. A is anchored
+// strictly above the audit bar so the letter and PASS/FAIL never disagree.
+{
+  assert(instrumentGradeFor(0).letter === 'D', '0% is Consumer Grade');
+  assert(instrumentGradeFor(37.4).letter === 'D', 'just under 37.5% stays Consumer Grade');
+  assert(instrumentGradeFor(37.5).letter === 'C', '37.5% reaches Field Grade');
+  assert(instrumentGradeFor(62.5).letter === 'B', '62.5% reaches Industrial Grade');
+  assert(instrumentGradeFor(75).letter === 'B+', '75% reaches Inspection Grade');
+  assert(instrumentGradeFor(85).letter === 'B+', 'exactly 85% is still Inspection Grade — A requires strictly more than the audit bar');
+  assert(instrumentGradeFor(85.01).letter === 'A', 'above the audit bar is Diagnostic / Clinical Grade');
+  assert(instrumentGradeFor(95).letter === 'A+', '95% reaches Laboratory / Research Grade');
+  assert(instrumentGradeFor(100).letter === 'A+', 'a perfect verification score caps at A+ — A++/S need external reference evidence');
+  const unreachable = INSTRUMENT_GRADE_SCALE.filter((g) => g.minPct === null).map((g) => g.letter);
+  assert(unreachable.length === 2 && unreachable.includes('A++') && unreachable.includes('S'),
+         'exactly A++ and S are not score-reachable', unreachable);
+  // The letter can never contradict the audit verdict.
+  for (const pct of [0, 37.5, 62.5, 75, 84.9, 85, 85.01, 92, 95, 100]) {
+    const passes = pct > 85;
+    const letter = instrumentGradeFor(pct).letter;
+    const aOrBetter = ['A', 'A+'].includes(letter);
+    assert(passes === aOrBetter, `at ${pct}%: audit ${passes ? 'PASS' : 'FAIL'} must match grade ${letter}`, { pct, letter });
+  }
+}
+
 {
   const result = computeDiagnosticGrade(
     baseRepoPack(),
@@ -131,6 +157,7 @@ const nowMs = Date.parse('2026-06-09T12:00:00Z');
   assert(closeTo(result.trust.passed, 2.9), 'trust score should include fractional drift fidelity', result.trust);
   assert(criterion(result, 'drift-free').pass === true, '0.90 traceability integrity should satisfy drift-free');
   assert(closeTo(criterion(result, 'drift-free').score, 0.9), 'drift-free score should equal integrity mean');
+  assert(result.overall.instrumentGrade.letter === 'A+', '6.9/7 = 98.6% lands on Laboratory / Research Grade', result.overall.instrumentGrade);
   assert(result.operability.informational === true, 'operability section is marked informational', result.operability);
   assert(criterion(result, 'actionable')?.informational === true, 'actionable criterion carries the informational flag');
   assert(!result.coverage.criteria.some((c) => c.key === 'actionable'), 'actionable must not appear among scored coverage criteria');
@@ -150,6 +177,7 @@ const nowMs = Date.parse('2026-06-09T12:00:00Z');
   assert(result.overall.audit.scorePctExact < 85, 'sub-threshold score should land below the 85% gate', result.overall.audit);
   assert(result.overall.audit.status === 'FAIL', 'below 85% should not pass the diagnostic-grade audit', result.overall.audit);
   assert(result.overall.verdict.word === 'Almost diagnostic-grade', 'sub-threshold score in the 62.5–85% band reads almost diagnostic-grade', result.overall.verdict);
+  assert(result.overall.instrumentGrade.letter === 'B+', '5.8/7 = 82.9% lands on Inspection Grade', result.overall.instrumentGrade);
   assert(criterion(result, 'fresh').pass === false, 'missing refreshedAt should fail freshness');
 }
 

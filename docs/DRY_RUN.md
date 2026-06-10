@@ -146,15 +146,19 @@ Open **Diagnose - Can We Trust It?**
 Expected current shape:
 
 ```text
-DIAGNOSTIC GRADE PASS
+DIAGNOSTIC GRADE    A · DIAGNOSTIC / CLINICAL GRADE
 Score    86% 6.04/7
 Coverage 100% 4/4
 Trust    68% 2.04/3
+Audit    PASS (bar: above 85% — A and better)
 Verified YES live signal present
 ```
 
 (Grade schema 2: seven scored criteria; the Actionable check renders
-separately under 2C Operability as informational.)
+separately under 2C Operability as informational. The headline stamp is
+the instrument grade — D/C/B/B+/A/A+ with A++/S shown as reference-only
+rungs — and the full ladder renders below the summary with the current
+rung highlighted.)
 
 The exact live snapshot may change. The interpretation remains:
 

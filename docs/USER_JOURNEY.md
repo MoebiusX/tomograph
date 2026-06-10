@@ -112,12 +112,29 @@ criteria (grade schema 2), plus one informational operability check:
   the score (reclassified 2026-06-10; journey run records carry
   `grade.schema` so score history steps are explainable).
 
-The displayed verdict is:
+The audit verdict (the machine contract journeys gate on) is:
 
 ```text
 PASS when score > 85%
 FAIL otherwise
 ```
+
+The displayed verdict is the **instrument grade** the score lands on,
+rendered as a full ladder with the current rung highlighted:
+
+| Grade | Class | Score band |
+|---|---|---|
+| S | Primary Standard | not score-reachable (external metrology evidence) |
+| A++ | Calibration / Reference Grade | not score-reachable (external benchmarking) |
+| A+ | Laboratory / Research Grade | ≥ 95% |
+| A | Diagnostic / Clinical Grade | > 85% — anchored to the audit bar |
+| B+ | Inspection Grade | ≥ 75% |
+| B | Industrial Grade | ≥ 62.5% |
+| C | Field Grade | ≥ 37.5% |
+| D | Consumer Grade | < 37.5% |
+
+A or better and audit PASS are by construction the same statement. Journey
+run records carry `grade.letter` alongside `grade.score`.
 
 Failed criteria still render as evidence. A score can pass while drift remains
 visible. That is intentional: the grade answers whether the posture is

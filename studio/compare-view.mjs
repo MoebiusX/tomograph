@@ -25,6 +25,8 @@ import {
   layerItemsFor,
   criterionScore,
   diagnosticAuditStatus,
+  INSTRUMENT_GRADE_SCALE,
+  instrumentGradeFor,
   isScaffoldDiffEntry,
 } from './diagnostic-grade.mjs';
 
@@ -1294,11 +1296,13 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const trustPct = pct(trust.passed, trust.total);
   const chainBlock = renderDiagnosticTraceabilityGraph(diagnostic.traceabilityGraph);
 
-  // Single binary verdict in audit terms: PASS when the score is >85%.
-  // Individual failed criteria still render below as evidence and gaps.
+  // The audit (PASS when score >85%) stays the machine contract — journey
+  // gates and run records key off it. What USERS see is the instrument
+  // grade: the metrology-style letter the score lands on. The two can
+  // never disagree: A begins strictly above the audit bar.
   const audit = overall.audit || diagnosticAuditStatus(overall.passed, overall.total);
   const passes = audit.passes;
-  const status = audit.status;
+  const ig = overall.instrumentGrade || instrumentGradeFor(audit.scorePctExact);
 
   // Compact mono row builder for the summary block.
   const summaryRow = (label, value, hint, state) => `
@@ -1416,11 +1420,33 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
     </table>
   `;
 
+  // The instrument-grade ladder: every rung rendered top (best) → bottom,
+  // the rung the score lands on highlighted. A++/S have no score band —
+  // they require external reference evidence, so they render dimmed with
+  // that requirement stated rather than pretending the score can reach them.
+  const ladderHtml = `
+    <ul class="grade-ladder">
+      ${INSTRUMENT_GRADE_SCALE.map(g => {
+        const current = g.letter === ig.letter;
+        const unreachable = g.minPct === null;
+        return `
+        <li class="grade-rung tier-${g.tier} ${current ? 'is-current' : ''} ${unreachable ? 'is-unreachable' : ''}">
+          <span class="grade-rung-letter">${escapeHtml(g.letter)}</span>
+          <span class="grade-rung-label">${escapeHtml(g.label)}</span>
+          <span class="grade-rung-range">${escapeHtml(g.range)}</span>
+          <span class="grade-rung-blurb">${escapeHtml(g.blurb)}${unreachable ? ` <em class="grade-rung-req">${escapeHtml(g.requires)}</em>` : ''}</span>
+          <span class="grade-rung-marker">${current ? `◀ ${overallPct}%` : ''}</span>
+        </li>`;
+      }).join('')}
+    </ul>
+    <p class="grade-ladder-note">Grades derive from the verification score — A starts strictly above the ${audit.threshold}% audit bar, so the letter and the machine PASS/FAIL always agree. Verification evidence, not incident-validation. A++ and S need evidence this instrument cannot produce alone.</p>
+  `;
+
   wrap.innerHTML = `
     <header class="diag-report-head">
       <div class="diag-report-head-line">
         <span class="diag-report-eyebrow">DIAGNOSTIC GRADE</span>
-        <span class="diag-report-status diag-${passes ? 'pass' : 'fail'}">${status}</span>
+        <span class="diag-report-status grade-chip tier-${ig.tier}">${escapeHtml(ig.letter)} · ${escapeHtml(ig.label)}</span>
       </div>
       <table class="diag-summary">
         <colgroup><col><col><col></colgroup>
@@ -1428,12 +1454,22 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
           ${summaryRow('Score',    `<span class="diag-pct">${overallPct}%</span> <span class="diag-frac">${fmtScore(overall.passed)}/${overall.total}</span>`, bar(overallPct))}
           ${summaryRow('Coverage', `<span class="diag-pct">${covPct}%</span> <span class="diag-frac">${fmtScore(cov.passed)}/${cov.total}</span>`,       bar(covPct))}
           ${summaryRow('Trust',    `<span class="diag-pct">${trustPct}%</span> <span class="diag-frac">${fmtScore(trust.passed)}/${trust.total}</span>`, bar(trustPct))}
+          ${summaryRow('Audit',    `<span class="${passes ? 'diag-yes' : 'diag-no'}">${audit.status}</span>`, `gate contract: PASS above ${audit.threshold}% (A and better)`)}
           ${summaryRow('Verified', trust.hasMcpSource ? '<span class="diag-yes">YES</span>' : '<span class="diag-no">NO</span>',
                        trust.hasMcpSource ? 'live signal present' : 'connect MCP or scan live to verify',
                        trust.hasMcpSource ? '' : 'is-warn')}
         </tbody>
       </table>
     </header>
+
+    <section class="diag-section diag-grade-scale">
+      <header class="diag-section-head">
+        <span class="diag-section-num">⊙</span>
+        <span class="diag-section-title">Instrument grade — where this score lands</span>
+        <span class="diag-section-meta">current: ${escapeHtml(ig.letter)} · ${overallPct}%</span>
+      </header>
+      ${ladderHtml}
+    </section>
 
     <section class="diag-section">
       <header class="diag-section-head">
