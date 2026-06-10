@@ -13,6 +13,10 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, relative, basename } from 'node:path';
 import { crawlToYaml } from './lib/crawler.mjs';
+import { validateCanonical } from './lib/validator.mjs';
+import { readFileSync } from 'node:fs';
+const SCHEMA = JSON.parse(readFileSync(
+  new URL('../vendor/observability-pack-spec/v1.2/observability-pack.schema.json', import.meta.url), 'utf8'));
 
 const SCAN_EXT = /\.(ya?ml|json|cjs|mjs|js|jsx|ts|tsx|py|go|java|kt|rs|cs)$/i;
 const IGNORE_DIRS = new Set(['.git', 'node_modules', 'vendor', 'dist', 'build', '.cache', '.next', '.terraform']);
@@ -129,7 +133,13 @@ async function main() {
   if (!opts.repoName) opts.repoName = basename(opts.repoPath.replace(/[\\/]$/, ''));
 
   const files = await walk(opts.repoPath);
-  const { yaml, summary, evidence } = crawlToYaml(files, opts);
+  const { yaml, canonical, summary, evidence } = crawlToYaml(files, opts);
+
+  // Tripwire: the crawler's contract is that its output validates against
+  // the spec it crawls for. Check it HERE, before anyone downstream has to
+  // discover it the hard way. Invalid output is still emitted (for
+  // debugging) but the summary says so loudly and the exit code is 3.
+  const schemaErrors = validateCanonical(canonical, SCHEMA);
 
   process.stdout.write(yaml);
 
@@ -156,8 +166,13 @@ async function main() {
     `#   warnings         : ${summary.warnings.length}`,
     ...summary.warnings.map(w => `#     · ${w}`),
     `#   evidence entries : ${Object.keys(evidence).length}`,
+    schemaErrors.length
+      ? `#   schema           : INVALID — ${schemaErrors.length} error(s); this is a crawler bug, please report it`
+      : `#   schema           : valid (spec v1.2)`,
+    ...schemaErrors.map(e => `#     ✗ ${e}`),
     '',
   ].join('\n'));
+  if (schemaErrors.length) process.exit(3);
 }
 
 main().catch(e => {
