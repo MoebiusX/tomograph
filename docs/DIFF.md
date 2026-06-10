@@ -77,8 +77,16 @@ Normalisation rules:
 - Arrays are normalised element-wise, sorted, and empty arrays are treated like
   absent fields.
 - Empty `null`, `undefined`, `''`, `{}`, and `[]` values are dropped.
-- Expressions in `expr`, `query`, `promql`, and `expression` collapse
-  whitespace only. Tomograph does not do semantic PromQL equivalence.
+- Expressions in `expr`, `query`, `promql`, and `expression` are
+  order-canonicalized when the expression parses cleanly (parser-proven):
+  selector matcher order (`{b="2",a="1"}` ≡ `{a="1",b="2"}`), aggregation
+  grouping label order (`sum by (a,b)` ≡ `sum by (b,a)`), and structural
+  whitespace (`rate( x [5m] )` ≡ `rate(x[5m])`). Anything that fails to
+  parse falls back to whitespace collapse only — recorded as
+  `textual-fallback` by `tools/lib/promql-canon.mjs`. Explicit non-goals
+  (per `PHASE_1_VERDICT_TRUST_RESEARCH.md` Workstream B): no algebraic
+  rewrites, no binary-expression or vector-matching reordering, no regex
+  equivalence, no histogram folding.
 - `version` blocks compare by `declared` when present.
 - Deployment/presentation fields are stripped:
 
