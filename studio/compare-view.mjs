@@ -63,7 +63,7 @@ export async function loadDiff() {
   }
 }
 
-function activeDiffScopeMode() {
+export function activeDiffScopeMode() {
   return normalizeDiffScopeMode(state.diffScopeMode || state.pack?.meta?.diffScopeMode);
 }
 

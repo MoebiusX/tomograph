@@ -44,7 +44,7 @@ import { makeZip } from '../tools/lib/zip.mjs';
 import {
   saveWorkspacePack, deleteWorkspacePack, touchWorkspacePack,
   loadWorkspacePacks, clearWorkspacePacks,
-  appendDeployRecord, readDeployRecords,
+  appendDeployRecord, appendDeployVerify, readDeployRecords,
 } from './workspace.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -863,6 +863,35 @@ app.get('/api/deploys', (req, res) => {
     res.json({ deploys: readDeployRecords({ packId, limit }) });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/deploys/:deployId/verify — the post-deploy re-verify outcome
+// (VALUE_BACKLOG item 9) written back into the audit trail. Appended as its
+// own record and merged at read time; the original deploy line is never
+// rewritten. A verify outcome is read-path evidence — "deployed" stays
+// distinct from "verified live" (Phase 1 language contract).
+app.post('/api/deploys/:deployId/verify', (req, res) => {
+  const deployId = String(req.params.deployId || '');
+  if (!/^dep_[A-Za-z0-9_-]+$/.test(deployId)) {
+    return res.status(400).json({ ok: false, error: 'malformed deployId' });
+  }
+  const known = readDeployRecords({ limit: 0 }).some(d => d.deployId === deployId);
+  if (!known) return res.status(404).json({ ok: false, error: `unknown deployId: ${deployId}` });
+  const b = req.body || {};
+  try {
+    appendDeployVerify(deployId, {
+      outcome: typeof b.outcome === 'string' ? b.outcome : 'unknown',
+      summary: (b.summary && typeof b.summary === 'object') ? b.summary : null,
+      transitions: Array.isArray(b.transitions) ? b.transitions.slice(0, 200) : null,
+      packB: typeof b.packB === 'string' ? b.packB : null,
+      refreshedAt: typeof b.refreshedAt === 'string' ? b.refreshedAt : null,
+      attempts: Number.isFinite(b.attempts) ? b.attempts : null,
+      alignment: Number.isFinite(b.alignment) ? b.alignment : null,
+    });
+    res.json({ ok: true, deployId });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 

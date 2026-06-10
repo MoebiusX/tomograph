@@ -438,6 +438,32 @@ try {
          'audited error is present and credential-free');
   assert(!('verify' in (auditRec || {})), 'no verify field until re-verify writes one back');
 
+  // Post-deploy re-verify write-back (item 9): the verify outcome lands as
+  // its own audit record and merges into the deploy at read time.
+  const verifyRes = await fetch(`${base}/api/deploys/${encodeURIComponent(deployErr.deployId)}/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      outcome: 'pending',
+      summary: { total: 1, verified: 0, pending: 1, drifted: 0, shadow: 0, unknown: 0, allVerified: false },
+      transitions: [{ id: 'settlement_latency_99', type: 'alert', status: 'pending', match: 'exact' }],
+      attempts: 2,
+    }),
+  });
+  assert(verifyRes.status === 200, 'POST /api/deploys/:id/verify accepts a verify outcome');
+  const auditAfter = await getJson(base, `/api/deploys?pack=payment-service&limit=10`);
+  const mergedRec = auditAfter.deploys.find(d => d.deployId === deployErr.deployId);
+  assert(mergedRec?.verify?.outcome === 'pending', 'verify outcome merges into the deploy record');
+  assert(mergedRec?.verify?.transitions?.[0]?.status === 'pending', 'verify transitions round-trip');
+  const verify404 = await fetch(`${base}/api/deploys/dep_does-not-exist_zzzz/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert(verify404.status === 404, 'verify on unknown deployId → 404');
+  const verify400 = await fetch(`${base}/api/deploys/..%2Fescape/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert(verify400.status === 400, 'verify with malformed deployId → 400');
+
   // Deploy v2 — target product / version / scope wiring
   const matrix = await getJson(base, '/api/deploy/matrix');
   assert(Array.isArray(matrix.products) && matrix.products.includes('grafana'),
