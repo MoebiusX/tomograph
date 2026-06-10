@@ -1474,16 +1474,14 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
                        trust.hasMcpSource ? '' : 'is-warn')}
         </tbody>
       </table>
+      <!-- The scale lives INSIDE the header block, glued to the score —
+           other bands (drift drill, posture) are inserted directly after
+           the header, so anything below it gets pushed off-screen. -->
+      <div class="diag-grade-scale">
+        <div class="diag-scale-caption">INSTRUMENT GRADE SCALE <span class="diag-scale-current">current: ${escapeHtml(ig.letter)} · ${overallPct}%</span></div>
+        ${ladderHtml}
+      </div>
     </header>
-
-    <section class="diag-section diag-grade-scale">
-      <header class="diag-section-head">
-        <span class="diag-section-num">⊙</span>
-        <span class="diag-section-title">Instrument grade — where this score lands</span>
-        <span class="diag-section-meta">current: ${escapeHtml(ig.letter)} · ${overallPct}%</span>
-      </header>
-      ${ladderHtml}
-    </section>
 
     <section class="diag-section">
       <header class="diag-section-head">

@@ -1918,7 +1918,27 @@ a:hover { color: var(--ink); }
   letter-spacing: 0.1em;
 }
 
-/* The grade ladder — every rung visible, current one highlighted ------ */
+/* The grade ladder — every rung visible, current one highlighted.
+   Lives inside .diag-report-head so the drift/posture bands (inserted
+   right after the header) can never push it below the fold. ------ */
+.diag-grade-scale {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-2);
+}
+.diag-scale-caption {
+  margin-bottom: 4px;
+  font: 600 10.5px/1.2 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.diag-scale-current {
+  float: right;
+  color: var(--ink-3);
+  text-transform: none;
+  letter-spacing: 0.04em;
+}
 .grade-ladder {
   list-style: none;
   margin: 0;
