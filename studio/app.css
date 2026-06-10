@@ -62,6 +62,7 @@
 
   /* Neutrals */
   --ink:    #0F1B2D;
+  --ink-1:  #0F1B2D;   /* alias of --ink: widely referenced; SVG fill needs it defined */
   --ink-2:  #1F3A5F;
   --ink-3:  #4A4A4A;
   --ink-4:  #6B6B6B;
@@ -131,6 +132,7 @@
   --crit-tier-3: #94A3B8;
 
   --ink:    #E5E8EC;
+  --ink-1:  #E5E8EC;   /* alias of --ink (see :root) */
   --ink-2:  #B6BFCB;
   --ink-3:  #9AA3AD;
   --ink-4:  #788396;
