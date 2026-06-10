@@ -236,6 +236,35 @@ curl "http://127.0.0.1:8000/api/packs/<pack-id>/compile-artifact?group=rules&fla
 
 The UI exposes the same path through **Remediate -> Compile & Deploy**.
 
+### Saved Journeys — Repeatable Drift Checks
+
+Freeze a comparison as a journey file and run it on demand or on a schedule:
+
+```yaml
+# .tomograph/journeys/repo-vs-live.journey.yaml
+name: repo-vs-live
+packA:
+  crawl: { path: ../my-service, name: my-service, env: prod }
+packB:
+  mcp: { url: https://otel-mcp.example.com/mcp, authEnv: MY_MCP_TOKEN }
+gate:
+  minAlignmentPct: 85
+  requireGradePass: true
+  maxLiveAgeHours: 24
+```
+
+```bash
+node tools/cli.mjs journey run repo-vs-live          # markdown report
+node tools/cli.mjs journey run repo-vs-live --json   # automation output
+node tools/cli.mjs journey list                      # journeys + last outcome
+```
+
+Exit codes follow the gate contract: `0` verdict passes, `1` gate failed,
+`2` tooling/config error — so the same command is a cron job, a Windows
+scheduled task, or a CI gate. Every run appends a JSON record under
+`.tomograph/runs/<journey>/` (the drift-over-time series). Secrets never
+live in journey files — MCP auth is referenced by env-var name.
+
 ## API Surface
 
 | Method | Path | Purpose |

@@ -89,10 +89,47 @@ Usage:
   packc adapt    <file> [env]     Adapt a pack into the layered projection
   packc x-ray    <repo-dir>       Crawl a repo into a draft pack
   packc compile  <file> [target]  Compile a pack into a backend artefact
+  packc journey  run <name>       Run a saved drift check (exit 0 pass · 1 gate-failed · 2 error)
+  packc journey  list             List saved journeys + their last outcome
   packc serve                     Boot the studio (Express server)
   tomograph                       Same as \`packc serve\`
 
 Run a command with no/invalid args to see its own usage.`);
+}
+
+// `packc journey run <name|path> [--json]` — the repeatable drift check
+// (VALUE_BACKLOG 11). Exit codes follow the gate contract in
+// docs/PHASE_1_VERDICT_TRUST_RESEARCH.md Workstream D:
+//   0 verdict passes the gate · 1 gate failed · 2 tooling/config error.
+// Schedule it externally (cron, Task Scheduler, GitHub Actions) — the
+// journey file is the unit of repetition, not a built-in scheduler.
+async function runJourneyCommand([sub, ...args]) {
+  const journeyLib = await import('./lib/journey.mjs');
+  if (sub === 'list') {
+    const names = journeyLib.listJourneys();
+    if (!names.length) { console.log('(no journeys saved — add .tomograph/journeys/<name>.journey.yaml)'); return; }
+    for (const n of names) {
+      const last = journeyLib.readJourneyRuns(n, { limit: 1 })[0];
+      console.log(`${n}\t${last ? `${last.outcome} · ${last.startedAt} · alignment ${last.drift?.alignmentPct}%` : '(never run)'}`);
+    }
+    return;
+  }
+  if (sub === 'run') {
+    const ref = args.find(a => !a.startsWith('--'));
+    const asJson = args.includes('--json');
+    if (!ref) { console.error('usage: packc journey run <name|path/to/file.journey.yaml> [--json]'); process.exit(2); }
+    try {
+      const def = journeyLib.loadJourneyDef(ref);
+      const record = await journeyLib.runJourney(def);
+      process.stdout.write(asJson ? JSON.stringify(record, null, 2) + '\n' : journeyLib.renderJourneyMarkdown(record) + '\n');
+      process.exit(record.outcome === 'pass' ? 0 : 1);
+    } catch (e) {
+      console.error(`packc journey: ${e.message}`);
+      process.exit(2);
+    }
+  }
+  console.error('usage: packc journey <run|list> …');
+  process.exit(2);
 }
 
 switch (command) {
@@ -109,6 +146,9 @@ switch (command) {
     break;
   case 'compile':
     await runCompile(rest);
+    break;
+  case 'journey':
+    await runJourneyCommand(rest);
     break;
   case 'serve':
   case 'studio':
