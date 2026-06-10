@@ -19,15 +19,8 @@ import {
   compileAlertmanager,
 } from './lib/compile.mjs';
 
-const failures = [];
-function assert(cond, label, got, want) {
-  if (cond) { process.stdout.write(`  \u2713 ${label}\n`); return; }
-  const detail = got !== undefined
-    ? `\n      got:  ${JSON.stringify(got).slice(0, 160)}\n      want: ${JSON.stringify(want).slice(0, 160)}`
-    : '';
-  failures.push(`${label}${detail}`);
-  process.stdout.write(`  \u2717 ${label}${detail}\n`);
-}
+import { createHarness } from './lib/harness.mjs';
+const { assert, report } = createHarness({ indent: '  ', truncate: 160 });
 
 // ---------------------------------------------------------------------------
 process.stdout.write('\n[semver] range matcher\n');
@@ -218,8 +211,4 @@ const am26cfg = compileAlertmanager(baseAm, { version: '0.26.0' });
 assert(/msteams_configs/.test(am26cfg) && !/msteamsv2_configs/.test(am26cfg), 'Alertmanager 0.26 routes to msteams_configs');
 
 // ---------------------------------------------------------------------------
-if (failures.length) {
-  process.stderr.write(`\n${failures.length} profile assertion(s) failed.\n`);
-  process.exit(1);
-}
-process.stdout.write('\nall profile assertions pass.\n');
+report('profile');

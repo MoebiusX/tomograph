@@ -36,5 +36,13 @@ export async function validateUploaded(body, contentType, env) {
     headers: { 'Content-Type': contentType, Accept: 'application/json' },
     body,
   });
+  // /api/validate reports schema failures as JSON with a non-2xx status, so
+  // only treat the response as an error when it isn't JSON at all (e.g. the
+  // HTML fallback from a stale server, or a proxy error page).
+  const ct = r.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`/api/validate: server returned non-JSON (${ct || 'no content-type'}, ${r.status}). Restart \`npm run dev\` if the route is new.${text ? '\n' + text.slice(0, 200) : ''}`);
+  }
   return r.json();
 }

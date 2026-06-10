@@ -132,6 +132,15 @@ npm run dev
 
 Open `http://127.0.0.1:8000`.
 
+### Security Posture
+
+The server is a local diagnostic workspace with **no authentication**. Every
+`/api/*` route is open to anyone who can reach the port — including routes
+that make outbound requests on your behalf (`/api/draft-from-mcp`,
+`/api/refresh-live`, the deploy endpoints). Run it on localhost or behind a
+reverse proxy that enforces auth. Never expose it directly to an untrusted
+network.
+
 Useful local checks:
 
 ```bash
@@ -140,6 +149,22 @@ npm run lint:studio
 npm run lint:crawler
 npm run lint:fetcher
 npm run test
+```
+
+### Run In Docker Or Kubernetes
+
+The whole app is one Express process, so the container story is one image:
+
+```bash
+docker build -t tomograph:0.3.0 .
+docker run --rm -p 8000:8000 tomograph:0.3.0
+```
+
+Kubernetes manifests (Deployment + Service + Ingress, applied with Kustomize)
+live in [`deploy/k8s/`](deploy/k8s/README.md):
+
+```bash
+kubectl apply -k deploy/k8s
 ```
 
 ## Common Operations
@@ -256,6 +281,9 @@ reference-packs/
   kafka.pack.yaml
   prometheus.pack.yaml
   grafana.pack.yaml
+
+deploy/k8s/
+  kustomization.yaml       Kustomize entry point (see deploy/k8s/README.md)
 ```
 
 ## Key Docs
@@ -264,10 +292,18 @@ reference-packs/
 - [`docs/DRY_RUN.md`](docs/DRY_RUN.md) - dry-run script and readiness checklist
 - [`docs/RELEASE_READINESS.md`](docs/RELEASE_READINESS.md) - V1 release gate
 - [`docs/MCP_INTEGRATION.md`](docs/MCP_INTEGRATION.md) - live fetch, verification, deploy writes
+- [`docs/MODEL.md`](docs/MODEL.md) - the layered observability model (L1–L5, L2X, GOV)
 - [`docs/DIFF.md`](docs/DIFF.md) - structural alignment and drift model
 - [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) - maturity rubric scoring
+- [`docs/DIAGNOSTIC_GRADE_FRAMEWORK.md`](docs/DIAGNOSTIC_GRADE_FRAMEWORK.md) - the eight coverage/trust criteria behind the Diagnose grade
+- [`docs/TRACEABILITY_GRAPH_COMPARISON_SPEC.md`](docs/TRACEABILITY_GRAPH_COMPARISON_SPEC.md) - requirement-chain comparison semantics
 - [`docs/USER_STORY_CRAWLER_PROVENANCE.md`](docs/USER_STORY_CRAWLER_PROVENANCE.md) - provenance requirements for deployable artifacts
 - [`docs/USER_STORY_REQUIRED_DEPLOYMENT_ENVIRONMENT.md`](docs/USER_STORY_REQUIRED_DEPLOYMENT_ENVIRONMENT.md) - backlog story for required crawl environment selection
+- [`docs/ADVANCED_FEATURE_AUDIT.md`](docs/ADVANCED_FEATURE_AUDIT.md) - per-view audit of the Advanced tools (References · Conformance · Schema · OTLP · Traceability · Atlas)
+- [`docs/VALUE_BACKLOG.md`](docs/VALUE_BACKLOG.md) - prioritized product backlog for the next iterations
+- [`docs/REFACTORING_PLAN.md`](docs/REFACTORING_PLAN.md) - maintainability refactor backlog from the 2026-06 audit
+
+Superseded planning docs live in [`docs/archive/`](docs/archive/README.md).
 
 ## License
 

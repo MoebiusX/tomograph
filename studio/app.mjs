@@ -25,7 +25,7 @@ import {
   focusedCompileFlavor, setFocusedCompileFlavor,
   focusedCompileArtifact, setFocusedCompileArtifact,
 } from './focus.mjs';
-import { escapeHtml, toast, fmtRelative } from './util.mjs';
+import { escapeHtml, toast, fmtRelative, installDialogFocusTrap } from './util.mjs';
 import { renderSchemaView } from './schema-view.mjs';
 import { renderConformanceView } from './conformance-view.mjs';
 import { renderOtlpView } from './otlp-view.mjs';
@@ -129,6 +129,13 @@ async function rehydrateFromPersistence() {
       applyModeChrome();
       renderPackBSelect();
       renderEnvBSelect();
+      renderTabs();
+      renderMainView();
+    }).catch((e) => {
+      // Pack B restore is best-effort: keep the session usable on Pack A.
+      state.compareBId = null;
+      state.packB = null;
+      toast(`Couldn't restore Pack B: ${e.message}`, 'error');
       renderTabs();
       renderMainView();
     });
@@ -361,7 +368,11 @@ function renderPackBSelect() {
   for (const p of [...cat, ...ex]) {
     if (!p?.id || !p.ok) continue;
     if (p.id === state.selectedPackId) continue;
-    if (!packMatchesService(p, state.selectedService, { side: 'b' })) continue;
+    // The ACTIVE Pack B is always representable, even when it wouldn't
+    // pass the service filter (e.g. a reference pack loaded via the
+    // References → Benchmark CTA) — a select must show its own value.
+    if (p.id !== state.compareBId
+        && !packMatchesService(p, state.selectedService, { side: 'b' })) continue;
     if (seen.has(p.id)) continue;
     seen.add(p.id);
     options.push(p);
@@ -595,12 +606,12 @@ export function renderTabs() {
 }
 
 // Focus toggle (A | B). Visible only when both packs are loaded AND the
-// active view renders a single pack — conformance, compile, schema. The
-// other views (layers/compare/atlas) already show both packs.
+// active view renders a single pack — conformance, compile, schema, otlp.
+// The other views (layers/compare/atlas) already show both packs.
 function renderFocusToggle() {
   const wrap = document.createElement('div');
   wrap.className = 'focus-toggle';
-  const showToggle = !!state.packB && ['conformance', 'compile', 'schema'].includes(state.view);
+  const showToggle = !!state.packB && ['conformance', 'compile', 'schema', 'otlp'].includes(state.view);
   if (!showToggle) { wrap.hidden = true; return wrap; }
   const cur = effectiveFocus();
 
@@ -733,28 +744,33 @@ export async function runBenchmark(product, refPackId) {
   if (!product || !refPackId) return;
   state.compareLens = product;
   try {
-    // The Pack B picker handles fetch + render. We dispatch a change
-    // event on it so the existing path (auto-load + render Compare)
-    // runs as if the user had picked it.
-    const bSel = document.querySelector('#pack-b-select');
-    if (bSel) {
-      bSel.value = refPackId;
-      bSel.dispatchEvent(new Event('change', { bubbles: true }));
-    } else {
-      // Fallback: drive state directly if the picker isn't mounted yet.
-      state.compareBId = refPackId;
-      state.view = 'compare';
-      renderTabs(); renderMainView();
+    // Drive state directly. The old path dispatched a change event at the
+    // Pack B picker, but reference packs are intentionally NOT picker
+    // options anymore (see renderPackBSelect) — assigning a non-existent
+    // option silently reset the select to '' and the CTA cleared Pack B
+    // instead of loading the reference.
+    if (!state.catalog.find(p => p.id === refPackId)) {
+      const ref = (state._referencesCache || []).find(p => p.id === refPackId)
+               || (state._examplesCache  || []).find(p => p.id === refPackId);
+      if (ref) state.catalog.push(ref);
     }
-    // Belt-and-suspenders: the picker's auto-switch lands on Compare,
-    // but a Benchmark CTA should land on the Benchmark view. Override
-    // explicitly here a tick later.
-    setTimeout(() => {
-      state.view = 'compare';
-      renderTabs(); renderMainView();
-    }, 700);
+    state.compareBId  = refPackId;
+    state.compareBEnv = defaultEnvFor(refPackId);
+    state.packB = null; state.diff = null;
+    state.conformanceB = null;
+    state.compileCatalogB = null;
+    state.compileContentB = null;
+    await loadPackB();
+    refreshDiff();
+    state.view = 'compare';
+    applyModeChrome();
+    renderPackBSelect();
+    renderEnvBSelect();
+    renderTabs();
+    renderMainView();
   } catch (e) {
     console.warn('[benchmark] failed:', e);
+    toast(`Benchmark failed: ${e.message}`, 'error');
   }
 }
 
@@ -1126,13 +1142,13 @@ function installObservaChrome() {
       <div class="observa-actions" aria-label="Advanced tools">
         <div class="observa-adv-wrap">
           <button type="button" class="observa-action observa-adv-toggle"
-                  aria-haspopup="true" aria-expanded="false"
+                  aria-haspopup="true" aria-expanded="false" aria-controls="observa-adv-menu"
                   title="Advanced — deep observability tools">
             <span class="observa-action-glyph">⬡</span>
             <span class="observa-action-label">Advanced</span>
             <span class="observa-adv-caret">▾</span>
           </button>
-          <div class="observa-adv-menu" role="menu" hidden>
+          <div class="observa-adv-menu" id="observa-adv-menu" role="menu" aria-label="Advanced tools" hidden>
             <div class="observa-adv-menu-head">Alien Observability · deep tools</div>
             ${OBSERVA_ADV.map(a => `
               <button type="button" class="observa-adv-item" role="menuitem" data-view="${a.id}">
@@ -1171,7 +1187,17 @@ function installObservaChrome() {
   // Wire the Advanced menu — deep tools off the main workflow.
   const advToggle = hdr.querySelector('.observa-adv-toggle');
   const advMenu   = hdr.querySelector('.observa-adv-menu');
-  const closeAdv = () => { if (advMenu) { advMenu.hidden = true; advToggle?.setAttribute('aria-expanded', 'false'); } };
+  const advItems  = () => [...advMenu.querySelectorAll('.observa-adv-item')];
+  // Focus contract: opening moves focus to the first menu item; closing
+  // hands it back to the toggle whenever the menu owned it (Escape, item
+  // activation) — but an outside click keeps focus where the user clicked.
+  const closeAdv = () => {
+    if (!advMenu || advMenu.hidden) return;
+    const ownedFocus = advMenu.contains(document.activeElement);
+    advMenu.hidden = true;
+    advToggle?.setAttribute('aria-expanded', 'false');
+    if (ownedFocus) advToggle?.focus();
+  };
   const positionAdv = () => {
     if (!advToggle || !advMenu) return;
     const gap = 10;
@@ -1193,13 +1219,25 @@ function installObservaChrome() {
   advToggle?.addEventListener('click', (e) => {
     e.stopPropagation();
     const willOpen = advMenu.hidden;
-    advMenu.hidden = !willOpen;
-    advToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
-    if (willOpen) positionAdv();
+    if (!willOpen) { closeAdv(); return; }
+    advMenu.hidden = false;
+    advToggle.setAttribute('aria-expanded', 'true');
+    positionAdv();
+    advItems()[0]?.focus();
   });
   window.addEventListener('resize', () => { if (advMenu && !advMenu.hidden) positionAdv(); });
   hdr.querySelectorAll('.observa-adv-item').forEach(item => {
     item.addEventListener('click', () => { closeAdv(); routeTo(item.dataset.view); });
+  });
+  // Arrow-key navigation within the menu (standard menu pattern).
+  advMenu?.addEventListener('keydown', (e) => {
+    const items = advItems();
+    if (!items.length) return;
+    const idx = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown')      { e.preventDefault(); items[(idx + 1) % items.length].focus(); }
+    else if (e.key === 'ArrowUp')   { e.preventDefault(); items[(idx - 1 + items.length) % items.length].focus(); }
+    else if (e.key === 'Home')      { e.preventDefault(); items[0].focus(); }
+    else if (e.key === 'End')       { e.preventDefault(); items[items.length - 1].focus(); }
   });
   // Close the menu on any outside click / Escape.
   document.addEventListener('click', (e) => {
@@ -1271,6 +1309,7 @@ async function boot() {
   setupCrawlPanel();
   setupDraftFromMcpPanel();
   setupDeployModal();
+  installDialogFocusTrap();
   setupHomeAffordance();   // logo click returns home
 
   // Initial live-status load + 60s soft-refresh of the badge so "3m ago"
@@ -1983,13 +2022,28 @@ async function loadAndCacheExamples() {
 // benchmark CTA can load them for comparison.
 export async function loadAndCacheReferences() {
   if (state._referencesCache?.length) return state._referencesCache;
-  try {
-    const r = await api('/api/references');
-    state._referencesCache = r.references || [];
-    renderServiceSelect();
-    renderPackBSelect();
-  } catch (_) { state._referencesCache = []; }
-  return state._referencesCache;
+  // Single-flight: concurrent callers (boot + the References view) share
+  // one fetch. _referencesError distinguishes "failed" from "catalogue is
+  // empty" so the view can render an honest state instead of loading
+  // forever; a retry just calls this again.
+  if (state._referencesPromise) return state._referencesPromise;
+  state._referencesPromise = (async () => {
+    try {
+      const r = await api('/api/references');
+      state._referencesCache = r.references || [];
+      state._referencesError = null;
+      state._referencesLoaded = true; // settled — even an empty catalogue
+      renderServiceSelect();
+      renderPackBSelect();
+    } catch (e) {
+      state._referencesCache = [];
+      state._referencesError = e?.message || 'failed to load /api/references';
+    } finally {
+      state._referencesPromise = null;
+    }
+    return state._referencesCache;
+  })();
+  return state._referencesPromise;
 }
 
 // loadAndRenderHomeExamples + openExampleAsPack lived here until the

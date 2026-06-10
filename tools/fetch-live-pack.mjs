@@ -39,6 +39,7 @@ import { emit as emitYaml } from './lib/mini-yaml.mjs';
 import { validateCanonical, SPEC_VERSION } from './lib/validator.mjs';
 import { inferSlisFromRecordingRules } from './lib/sli-inference.mjs';
 import { materializeL2XFromBackends } from './lib/l2x.mjs';
+import { serviceSlug as slug } from './lib/slug.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = resolve(__dirname, '..', 'vendor', 'observability-pack-spec', `v${SPEC_VERSION}`, 'observability-pack.schema.json');
@@ -52,6 +53,9 @@ const GRAFANA_DASHBOARD_SEARCH_LIMIT = Math.min(Number(process.env.TOMOGRAPH_GRA
 const GRAFANA_DASHBOARD_PANEL_LIMIT  = Math.min(Number(process.env.TOMOGRAPH_GRAFANA_PANEL_LIMIT || 500) || 500, 500);
 const GRAFANA_DASHBOARD_INCLUDE_JSON = !/^(0|false|no|off)$/i.test(process.env.TOMOGRAPH_GRAFANA_INCLUDE_JSON || 'true');
 const JSON_ANNOTATION_BLOCK_LENGTH = 4096;
+// Per-request MCP timeout. Without it a hung endpoint stalls the fetch (and
+// the server's /api/refresh-live caller) forever. Capped at 5 minutes.
+const MCP_TIMEOUT_MS = Math.min(Number(process.env.TOMOGRAPH_MCP_TIMEOUT_MS || 30_000) || 30_000, 300_000);
 
 function annotationJson(value) {
   const compact = JSON.stringify(value);
@@ -86,6 +90,7 @@ export function createMcpClient({ mcpUrl, mcpAuth = null } = {}) {
       method: 'POST',
       headers,
       body: JSON.stringify({ jsonrpc: '2.0', id: nextId++, method, params }),
+      signal: AbortSignal.timeout(MCP_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`MCP HTTP ${res.status} on ${method}: ${await res.text().catch(() => '')}`);
     if (res.headers.get('mcp-session-id')) session = res.headers.get('mcp-session-id');
@@ -131,6 +136,7 @@ export function createMcpClient({ mcpUrl, mcpAuth = null } = {}) {
       method: 'POST',
       headers,
       body: JSON.stringify({ jsonrpc: '2.0', method, params }),
+      signal: AbortSignal.timeout(MCP_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`MCP HTTP ${res.status} on ${method}: ${await res.text().catch(() => '')}`);
     if (res.headers.get('mcp-session-id')) session = res.headers.get('mcp-session-id');
@@ -155,13 +161,6 @@ export function createMcpClient({ mcpUrl, mcpAuth = null } = {}) {
 // Pack builder — pure, takes stubbed MCP responses, returns a canonical
 // v1.2 manifest. Exported for offline tests.
 // ============================================================
-
-function slug(s, fallback = 'svc') {
-  if (typeof s !== 'string' || !s) return fallback;
-  const cleaned = s.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-  if (cleaned.length < 2) return fallback;
-  return cleaned.slice(0, 50);
-}
 
 function pickCriticality(services) {
   // Heuristic: the cron treats prod observability as tier-2 by default.

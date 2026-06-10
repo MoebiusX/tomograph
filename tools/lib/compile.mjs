@@ -25,6 +25,7 @@
 
 import { emit as emitYaml } from './mini-yaml.mjs';
 import { resolveProfile } from './profiles.mjs';
+import { fileSlug as slug } from './slug.mjs';
 
 // ============================================================
 // Helpers — ref resolution, slug normalisation, expression building
@@ -79,11 +80,6 @@ function profileForTarget(canonical, family, opts = {}) {
     default:
       return resolveProfile(family, opts.version);
   }
-}
-
-function slug(s) {
-  if (typeof s !== 'string') return 'pack';
-  return s.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
 }
 
 function nameOf(canonical) {

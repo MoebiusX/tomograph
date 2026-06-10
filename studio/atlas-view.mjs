@@ -107,6 +107,8 @@ export function renderAtlasView(view) {
       state.diff  ? Promise.resolve() : loadDiff(),
     ]).then(() => {
       renderAtlas(state.atlasVariant, stage, datasetFor(), atlasOpts);
+    }).catch((e) => {
+      stage.innerHTML = `<div class="error">Failed to load pack B: ${escapeHtml(e.message)}</div>`;
     });
   } else {
     renderAtlas(state.atlasVariant, stage, dataset, atlasOpts);

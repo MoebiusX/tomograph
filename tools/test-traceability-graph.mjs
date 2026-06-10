@@ -14,13 +14,8 @@ import {
   requirementRoots,
 } from './lib/traceability-graph.mjs';
 
-const failures = [];
-function assert(cond, label, got, want) {
-  if (cond) { process.stdout.write(`✓ ${label}\n`); return; }
-  const detail = got !== undefined ? `\n    got:  ${JSON.stringify(got)}\n    want: ${JSON.stringify(want)}` : '';
-  failures.push(`${label}${detail}`);
-  process.stdout.write(`✗ ${label}${detail}\n`);
-}
+import { createHarness } from './lib/harness.mjs';
+const { assert, report } = createHarness();
 
 function clone(x) {
   return JSON.parse(JSON.stringify(x));
@@ -192,8 +187,4 @@ assert(broken.branches[0].verdict === 'broken',
 assert(broken.branches[0].missingRoles.some((role) => role.role === 'action'),
        'broken branch reports missing action limb');
 
-if (failures.length) {
-  process.stderr.write(`\n${failures.length} traceability graph assertion(s) failed.\n`);
-  process.exit(1);
-}
-process.stdout.write('\nall traceability graph assertions pass.\n');
+report('traceability graph');

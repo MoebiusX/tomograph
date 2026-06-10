@@ -39,6 +39,6 @@ file and should not have appeared as deployable rows.
 
 ## Notes
 
-The dependency view plan in `docs/DEPENDENCY_VIEW_PLAN.md` covers the UI shape
-for lineage. This story is the data contract needed before that view can be
-trusted for deployment decisions.
+The dependency view plan in `docs/archive/DEPENDENCY_VIEW_PLAN.md` (archived)
+covers the UI shape for lineage. This story is the data contract needed before
+that view can be trusted for deployment decisions.

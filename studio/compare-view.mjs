@@ -15,6 +15,16 @@ import { openDrawer } from './drawer.mjs';
 import { defaultEnvFor, loadPackB, openDeployModal, renderMainView, renderTabs, refresh } from './app.mjs';
 import { cardKey } from './layers-view.mjs';
 import { diffEntryLabel } from './artifact-model.mjs';
+import {
+  POSTURE_LAYERS,
+  POSTURE_MECHANISMS_PER_LAYER,
+  compareModeFor,
+  computeDiagnosticGrade,
+  computeWeightedDeltaRisk,
+  criterionScore,
+  diagnosticAuditStatus,
+  isScaffoldDiffEntry,
+} from './diagnostic-grade.mjs';
 
 // ---------- compare view ----------
 
@@ -722,96 +732,6 @@ function renderComparePrompt() {
   return el;
 }
 
-// Detect what KIND of comparison Pack B represents so the drill can
-// frame the deltas correctly:
-//   'gap'   — B is a target / reference / contract ("what good looks
-//             like"). onlyInB = the gap to close; onlyInA = beyond target.
-//   'drift' — B is the live / deployed system ("what's actually out
-//             there"). onlyInA = declared but unconfirmed (drift risk);
-//             onlyInB = observed live but undeclared (shadow signal).
-// Ambiguous comparisons default to 'gap' — "what's different / missing"
-// is the more common intent when benchmarking against another pack.
-function compareModeFor(packB, compareBId) {
-  const bId = String(compareBId || packB?.id || '').toLowerCase();
-  const src = inferPackSource(packB);
-  const isLiveLike = /(^|[-_])(live|deployed|prod|runtime)([-_]|$)/.test(bId) || src === 'Live';
-  if (isLiveLike) return 'drift';
-  return 'gap';
-}
-
-const DELTA_BADNESS = {
-  declaredNotLive: 1.0,
-  driftedDefault: 0.5,
-  driftedDecisionBearing: 1.0,
-  driftedCosmetic: 0.1,
-  liveNotDeclared: 0.15,
-};
-
-// Trust threshold derived from decision cost, not a round-number vote:
-// badness/aligned <= 0.176 means roughly one high-cost false reassurance
-// per six confirmed controls. Fidelity = aligned / (aligned + badness).
-const DRIFT_BADNESS_PER_ALIGNED_TRUST_CEILING = 0.176;
-const DRIFT_FIDELITY_TRUST_THRESHOLD = 1 / (1 + DRIFT_BADNESS_PER_ALIGNED_TRUST_CEILING);
-const DRIFT_HEALTH_PASS_PCT = Math.round(DRIFT_FIDELITY_TRUST_THRESHOLD * 100);
-const DECISION_BEARING_DELTA_RE = /(objective|target|threshold|window|duration|severity|burn|budget|expr|query|promql|expression|condition|sli|slo|metric|record|route|receiver|channel|contact|notification|pager|trigger|pipeline|exporter|backend|signal|good|total|mttd|mttr)/i;
-const COSMETIC_DELTA_RE = /(title|label|labels|legend|display|layout|grid|position|folder|tag|tags|description|desc|summary|annotation|annotations|unit|color|schema|uid|source|provider)/i;
-
-function isScaffoldArtefact(artefact) {
-  return artefact?.source === 'Scaffold';
-}
-
-function isScaffoldDiffEntry(entry) {
-  return isScaffoldArtefact(entry?.artefact) || isScaffoldArtefact(entry?.a) || isScaffoldArtefact(entry?.b);
-}
-
-function driftedEntryBadness(entry) {
-  const fields = (entry?.deltas || []).map((d) => String(d.field || '')).filter(Boolean);
-  if (fields.some((field) => DECISION_BEARING_DELTA_RE.test(field))) {
-    return { weight: DELTA_BADNESS.driftedDecisionBearing, className: 'decision' };
-  }
-  if (fields.length > 0 && fields.every((field) => COSMETIC_DELTA_RE.test(field))) {
-    return { weight: DELTA_BADNESS.driftedCosmetic, className: 'cosmetic' };
-  }
-  return { weight: DELTA_BADNESS.driftedDefault, className: 'default' };
-}
-
-function computeWeightedDeltaRisk({ mode, aligned, driftedEntries = [], drifted, onlyInA, onlyInB }) {
-  const aWeight = mode === 'drift'
-    ? DELTA_BADNESS.declaredNotLive
-    : DELTA_BADNESS.liveNotDeclared;
-  const bWeight = mode === 'drift'
-    ? DELTA_BADNESS.liveNotDeclared
-    : DELTA_BADNESS.declaredNotLive;
-  const driftEntries = driftedEntries.length
-    ? driftedEntries
-    : Array.from({ length: drifted || 0 }, () => null);
-  const driftedBreakdown = { decision: 0, default: 0, cosmetic: 0 };
-  let driftedUnits = 0;
-  for (const entry of driftEntries) {
-    if (isScaffoldDiffEntry(entry)) continue;
-    const cost = driftedEntryBadness(entry);
-    driftedBreakdown[cost.className] += 1;
-    driftedUnits += cost.weight;
-  }
-  const onlyInAUnits = onlyInA * aWeight;
-  const onlyInBUnits = onlyInB * bWeight;
-  const totalBadness = driftedUnits + onlyInAUnits + onlyInBUnits;
-  const denominator = aligned + totalBadness;
-  const health = denominator === 0 ? 1 : aligned / denominator;
-  const healthPct = Math.round(health * 100);
-  return {
-    aWeight,
-    bWeight,
-    driftedUnits,
-    driftedBreakdown,
-    onlyInAUnits,
-    onlyInBUnits,
-    totalBadness,
-    health,
-    healthPct,
-  };
-}
-
 // THE A-vs-B drill — the real side-by-side evidence behind the verdict.
 // Consumes state.diff (server-computed set arithmetic on the two packs'
 // artefact keys) and projects it through the active product lens, then
@@ -1054,28 +974,6 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
 // titles, dashboard folders, alert names — overridable via
 // `metadata.annotations.layer.<artefact-id>: infra|platform|app|ux`.
 // ============================================================
-const POSTURE_LAYERS = [
-  { key: 'infra',    label: 'Infrastructure', hint: 'nodes · pods · disk · network' },
-  { key: 'platform', label: 'Platform',       hint: 'db · cache · queue · gateway' },
-  { key: 'app',      label: 'Application',    hint: 'service · API · job · business logic' },
-  { key: 'ux',       label: 'User Experience',hint: 'frontend · journey · business outcome' },
-];
-
-// Layer-specific mechanisms — each has a present/absent verdict per
-// layer based on artefacts classified to that layer.
-const POSTURE_MECHANISMS_PER_LAYER = [
-  { key: 'sli',        label: 'SLI defined',       hint: 'what we measure' },
-  { key: 'slo',        label: 'SLO declared',      hint: 'target reliability' },
-  { key: 'alert',      label: 'Alert wired',       hint: 'fires on threshold or burn-rate' },
-  { key: 'dashboard',  label: 'Dashboard',         hint: 'human-readable view' },
-  { key: 'metric',     label: 'Metrics flowing',   hint: 'scrape job, recording rule, or evidence' },
-  { key: 'log',        label: 'Logs flowing',      hint: 'log scrape / shipper' },
-  { key: 'trace',      label: 'Traces flowing',    hint: 'span emission attested' },
-  { key: 'runbook',    label: 'Runbook linked',    hint: 'oncall response declared' },
-  { key: 'chaos',      label: 'Chaos validated',   hint: 'fault injection tested' },
-  { key: 'synthetic',  label: 'Synthetic check',   hint: 'active uptime probe' },
-];
-
 // Platform-wide mechanisms — single status, doesn't depend on layer.
 const POSTURE_MECHANISMS_GLOBAL = [
   { key: 'instrumentation', label: 'OTel SDK',     hint: 'instrumentation contract' },
@@ -1444,313 +1342,6 @@ function renderPostureNarrative(posture) {
 //   <3  → Far from diagnostic-grade
 // ============================================================
 
-// "Observability Contract" mode is on when Pack B is the
-// hand-authored aspirational/contract reference. The internal label
-// is OLA; the user-facing label is "Observability Contract".
-//
-// Detection runs three ways (any one suffices):
-//   1. The pack itself carries `metadata.annotations.studio.role: contract`
-//      (canonical signal — the contract pack declares its role).
-//   2. The catalog id (the dropdown slot, not pack.metadata.name) is a
-//      known contract slot — covers target-advanced even before the
-//      annotation is added, and any future *-contract slot.
-//   3. The pack's id or metadata.name carries a `contract` or `ola` token.
-const CONTRACT_PACK_IDS = new Set(['target-advanced']);
-function isObservabilityContractPack(pack, catalogId) {
-  if (!pack) return false;
-  const role = pack.meta?.annotations?.['studio.role'] || pack.metadata?.annotations?.['studio.role'];
-  if (String(role || '').toLowerCase() === 'contract') return true;
-  const slot = String(catalogId || '').toLowerCase();
-  if (slot && CONTRACT_PACK_IDS.has(slot)) return true;
-  if (slot && /(^|-)contract($|-)/i.test(slot)) return true;
-  if (slot && /(^|-)ola($|-)/i.test(slot))      return true;
-  const id = String(pack.id || pack.meta?.id || pack.metadata?.name || '').toLowerCase();
-  if (CONTRACT_PACK_IDS.has(id)) return true;
-  if (/(^|-)contract($|-)/i.test(id)) return true;
-  if (/(^|-)ola($|-)/i.test(id))      return true;
-  return false;
-}
-function contractLabelFor(packB, catalogId) {
-  if (!packB) return null;
-  if (isObservabilityContractPack(packB, catalogId)) return 'Observability Contract';
-  return packB?.meta?.name || packB?.metadata?.name || packB?.id || 'reference pack';
-}
-
-// Staleness window for the freshness criterion. 24h is the demo
-// default — daily refresh is the lowest bar for a "live" pack.
-const FRESH_WINDOW_MS = 24 * 60 * 60 * 1000;
-// Drift tolerance: how many probes can come back empty/failed and
-// still pass. 0.3 = up to 30% of attempted probes can be empty/failed
-// without flunking. Empty AND failed both count as drift signal —
-// the live system didn't confirm what the pack declares.
-const DRIFT_FAIL_TOLERANCE = 0.30;
-
-function computeDiagnosticGrade(packA, packB, posture, catalogBId, diff) {
-  // ===== Coverage criteria (2A) =====
-  const meta = packA?.meta || {};
-  const ann = meta?.annotations || packA?.metadata?.annotations || {};
-  const L1 = packA?.layers?.L1 || [];
-  const L2 = packA?.layers?.L2 || [];
-  const L4 = packA?.layers?.L4 || {};
-  const L5 = packA?.layers?.L5 || [];
-
-  // ---- 1. Multi-modal ----
-  const signalsPresent = new Set();
-  for (const b of L2) {
-    const sig = String(b.spec?.signal || b.signal || '').toLowerCase();
-    if (['metrics','logs','traces','profiles'].includes(sig)) signalsPresent.add(sig);
-  }
-  const allSignals = ['metrics','logs','traces','profiles'];
-  const signalsCount = signalsPresent.size;
-  const multiModal = signalsCount >= 3;
-
-  // ---- 2. Correlated ----
-  const otel = L2.find(a => /^OTEL-/.test(a.id || ''));
-  const propagators = otel?.spec?.sdk?.propagators || otel?.sdk?.propagators || [];
-  const hasTraceContext = (Array.isArray(propagators) ? propagators : [])
-    .some(p => /tracecontext/i.test(String(p)));
-  const logCorrelationDeclared = !!(otel?.spec?.log_correlation === true || otel?.log_correlation === true);
-  const correlated = hasTraceContext && (logCorrelationDeclared || signalsPresent.has('logs'));
-
-  // ---- 3. Calibrated ----
-  const hasBaselines = L5.some(a => /baseline/i.test(a.id || '') || /baseline/i.test(a.title || ''));
-  const slos = L1.filter(a => /^SLO-/.test(a.id || ''));
-  const slosWithObjective = slos.filter(a => {
-    const obj = a.spec?.objective ?? a.objective;
-    return typeof obj === 'number' && obj > 0 && obj <= 1;
-  });
-  const calibrated = hasBaselines && slosWithObjective.length > 0;
-
-  // ---- 4. Comprehensive ----
-  let totalObserved = 0;
-  for (const l of POSTURE_LAYERS) {
-    let present = 0, evidence = 0;
-    for (const m of POSTURE_MECHANISMS_PER_LAYER) {
-      const arr = posture.cells[`${l.key}:${m.key}`];
-      if (arr && arr.length) {
-        if (arr.every(a => a._evidence)) evidence++;
-        else present++;
-      }
-    }
-    totalObserved += (present + evidence) / POSTURE_MECHANISMS_PER_LAYER.length;
-  }
-  const avgObservedPct = Math.round((totalObserved / POSTURE_LAYERS.length) * 100);
-  const comprehensive = avgObservedPct >= 50;
-
-  // ---- 5. Actionable ----
-  const healings = (L4.healing || []).concat(
-    Array.isArray(L4) ? L4.filter(a => /^HEAL-/.test(a.id || '')) : []
-  );
-  const actionableCount = healings.length;
-  const actionable = actionableCount > 0;
-
-  const coverageCriteria = [
-    { key: 'multi-modal',   label: 'Multi-modal',   sub: 'metrics + logs + traces + profiles',
-      pass: multiModal,
-      detail: `${signalsCount} of ${allSignals.length} signals declared as backends` +
-              (signalsCount > 0 ? ' (' + [...signalsPresent].join(', ') + ')' : ''),
-    },
-    { key: 'correlated',    label: 'Correlated',    sub: 'signals linked at evidence-level',
-      pass: correlated,
-      detail: hasTraceContext
-        ? (logCorrelationDeclared ? 'tracecontext propagator + log_correlation: true' : 'tracecontext propagator declared')
-        : 'tracecontext propagator missing — logs/traces can\'t be joined',
-    },
-    { key: 'calibrated',    label: 'Calibrated',    sub: 'normal defined with numbers',
-      pass: calibrated,
-      detail: hasBaselines
-        ? (slosWithObjective.length
-            ? `MTTD/MTTR baselines + ${slosWithObjective.length} SLO${slosWithObjective.length === 1 ? '' : 's'} with explicit objective`
-            : 'baselines declared but no SLOs have explicit objectives')
-        : 'no MTTD/MTTR baselines declared',
-    },
-    { key: 'comprehensive', label: 'Comprehensive', sub: 'coverage spans all layers',
-      pass: comprehensive,
-      detail: `${avgObservedPct}% average observed across infra · platform · app · ux`,
-    },
-    { key: 'actionable',    label: 'Actionable',    sub: 'alerts lead to a response path',
-      pass: actionable,
-      detail: actionableCount > 0
-        ? `${actionableCount} remediation runbook${actionableCount === 1 ? '' : 's'} declared`
-        : 'no runbooks linked — when an alert fires, oncall has no scripted response',
-    },
-  ];
-
-  // ===== Trust criteria (2B) =====
-
-  // The live/verified evidence (MCP probe outcomes + refreshedAt) is
-  // stamped by the fetcher onto whichever pack was drafted from live.
-  // In the drift journey Pack A is the declared repo scan (no MCP) and
-  // Pack B is the live draft that carries the evidence; in the single-
-  // pack refreshed workflow Pack A carries its own evidence. Read the
-  // trust signals from whichever pack actually has MCP annotations,
-  // favouring the live half (Pack B).
-  const annB = packB?.meta?.annotations || packB?.metadata?.annotations || {};
-  const hasMcpAnnotations = (a) => !!a && Object.keys(a).some(k => k.startsWith('mcp.'));
-  const liveAnn = hasMcpAnnotations(annB) ? annB : ann;
-
-  // ---- 6. Chaos-validated ----
-  const chaosCount = L5.filter(a => /^CHAOS-/.test(a.id || '')).length;
-  const chaosValidated = chaosCount > 0;
-
-  // ---- 7. Drift-free ----
-  // Live signal integrity: did the declarations the pack makes about
-  // the world match what the MCP actually observed? When Pack B is a
-  // live reconstruction, use the actual A-vs-B diff. Probe success only
-  // says the live scanner worked; it does not prove declared artefacts
-  // are active in production.
-  const probesAttempted = (liveAnn['mcp.probesAttempted']  || '').split(',').filter(Boolean);
-  const probesSucceeded = (liveAnn['mcp.probesSucceeded']  || '').split(',').filter(Boolean);
-  const probesEmpty     = (liveAnn['mcp.probesEmpty']      || '').split(',').filter(Boolean);
-  const probesFailed    = (liveAnn['mcp.probesFailed']     || '').split(',').filter(Boolean);
-  const hasMcpSource = probesAttempted.length > 0 || !!liveAnn['mcp.refreshedAt'];
-  let driftFree, driftDetail, driftScore = 0;
-  const hasLiveDiff = !!diff?.layers && compareModeFor(packB, catalogBId) === 'drift';
-  if (hasLiveDiff) {
-    const branchRollup = diff.traceabilityGraph?.rollup;
-    if (branchRollup && branchRollup.declaredTotal > 0) {
-      driftScore = Math.max(0, Math.min(1, branchRollup.integrityMean ?? 0));
-      driftFree = driftScore >= DRIFT_FIDELITY_TRUST_THRESHOLD;
-      const confidence = (diff.traceabilityGraph?.branches || []).some(b => b.confidence === 'inferred')
-        ? 'some inferred edges'
-        : 'declared edges';
-      driftDetail = driftFree
-        ? `requirement-chain integrity ${branchRollup.integrityPct}% — ${branchRollup.intact}/${branchRollup.declaredTotal} declared commitment${branchRollup.declaredTotal === 1 ? '' : 's'} intact; ${branchRollup.partial} partial, ${branchRollup.broken} broken, ${branchRollup.undeclared} live-only; ${confidence}`
-        : `requirement-chain integrity ${branchRollup.integrityPct}% (<${DRIFT_HEALTH_PASS_PCT}% trust threshold) — ${branchRollup.intact}/${branchRollup.declaredTotal} declared commitment${branchRollup.declaredTotal === 1 ? '' : 's'} intact; ${branchRollup.partial} partial, ${branchRollup.broken} broken, ${branchRollup.undeclared} live-only; ${confidence}`;
-    } else {
-      let alignedLive = 0;
-      let declaredMissing = 0;
-      let behaviorDrifted = 0;
-      let liveShadow = 0;
-      let scaffoldExcluded = 0;
-      const driftedEntries = [];
-      for (const bucket of Object.values(diff.layers || {})) {
-        const concreteOnlyInA = (bucket.onlyInA || []).filter(e => !isScaffoldDiffEntry(e));
-        const concreteOnlyInB = (bucket.onlyInB || []).filter(e => !isScaffoldDiffEntry(e));
-        const concreteInBoth = (bucket.inBoth || []).filter(e => !isScaffoldDiffEntry(e));
-        scaffoldExcluded += (bucket.onlyInA || []).filter(e => isScaffoldDiffEntry(e)).length
-          + (bucket.onlyInB || []).filter(e => isScaffoldDiffEntry(e)).length
-          + (bucket.inBoth || []).filter(e => isScaffoldDiffEntry(e)).length;
-        declaredMissing += concreteOnlyInA.length;
-        const bucketDrifted = concreteInBoth.filter(e => e.match === 'drifted');
-        behaviorDrifted += bucketDrifted.length;
-        driftedEntries.push(...bucketDrifted);
-        alignedLive += concreteInBoth.filter(e => e.match !== 'drifted').length;
-        liveShadow += concreteOnlyInB.length;
-      }
-      const weighted = computeWeightedDeltaRisk({
-        mode: 'drift',
-        aligned: alignedLive,
-        driftedEntries,
-        drifted: behaviorDrifted,
-        onlyInA: declaredMissing,
-        onlyInB: liveShadow,
-      });
-      driftScore = Math.max(0, Math.min(1, weighted.health));
-      driftFree = weighted.health >= DRIFT_FIDELITY_TRUST_THRESHOLD;
-      const fmtUnits = (n) => Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, '');
-      const driftBreakdown = `${weighted.driftedBreakdown.decision} decision-bearing, ${weighted.driftedBreakdown.default} default, ${weighted.driftedBreakdown.cosmetic} cosmetic`;
-      const scaffoldNote = scaffoldExcluded ? `; ${scaffoldExcluded} scaffold excluded` : '';
-      driftDetail = driftFree
-        ? `weighted live-fidelity ${weighted.healthPct}% — declared-not-live ${declaredMissing}×1.0, drifted ${behaviorDrifted} (${driftBreakdown}), live-not-declared ${liveShadow}×0.15; ${fmtUnits(weighted.totalBadness)} badness units${scaffoldNote}`
-        : `weighted live-fidelity ${weighted.healthPct}% (<${DRIFT_HEALTH_PASS_PCT}% trust threshold); declared-not-live ${declaredMissing}×1.0, drifted ${behaviorDrifted} (${driftBreakdown}), live-not-declared ${liveShadow}×0.15; ${fmtUnits(weighted.totalBadness)} badness units${scaffoldNote}`;
-    }
-  } else if (!hasMcpSource) {
-    driftFree = false;
-    driftScore = 0;
-    driftDetail = 'declared-only — no live signal to verify against (connect MCP or scan live)';
-  } else if (probesAttempted.length === 0) {
-    // Pack has refreshedAt but no probe table — can't compute ratio.
-    driftFree = true;
-    driftScore = 1;
-    driftDetail = 'live source connected — probe table not recorded';
-  } else {
-    const driftCount = probesEmpty.length + probesFailed.length;
-    const driftRatio = driftCount / probesAttempted.length;
-    driftFree = driftRatio <= DRIFT_FAIL_TOLERANCE;
-    driftScore = Math.max(0, Math.min(1, 1 - driftRatio));
-    const pct = Math.round(driftRatio * 100);
-    driftDetail = driftFree
-      ? `${probesSucceeded.length}/${probesAttempted.length} probes confirmed (${pct}% empty or failed, within ${Math.round(DRIFT_FAIL_TOLERANCE * 100)}% tolerance)`
-      : `${driftCount}/${probesAttempted.length} probes empty or failed (${pct}%) — declared surface exceeds what live attests`;
-  }
-
-  // ---- 8. Fresh ----
-  const refreshedAtStr = liveAnn['mcp.refreshedAt'];
-  let fresh, freshDetail;
-  if (!refreshedAtStr) {
-    fresh = false;
-    freshDetail = 'no mcp.refreshedAt annotation — pack has never been verified against live state';
-  } else {
-    const refreshedAtMs = Date.parse(refreshedAtStr);
-    if (!Number.isFinite(refreshedAtMs)) {
-      fresh = false;
-      freshDetail = `mcp.refreshedAt is unparseable (${refreshedAtStr})`;
-    } else {
-      const ageMs = Date.now() - refreshedAtMs;
-      const ageHrs = Math.round(ageMs / 3600000);
-      fresh = ageMs <= FRESH_WINDOW_MS;
-      freshDetail = fresh
-        ? `last refreshed ${ageHrs}h ago — within 24h staleness window`
-        : `last refreshed ${ageHrs}h ago — exceeds 24h staleness window, signals may have drifted`;
-    }
-  }
-
-  const trustCriteria = [
-    { key: 'chaos-validated', label: 'Chaos-validated', sub: 'recovery proven by fault injection',
-      pass: chaosValidated,
-      detail: chaosCount > 0
-        ? `${chaosCount} chaos experiment${chaosCount === 1 ? '' : 's'} declared`
-        : 'no chaos experiments — recovery procedures are theoretical',
-    },
-    { key: 'drift-free',      label: 'Drift-free',      sub: 'declarations match live state',
-      pass: driftFree,
-      score: driftScore,
-      detail: driftDetail,
-    },
-    { key: 'fresh',           label: 'Fresh',           sub: 'recently verified against live',
-      pass: fresh,
-      detail: freshDetail,
-    },
-  ];
-
-  // ===== Overall verdict (equal-weighted, fractional where a criterion has a score) =====
-  const criterionScore = (c) => typeof c.score === 'number' ? Math.max(0, Math.min(1, c.score)) : (c.pass ? 1 : 0);
-  const sumScore = (items) => items.reduce((n, c) => n + criterionScore(c), 0);
-  const coveragePassed = sumScore(coverageCriteria);
-  const trustPassed = sumScore(trustCriteria);
-  const overallPassed = coveragePassed + trustPassed;
-  const overallTotal = coverageCriteria.length + trustCriteria.length;   // 5 + 3 = 8
-  const verdict =
-    overallPassed >= 7 ? { word: 'Diagnostic-grade',          level: 'is-grade' } :
-    overallPassed >= 5 ? { word: 'Almost diagnostic-grade',   level: 'is-almost' } :
-    overallPassed >= 3 ? { word: 'Not yet diagnostic-grade',  level: 'is-not-yet' } :
-                         { word: 'Far from diagnostic-grade', level: 'is-far' };
-
-  return {
-    coverage: {
-      criteria: coverageCriteria,
-      passed:   coveragePassed,
-      total:    coverageCriteria.length,
-      contractLabel: contractLabelFor(packB, catalogBId),
-      contractMode:  isObservabilityContractPack(packB, catalogBId),
-    },
-    trust: {
-      criteria: trustCriteria,
-      passed:   trustPassed,
-      total:    trustCriteria.length,
-      hasMcpSource,
-    },
-    overall: {
-      passed: overallPassed,
-      total:  overallTotal,
-      verdict,
-      liveDriftFree: driftFree,
-    },
-    traceabilityGraph: diff?.traceabilityGraph || null,
-  };
-}
-
 // Diagnose view — rendered as a compliance report, not a pitch deck.
 // Density and evidence are the design language; every row encodes
 // observed vs expected. No giant typography, no decorative tiles.
@@ -1765,7 +1356,6 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
 
   const pct = (passed, total) => total === 0 ? 0 : Math.round((passed / total) * 100);
   const fmtScore = (n) => Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
-  const criterionScore = (c) => typeof c.score === 'number' ? Math.max(0, Math.min(1, c.score)) : (c.pass ? 1 : 0);
   const criterionState = (c) => c.pass ? 'is-pass' : (criterionScore(c) > 0 ? 'is-partial' : 'is-fail');
   const criterionPip = (c) => c.pass ? '✓' : (criterionScore(c) > 0 ? '◐' : '✗');
   const criterionStatus = (c) => c.pass ? 'PASS' : (criterionScore(c) > 0 ? 'PARTIAL' : 'FAIL');
@@ -1776,10 +1366,9 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
 
   // Single binary verdict in audit terms: PASS when the score is >85%.
   // Individual failed criteria still render below as evidence and gaps.
-  const PASS_SCORE_THRESHOLD = 85;
-  const scorePctExact = overall.total === 0 ? 0 : (overall.passed / overall.total) * 100;
-  const passes = scorePctExact > PASS_SCORE_THRESHOLD;
-  const status = passes ? 'PASS' : 'FAIL';
+  const audit = overall.audit || diagnosticAuditStatus(overall.passed, overall.total);
+  const passes = audit.passes;
+  const status = audit.status;
 
   // Compact mono row builder for the summary block.
   const summaryRow = (label, value, hint, state) => `
@@ -2370,7 +1959,11 @@ function renderCompareView(view) {
     Promise.all([
       haveB    ? Promise.resolve() : loadPackB(),
       haveDiff ? Promise.resolve() : loadDiff(),
-    ]).then(() => { renderTabs(); renderMainView(); });
+    ]).then(() => { renderTabs(); renderMainView(); })
+      .catch((e) => {
+        loading.className = 'error';
+        loading.textContent = `Failed to load packs: ${e.message}`;
+      });
     return;
   }
 

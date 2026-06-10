@@ -23,13 +23,8 @@ const FIXTURE = resolve(
   'examples', 'payment-service.pack.yaml',
 );
 
-const failures = [];
-function assert(cond, label, got, want) {
-  if (cond) { process.stdout.write(`✓ ${label}\n`); return; }
-  const detail = got !== undefined ? `\n    got:  ${JSON.stringify(got)}\n    want: ${JSON.stringify(want)}` : '';
-  failures.push(`${label}${detail}`);
-  process.stdout.write(`✗ ${label}${detail}\n`);
-}
+import { createHarness } from './lib/harness.mjs';
+const { assert, report } = createHarness();
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -261,8 +256,4 @@ assert(declaredOnlyMetric?.declared === true && declaredOnlyMetric?.verified ===
 
 // ---------- summary ----------
 
-if (failures.length) {
-  process.stderr.write(`\n${failures.length} adapter assertion(s) failed.\n`);
-  process.exit(1);
-}
-process.stdout.write(`\nall adapter assertions pass.\n`);
+report('adapter');

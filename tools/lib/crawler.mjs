@@ -25,6 +25,7 @@ import { parse as parseYaml, parseAll as parseYamlAll, emit as emitYaml } from '
 import { inferSlisFromRecordingRules, ruleNameToSliId, ruleNameToSloId } from './sli-inference.mjs';
 import { materializeL2XFromBackends } from './l2x.mjs';
 import { PROMQL_KEYWORDS, extractPromqlMetricNames } from './promql.mjs';
+import { symbolSlug as slug } from './slug.mjs';
 
 // Parse a (possibly multi-document) YAML file into a list of non-null
 // documents. Prometheus rule files, Alertmanager configs and Kubernetes
@@ -2138,8 +2139,4 @@ function keywords(text) {
 
 function norm(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-}
-
-function slug(s) {
-  return String(s || '').toLowerCase().replace(/[^a-z0-9-]+/g, '_').replace(/^_+|_+$/g, '');
 }

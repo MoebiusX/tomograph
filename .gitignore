@@ -3,6 +3,8 @@ node_modules/
 *.log
 .env
 .env.*
+# …but the documented example config must stay in the repo.
+!.env.example
 
 # Coverage output (c8 / nyc).
 coverage/
@@ -27,6 +29,10 @@ coverage/
 
 # Internal, repo-local working docs — status surveys, ad-hoc audits,
 # brand/rename strategy and launch backlog. Not part of the public doc set.
+# Archived locally under docs/archive/ (see docs/archive/README.md).
 PROJECT_STATUS_SURVEY.md
-docs/TOMOGRAPH_BRAND_PLAN.md
-docs/TOMOGRAPH_MIGRATION_CHECKLIST.md
+docs/archive/TOMOGRAPH_BRAND_PLAN.md
+docs/archive/TOMOGRAPH_MIGRATION_CHECKLIST.md
+
+# Superseded scratch versions of the brand/architecture diagrams.
+docs/diagrams/_prev*
