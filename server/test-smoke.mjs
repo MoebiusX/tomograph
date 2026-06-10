@@ -6,6 +6,17 @@
  * route, asserts response shape, then kills the server. Exit 0 = pass.
  */
 
+import { mkdtempSync, rmSync, readdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
+// Redirect the pack workspace to a temp dir BEFORE the server boots, so
+// smoke-test registrations never pollute the repo's .tomograph/. Workspace
+// resolution is lazy (read at start(), not at import), which is what makes
+// this ordering work despite the hoisted import below.
+const SMOKE_WORKSPACE = mkdtempSync(join(tmpdir(), 'tomograph-smoke-ws-'));
+process.env.TOMOGRAPH_WORKSPACE = SMOKE_WORKSPACE;
+
 import { start } from './index.mjs';
 import { createServer } from 'node:http';
 
@@ -413,6 +424,99 @@ try {
   assert(deployErr.targetVersion === '12', 'deploy 502 echoes targetVersion');
   assert(deployErr.scope === 'both', 'deploy 502 echoes scope (both)');
 
+  // Deploy audit (10C): every attempt — including this failure — lands in
+  // the workspace audit log with a deployId, and /api/deploys serves it.
+  assert(typeof deployErr.deployId === 'string' && deployErr.deployId.startsWith('dep_'),
+         'deploy 502 returns a deployId for the audit trail');
+  const audit = await getJson(base, '/api/deploys?pack=payment-service&limit=10');
+  assert(Array.isArray(audit.deploys), 'GET /api/deploys returns deploys[]');
+  const auditRec = audit.deploys.find(d => d.deployId === deployErr.deployId);
+  assert(!!auditRec, 'the failed deploy attempt is audited');
+  assert(auditRec?.summary?.failed === 1, 'audit record counts the failure', auditRec?.summary, { total: 1, ok: 0, failed: 1 });
+  assert(auditRec?.actor === 'local', 'audit record carries the actor');
+  assert(auditRec?.items?.[0]?.error && !/Bearer|token=/i.test(auditRec.items[0].error),
+         'audited error is present and credential-free');
+  assert(!('verify' in (auditRec || {})), 'no verify field until re-verify writes one back');
+
+  // Post-deploy re-verify write-back (item 9): the verify outcome lands as
+  // its own audit record and merges into the deploy at read time.
+  const verifyRes = await fetch(`${base}/api/deploys/${encodeURIComponent(deployErr.deployId)}/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      outcome: 'pending',
+      summary: { total: 1, verified: 0, pending: 1, drifted: 0, shadow: 0, unknown: 0, allVerified: false },
+      transitions: [{ id: 'settlement_latency_99', type: 'alert', status: 'pending', match: 'exact' }],
+      attempts: 2,
+    }),
+  });
+  assert(verifyRes.status === 200, 'POST /api/deploys/:id/verify accepts a verify outcome');
+  const auditAfter = await getJson(base, `/api/deploys?pack=payment-service&limit=10`);
+  const mergedRec = auditAfter.deploys.find(d => d.deployId === deployErr.deployId);
+  assert(mergedRec?.verify?.outcome === 'pending', 'verify outcome merges into the deploy record');
+  assert(mergedRec?.verify?.transitions?.[0]?.status === 'pending', 'verify transitions round-trip');
+  const verify404 = await fetch(`${base}/api/deploys/dep_does-not-exist_zzzz/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert(verify404.status === 404, 'verify on unknown deployId → 404');
+  const verify400 = await fetch(`${base}/api/deploys/..%2Fescape/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert(verify400.status === 400, 'verify with malformed deployId → 400');
+
+  // --- write-route auth (10B) — token read lazily per request, so the
+  // posture can be flipped mid-suite. ---
+  const authRaw = await getJson(base, '/api/packs/payment-service/canonical');
+  delete authRaw.__effectiveEnvironment;
+  delete authRaw.__effective;
+  process.env.TOMOGRAPH_API_TOKEN = 'smoke-secret';
+  process.env.TOMOGRAPH_API_TOKEN_LABEL = 'smoke-ci';
+  const openRead = await fetch(`${base}/api/packs`);
+  assert(openRead.status === 200, 'token set: GET routes stay open without auth');
+  const denied = await fetch(`${base}/api/validate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(authRaw),
+  });
+  assert(denied.status === 401, 'token set: mutating route without bearer → 401');
+  assert((denied.headers.get('www-authenticate') || '').includes('Bearer'), '401 carries WWW-Authenticate: Bearer');
+  assert(/TOMOGRAPH_API_TOKEN/.test((await denied.json()).error || ''), '401 error names the env var to set');
+  const wrongTok = await fetch(`${base}/api/validate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer not-the-secret' },
+    body: JSON.stringify(authRaw),
+  });
+  assert(wrongTok.status === 401, 'wrong bearer token → 401');
+  const rightTok = await fetch(`${base}/api/validate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer smoke-secret' },
+    body: JSON.stringify(authRaw),
+  }).then(r => r.json());
+  assert(rightTok.ok === true, 'correct bearer token → mutating route works');
+  // The audit actor becomes the token's ownership label, never the secret.
+  const authedDeploy = await fetch(`${base}/api/packs/payment-service/deploy/prometheus-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer smoke-secret' },
+    body: JSON.stringify({ mcpUrl: 'http://127.0.0.1:1/no-mcp' }),
+  }).then(r => r.json());
+  const authedAudit = await getJson(base, `/api/deploys?pack=payment-service&limit=5`);
+  const authedRec = authedAudit.deploys.find(d => d.deployId === authedDeploy.deployId);
+  assert(authedRec?.actor === 'smoke-ci', 'audit actor is the token label', authedRec?.actor, 'smoke-ci');
+  assert(!JSON.stringify(authedRec).includes('smoke-secret'), 'the token secret never lands in the audit log');
+  delete process.env.TOMOGRAPH_API_TOKEN;
+  delete process.env.TOMOGRAPH_API_TOKEN_LABEL;
+  const reopened = await fetch(`${base}/api/validate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(authRaw),
+  });
+  assert(reopened.status === 200, 'token removed: loopback posture is auth-free again');
+
+  // --- fail-closed startup (10B): exposed bind without a token refuses to boot. ---
+  let exposedRefused = null;
+  try { await start({ host: '0.0.0.0', port: 0, silent: true }); exposedRefused = false; }
+  catch (e) { exposedRefused = /TOMOGRAPH_API_TOKEN/.test(e.message); }
+  assert(exposedRefused === true, 'binding 0.0.0.0 without a token fails closed with a clear message');
+  process.env.TOMOGRAPH_INSECURE_NO_AUTH = '1';
+  const insecureSrv = await start({ host: '0.0.0.0', port: 0, silent: true });
+  assert(!!insecureSrv.address(), 'TOMOGRAPH_INSECURE_NO_AUTH=1 overrides knowingly (with a loud warning)');
+  await new Promise(r => insecureSrv.close(r));
+  delete process.env.TOMOGRAPH_INSECURE_NO_AUTH;
+
   // Deploy v2 — target product / version / scope wiring
   const matrix = await getJson(base, '/api/deploy/matrix');
   assert(Array.isArray(matrix.products) && matrix.products.includes('grafana'),
@@ -553,11 +657,27 @@ try {
   const validateRes = await fetch(`${base}/api/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(raw),
+    body: JSON.stringify(authRaw),
   }).then(r => r.json());
   assert(validateRes.ok === true, 'POST /api/validate accepts a valid canonical pack', validateRes.errors, []);
   assert(validateRes.adapted?.meta?.apiVersion === 'observability.platform/v1', 'validate response includes adapted layered pack');
   assert(typeof validateRes.conformance?.scorePercent === 'number', 'validate response includes conformance report');
+
+  // Workspace persistence (10A): registering a pack writes it through to
+  // the .tomograph/ workspace as an inspectable YAML file + index entry.
+  const registeredId = validateRes.registered?.id;
+  assert(typeof registeredId === 'string' && registeredId.length > 0, 'validate returns a registered pack id');
+  const wsPackFile = join(SMOKE_WORKSPACE, 'packs', `${registeredId}.pack.yaml`);
+  assert(existsSync(wsPackFile), 'registered pack is persisted to the workspace', wsPackFile, 'exists');
+  assert(existsSync(join(SMOKE_WORKSPACE, 'packs', 'index.json')), 'workspace index.json exists after registration');
+
+  // DELETE /api/uploads clears the disk copies too — reset means reset.
+  const cleared = await fetch(`${base}/api/uploads`, { method: 'DELETE' }).then(r => r.json());
+  assert(cleared.ok === true, 'DELETE /api/uploads responds ok');
+  const wsLeft = existsSync(join(SMOKE_WORKSPACE, 'packs'))
+    ? readdirSync(join(SMOKE_WORKSPACE, 'packs')).filter(f => f.endsWith('.pack.yaml')).length
+    : 0;
+  assert(wsLeft === 0, 'DELETE /api/uploads clears persisted workspace packs', wsLeft, 0);
 
   // POST /api/validate — pre-1.2 should fail gatekeeper
   const bad = await fetch(`${base}/api/validate`, {
@@ -710,6 +830,7 @@ try {
   }
 } finally {
   await new Promise(r => srv.close(r));
+  rmSync(SMOKE_WORKSPACE, { recursive: true, force: true });
 }
 
 if (failures.length) {

@@ -34,8 +34,9 @@ import { renderCompileView, loadDeployMatrix } from './compile-view.mjs';
 import { openDrawer, closeDrawer } from './drawer.mjs';
 import { renderDiscoverDashboard, renderLayersView, renderCard, cardKey } from './layers-view.mjs';
 import { renderAtlasView } from './atlas-view.mjs';
-import { renderBenchmarkView, renderComparePicker, renderTraceabilityView, refreshDiff, loadDiff, LENS_PRODUCTS } from './compare-view.mjs';
+import { renderBenchmarkView, renderComparePicker, renderTraceabilityView, refreshDiff, loadDiff, LENS_PRODUCTS, activeDiffScopeMode } from './compare-view.mjs';
 import { catalogToDeployManifest } from './artifact-model.mjs';
+import { computeDeployTransitions } from './verify-deploy.mjs';
 
 // `state`, the `$`/`$$` DOM helpers and the persistence layer now live in
 // studio/state.mjs (imported above).
@@ -2839,13 +2840,52 @@ export function openDeployModal({ packId, packLabel, presetIdentities } = {}) {
   modal.focus?.();
   $('#deploy-modal-status').textContent = '';
   $('#deploy-modal-result').hidden = true;
+  const verifyHost = $('#deploy-modal-verify');
+  if (verifyHost) { verifyHost.hidden = true; verifyHost.innerHTML = ''; }
+  cancelDeployVerify();
   loadDeployManifest(packId || state.selectedPackId);
   updateDeployTargetSummary();
+  loadDeployHistory(packId || state.selectedPackId);
+}
+
+// Deploy history — the audit trail for this pack (VALUE_BACKLOG 10C).
+// Read-only context above the Go button: when this pack was last pushed,
+// where, and whether it stuck. Failures here never block deploying.
+async function loadDeployHistory(packId) {
+  const host = $('#deploy-modal-history');
+  if (!host) return;
+  host.hidden = true;
+  if (!packId) return;
+  try {
+    const { deploys } = await api(`/api/deploys?pack=${encodeURIComponent(packId)}&limit=5`);
+    if (!deploys?.length) return;
+    const rows = deploys.map(d => {
+      const when = d.at ? new Date(d.at).toLocaleString() : '?';
+      const ok = d.summary?.failed === 0;
+      const verify = d.verify
+        ? `<span class="deploy-hist-verify">verify: ${escapeHtml(d.verify.outcome || '?')}</span>`
+        : '';
+      return `<tr class="${ok ? 'is-ok' : 'is-err'}">
+        <td>${ok ? '✓' : '✗'}</td>
+        <td>${escapeHtml(when)}</td>
+        <td>${escapeHtml(d.target?.product || '?')}@${escapeHtml(d.target?.version || '?')}${d.dryRun ? ' · dry-run' : ''}</td>
+        <td>${d.summary?.ok ?? 0}/${d.summary?.total ?? 0} ok ${verify}</td>
+      </tr>`;
+    }).join('');
+    host.innerHTML = `
+      <h4 class="deploy-hist-title">Deploy history</h4>
+      <table class="deploy-result-table">
+        <thead><tr><th></th><th>When</th><th>Target</th><th>Result</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    host.hidden = false;
+  } catch (_) { /* history is optional context — never block the modal */ }
 }
 
 function closeDeployModal() {
   const modal = $('#deploy-modal');
   if (modal) modal.hidden = true;
+  cancelDeployVerify();   // closing the modal stops the verify polling cold
 }
 
 function populateDeployTargetSelects() {
@@ -3048,6 +3088,10 @@ async function doDeployBulk() {
       artifact:    row.artifact,
       dashboardId: row.dashboardId,
       scope:       row.scope,
+      // Carried for the post-deploy transition verification (and the audit
+      // trail): the matcher keys on type + human identity.
+      type:        row.type,
+      id:          row.id,
     };
   }).filter(Boolean);
 
@@ -3081,12 +3125,205 @@ async function doDeployBulk() {
       setStatus(`${ok}/${total} deployed in ${body.tookMs}ms · ${failed} failed`, failed === 0 ? 'ok' : 'error');
     }
     renderDeployBulkResult(body);
+    // The attempt is in the audit log now (ok or not) — refresh the trail.
+    loadDeployHistory(deployModalState.packId);
+    // Post-deploy re-verify (VALUE_BACKLOG 9): confirm the ok items through
+    // the READ path. A write acknowledgement is not live verification.
+    const okItems = (body.results || []).filter(r => r.ok && r.item).map(r => r.item);
+    if (okItems.length && !body.dryRun) {
+      startDeployVerify({
+        deployId: body.deployId,
+        packId: deployModalState.packId,
+        env: state.selectedEnv || null,
+        mcpUrl: url,
+        mcpAuth: auth || undefined,
+        items: okItems,
+      });
+    }
   } catch (e) {
     setStatus(`error: ${e.message}`, 'error');
   } finally {
     deployModalState.inflight = false;
     goBtn.disabled = false;
   }
+}
+
+// ---------- post-deploy re-verify (VALUE_BACKLOG item 9) ----------
+//
+// After a deploy reports ok, confirm each item through the READ path: re-
+// draft the live pack from the same MCP, re-diff it against the deployed
+// pack (same scope params the app's own diff uses), and classify every
+// deployed item via studio/verify-deploy.mjs. Propagation lag is expected —
+// a just-written rule needs an evaluation cycle before the read path sees
+// it — so 'pending' polls with backoff and then settles HONESTLY rather
+// than claiming success: deployed ≠ verified live.
+
+const deployVerifyState = { running: false, cancelled: false };
+
+function cancelDeployVerify() {
+  deployVerifyState.cancelled = true;
+  deployVerifyState.running = false;
+}
+
+const VERIFY_DELAYS_MS = [3000, 15000, 30000, 60000];
+
+export async function startDeployVerify({ deployId, packId, env, mcpUrl, mcpAuth, items }) {
+  const host = $('#deploy-modal-verify');
+  if (!host || !items.length || !mcpUrl) return;
+  if (deployVerifyState.running) cancelDeployVerify();
+  deployVerifyState.cancelled = false;
+  deployVerifyState.running = true;
+  host.hidden = false;
+
+  let last = null, packBId = null, refreshedAt = null, attempt = 0, lastError = null;
+
+  for (; attempt < VERIFY_DELAYS_MS.length && !deployVerifyState.cancelled; ) {
+    await verifyCountdown(host, VERIFY_DELAYS_MS[attempt], attempt, last);
+    if (deployVerifyState.cancelled) return;
+    attempt++;
+    try {
+      host.querySelector('.deploy-verify-status')?.replaceChildren(
+        document.createTextNode(`check ${attempt}/${VERIFY_DELAYS_MS.length}: drafting live state…`));
+      const out = await api('/api/draft-from-mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ mcpUrl, mcpAuth }),
+      });
+      if (!out.ok) throw new Error(out.error || 'MCP draft failed');
+      const reg = await validateUploaded(out.canonicalYaml, 'application/x-yaml');
+      if (!reg.ok || !reg.registered?.id) throw new Error('live draft failed validation');
+      packBId = reg.registered.id;
+      refreshedAt = out.canonical?.metadata?.annotations?.['mcp.refreshedAt'] || null;
+      const params = new URLSearchParams({ a: packId, b: packBId });
+      if (env) params.set('aEnv', env);
+      params.set('scopeMode', activeDiffScopeMode());
+      if (state.selectedService) params.set('service', state.selectedService);
+      const diff = await api(`/api/diff?${params}`);
+      last = computeDeployTransitions(items, diff);
+      lastError = null;
+      renderDeployVerifyPanel(host, last, { attempt, packBId, final: false });
+      // Only propagation lag warrants another poll. Verified is done;
+      // drifted/partial won't fix itself by waiting.
+      if (last.summary.outcome !== 'pending') break;
+    } catch (e) {
+      lastError = e;
+      renderDeployVerifyPanel(host, last, { attempt, packBId, final: false, error: e.message });
+    }
+  }
+  if (deployVerifyState.cancelled) return;
+  deployVerifyState.running = false;
+
+  renderDeployVerifyPanel(host, last, { attempt, packBId, final: true, error: lastError?.message });
+
+  // Write the outcome back into the audit trail (best effort — the verify
+  // verdict on screen never depends on this landing).
+  if (last && deployId) {
+    try {
+      await fetch(`/api/deploys/${encodeURIComponent(deployId)}/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          outcome: last.summary.outcome,
+          summary: last.summary,
+          transitions: last.transitions.map(t => ({ id: t.id, type: t.type, status: t.status, match: t.match })),
+          packB: packBId,
+          refreshedAt,
+          attempts: attempt,
+          alignment: typeof last.alignment === 'number' ? last.alignment : undefined,
+        }),
+      });
+      loadDeployHistory(packId);
+    } catch (_) {}
+  }
+}
+
+// Render the countdown into the panel and resolve when it elapses; checks
+// the cancel flag every tick so closing the modal stops the loop cold.
+function verifyCountdown(host, ms, attempt, last) {
+  return new Promise((resolve) => {
+    let remaining = Math.round(ms / 1000);
+    const headline = last
+      ? `still pending — re-checking in <strong class="deploy-verify-count">${remaining}</strong>s`
+      : `verifying through the live read path in <strong class="deploy-verify-count">${remaining}</strong>s`;
+    if (!host.querySelector('.deploy-verify-status') || !last) {
+      host.innerHTML = `
+        <h4 class="deploy-hist-title">Post-deploy verification</h4>
+        <p class="deploy-verify-status">${headline}</p>
+        ${last ? '' : '<p class="deploy-verify-note">A write acknowledgement is not live verification — confirming each artefact via the MCP read path.</p>'}
+      `;
+    } else {
+      host.querySelector('.deploy-verify-status').innerHTML = headline;
+    }
+    const tick = setInterval(() => {
+      if (deployVerifyState.cancelled) { clearInterval(tick); resolve(); return; }
+      remaining--;
+      const el = host.querySelector('.deploy-verify-count');
+      if (el) el.textContent = String(Math.max(0, remaining));
+      if (remaining <= 0) { clearInterval(tick); resolve(); }
+    }, 1000);
+  });
+}
+
+const VERIFY_STATUS_META = {
+  verified: { icon: '✓', label: 'verified live' },
+  pending:  { icon: '⏳', label: 'deployed · not yet visible live' },
+  drifted:  { icon: '≠', label: 'live contract differs' },
+  shadow:   { icon: '◌', label: 'only on the live side' },
+  unknown:  { icon: '?', label: 'no identity mapping' },
+};
+
+function renderDeployVerifyPanel(host, result, { attempt, packBId, final, error }) {
+  if (!result) {
+    host.innerHTML = `
+      <h4 class="deploy-hist-title">Post-deploy verification</h4>
+      <p class="deploy-verify-status is-error">could not verify: ${escapeHtml(error || 'unknown error')}${final ? '' : ' — will retry'}</p>
+    `;
+    return;
+  }
+  const s = result.summary;
+  const headIcon = s.allVerified ? '✓' : (s.outcome === 'pending' ? '⏳' : '≠');
+  const headline = s.allVerified
+    ? `${s.verified}/${s.total} verified live`
+    : `${s.verified}/${s.total} verified · ${s.pending} pending · ${s.drifted} drifted`;
+  const align = typeof result.alignment === 'number' ? ` · alignment ${Math.round(result.alignment * 100)}%` : '';
+  const rows = result.transitions.map(t => {
+    const m = VERIFY_STATUS_META[t.status] || VERIFY_STATUS_META.unknown;
+    return `<tr class="${t.status === 'verified' ? 'is-ok' : (t.status === 'pending' ? 'is-pending' : 'is-err')}">
+      <td>${m.icon}</td>
+      <td><code>${escapeHtml(t.id ?? '?')}</code></td>
+      <td>${escapeHtml(t.type || '?')}</td>
+      <td>${escapeHtml(m.label)}${t.match === 'fuzzy' ? ' <span class="deploy-verify-fuzzy">(SLI-base match)</span>' : ''}</td>
+    </tr>`;
+  }).join('');
+  const finalNote = final
+    ? (s.outcome === 'pending'
+        ? `<p class="deploy-verify-note">Still not visible after ${attempt} checks — rules may need an evaluation cycle. Re-open this modal later or refresh live from the MCP panel.</p>`
+        : '')
+    : '';
+  const adoptBtn = final && packBId
+    ? `<button type="button" class="ctrl-btn" id="deploy-verify-adopt">Load post-deploy live state as Pack B</button>`
+    : '';
+  host.innerHTML = `
+    <h4 class="deploy-hist-title">Post-deploy verification</h4>
+    <p class="deploy-verify-status ${s.allVerified ? 'is-ok' : ''}">${headIcon} ${escapeHtml(headline)}${align}${final ? '' : ` · check ${attempt}/${VERIFY_DELAYS_MS.length}`}</p>
+    ${error ? `<p class="deploy-verify-status is-error">last check failed: ${escapeHtml(error)}</p>` : ''}
+    <table class="deploy-result-table"><tbody>${rows}</tbody></table>
+    ${finalNote}
+    ${adoptBtn}
+  `;
+  host.querySelector('#deploy-verify-adopt')?.addEventListener('click', () => {
+    state.compareBId = packBId;
+    state.compareBEnv = null;
+    loadPackB().then(() => {
+      refreshDiff();
+      renderPackBSelect();
+      renderEnvBSelect();
+      renderTabs();
+      renderMainView();
+    });
+    toast('Post-deploy live draft loaded as Pack B');
+    closeDeployModal();
+  });
 }
 
 function renderDeployBulkResult(body) {

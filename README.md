@@ -134,12 +134,25 @@ Open `http://127.0.0.1:8000`.
 
 ### Security Posture
 
-The server is a local diagnostic workspace with **no authentication**. Every
-`/api/*` route is open to anyone who can reach the port — including routes
-that make outbound requests on your behalf (`/api/draft-from-mcp`,
-`/api/refresh-live`, the deploy endpoints). Run it on localhost or behind a
-reverse proxy that enforces auth. Never expose it directly to an untrusted
-network.
+One token, three postures:
+
+1. **Local (default).** The server binds to `127.0.0.1` and runs with no
+   authentication — a zero-friction local workspace.
+2. **Exposed with a token.** Set `TOMOGRAPH_API_TOKEN=<secret>` and bind
+   wherever you need (`HOST=0.0.0.0`). Mutating `/api/*` routes (crawl,
+   draft, validate-register, deploy, verify, reset) then require
+   `Authorization: Bearer <secret>`; read routes stay open. Set
+   `TOMOGRAPH_API_TOKEN_LABEL=<team-or-owner>` to stamp the deploy audit
+   log with the token's ownership — the secret itself never lands in any
+   log.
+3. **Exposed without a token.** The server **refuses to start** with a
+   clear message. `TOMOGRAPH_INSECURE_NO_AUTH=1` overrides knowingly (it
+   logs a loud warning) for trusted-network demos only.
+
+MCP write tokens are unrelated to the API token: they pass through per
+request and are never stored server-side. Registered packs and the deploy
+audit live in the `.tomograph/` workspace (`TOMOGRAPH_WORKSPACE`
+relocates it).
 
 Useful local checks:
 
@@ -302,6 +315,7 @@ deploy/k8s/
 - [`docs/ADVANCED_FEATURE_AUDIT.md`](docs/ADVANCED_FEATURE_AUDIT.md) - per-view audit of the Advanced tools (References · Conformance · Schema · OTLP · Traceability · Atlas)
 - [`docs/VALUE_BACKLOG.md`](docs/VALUE_BACKLOG.md) - prioritized product backlog for the next iterations
 - [`docs/REFACTORING_PLAN.md`](docs/REFACTORING_PLAN.md) - maintainability refactor backlog from the 2026-06 audit
+- [`docs/BRANCHING.md`](docs/BRANCHING.md) - the branching model: lanes, per-commit bar, multi-writer rules, promotion cadence
 
 Superseded planning docs live in [`docs/archive/`](docs/archive/README.md).
 

@@ -10,6 +10,10 @@ node_modules/
 coverage/
 .nyc_output/
 
+# Local workspace — persisted packs, deploy audit, journey runs.
+# Per-machine state, never source. TOMOGRAPH_WORKSPACE relocates it.
+.tomograph/
+
 # Ad-hoc test/debug dumps created during fetcher + adapter probing.
 # These are scratch artefacts, not source of truth.
 .tmp-*
