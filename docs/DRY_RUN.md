@@ -164,12 +164,14 @@ Explain the two diagnostic questions:
 1. Are we monitoring the right things?
 2. Is what we say we monitor actually active in production?
 
-Name the eight checks when asked how the grade is calculated:
+Name the checks when asked how the grade is calculated (seven scored, one
+informational):
 
-| Area | Checks |
-|---|---|
-| Coverage | Multi-modal, Correlated, Calibrated, Comprehensive, Actionable |
-| Trust | Chaos-validated, Drift-free, Fresh |
+| Area | Checks | Scored |
+|---|---|---|
+| Coverage | Multi-modal, Correlated, Calibrated, Comprehensive | yes |
+| Trust | Chaos-validated, Drift-free, Fresh | yes |
+| Operability | Actionable | no — informational |
 
 Then explain the drift buckets:
 

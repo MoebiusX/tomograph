@@ -1237,33 +1237,38 @@ function renderPostureNarrative(posture) {
 // ============================================================
 // Diagnostic-grade verdict — the CEO question, made answerable.
 //
-// "Is our observability diagnostic-grade?" answered as eight pass/fail
-// criteria split into two equally-weighted halves:
+// "Is our observability diagnostic-grade?" answered as seven scored
+// pass/fail criteria (grade schema 2) plus one informational row:
 //
 //   2A — COVERAGE (vs Observability Contract)
 //        "Are we observing the right signals?"
-//        Five criteria evaluated on Pack A against Pack B (the
+//        Four criteria evaluated on Pack A against Pack B (the
 //        contract / "what good looks like"):
 //          1. Multi-modal    — metrics + logs + traces flowing
 //          2. Correlated     — tracecontext + log_correlation
 //          3. Calibrated     — baselines + SLOs w/ numeric objectives
 //          4. Comprehensive  — posture matrix ≥ 50% across layers
-//          5. Actionable     — remediation runbooks declared
 //
 //   2B — TRUST (signal integrity)
 //        "Can we trust what the signals show?"
 //        Three criteria evaluated on Pack A's live evidence:
-//          6. Chaos-validated — chaos experiments declared
-//          7. Drift-free      — declared artefacts match live state
+//          5. Chaos-validated — chaos experiments declared
+//          6. Drift-free      — declared artefacts match live state
 //                               (MCP probe success / total ratio)
-//          8. Fresh           — mcp.refreshedAt within staleness window
+//          7. Fresh           — mcp.refreshedAt within staleness window
 //
-// Overall score (out of 8) → verdict word. Most criteria are binary;
+//   2C — OPERABILITY (informational, never scored)
+//        Actionable — remediation runbooks declared. Response readiness
+//        of the overall solution, not diagnostic capability; reclassified
+//        out of the scored grade 2026-06-10 (maintainer-ratified).
+//
+// Overall score (out of 7) → verdict word. Most criteria are binary;
 // drift-free contributes fractional credit equal to weighted fidelity.
-//   >85% → Diagnostic-grade
-//   >=5 → Almost diagnostic-grade
-//   >=3 → Not yet diagnostic-grade
-//   <3  → Far from diagnostic-grade
+// Verdict bands are percentages so they survive schema changes:
+//   >85%   → Diagnostic-grade (same bar as the audit PASS stamp)
+//   >=62.5% → Almost diagnostic-grade
+//   >=37.5% → Not yet diagnostic-grade
+//   below  → Far from diagnostic-grade
 // ============================================================
 
 // Diagnose view — rendered as a compliance report, not a pitch deck.
@@ -1276,6 +1281,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
 
   const cov = diagnostic.coverage;
   const trust = diagnostic.trust;
+  const operability = diagnostic.operability || { criteria: [], informational: true, note: '' };
   const overall = diagnostic.overall;
 
   const pct = (passed, total) => total === 0 ? 0 : Math.round((passed / total) * 100);
@@ -1339,7 +1345,9 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   // For an audit tool this is the most important section, not the least.
   const evidenceRows = [];
   // Collect from criteria themselves — each criterion encodes an evidence assertion.
-  const C = (key, label) => cov.criteria.find(c => c.key === key) || trust.criteria.find(c => c.key === key);
+  const C = (key, label) => cov.criteria.find(c => c.key === key)
+    || trust.criteria.find(c => c.key === key)
+    || operability.criteria.find(c => c.key === key);
   const rowFor = (field, exp, obs, pass, score) => ({
     field, exp, obs, pass, score,
   });
@@ -1363,11 +1371,11 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
     'average ≥ 50% observed',
     C('comprehensive')?.detail || '—',
     C('comprehensive')?.pass));
-  evidenceRows.push(rowFor(
+  evidenceRows.push({ ...rowFor(
     'spec.remediation[]',
-    '≥ 1 remediation runbook declared',
+    '≥ 1 remediation runbook declared (informational — not scored)',
     C('actionable')?.detail || '—',
-    C('actionable')?.pass));
+    C('actionable')?.pass), informational: true });
   evidenceRows.push(rowFor(
     'spec.validation.chaos_experiments[]',
     '≥ 1 chaos experiment declared',
@@ -1397,11 +1405,11 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       </thead>
       <tbody>
         ${evidenceRows.map(r => `
-          <tr class="${criterionState(r)}">
+          <tr class="${r.informational ? 'is-info' : criterionState(r)}">
             <td class="e-field">${escapeHtml(r.field)}</td>
             <td class="e-exp">${escapeHtml(r.exp)}</td>
             <td class="e-obs">${escapeHtml(r.obs)}</td>
-            <td class="e-status">${criterionStatus(r)}</td>
+            <td class="e-status">${r.informational ? (r.pass ? 'YES · INFO' : 'NO · INFO') : criterionStatus(r)}</td>
           </tr>
         `).join('')}
       </tbody>
@@ -1451,13 +1459,26 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       ${critTable(trust.criteria)}
     </section>
 
+    <section class="diag-section diag-section-info">
+      <header class="diag-section-head">
+        <span class="diag-section-num">2C</span>
+        <span class="diag-section-title">Operability — can oncall act on what it sees?</span>
+        <span class="diag-section-meta">informational · not scored</span>
+      </header>
+      <div class="diag-banner">
+        <span class="diag-banner-key">INFO</span>
+        ${escapeHtml(operability.note || 'response readiness, not diagnostic capability — observed, displayed, never scored')}
+      </div>
+      ${critTable(operability.criteria)}
+    </section>
+
     ${chainBlock}
 
     <section class="diag-section">
       <header class="diag-section-head">
         <span class="diag-section-num">⊜</span>
         <span class="diag-section-title">Evidence — expected vs observed</span>
-        <span class="diag-section-meta">${fmtScore(evidenceRows.reduce((n, r) => n + criterionScore(r), 0))}/${evidenceRows.length} evidence score</span>
+        <span class="diag-section-meta">${fmtScore(evidenceRows.filter(r => !r.informational).reduce((n, r) => n + criterionScore(r), 0))}/${evidenceRows.filter(r => !r.informational).length} evidence score · +${evidenceRows.filter(r => r.informational).length} informational</span>
       </header>
       ${evidenceTable}
     </section>

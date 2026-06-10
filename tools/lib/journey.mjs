@@ -249,7 +249,11 @@ export async function runJourney(def, { baseDir } = {}) {
     packA: { source: a.source, name: a.canonical?.metadata?.name || null, version: a.canonical?.metadata?.version || null },
     packB: { source: b.source, name: b.canonical?.metadata?.name || null, version: b.canonical?.metadata?.version || null, refreshedAt: liveRefreshedAt },
     scope: { env: def.env || null, service: def.service || null, scopeMode: def.scopeMode || null },
-    grade: { score: facts.gradeScore, pass: facts.gradePass, threshold: DIAGNOSTIC_PASS_SCORE_THRESHOLD },
+    // schema identifies which scoring construct produced the score, so a
+    // step in the gradeScore series is explainable as re-scoring vs reality
+    // (schema 1: 8 scored criteria incl. Actionable; schema 2: 7 — Actionable
+    // is informational operability).
+    grade: { score: facts.gradeScore, pass: facts.gradePass, threshold: DIAGNOSTIC_PASS_SCORE_THRESHOLD, schema: grade.gradeSchema ?? 1 },
     conformance: { scorePercent: conformance.scorePercent, mustPercent: conformance.mustPercent, conformant: conformance.conformant, declaredTier: conformance.declaredTier },
     drift: {
       alignmentPct: facts.alignmentPct,

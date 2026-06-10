@@ -2362,6 +2362,14 @@ a:hover { color: var(--ink); }
 .diag-evidence-table tr.is-fail .e-status { color: rgb(178, 34, 34); }
 .diag-evidence-table tr:hover { background: var(--ink-bg); }
 
+/* Informational rows/sections (grade schema 2: operability is observed,
+   never scored) — neutral ink so a missing runbook doesn't read as grade
+   damage, while the observation itself stays fully visible. */
+.diag-evidence-table tr.is-info .e-status { color: var(--ink-3); }
+.diag-section-info .diag-crit-table tr.is-fail .c-pip,
+.diag-section-info .diag-crit-table tr.is-pass .c-pip { color: var(--ink-3); }
+.diag-section-info .diag-section-meta { color: var(--ink-3); }
+
 
 /* Legacy diagnostic-grade-* rules retained below for safety while
    any other view (or persisted-state migration) references them.

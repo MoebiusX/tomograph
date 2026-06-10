@@ -58,6 +58,7 @@ try {
   assert(rec.scope.env === 'prod', 'record carries the env scope');
   assert(typeof rec.grade.score === 'number' && typeof rec.grade.pass === 'boolean', 'record carries grade score + pass');
   assert(rec.grade.threshold === 85, 'record states the pass threshold');
+  assert(rec.grade.schema === 2, 'record names the grade schema so score-history steps are explainable', rec.grade);
   assert(typeof rec.conformance.scorePercent === 'number' && rec.conformance.declaredTier === 'tier-1',
          'record carries the conformance verdict');
   assert(typeof rec.drift.alignmentPct === 'number' && rec.drift.aligned >= 0, 'record carries drift bucket counts');

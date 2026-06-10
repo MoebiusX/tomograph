@@ -87,7 +87,8 @@ Re-run live scan and compare again
 
 ## Diagnostic Grade Contract
 
-The Diagnostic Grade is the top-level answer. It is scored from eight criteria:
+The Diagnostic Grade is the top-level answer. It is scored from seven
+criteria (grade schema 2), plus one informational operability check:
 
 ### Coverage - Are We Observing The Right Things?
 
@@ -96,13 +97,20 @@ The Diagnostic Grade is the top-level answer. It is scored from eight criteria:
    correlation.
 3. **Calibrated** - SLOs have numeric objectives and baselines exist.
 4. **Comprehensive** - coverage spans the major service layers.
-5. **Actionable** - alerts lead to a runbook or remediation path.
 
 ### Trust - Can We Trust What The Signals Show?
 
-6. **Chaos-validated** - recovery has fault-injection evidence.
-7. **Drift-free** - declared artifacts match live state.
-8. **Fresh** - the live signal was verified recently.
+5. **Chaos-validated** - recovery has fault-injection evidence.
+6. **Drift-free** - declared artifacts match live state.
+7. **Fresh** - the live signal was verified recently.
+
+### Operability - Can Oncall Act On What It Sees? (informational, not scored)
+
+- **Actionable** - alerts lead to a runbook or remediation path. This
+  measures response readiness of the overall observability solution, not
+  diagnostic capability, so it is observed and displayed but never moves
+  the score (reclassified 2026-06-10; journey run records carry
+  `grade.schema` so score history steps are explainable).
 
 The displayed verdict is:
 

@@ -76,21 +76,29 @@ The Discover view renders the observability tomogram across the layered model:
 Load the declared repo pack as **Pack A** and the live production pack as
 **Pack B**. Tomograph computes the Diagnostic Grade:
 
-- **Score**: total criteria passed out of 8
-- **Coverage**: five checks for "are we observing the right things?"
+- **Score**: total criteria passed out of 7
+- **Coverage**: four checks for "are we observing the right things?"
 - **Trust**: three checks for "can we trust what the signals show?"
+- **Operability**: one informational check (Actionable — runbooks linked),
+  displayed but never scored
 - **Verified**: whether a live MCP signal is present
 
 The Diagnostic Grade passes when the overall score is greater than 85%. Failed
 criteria remain visible as evidence. A pack can therefore pass the grade while
 still showing drift that belongs in Remediate.
 
-The eight checks are:
+The checks are (grade schema 2):
 
-| Area | Criteria |
-|---|---|
-| Coverage | Multi-modal, Correlated, Calibrated, Comprehensive, Actionable |
-| Trust | Chaos-validated, Drift-free, Fresh |
+| Area | Criteria | Scored |
+|---|---|---|
+| Coverage | Multi-modal, Correlated, Calibrated, Comprehensive | yes |
+| Trust | Chaos-validated, Drift-free, Fresh | yes |
+| Operability | Actionable | no — informational |
+
+Runbooks measure response readiness of the overall solution, not diagnostic
+capability — a perfectly diagnostic system tells you what is wrong even when
+nobody wrote the response script. The runbook gap stays visible on the grade
+card and in the posture matrix; it just no longer costs diagnostic credit.
 
 The drift drill shows:
 

@@ -41,12 +41,18 @@ PASS when score > 85%
 FAIL otherwise
 ```
 
-The eight criteria are:
+The seven scored criteria are (grade schema 2, ratified 2026-06-10):
 
-| Area | Criteria |
-|---|---|
-| Coverage | Multi-modal, Correlated, Calibrated, Comprehensive, Actionable |
-| Trust | Chaos-validated, Drift-free, Fresh |
+| Area | Criteria | Scored |
+|---|---|---|
+| Coverage | Multi-modal, Correlated, Calibrated, Comprehensive | yes |
+| Trust | Chaos-validated, Drift-free, Fresh | yes |
+| Operability | Actionable (runbooks linked) | no — informational |
+
+Actionable was reclassified out of the scored grade because runbooks measure
+response readiness of the overall observability solution, not diagnostic
+capability. It remains observed and displayed on the grade card (section 2C)
+and keeps a scored home in the posture matrix's runbook mechanism column.
 
 A passing grade does not hide drift. Remaining failed criteria,
 declared-not-live artifacts, drifted artifacts, and live-only artifacts stay

@@ -182,13 +182,15 @@ Canonical example: *"repo vs live drift check"* — crawl
 ## P3 — Make the verdict more trustworthy *(under research — re-enters the queue when the maintainer's research lands)*
 
 ### 1. Diagnostic-grade validation against incident ground truth
-The grade claims "diagnostic-grade" on eight structural criteria. Close the
+The grade claims "diagnostic-grade" on seven scored structural criteria
+(grade schema 2; Actionable is observed but informational). Close the
 loop with reality: for services with incident history, check whether the
 signals the pack declares would have detected/explained real incidents
 (MTTD vs `mttd_target`, alert fired vs incident start, runbook referenced).
 Even a manual back-test template against 3–5 historical incidents would
 turn the grade from a posture score into a validated claim — and tell us
-which of the eight criteria actually predict diagnosability.
+which criteria actually predict diagnosability — including whether the
+informational Actionable check earns its way back into the score on evidence.
 
 ### 2. Runtime attestation / freshness evidence
 Today "Verified" means the live MCP scan saw the artefact at fetch time.
