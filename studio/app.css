@@ -2189,19 +2189,19 @@ a:hover { color: var(--ink); }
 }
 .drift-legend-risk {
   grid-column: 2 / -1;
-  font: 10.5px/1.25 var(--mono);
-  color: var(--ink-3);
+  font: 11px/1.25 var(--mono);
+  color: var(--ink-2);
 }
 .drift-legend-hint {
   grid-column: 2 / -1;
-  font: 11px/1.35 var(--sans);
-  color: var(--ink-4);
+  font: 11.5px/1.35 var(--sans);
+  color: var(--ink-3);
 }
 .drift-risk-note {
   margin: -2px 2px 12px;
   max-width: 940px;
-  font: 11px/1.45 var(--mono);
-  color: var(--ink-4);
+  font: 11.5px/1.45 var(--mono);
+  color: var(--ink-3);
 }
 
 .drift-table {
