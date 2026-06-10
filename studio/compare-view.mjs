@@ -960,8 +960,15 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
       <tbody>${layerRowsHtml}</tbody>
     </table>
     ${totScaffold ? `<p class="drift-oos-note">${totScaffold} schema-required scaffold artefact${totScaffold === 1 ? '' : 's'} had no source evidence in the selected environment. Shown in the pack, excluded from drift badness.</p>` : ''}
-    ${totOOS ? `<p class="drift-oos-note">${totOOS} live artefact${totOOS === 1 ? '' : 's'} out of declared scope — members of families <strong>${escapeHtml(bName)}</strong> runs but your pack doesn't declare (the rest of the platform inventory). Shown for context, not counted as drift.</p>` : ''}
+    ${totOOS ? `<p class="drift-oos-note">${totOOS} live artefact${totOOS === 1 ? '' : 's'} out of declared scope — members of families <strong>${escapeHtml(bName)}</strong> runs but your pack doesn't declare (the rest of the platform inventory). Shown for context, not counted as drift.
+      <button type="button" class="ctrl-link drift-oos-widen" title="Switch the live scope to 'All live' so the parked inventory is classified instead of parked">show them — widen scope</button></p>` : ''}
   `;
+  // Parked ≠ ignored: one click reclassifies the out-of-scope inventory.
+  wrap.querySelector('.drift-oos-widen')?.addEventListener('click', () => {
+    state.diffScopeMode = 'all';
+    state.diff = null;
+    refreshDiff();
+  });
 
   // ---------- bidirectional remediation actions (item 4) ----------
   // The two arrows, right where the gaps are diagnosed. Forward (drift mode
@@ -2469,7 +2476,7 @@ function renderCompareFilters() {
   return wrap;
 }
 
-function renderLiveScopeControl({ standalone = false } = {}) {
+export function renderLiveScopeControl({ standalone = false } = {}) {
   const modes = [
     {
       id: 'service',

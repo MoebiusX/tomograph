@@ -18,7 +18,7 @@ import {
   focusedCompileArtifact, setFocusedCompileArtifact,
 } from './focus.mjs';
 import { openDeployModal, renderMainView } from './app.mjs';
-import { catalogEntryFor, layerItemsFor, loadDiff, LAYERS_FOR_DIFF } from './compare-view.mjs';
+import { catalogEntryFor, layerItemsFor, loadDiff, LAYERS_FOR_DIFF, renderLiveScopeControl } from './compare-view.mjs';
 import { artefactLabel, deploySelectionFromEntries, deploySurfaceForArtefact } from './artifact-model.mjs';
 
 // ---------- COMPILE view ----------
@@ -343,6 +343,12 @@ function renderRemediationPlan(host) {
     </div>
     <div class="remediate-ops">${opsHtml}</div>
   `;
+
+  // Scope control (item 5): the remediation sets are carved from the same
+  // scoped diff as Diagnose — expose the scope HERE too, so what's parked
+  // out of scope is a visible choice while deciding what to deploy, not a
+  // silent precondition. Changing it refreshes the diff and re-renders.
+  if (haveB) wrap.appendChild(renderLiveScopeControl({ standalone: true }));
 
   // Wire op buttons.
   wrap.querySelectorAll('.remediate-op:not(.is-disabled)').forEach(btn => {
