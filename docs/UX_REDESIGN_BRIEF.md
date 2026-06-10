@@ -6,6 +6,11 @@ can start the design work cold. It is a brief, not a spec: it defines
 the problem, the constraints, and how we'll judge proposals. It does
 NOT prescribe the solution.*
 
+> **Status 2026-06-11:** the three divergent prototypes commissioned
+> below are built and clickable behind `?proto=a|b|c` — viewing guide,
+> honest inventory, and screenshots in
+> [UX_PROTOTYPES.md](UX_PROTOTYPES.md).
+
 ## Why this exists
 
 The verdict engine is in good shape: grade schema 2 (seven scored
