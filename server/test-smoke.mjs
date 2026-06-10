@@ -569,6 +569,35 @@ try {
   });
   assert(capBad.status === 404, 'capture with an unknown pack → 404');
 
+  // --- repo retrofeed (item 4, reverse remediation arrow) ---
+  const rf = await fetch(`${base}/api/packs/payment-service/retrofeed`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ packBId: 'production-curated', scopeMode: 'off' }),
+  }).then(r => r.json());
+  assert(rf.ok === true && rf.summary.adopted > 0, 'retrofeed adopts live shadow signals', rf.summary);
+  assert(rf.summary.candidates === rf.summary.adopted + rf.summary.skipped,
+         'every candidate is accounted for (adopted + skipped)', rf.summary);
+  assert(typeof rf.fragmentYaml === 'string' && rf.fragmentYaml.includes('spec:'),
+         'retrofeed returns the additions as a YAML fragment');
+  // The law: the updated pack must round-trip through the validator.
+  const rfValidate = await fetch(`${base}/api/validate?source=retrofeed-roundtrip`, {
+    method: 'POST', headers: { 'Content-Type': 'text/yaml' }, body: rf.updatedPackYaml,
+  }).then(r => r.json());
+  assert(rfValidate.ok === true, 'the retrofed pack validates end-to-end through /api/validate', rfValidate.errors?.slice(0, 2));
+  // keys filter narrows the adoption set.
+  const oneKey = rf.adopted[0]?.key;
+  const rfOne = await fetch(`${base}/api/packs/payment-service/retrofeed`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ packBId: 'production-curated', scopeMode: 'off', keys: [oneKey] }),
+  }).then(r => r.json());
+  assert(rfOne.ok === true && rfOne.summary.candidates === 1,
+         'keys[] filter narrows retrofeed to the chosen entries', rfOne.summary);
+  const rf404 = await fetch(`${base}/api/packs/payment-service/retrofeed`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ packBId: 'nope' }),
+  });
+  assert(rf404.status === 404, 'retrofeed with unknown pack B → 404');
+
   // Deploy v2 — target product / version / scope wiring
   const matrix = await getJson(base, '/api/deploy/matrix');
   assert(Array.isArray(matrix.products) && matrix.products.includes('grafana'),

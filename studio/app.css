@@ -6131,6 +6131,27 @@ body[data-mode="home"] #layer-view { padding: 0; background: var(--paper); }
 }
 .deploy-hist-verify { color: var(--ink-3); margin-left: 6px; }
 
+/* Bidirectional remediation actions on the drift drill (item 4). */
+.drift-actions {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  margin: 12px 0 4px;
+}
+.drift-retrofeed-result {
+  flex-basis: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--card);
+  padding: 10px 14px;
+  font: 12px/1.5 var(--mono);
+}
+.drift-retrofeed-head { margin: 0 0 6px; color: var(--ink-2); }
+.drift-retrofeed-head.is-error { color: var(--err, #b91c1c); }
+.drift-retrofeed-list { margin: 0 0 6px; padding-left: 16px; list-style: none; }
+.drift-retrofeed-skips { margin: 6px 0; color: var(--ink-3); }
+.drift-retrofeed-skips ul { margin: 4px 0 0; padding-left: 16px; }
+.drift-retrofeed-dl { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0 0; }
+.drift-retrofeed-note { font: 11px/1.4 var(--sans); color: var(--ink-4); }
+
 /* Journeys view (item 11) — saved drift checks with trend sparklines. */
 .journeys-capture-bar { display: flex; gap: 10px; align-items: center; margin: 0 0 16px; }
 .journeys-capture-bar .layers-search-input { max-width: 320px; }

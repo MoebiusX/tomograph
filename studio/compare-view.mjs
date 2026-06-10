@@ -14,7 +14,7 @@ import { LAYER_DEFS, L4_SUBGROUPS } from './constants.mjs';
 import { openDrawer } from './drawer.mjs';
 import { defaultEnvFor, loadPackB, openDeployModal, renderMainView, renderTabs, refresh } from './app.mjs';
 import { cardKey } from './layers-view.mjs';
-import { diffEntryLabel } from './artifact-model.mjs';
+import { diffEntryLabel, deploySelectionFromEntries, deploySurfaceForArtefact } from './artifact-model.mjs';
 import {
   POSTURE_LAYERS,
   POSTURE_MECHANISMS_PER_LAYER,
@@ -962,7 +962,86 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
     ${totScaffold ? `<p class="drift-oos-note">${totScaffold} schema-required scaffold artefact${totScaffold === 1 ? '' : 's'} had no source evidence in the selected environment. Shown in the pack, excluded from drift badness.</p>` : ''}
     ${totOOS ? `<p class="drift-oos-note">${totOOS} live artefact${totOOS === 1 ? '' : 's'} out of declared scope — members of families <strong>${escapeHtml(bName)}</strong> runs but your pack doesn't declare (the rest of the platform inventory). Shown for context, not counted as drift.</p>` : ''}
   `;
+
+  // ---------- bidirectional remediation actions (item 4) ----------
+  // The two arrows, right where the gaps are diagnosed. Forward (drift mode
+  // only): compile + deploy the declared-not-live set — preset → deploy
+  // modal. Reverse (both modes): adopt the onlyInB entries back into the
+  // declared pack — live shadow signals in drift mode, the target's
+  // declarations in gap/benchmark mode. In gap mode onlyInA means "beyond
+  // target", so there is nothing to push.
+  if (totA > 0 || totB > 0) {
+    const actions = document.createElement('div');
+    actions.className = 'drift-actions';
+    const onlyInAArts = rows.flatMap(r => r.onlyInA.map(e => e.artefact).filter(Boolean));
+    const deployable = mode === 'drift'
+      ? deploySelectionFromEntries(onlyInAArts.map(a => deploySurfaceForArtefact(a)))
+      : { identities: new Set(), rows: 0 };
+    const rfLabel = mode === 'drift'
+      ? `⤵ Retrofeed ${totB} shadow signal${totB === 1 ? '' : 's'} to the pack`
+      : `⤵ Adopt ${totB} declaration${totB === 1 ? '' : 's'} from ${escapeHtml(bName)}`;
+    actions.innerHTML = `
+      ${mode === 'drift' && totA > 0 && deployable.identities.size ? `
+        <button type="button" class="ctrl-btn" id="drift-deploy-missing"
+          title="Open the deploy modal preselected with the deployable declared-not-live artefacts (${deployable.rows} rule/dashboard row${deployable.rows === 1 ? '' : 's'})">
+          ⇪ Deploy the missing set (${deployable.identities.size})</button>` : ''}
+      ${totB > 0 ? `
+        <button type="button" class="ctrl-btn" id="drift-retrofeed"
+          title="Adopt the ${mode === 'drift' ? 'live-not-declared shadow signals' : 'target pack’s missing declarations'} into your pack — download the additions and the updated pack for a repo PR">
+          ${rfLabel}</button>` : ''}
+      <div class="drift-retrofeed-result" hidden></div>
+    `;
+    wrap.appendChild(actions);
+    actions.querySelector('#drift-deploy-missing')?.addEventListener('click', () => {
+      openDeployModal({ packId: state.selectedPackId, presetIdentities: deployable.identities });
+    });
+    actions.querySelector('#drift-retrofeed')?.addEventListener('click', (ev) =>
+      runRetrofeed(ev.currentTarget, actions.querySelector('.drift-retrofeed-result')));
+  }
   return wrap;
+}
+
+// Call the retrofeed endpoint for the current A/B pair and render the
+// outcome: what was adopted, what was skipped (with reasons), and the two
+// downloads — the additions fragment and the full updated pack — ready to
+// commit back to the service repo.
+async function runRetrofeed(btn, host) {
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/packs/${encodeURIComponent(state.selectedPackId)}/retrofeed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        packBId: state.compareBId,
+        aEnv: state.selectedEnv || undefined,
+        bEnv: state.compareBEnv || undefined,
+        scopeMode: activeDiffScopeMode(),
+        service: state.selectedService || undefined,
+      }),
+    });
+    const dl = (label, text, filename) => {
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/x-yaml' }));
+      return `<a class="ctrl-btn ctrl-link" href="${url}" download="${escapeHtml(filename)}">${escapeHtml(label)}</a>`;
+    };
+    const slug = (state.pack?.meta?.name || state.selectedPackId || 'pack').replace(/[^a-z0-9-]+/gi, '-');
+    host.innerHTML = `
+      <p class="drift-retrofeed-head">Adopted <strong>${r.summary.adopted}</strong> of ${r.summary.candidates} shadow signal${r.summary.candidates === 1 ? '' : 's'}${r.summary.skipped ? ` · ${r.summary.skipped} skipped` : ''}</p>
+      ${r.adopted.length ? `<ul class="drift-retrofeed-list">${r.adopted.map(a => `<li>＋ <code>${escapeHtml(a.kind)}</code> ${escapeHtml(String(a.id ?? ''))}</li>`).join('')}</ul>` : ''}
+      ${r.skipped.length ? `<details class="drift-retrofeed-skips"><summary>${r.skipped.length} skipped — why</summary><ul>${r.skipped.map(s => `<li><code>${escapeHtml(s.kind || '?')}</code> — ${escapeHtml(s.reason)}</li>`).join('')}</ul></details>` : ''}
+      ${r.adopted.length ? `<p class="drift-retrofeed-dl">
+          ${dl('⬇ additions fragment', r.fragmentYaml, `${slug}.retrofeed-fragment.yaml`)}
+          ${dl('⬇ updated pack', r.updatedPackYaml, `${slug}.pack.yaml`)}
+          <span class="drift-retrofeed-note">commit the updated pack to the service repo (it carries tomograph.retrofeed.* provenance), then re-scan to confirm the gap closed</span>
+        </p>` : ''}
+    `;
+    host.hidden = false;
+    toast(r.summary.adopted ? `Retrofeed: ${r.summary.adopted} shadow signal(s) adopted` : 'Nothing adoptable — see the skip reasons', r.summary.adopted ? '' : 'error');
+  } catch (e) {
+    host.innerHTML = `<p class="drift-retrofeed-head is-error">Retrofeed failed: ${escapeHtml(e.message)}</p>`;
+    host.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ============================================================

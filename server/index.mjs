@@ -50,6 +50,7 @@ import {
 import {
   listJourneys, loadJourneyDef, runJourney, readJourneyRuns, saveJourneyDef,
 } from '../tools/lib/journey.mjs';
+import { retrofeedShadowSignals } from '../tools/lib/retrofeed.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -1011,6 +1012,54 @@ app.post('/api/deploys/:deployId/verify', (req, res) => {
 
 // GET /api/journeys — every saved journey with its definition summary and
 // last-run outcome, for the studio panel.
+// POST /api/packs/:id/retrofeed — the reverse remediation arrow
+// (VALUE_BACKLOG item 4): adopt live shadow signals (the diff's onlyInB)
+// back into the declared pack. Recomputes the diff server-side (never
+// trusts client-supplied artefacts), returns the additions as a fragment,
+// the full updated pack YAML, and an honest skipped-list. The updated pack
+// is schema-validated before it leaves — retrofeed must never hand out a
+// pack that fails its own spec.
+app.post('/api/packs/:id/retrofeed', (req, res) => {
+  const metaA = findPackMeta(req.params.id);
+  if (!metaA) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
+  const b = req.body || {};
+  const metaB = findPackMeta(String(b.packBId || ''));
+  if (!metaB) return res.status(404).json({ ok: false, error: `unknown pack B: ${b.packBId}` });
+  try {
+    const canonicalA = loadPackCanonical(metaA);
+    const canonicalB = loadPackCanonical(metaB);
+    const aEnv = typeof b.aEnv === 'string' && b.aEnv ? b.aEnv : null;
+    const bEnv = typeof b.bEnv === 'string' && b.bEnv ? b.bEnv : null;
+    const diff = diffPacks(
+      adapt(canonicalA, { environment: aEnv }),
+      adapt(canonicalB, { environment: bEnv }),
+      { scopeMode: typeof b.scopeMode === 'string' ? b.scopeMode : undefined,
+        service: typeof b.service === 'string' ? b.service : undefined },
+    );
+    let entries = Object.values(diff.layers || {}).flatMap(l => l.onlyInB || []);
+    if (Array.isArray(b.keys) && b.keys.length) {
+      const want = new Set(b.keys.map(String));
+      entries = entries.filter(e => want.has(e.key));
+    }
+    const { adopted, skipped, updatedCanonical, fragment } =
+      retrofeedShadowSignals(canonicalA, entries, { now: new Date().toISOString() });
+    // Tripwire (the crawler incident's law, applied here too).
+    const errs = validateCanonical(updatedCanonical, SCHEMA);
+    if (errs.length) {
+      return res.status(500).json({ ok: false, error: 'retrofeed produced a pack that fails the schema — this is a bug, please report it', details: errs.slice(0, 5) });
+    }
+    res.json({
+      ok: true,
+      summary: { candidates: entries.length, adopted: adopted.length, skipped: skipped.length },
+      adopted, skipped,
+      fragmentYaml: fragment ? emitYaml(fragment) : null,
+      updatedPackYaml: emitYaml(updatedCanonical),
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/journeys', (req, res) => {
   try {
     const journeys = listJourneys().map(name => {
