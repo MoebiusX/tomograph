@@ -124,7 +124,6 @@ rendered as a full ladder with the current rung highlighted:
 
 | Grade | Class | Score band |
 |---|---|---|
-| S | Primary Standard | not score-reachable (external metrology evidence) |
 | A++ | Calibration / Reference Grade | not score-reachable (external benchmarking) |
 | A+ | Laboratory / Research Grade | ≥ 95% |
 | A | Diagnostic / Clinical Grade | > 85% — anchored to the audit bar |

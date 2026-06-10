@@ -1421,9 +1421,9 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   `;
 
   // The instrument-grade ladder: every rung rendered top (best) → bottom,
-  // the rung the score lands on highlighted. A++/S have no score band —
-  // they require external reference evidence, so they render dimmed with
-  // that requirement stated rather than pretending the score can reach them.
+  // the rung the score lands on highlighted. A++ has no score band — it
+  // requires external reference evidence, so it renders dimmed with that
+  // requirement stated rather than pretending the score can reach it.
   const ladderHtml = `
     <ul class="grade-ladder">
       ${INSTRUMENT_GRADE_SCALE.map(g => {
@@ -1439,7 +1439,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
         </li>`;
       }).join('')}
     </ul>
-    <p class="grade-ladder-note">Grades derive from the verification score — A starts strictly above the ${audit.threshold}% audit bar, so the letter and the machine PASS/FAIL always agree. Verification evidence, not incident-validation. A++ and S need evidence this instrument cannot produce alone.</p>
+    <p class="grade-ladder-note">Grades derive from the verification score — A starts strictly above the ${audit.threshold}% audit bar, so the letter and the machine PASS/FAIL always agree. Verification evidence, not incident-validation. A++ needs external reference benchmarking this instrument cannot produce alone.</p>
   `;
 
   wrap.innerHTML = `

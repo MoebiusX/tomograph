@@ -89,7 +89,6 @@ highlighted:
 
 | Grade | Class | Score band |
 |---|---|---|
-| S | Primary Standard | — (needs external metrology evidence) |
 | A++ | Calibration / Reference Grade | — (needs external reference benchmarking) |
 | A+ | Laboratory / Research Grade | ≥ 95% |
 | A | Diagnostic / Clinical Grade | > 85% (the audit bar) |

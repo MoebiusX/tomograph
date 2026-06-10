@@ -154,17 +154,16 @@ export function diagnosticAuditStatus(passed, total) {
 // the verdict-word fractions (62.5 / 37.5); B+ marks the upper half of the
 // almost-band; A+ is reserved for near-perfect scores.
 //
-// HONESTY FENCE: A++ and S are rendered on the ladder but are NOT
-// score-reachable (minPct: null). "Calibrates other instruments" and
-// "primary standard" are claims about external reference evidence —
-// benchmarking against other instruments, metrology-grade traceability —
-// that the seven verification criteria cannot attest. They appear so the
-// ceiling is visible, dimmed, with what they would require stated.
+// HONESTY FENCE: A++ is rendered on the ladder but is NOT score-reachable
+// (minPct: null). "Calibrates other instruments" is a claim about external
+// reference evidence — benchmarking against other instruments — that the
+// seven verification criteria cannot attest. It stays visible (dimmed,
+// requirement stated) because curated reference packs play exactly that
+// role in-context. The metrology scale's S / Primary Standard rung was
+// deliberately dropped (maintainer call, 2026-06-10): national-standards-
+// lab framing has no pragmatic meaning for an observability instrument.
 // Ordered top (best) → bottom.
 export const INSTRUMENT_GRADE_SCALE = [
-  { letter: 'S',   tier: 'ref', label: 'Primary Standard',              minPct: null, range: '—',
-    blurb: 'Highest-level standard; maintained by national metrology institutes or top-level standards labs.',
-    requires: 'external metrology traceability — beyond this instrument’s evidence' },
   { letter: 'A++', tier: 'ref', label: 'Calibration / Reference Grade', minPct: null, range: '—',
     blurb: 'Used to verify, calibrate, or benchmark other instruments. Very low uncertainty and strong traceability requirements.',
     requires: 'external reference benchmarking — beyond this instrument’s evidence' },

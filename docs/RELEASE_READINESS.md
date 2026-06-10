@@ -42,8 +42,8 @@ FAIL otherwise
 ```
 
 Users see the score as a metrology-style instrument grade (D < 37.5% · C ≥
-37.5% · B ≥ 62.5% · B+ ≥ 75% · A > 85% · A+ ≥ 95%; A++ and S require
-external reference evidence and are not score-reachable). A is anchored
+37.5% · B ≥ 62.5% · B+ ≥ 75% · A > 85% · A+ ≥ 95%; A++ requires
+external reference evidence and is not score-reachable). A is anchored
 strictly above the audit bar, so "A or better" and PASS are the same
 statement — gates and run records keep keying off PASS/FAIL.
 

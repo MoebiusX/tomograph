@@ -156,8 +156,8 @@ Verified YES live signal present
 
 (Grade schema 2: seven scored criteria; the Actionable check renders
 separately under 2C Operability as informational. The headline stamp is
-the instrument grade — D/C/B/B+/A/A+ with A++/S shown as reference-only
-rungs — and the full ladder renders below the summary with the current
+the instrument grade — D/C/B/B+/A/A+ with A++ shown as a reference-only
+rung — and the full ladder renders below the summary with the current
 rung highlighted.)
 
 The exact live snapshot may change. The interpretation remains:

@@ -126,10 +126,11 @@ const nowMs = Date.parse('2026-06-09T12:00:00Z');
   assert(instrumentGradeFor(85).letter === 'B+', 'exactly 85% is still Inspection Grade — A requires strictly more than the audit bar');
   assert(instrumentGradeFor(85.01).letter === 'A', 'above the audit bar is Diagnostic / Clinical Grade');
   assert(instrumentGradeFor(95).letter === 'A+', '95% reaches Laboratory / Research Grade');
-  assert(instrumentGradeFor(100).letter === 'A+', 'a perfect verification score caps at A+ — A++/S need external reference evidence');
+  assert(instrumentGradeFor(100).letter === 'A+', 'a perfect verification score caps at A+ — A++ needs external reference evidence');
   const unreachable = INSTRUMENT_GRADE_SCALE.filter((g) => g.minPct === null).map((g) => g.letter);
-  assert(unreachable.length === 2 && unreachable.includes('A++') && unreachable.includes('S'),
-         'exactly A++ and S are not score-reachable', unreachable);
+  assert(unreachable.length === 1 && unreachable[0] === 'A++',
+         'exactly A++ is not score-reachable (the metrology S rung was dropped as unpragmatic)', unreachable);
+  assert(!INSTRUMENT_GRADE_SCALE.some((g) => g.letter === 'S'), 'no Primary Standard rung — absurd for an observability instrument');
   // The letter can never contradict the audit verdict.
   for (const pct of [0, 37.5, 62.5, 75, 84.9, 85, 85.01, 92, 95, 100]) {
     const passes = pct > 85;
