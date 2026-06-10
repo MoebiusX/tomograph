@@ -4,6 +4,7 @@ import {
   computeDiagnosticGrade,
   computeWeightedDeltaRisk,
   diagnosticAuditStatus,
+  partialLiveEvidence,
 } from '../studio/diagnostic-grade.mjs';
 
 function assert(condition, message, details) {
@@ -207,6 +208,32 @@ const nowMs = Date.parse('2026-06-09T12:00:00Z');
 
   assert(criterion(result, 'drift-free').pass === false, '40% empty/failed probes should fail fallback drift tolerance');
   assert(closeTo(criterion(result, 'drift-free').score, 0.6), 'failed probe fallback should still award fractional evidence credit');
+}
+
+// Partial live evidence — a live draft that lost probes to 503s must be
+// flagged so a thin Pack B can't masquerade as massive drift.
+{
+  const liveDraft = (extra) => ({ meta: { annotations: {
+    'mcp.url': 'https://example.test/mcp',
+    'mcp.probesAttempted': 'metrics,recording_rules,alert_rules,dashboards,routes',
+    'mcp.probesSucceeded': 'dashboards,routes',
+    ...extra,
+  } } });
+
+  const partial = partialLiveEvidence(liveDraft({ 'mcp.probesFailed': 'metrics,recording_rules,alert_rules' }));
+  assert(partial.partial === true, 'failed probes on a live draft mark the evidence PARTIAL', partial);
+  assert(partial.failed.length === 3 && partial.attempted.length === 5, 'failed/attempted probe lists parse from annotations', partial);
+
+  const emptyOnly = partialLiveEvidence(liveDraft({ 'mcp.probesEmpty': 'metrics' }));
+  assert(emptyOnly.partial === false, 'empty probes are honest zeros, NOT partial evidence', emptyOnly);
+
+  const clean = partialLiveEvidence(liveDraft({}));
+  assert(clean.partial === false, 'a clean live draft is not partial', clean);
+
+  const filePack = partialLiveEvidence({ meta: { annotations: { 'mcp.probesFailed': 'x' } } });
+  assert(filePack.partial === false, 'non-live packs (no mcp.url) never claim partial live evidence', filePack);
+
+  assert(partialLiveEvidence(null).partial === false, 'null pack is handled');
 }
 
 console.log('all diagnostic-grade assertions pass.');

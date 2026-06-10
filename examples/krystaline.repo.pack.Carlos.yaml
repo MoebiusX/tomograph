@@ -1,6 +1,6 @@
 # =============================================================================
 # ObservabilityPack: krystaline  (drafted by the crawler)
-# Discovered at 2026-06-10T17:18:43.943Z
+# Discovered at 2026-06-10T18:50:48.376Z
 # Files scanned: 490, classified: 109
 # Tier inferred: tier-2
 # Warnings: 5 (see metadata.annotations + the summary report)
@@ -27,7 +27,7 @@ metadata:
   labels:
     source: crawler
   annotations:
-    crawler.discoveredAt: 2026-06-10T17:18:43.943Z
+    crawler.discoveredAt: 2026-06-10T18:50:48.376Z
     crawler.filesScanned: "490"
     crawler.filesIncluded: "424"
     crawler.filesExcludedByEnvironment: "66"
@@ -148,8 +148,15 @@ metadata:
         "mcp_backend_duration_seconds",
         "mcp_backend_duration_seconds_bucket",
         "mcp_backend_requests_total",
+        "mcp_http_request_duration_seconds",
+        "mcp_http_requests_total",
+        "mcp_registered_resources",
+        "mcp_registered_tools",
+        "mcp_resource_read_duration_seconds",
+        "mcp_resource_reads_total",
         "mcp_server_info",
         "mcp_server_operation_duration_seconds",
+        "mcp_server_operation_duration_seconds_bucket",
         "mcp_server_operation_duration_seconds_count",
         "mcp_tool_calls_total",
         "mcp_tool_duration_seconds",
@@ -220,7 +227,7 @@ metadata:
         "slo:server:probe_success_ratio_5m",
         "up"
       ]
-    crawler.discovered.metric_names_count: "176"
+    crawler.discovered.metric_names_count: "183"
     crawler.discovered.metric_origins: |
       {
         "ALERTS": {
@@ -3669,21 +3676,11 @@ metadata:
           "origin_kind": "promql-reference",
           "confidence": "declared",
           "candidate": false,
-          "query": "histogram_quantile(0.50, sum(rate(mcp_backend_duration_seconds_bucket{job=~\"$mcp_job\"}[5m])) by (le, backend))",
+          "query": "histogram_quantile(0.95, sum(rate(mcp_backend_duration_seconds_bucket{job=~\"$mcp_job\"}[5m])) by (le, backend))",
           "used_by": [
             "dashboard:kx-mcp-observability-trace-coverage/mcp_operation_latency"
           ],
           "references": [
-            {
-              "kind": "dashboard-panel",
-              "name": "mcp_operation_latency",
-              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency"
-            },
-            {
-              "kind": "dashboard-panel",
-              "name": "mcp_operation_latency",
-              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency"
-            },
             {
               "kind": "dashboard-panel",
               "name": "mcp_operation_latency",
@@ -3703,33 +3700,107 @@ metadata:
           "candidate": false,
           "query": "",
           "used_by": [
-            "dashboard:kx-mcp-observability-trace-coverage/mcp_requests_sec",
-            "dashboard:kx-mcp-observability-trace-coverage/mcp_error_rate",
-            "dashboard:kx-mcp-observability-trace-coverage/mcp_request_volume",
             "dashboard:kx-mcp-observability-trace-coverage/backend_requests_and_sessions"
           ],
           "references": [
-            {
-              "kind": "dashboard-panel",
-              "name": "mcp_requests_sec",
-              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_requests_sec"
-            },
-            {
-              "kind": "dashboard-panel",
-              "name": "mcp_error_rate",
-              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_error_rate"
-            },
-            {
-              "kind": "dashboard-panel",
-              "name": "mcp_request_volume",
-              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_request_volume"
-            },
             {
               "kind": "dashboard-panel",
               "name": "backend_requests_and_sessions",
               "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#backend_requests_and_sessions"
             }
           ]
+        },
+        "mcp_http_request_duration_seconds": {
+          "file": "otel-mcp-server/src/metrics.ts",
+          "service": "otel-mcp-server",
+          "type": "histogram",
+          "help": "MCP HTTP request duration in seconds",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "source-code",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "",
+          "used_by": [],
+          "references": []
+        },
+        "mcp_http_requests_total": {
+          "file": "otel-mcp-server/src/metrics.ts",
+          "service": "otel-mcp-server",
+          "type": "counter",
+          "help": "Total HTTP requests received by the MCP server",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "source-code",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "",
+          "used_by": [
+            "dashboard:kx-mcp-observability-trace-coverage/backend_requests_and_sessions"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "backend_requests_and_sessions",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#backend_requests_and_sessions"
+            }
+          ]
+        },
+        "mcp_registered_resources": {
+          "file": "otel-mcp-server/src/metrics.ts",
+          "service": "otel-mcp-server",
+          "type": "gauge",
+          "help": "MCP resources registered by this server",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "source-code",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "",
+          "used_by": [],
+          "references": []
+        },
+        "mcp_registered_tools": {
+          "file": "otel-mcp-server/src/metrics.ts",
+          "service": "otel-mcp-server",
+          "type": "gauge",
+          "help": "MCP tools registered by this server",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "source-code",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "",
+          "used_by": [],
+          "references": []
+        },
+        "mcp_resource_read_duration_seconds": {
+          "file": "otel-mcp-server/src/metrics.ts",
+          "service": "otel-mcp-server",
+          "type": "histogram",
+          "help": "MCP resource read duration in seconds",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "source-code",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "",
+          "used_by": [],
+          "references": []
+        },
+        "mcp_resource_reads_total": {
+          "file": "otel-mcp-server/src/metrics.ts",
+          "service": "otel-mcp-server",
+          "type": "counter",
+          "help": "Total MCP resource reads",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "source-code",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "",
+          "used_by": [],
+          "references": []
         },
         "mcp_server_info": {
           "file": "otel-mcp-server/src/metrics.ts",
@@ -3758,6 +3829,38 @@ metadata:
           "query": "",
           "used_by": [],
           "references": []
+        },
+        "mcp_server_operation_duration_seconds_bucket": {
+          "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency",
+          "service": "",
+          "type": "promql-reference",
+          "help": "",
+          "labels": [],
+          "source_name": "",
+          "origin_kind": "promql-reference",
+          "confidence": "declared",
+          "candidate": false,
+          "query": "histogram_quantile(0.50, sum(rate(mcp_server_operation_duration_seconds_bucket{job=~\"$mcp_job\"}[5m])) by (le, tool))",
+          "used_by": [
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_operation_latency"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_operation_latency",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_operation_latency",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_operation_latency",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency"
+            }
+          ]
         },
         "mcp_server_operation_duration_seconds_count": {
           "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#missing_trace_gap",
@@ -3798,8 +3901,28 @@ metadata:
           "confidence": "declared",
           "candidate": false,
           "query": "",
-          "used_by": [],
-          "references": []
+          "used_by": [
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_tool_calls_sec",
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_error_rate",
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_tool_call_volume"
+          ],
+          "references": [
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_tool_calls_sec",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_tool_calls_sec"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_error_rate",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_error_rate"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_tool_call_volume",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_tool_call_volume"
+            }
+          ]
         },
         "mcp_tool_duration_seconds": {
           "file": "otel-mcp-server/src/metrics.ts",
@@ -7573,22 +7696,22 @@ spec:
         title: MCP Observability & Trace Coverage
         uid: kx-mcp-observability-trace-coverage
         panel_count: 15
-        query_panel_count: 16
+        query_panel_count: 18
         panels:
-          - panel: mcp_requests_sec
-            title: MCP Requests/sec
-            expr: sum(rate(mcp_backend_requests_total{job=~"$mcp_job"}[5m]))
+          - panel: mcp_tool_calls_sec
+            title: MCP Tool Calls/sec
+            expr: sum(rate(mcp_tool_calls_total{job=~"$mcp_job"}[5m]))
             refId: ''
             datasource: prometheus
             metrics:
-              - mcp_backend_requests_total
+              - mcp_tool_calls_total
           - panel: mcp_error_rate
             title: MCP Error Rate
-            expr: 100 * sum(rate(mcp_backend_requests_total{job=~"$mcp_job",status="error"}[5m])) / clamp_min(sum(rate(mcp_backend_requests_total{job=~"$mcp_job"}[5m])), 0.000001)
+            expr: 100 * sum(rate(mcp_tool_calls_total{job=~"$mcp_job",status="error"}[5m])) / clamp_min(sum(rate(mcp_tool_calls_total{job=~"$mcp_job"}[5m])), 0.000001)
             refId: ''
             datasource: prometheus
             metrics:
-              - mcp_backend_requests_total
+              - mcp_tool_calls_total
           - panel: mcp_metrics_coverage
             title: MCP Metrics Coverage
             expr: 100 * count(up{job=~"otel-mcp-server|mcp-public"} == 1) / 2
@@ -7610,13 +7733,13 @@ spec:
             datasource: prometheus
             metrics:
               - mcp_server_operation_duration_seconds_count
-          - panel: mcp_request_volume
-            title: MCP Request Volume
-            expr: sum by (job, status) (rate(mcp_backend_requests_total{job=~"$mcp_job"}[5m]))
+          - panel: mcp_tool_call_volume
+            title: MCP Tool Call Volume
+            expr: sum by (job, status) (rate(mcp_tool_calls_total{job=~"$mcp_job"}[5m]))
             refId: ''
             datasource: prometheus
             metrics:
-              - mcp_backend_requests_total
+              - mcp_tool_calls_total
           - panel: trace_coverage_by_service
             title: Trace Coverage by Service
             expr: 100 * up{job=~"otel-mcp-server|mcp-public|jaeger|otel-collector"}
@@ -7633,21 +7756,28 @@ spec:
               - mcp_server_operation_duration_seconds_count
           - panel: mcp_operation_latency
             title: MCP Operation Latency
-            expr: histogram_quantile(0.50, sum(rate(mcp_backend_duration_seconds_bucket{job=~"$mcp_job"}[5m])) by (le, backend))
+            expr: histogram_quantile(0.50, sum(rate(mcp_server_operation_duration_seconds_bucket{job=~"$mcp_job"}[5m])) by (le, tool))
             refId: ''
             datasource: prometheus
             metrics:
-              - mcp_backend_duration_seconds_bucket
+              - mcp_server_operation_duration_seconds_bucket
+          - panel: mcp_operation_latency
+            title: MCP Operation Latency
+            expr: histogram_quantile(0.95, sum(rate(mcp_server_operation_duration_seconds_bucket{job=~"$mcp_job"}[5m])) by (le, tool))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_server_operation_duration_seconds_bucket
+          - panel: mcp_operation_latency
+            title: MCP Operation Latency
+            expr: histogram_quantile(0.99, sum(rate(mcp_server_operation_duration_seconds_bucket{job=~"$mcp_job"}[5m])) by (le, tool))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_server_operation_duration_seconds_bucket
           - panel: mcp_operation_latency
             title: MCP Operation Latency
             expr: histogram_quantile(0.95, sum(rate(mcp_backend_duration_seconds_bucket{job=~"$mcp_job"}[5m])) by (le, backend))
-            refId: ''
-            datasource: prometheus
-            metrics:
-              - mcp_backend_duration_seconds_bucket
-          - panel: mcp_operation_latency
-            title: MCP Operation Latency
-            expr: histogram_quantile(0.99, sum(rate(mcp_backend_duration_seconds_bucket{job=~"$mcp_job"}[5m])) by (le, backend))
             refId: ''
             datasource: prometheus
             metrics:
@@ -7659,6 +7789,13 @@ spec:
             datasource: prometheus
             metrics:
               - mcp_backend_requests_total
+          - panel: backend_requests_and_sessions
+            title: Backend Requests and Sessions
+            expr: sum by (route, status_code) (rate(mcp_http_requests_total{job=~"$mcp_job"}[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_http_requests_total
           - panel: backend_requests_and_sessions
             title: Backend Requests and Sessions
             expr: mcp_active_sessions{job=~"$mcp_job"}
