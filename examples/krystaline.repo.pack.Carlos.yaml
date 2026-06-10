@@ -1,6 +1,6 @@
 # =============================================================================
 # ObservabilityPack: krystaline  (drafted by the crawler)
-# Discovered at 2026-06-10T10:24:39.842Z
+# Discovered at 2026-06-10T12:54:28.045Z
 # Files scanned: 484, classified: 106
 # Tier inferred: tier-2
 # Warnings: 5 (see metadata.annotations + the summary report)
@@ -27,7 +27,7 @@ metadata:
   labels:
     source: crawler
   annotations:
-    crawler.discoveredAt: 2026-06-10T10:24:39.842Z
+    crawler.discoveredAt: 2026-06-10T12:54:28.045Z
     crawler.filesScanned: "484"
     crawler.filesIncluded: "421"
     crawler.filesExcludedByEnvironment: "63"
@@ -7268,3 +7268,4 @@ spec:
       version:
         declared: "3.9"
         gating: "off"
+
