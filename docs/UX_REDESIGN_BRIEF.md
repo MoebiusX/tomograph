@@ -98,6 +98,47 @@ from B to A" is never drawn.
 6. **Demo-grade aesthetics.** This UI must carry a live dry-run in
    front of stakeholders. Underwhelming is a defect.
 
+## Aesthetic direction — "alien-like" mission control (maintainer-set)
+
+The maintainer's target look is calibrated by his own KrystalineX
+Grafana dashboards (GenAI Operations Overview · AI RCA Reliability &
+Queue Health · MCP Observability & Trace Coverage — drop screenshots
+into `docs/img/ux-refs/` so cold readers see them). What makes those
+boards feel advanced is decodable; reproduce the qualities, not the
+widgets:
+
+1. **Hero KPI band.** A top row of stat tiles — big number, unit,
+   colored sparkline, delta vs a previous window ("▲ 0.62 pp vs 6h
+   ago"). Tomograph mapping: Score · Coverage · Trust · Drift fidelity
+   · Freshness · Verified as tiles, with sparkline + delta powered by
+   **journey run history** (the data already exists in
+   `.tomograph/runs/`). The grade ladder sits beside this band.
+2. **Per-tile color identity.** Each tile owns a saturated accent on
+   the dark ground (green/blue/purple/amber/red fills) — glanceable
+   semantics, not rainbow decoration. Light theme must still hold.
+3. **Density done cleanly.** Many panels, but every panel has one
+   title, one question, min/avg/max-style micro-stats in the legend.
+   No prose inside panels.
+4. **Verdict chips everywhere.** Pass/Fail/Warn, FIRING/PENDING/OK —
+   colored status chips in tables, exactly like the "Coverage
+   Findings" and "Current Alert State" tables in the references.
+5. **Actions as a first-class table.** The references end with
+   "Recommended Next Actions" — finding, owner, when. That IS
+   Remediate's triage queue: drift finding · weighted badness · fix
+   (deploy/retrofeed/manual) · one-click act.
+6. **Dramatic-but-precise naming.** "MCP Signal Lattice", "Reliability
+   Matrix" — names that sound advanced and are literally accurate.
+   Tomograph already owns "tomogram"; lean into the instrument/imaging
+   vocabulary (lattice, strata, drill, posture).
+7. **Dark-first, glowing accents, zero clutter chrome.** Filter bar
+   (env/service/pack/time) styled as quiet chips; "Powered by" footer
+   energy — the page should look like an instrument, not a document.
+
+Note: the studio's OBSERVA chrome and Atlas views already trend this
+way; the redesign should make Diagnose/Remediate feel like they belong
+to that family. Direction B below starts closest to the references —
+but all three directions should wear this skin.
+
 ## Process — how we'll work
 
 1. **Three divergent prototypes**, built as real clickable HTML pages
