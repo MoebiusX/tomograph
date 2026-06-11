@@ -1169,7 +1169,7 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   const initialized = await rpc('initialize', {
     protocolVersion: '2025-06-18',
     capabilities: {},
-    clientInfo: { name: 'tomograph-fetcher', version: '0.3.0' },
+    clientInfo: { name: 'tomograph-fetcher', version: '0.4.0' },
   }).then(() => true).catch(() => false);
   if (initialized) await notify('notifications/initialized').catch(() => {});
 

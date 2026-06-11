@@ -6,14 +6,14 @@ deploy is correspondingly small: one Deployment, one Service, one Ingress.
 
 ```bash
 # 1. Build the image from the repo root.
-docker build -t tomograph:0.3.0 .
+docker build -t tomograph:0.4.0 .
 
 # 2. Make it visible to your cluster.
 #    docker-desktop: nothing to do.
-#    kind:           kind load docker-image tomograph:0.3.0
-#    remote:         docker tag tomograph:0.3.0 <registry>/tomograph:0.3.0
-#                    docker push <registry>/tomograph:0.3.0
-#                    cd deploy/k8s && kustomize edit set image tomograph=<registry>/tomograph:0.3.0
+#    kind:           kind load docker-image tomograph:0.4.0
+#    remote:         docker tag tomograph:0.4.0 <registry>/tomograph:0.4.0
+#                    docker push <registry>/tomograph:0.4.0
+#                    cd deploy/k8s && kustomize edit set image tomograph=<registry>/tomograph:0.4.0
 
 # 3. Apply (from the repo root).
 kubectl create namespace observability --dry-run=client -o yaml | kubectl apply -f -

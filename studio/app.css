@@ -7951,3 +7951,105 @@ body.chrome-observa .disco {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ============================================================
+   SERVICE GATE — the post-sign-in landing (which service are
+   you working on?) + the always-visible active-service chip in
+   the OBSERVA bar. docs/PRODUCTIZATION_PLAN.md Stage 1 UX.
+   ============================================================ */
+.svc-gate {
+  max-width: 880px;
+  margin: 9vh auto 0;
+  padding: 0 28px;
+}
+.svc-gate-eyebrow {
+  font: 700 11px/1 var(--mono);
+  letter-spacing: 0.22em;
+  color: var(--CMP);
+}
+.svc-gate-title {
+  font-family: var(--serif);
+  font-size: 42px;
+  font-weight: 600;
+  margin: 14px 0 4px;
+  color: var(--ink);
+}
+.svc-gate-sub {
+  font-size: 16px;
+  color: var(--ink-3);
+  margin: 0 0 30px;
+}
+.svc-gate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.svc-gate-card {
+  appearance: none;
+  text-align: left;
+  cursor: pointer;
+  padding: 18px 20px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line);
+  background:
+    radial-gradient(120% 100% at 0% 0%, color-mix(in srgb, var(--CMP) 7%, transparent), transparent 60%),
+    var(--card);
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.05s;
+}
+.svc-gate-card:hover {
+  border-color: var(--CMP);
+  box-shadow: 0 0 22px color-mix(in srgb, var(--CMP) 22%, transparent);
+}
+.svc-gate-card:active { transform: translateY(1px); }
+.svc-gate-name {
+  display: block;
+  font: 700 15px/1.3 var(--mono);
+  color: var(--ink);
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.svc-gate-meta {
+  display: block;
+  font-size: 11.5px;
+  color: var(--ink-4);
+}
+.svc-gate-new {
+  appearance: none;
+  margin-top: 26px;
+  padding: 8px 2px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  border-bottom: 1px dashed var(--line);
+}
+.svc-gate-new:hover { color: var(--CMP); border-bottom-color: var(--CMP); }
+
+/* Active-service chip in the OBSERVA bar. */
+.observa-service {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 14px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--CMP) 45%, transparent);
+  background: color-mix(in srgb, var(--CMP) 10%, transparent);
+  align-self: center;
+}
+.observa-service-key {
+  font: 700 9px/1 var(--mono);
+  letter-spacing: 0.16em;
+  color: var(--ink-4);
+}
+.observa-service-name {
+  font: 700 12.5px/1 var(--mono);
+  color: var(--CMP);
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.observa-service[hidden] { display: none; }

@@ -1,7 +1,7 @@
 # =============================================================================
 # ObservabilityPack: krystaline  (drafted by the crawler)
-# Discovered at 2026-06-10T18:50:48.376Z
-# Files scanned: 490, classified: 109
+# Discovered at 2026-06-11T03:32:24.885Z
+# Files scanned: 492, classified: 109
 # Tier inferred: tier-2
 # Warnings: 5 (see metadata.annotations + the summary report)
 # -----------------------------------------------------------------------------
@@ -27,9 +27,9 @@ metadata:
   labels:
     source: crawler
   annotations:
-    crawler.discoveredAt: 2026-06-10T18:50:48.376Z
-    crawler.filesScanned: "490"
-    crawler.filesIncluded: "424"
+    crawler.discoveredAt: 2026-06-11T03:32:24.885Z
+    crawler.filesScanned: "492"
+    crawler.filesIncluded: "426"
     crawler.filesExcludedByEnvironment: "66"
     crawler.filesClassified: "109"
     crawler.environmentProfile: prod
@@ -243,6 +243,7 @@ metadata:
           "query": "ALERTS{alertname=~\"GenAi.*\",alertstate=\"firing\"}",
           "used_by": [
             "dashboard:kx-ai-rca-reliability/current_alert_state",
+            "dashboard:kx-ai-rca-reliability/rca_alert_state_bands",
             "dashboard:kx-predictive-finops/predictive_alert_status",
             "dashboard:krystalinex-unified/firing_alerts",
             "dashboard:krystalinex-unified/pending_alerts",
@@ -255,6 +256,11 @@ metadata:
               "kind": "dashboard-panel",
               "name": "current_alert_state",
               "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#current_alert_state"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "rca_alert_state_bands",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#rca_alert_state_bands"
             },
             {
               "kind": "dashboard-panel",
@@ -1356,11 +1362,12 @@ metadata:
           "origin_kind": "promql-reference",
           "confidence": "declared",
           "candidate": false,
-          "query": "max(genai:client_operation_duration:p99_5m{job=~\"$service\",model=~\"$model\"}) or max(histogram_quantile(0.99, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~\"$service\",model=~\"$model\"}[5m])) by (le, provider, model, operation)))",
+          "query": "max(genai:client_operation_duration:p99_5m{job=~\"$service\",model=~\"$model\",provider=~\"$provider\"}) or max(histogram_quantile(0.99, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~\"$service\",model=~\"$model\",provider=~\"$provider\"}[5m])) by (le, provider, model, operation)))",
           "used_by": [
             "dashboard:kx-ai-rca-reliability/p99_generate_latency",
             "dashboard:kx-ai-rca-reliability/genai_operation_duration",
             "dashboard:kx-genai-operations/raw_genai_duration_p95_by_model",
+            "dashboard:kx-genai-operations/genai_duration_distribution",
             "recording_rule:genai:client_operation_duration:p95_5m",
             "recording_rule:genai:client_operation_duration:p99_5m"
           ],
@@ -1389,6 +1396,11 @@ metadata:
               "kind": "dashboard-panel",
               "name": "raw_genai_duration_p95_by_model",
               "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#raw_genai_duration_p95_by_model"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "genai_duration_distribution",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#genai_duration_distribution"
             },
             {
               "kind": "recording-rule",
@@ -1432,7 +1444,7 @@ metadata:
           "origin_kind": "promql-reference",
           "confidence": "declared",
           "candidate": false,
-          "query": "histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~\"$service\",model=~\"$model\"}[5m])) by (le))",
+          "query": "histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~\"$service\",model=~\"$model\",provider=~\"$provider\"}[5m])) by (le))",
           "used_by": [
             "dashboard:kx-ai-rca-reliability/time_per_output_chunk",
             "dashboard:kx-genai-operations/streaming_latency_p95"
@@ -1490,7 +1502,7 @@ metadata:
           "origin_kind": "promql-reference",
           "confidence": "declared",
           "candidate": false,
-          "query": "histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~\"$service\",model=~\"$model\"}[5m])) by (le))",
+          "query": "histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~\"$service\",model=~\"$model\",provider=~\"$provider\"}[5m])) by (le))",
           "used_by": [
             "dashboard:kx-ai-rca-reliability/time_to_first_chunk",
             "dashboard:kx-genai-operations/streaming_latency_p95"
@@ -1604,7 +1616,7 @@ metadata:
           "origin_kind": "promql-reference",
           "confidence": "declared",
           "candidate": false,
-          "query": "sum by (model, direction) (rate(gen_ai_client_token_usage_sum[5m]))",
+          "query": "sum by (model, direction) (rate(gen_ai_client_token_usage_sum{provider=~\"$provider\",model=~\"$model\"}[5m]))",
           "used_by": [
             "dashboard:kx-genai-operations/token_usage_rate",
             "recording_rule:genai:client_token_usage:rate_1h"
@@ -3004,6 +3016,7 @@ metadata:
           "used_by": [
             "dashboard:kx-ai-rca-reliability/p95_analysis_duration",
             "dashboard:kx-ai-rca-reliability/analysis_duration_quantiles",
+            "dashboard:kx-ai-rca-reliability/rca_duration_heat_field",
             "dashboard:kx-genai-operations/rca_analysis_duration",
             "dashboard:krystalinex-unified/llm_analysis_duration",
             "recording_rule:genai:rca_analysis_duration:p95_5m"
@@ -3028,6 +3041,11 @@ metadata:
               "kind": "dashboard-panel",
               "name": "analysis_duration_quantiles",
               "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#analysis_duration_quantiles"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "rca_duration_heat_field",
+              "file": "k8s/charts/krystalinex/dashboards/ai-rca-reliability.json#rca_duration_heat_field"
             },
             {
               "kind": "dashboard-panel",
@@ -3842,7 +3860,8 @@ metadata:
           "candidate": false,
           "query": "histogram_quantile(0.50, sum(rate(mcp_server_operation_duration_seconds_bucket{job=~\"$mcp_job\"}[5m])) by (le, tool))",
           "used_by": [
-            "dashboard:kx-mcp-observability-trace-coverage/mcp_operation_latency"
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_operation_latency",
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_operation_latency_field"
           ],
           "references": [
             {
@@ -3859,11 +3878,16 @@ metadata:
               "kind": "dashboard-panel",
               "name": "mcp_operation_latency",
               "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_operation_latency_field",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_operation_latency_field"
             }
           ]
         },
         "mcp_server_operation_duration_seconds_count": {
-          "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#missing_trace_gap",
+          "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#trace_gap",
           "service": "",
           "type": "promql-reference",
           "help": "",
@@ -3874,14 +3898,14 @@ metadata:
           "candidate": false,
           "query": "absent(mcp_server_operation_duration_seconds_count) or vector(0)",
           "used_by": [
-            "dashboard:kx-mcp-observability-trace-coverage/missing_trace_gap",
+            "dashboard:kx-mcp-observability-trace-coverage/trace_gap",
             "dashboard:kx-mcp-observability-trace-coverage/trace_coverage_by_service"
           ],
           "references": [
             {
               "kind": "dashboard-panel",
-              "name": "missing_trace_gap",
-              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#missing_trace_gap"
+              "name": "trace_gap",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#trace_gap"
             },
             {
               "kind": "dashboard-panel",
@@ -3902,20 +3926,20 @@ metadata:
           "candidate": false,
           "query": "",
           "used_by": [
-            "dashboard:kx-mcp-observability-trace-coverage/mcp_tool_calls_sec",
-            "dashboard:kx-mcp-observability-trace-coverage/mcp_error_rate",
+            "dashboard:kx-mcp-observability-trace-coverage/tool_calls",
+            "dashboard:kx-mcp-observability-trace-coverage/error_rate",
             "dashboard:kx-mcp-observability-trace-coverage/mcp_tool_call_volume"
           ],
           "references": [
             {
               "kind": "dashboard-panel",
-              "name": "mcp_tool_calls_sec",
-              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_tool_calls_sec"
+              "name": "tool_calls",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#tool_calls"
             },
             {
               "kind": "dashboard-panel",
-              "name": "mcp_error_rate",
-              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_error_rate"
+              "name": "error_rate",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#error_rate"
             },
             {
               "kind": "dashboard-panel",
@@ -5676,7 +5700,7 @@ metadata:
           ]
         },
         "up": {
-          "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_metrics_coverage",
+          "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#genai_signal_presence",
           "service": "",
           "type": "promql-reference",
           "help": "",
@@ -5685,12 +5709,14 @@ metadata:
           "origin_kind": "promql-reference",
           "confidence": "declared",
           "candidate": false,
-          "query": "100 * count(up{job=~\"otel-mcp-server|mcp-public\"} == 1) / 2",
+          "query": "up{job=~\"krystalinex-server|otel-collector|jaeger\"}",
           "used_by": [
-            "dashboard:kx-mcp-observability-trace-coverage/mcp_metrics_coverage",
-            "dashboard:kx-mcp-observability-trace-coverage/visible_mcp_services",
-            "dashboard:kx-mcp-observability-trace-coverage/trace_coverage_by_service",
+            "dashboard:kx-genai-operations/genai_signal_presence",
+            "dashboard:kx-mcp-observability-trace-coverage/metrics_coverage",
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_services",
             "dashboard:kx-mcp-observability-trace-coverage/collector_pipeline_health",
+            "dashboard:kx-mcp-observability-trace-coverage/trace_coverage_by_service",
+            "dashboard:kx-mcp-observability-trace-coverage/mcp_pipeline_uptime_bands",
             "dashboard:krystalinex-unified/services_up",
             "alert:ServiceDown",
             "recording_rule:slo:server:probe_success_ratio_5m",
@@ -5700,13 +5726,23 @@ metadata:
           "references": [
             {
               "kind": "dashboard-panel",
-              "name": "mcp_metrics_coverage",
-              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_metrics_coverage"
+              "name": "genai_signal_presence",
+              "file": "k8s/charts/krystalinex/dashboards/genai-operations.json#genai_signal_presence"
             },
             {
               "kind": "dashboard-panel",
-              "name": "visible_mcp_services",
-              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#visible_mcp_services"
+              "name": "metrics_coverage",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#metrics_coverage"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "mcp_services",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_services"
+            },
+            {
+              "kind": "dashboard-panel",
+              "name": "collector_pipeline_health",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#collector_pipeline_health"
             },
             {
               "kind": "dashboard-panel",
@@ -5715,8 +5751,8 @@ metadata:
             },
             {
               "kind": "dashboard-panel",
-              "name": "collector_pipeline_health",
-              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#collector_pipeline_health"
+              "name": "mcp_pipeline_uptime_bands",
+              "file": "k8s/charts/krystalinex/dashboards/mcp-observability-trace-coverage.json#mcp_pipeline_uptime_bands"
             },
             {
               "kind": "dashboard-panel",
@@ -6292,8 +6328,8 @@ spec:
       params:
         title: AI RCA Reliability & Queue Health
         uid: kx-ai-rca-reliability
-        panel_count: 17
-        query_panel_count: 28
+        panel_count: 20
+        query_panel_count: 30
         panels:
           - panel: rca_failure_ratio
             title: RCA Failure Ratio
@@ -6307,7 +6343,7 @@ spec:
             binding_reason: shared metrics:kx_llm_analysis_total, keywords:analysis|failure|ratio|total
           - panel: timeout_ratio
             title: Timeout Ratio
-            expr: 100 * sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model",status="timeout"}[5m])) / clamp_min(sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model"}[5m])), 0.000001)
+            expr: 100 * sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model",status="timeout",provider=~"$provider"}[5m])) / clamp_min(sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model",provider=~"$provider"}[5m])), 0.000001)
             refId: ''
             datasource: prometheus
             metrics:
@@ -6328,7 +6364,7 @@ spec:
             binding_reason: recording rule name, shared metrics:kx_llm_analysis_duration_seconds_bucket, keywords:genai|analysis|duration|histogram
           - panel: p99_generate_latency
             title: p99 Generate Latency
-            expr: max(genai:client_operation_duration:p99_5m{job=~"$service",model=~"$model"}) or max(histogram_quantile(0.99, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le, provider, model, operation)))
+            expr: max(genai:client_operation_duration:p99_5m{job=~"$service",model=~"$model",provider=~"$provider"}) or max(histogram_quantile(0.99, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model",provider=~"$provider"}[5m])) by (le, provider, model, operation)))
             refId: ''
             datasource: prometheus
             metrics:
@@ -6393,7 +6429,7 @@ spec:
             binding_reason: shared metrics:kx_llm_analysis_duration_seconds_bucket, keywords:analysis|duration|histogram|seconds
           - panel: timeouts_and_errors
             title: Timeouts and Errors
-            expr: sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model",status="timeout"}[5m]))
+            expr: sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model",status="timeout",provider=~"$provider"}[5m]))
             refId: ''
             datasource: prometheus
             metrics:
@@ -6403,7 +6439,7 @@ spec:
             binding_reason: shared metrics:gen_ai_client_operations_total, keywords:client|operation|error|ratio
           - panel: timeouts_and_errors
             title: Timeouts and Errors
-            expr: sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model",status="error"}[5m]))
+            expr: sum(rate(gen_ai_client_operations_total{job=~"$service",model=~"$model",status="error",provider=~"$provider"}[5m]))
             refId: ''
             datasource: prometheus
             metrics:
@@ -6461,49 +6497,49 @@ spec:
             binding_reason: shared metrics:kx_llm_analysis_total, keywords:analysis|ratio|total
           - panel: time_to_first_chunk
             title: Time to First Chunk
-            expr: histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            expr: histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~"$service",model=~"$model",provider=~"$provider"}[5m])) by (le))
             refId: ''
             datasource: prometheus
             metrics:
               - gen_ai_client_operation_time_to_first_chunk_seconds_bucket
           - panel: time_to_first_chunk
             title: Time to First Chunk
-            expr: histogram_quantile(0.95, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            expr: histogram_quantile(0.95, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~"$service",model=~"$model",provider=~"$provider"}[5m])) by (le))
             refId: ''
             datasource: prometheus
             metrics:
               - gen_ai_client_operation_time_to_first_chunk_seconds_bucket
           - panel: time_to_first_chunk
             title: Time to First Chunk
-            expr: histogram_quantile(0.99, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            expr: histogram_quantile(0.99, sum(rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{job=~"$service",model=~"$model",provider=~"$provider"}[5m])) by (le))
             refId: ''
             datasource: prometheus
             metrics:
               - gen_ai_client_operation_time_to_first_chunk_seconds_bucket
           - panel: time_per_output_chunk
             title: Time per Output Chunk
-            expr: histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            expr: histogram_quantile(0.50, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~"$service",model=~"$model",provider=~"$provider"}[5m])) by (le))
             refId: ''
             datasource: prometheus
             metrics:
               - gen_ai_client_operation_time_per_output_chunk_seconds_bucket
           - panel: time_per_output_chunk
             title: Time per Output Chunk
-            expr: histogram_quantile(0.95, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            expr: histogram_quantile(0.95, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~"$service",model=~"$model",provider=~"$provider"}[5m])) by (le))
             refId: ''
             datasource: prometheus
             metrics:
               - gen_ai_client_operation_time_per_output_chunk_seconds_bucket
           - panel: time_per_output_chunk
             title: Time per Output Chunk
-            expr: histogram_quantile(0.99, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            expr: histogram_quantile(0.99, sum(rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{job=~"$service",model=~"$model",provider=~"$provider"}[5m])) by (le))
             refId: ''
             datasource: prometheus
             metrics:
               - gen_ai_client_operation_time_per_output_chunk_seconds_bucket
           - panel: genai_operation_duration
             title: GenAI Operation Duration
-            expr: histogram_quantile(0.50, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            expr: histogram_quantile(0.50, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model",provider=~"$provider"}[5m])) by (le))
             refId: ''
             datasource: prometheus
             metrics:
@@ -6513,7 +6549,7 @@ spec:
             binding_reason: shared metrics:gen_ai_client_operation_duration_seconds_bucket, keywords:genai|client|operation|duration
           - panel: genai_operation_duration
             title: GenAI Operation Duration
-            expr: histogram_quantile(0.95, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            expr: histogram_quantile(0.95, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model",provider=~"$provider"}[5m])) by (le))
             refId: ''
             datasource: prometheus
             metrics:
@@ -6523,7 +6559,7 @@ spec:
             binding_reason: shared metrics:gen_ai_client_operation_duration_seconds_bucket, keywords:genai|client|operation|duration
           - panel: genai_operation_duration
             title: GenAI Operation Duration
-            expr: histogram_quantile(0.99, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model"}[5m])) by (le))
+            expr: histogram_quantile(0.99, sum(rate(gen_ai_client_operation_duration_seconds_bucket{job=~"$service",model=~"$model",provider=~"$provider"}[5m])) by (le))
             refId: ''
             datasource: prometheus
             metrics:
@@ -6534,6 +6570,23 @@ spec:
           - panel: current_alert_state
             title: Current Alert State
             expr: ALERTS{alertname=~"GenAi.*",alertstate="firing"}
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - ALERTS
+          - panel: rca_duration_heat_field
+            title: RCA Duration Heat Field
+            expr: sum(rate(kx_llm_analysis_duration_seconds_bucket[5m])) by (le)
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - kx_llm_analysis_duration_seconds_bucket
+            binds_to: slis.genai_rca_analysis_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:kx_llm_analysis_duration_seconds_bucket, keywords:analysis|duration|seconds|bucket
+          - panel: rca_alert_state_bands
+            title: RCA Alert State Bands
+            expr: ALERTS{alertname=~"GenAi.*|.*RCA.*",alertstate="firing"}
             refId: ''
             datasource: prometheus
             metrics:
@@ -6557,6 +6610,8 @@ spec:
           binds_to: slis.genai_rca_analysis
         - panel: GenAI Operation Duration
           binds_to: slis.genai_client_operation_duration
+        - panel: RCA Duration Heat Field
+          binds_to: slis.genai_rca_analysis_duration
     - id: kx-genai-operations
       provider:
         kind: grafana
@@ -6567,12 +6622,12 @@ spec:
       params:
         title: GenAI Operations Overview
         uid: kx-genai-operations
-        panel_count: 12
-        query_panel_count: 17
+        panel_count: 15
+        query_panel_count: 19
         panels:
           - panel: genai_operations_6h
             title: GenAI Operations (6h)
-            expr: sum(increase(gen_ai_client_operations_total[6h]))
+            expr: sum(increase(gen_ai_client_operations_total{provider=~"$provider",model=~"$model"}[6h]))
             refId: ''
             datasource: prometheus
             metrics:
@@ -6606,7 +6661,7 @@ spec:
               - kx_llm_dropped_events_total
           - panel: genai_client_latency
             title: GenAI Client Latency
-            expr: genai:client_operation_duration:p95_5m
+            expr: genai:client_operation_duration:p95_5m{provider=~"$provider",model=~"$model"}
             refId: ''
             datasource: prometheus
             metrics:
@@ -6616,7 +6671,7 @@ spec:
             binding_reason: recording rule name, keywords:genai|client|operation|duration
           - panel: genai_client_latency
             title: GenAI Client Latency
-            expr: genai:client_operation_duration:p99_5m
+            expr: genai:client_operation_duration:p99_5m{provider=~"$provider",model=~"$model"}
             refId: ''
             datasource: prometheus
             metrics:
@@ -6626,7 +6681,7 @@ spec:
             binding_reason: recording rule name, keywords:genai|client|operation|duration
           - panel: raw_genai_duration_p95_by_model
             title: Raw GenAI Duration P95 by Model
-            expr: histogram_quantile(0.95, sum by (le, provider, model, operation) (rate(gen_ai_client_operation_duration_seconds_bucket[5m])))
+            expr: histogram_quantile(0.95, sum by (le, provider, model, operation) (rate(gen_ai_client_operation_duration_seconds_bucket{provider=~"$provider",model=~"$model"}[5m])))
             refId: ''
             datasource: prometheus
             metrics:
@@ -6636,21 +6691,21 @@ spec:
             binding_reason: shared metrics:gen_ai_client_operation_duration_seconds_bucket, keywords:genai|client|operation|duration
           - panel: streaming_latency_p95
             title: Streaming Latency P95
-            expr: histogram_quantile(0.95, sum by (le, provider, model, operation) (rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket[5m])))
+            expr: histogram_quantile(0.95, sum by (le, provider, model, operation) (rate(gen_ai_client_operation_time_to_first_chunk_seconds_bucket{provider=~"$provider",model=~"$model"}[5m])))
             refId: ''
             datasource: prometheus
             metrics:
               - gen_ai_client_operation_time_to_first_chunk_seconds_bucket
           - panel: streaming_latency_p95
             title: Streaming Latency P95
-            expr: histogram_quantile(0.95, sum by (le, provider, model, operation) (rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket[5m])))
+            expr: histogram_quantile(0.95, sum by (le, provider, model, operation) (rate(gen_ai_client_operation_time_per_output_chunk_seconds_bucket{provider=~"$provider",model=~"$model"}[5m])))
             refId: ''
             datasource: prometheus
             metrics:
               - gen_ai_client_operation_time_per_output_chunk_seconds_bucket
           - panel: token_usage_rate
             title: Token Usage Rate
-            expr: genai:client_token_usage:rate_1h
+            expr: genai:client_token_usage:rate_1h{provider=~"$provider",model=~"$model"}
             refId: ''
             datasource: prometheus
             metrics:
@@ -6660,7 +6715,7 @@ spec:
             binding_reason: recording rule name, keywords:genai|client|token|usage
           - panel: token_usage_rate
             title: Token Usage Rate
-            expr: sum by (model, direction) (rate(gen_ai_client_token_usage_sum[5m]))
+            expr: sum by (model, direction) (rate(gen_ai_client_token_usage_sum{provider=~"$provider",model=~"$model"}[5m]))
             refId: ''
             datasource: prometheus
             metrics:
@@ -6670,7 +6725,7 @@ spec:
             binding_reason: shared metrics:gen_ai_client_token_usage_sum, keywords:client|token|usage|model
           - panel: operations_by_status
             title: Operations by Status
-            expr: sum by (provider, model, operation, status) (rate(gen_ai_client_operations_total[5m]))
+            expr: sum by (provider, model, operation, status) (rate(gen_ai_client_operations_total{provider=~"$provider",model=~"$model"}[5m]))
             refId: ''
             datasource: prometheus
             metrics:
@@ -6722,6 +6777,23 @@ spec:
             datasource: prometheus
             metrics:
               - kx_llm_dropped_events_total
+          - panel: genai_signal_presence
+            title: GenAI Signal Presence
+            expr: up{job=~"krystalinex-server|otel-collector|jaeger"}
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - up
+          - panel: genai_duration_distribution
+            title: GenAI Duration Distribution
+            expr: sum(rate(gen_ai_client_operation_duration_seconds_bucket{provider=~"$provider",model=~"$model"}[5m])) by (le)
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - gen_ai_client_operation_duration_seconds_bucket
+            binds_to: slis.genai_client_operation_duration
+            binding_confidence: inferred
+            binding_reason: shared metrics:gen_ai_client_operation_duration_seconds_bucket, keywords:genai|client|operation|duration
       panel_bindings:
         - panel: GenAI Operations (6h)
           binds_to: slis.genai_client_operation
@@ -6739,6 +6811,8 @@ spec:
           binds_to: slis.genai_rca_analysis_duration
         - panel: RCA Use Case Volume
           binds_to: slis.genai_rca_analysis
+        - panel: GenAI Duration Distribution
+          binds_to: slis.genai_client_operation_duration
     - id: adz2hpb
       provider:
         kind: grafana
@@ -7695,39 +7769,39 @@ spec:
       params:
         title: MCP Observability & Trace Coverage
         uid: kx-mcp-observability-trace-coverage
-        panel_count: 15
-        query_panel_count: 18
+        panel_count: 18
+        query_panel_count: 20
         panels:
-          - panel: mcp_tool_calls_sec
-            title: MCP Tool Calls/sec
+          - panel: tool_calls
+            title: Tool Calls
             expr: sum(rate(mcp_tool_calls_total{job=~"$mcp_job"}[5m]))
             refId: ''
             datasource: prometheus
             metrics:
               - mcp_tool_calls_total
-          - panel: mcp_error_rate
-            title: MCP Error Rate
+          - panel: error_rate
+            title: Error Rate
             expr: 100 * sum(rate(mcp_tool_calls_total{job=~"$mcp_job",status="error"}[5m])) / clamp_min(sum(rate(mcp_tool_calls_total{job=~"$mcp_job"}[5m])), 0.000001)
             refId: ''
             datasource: prometheus
             metrics:
               - mcp_tool_calls_total
-          - panel: mcp_metrics_coverage
-            title: MCP Metrics Coverage
+          - panel: metrics_coverage
+            title: Metrics Coverage
             expr: 100 * count(up{job=~"otel-mcp-server|mcp-public"} == 1) / 2
             refId: ''
             datasource: prometheus
             metrics:
               - up
-          - panel: visible_mcp_services
-            title: Visible MCP Services
+          - panel: mcp_services
+            title: MCP Services
             expr: count(up{job=~"otel-mcp-server|mcp-public"} == 1)
             refId: ''
             datasource: prometheus
             metrics:
               - up
-          - panel: missing_trace_gap
-            title: Missing Trace Gap
+          - panel: trace_gap
+            title: Trace Gap
             expr: absent(mcp_server_operation_duration_seconds_count) or vector(0)
             refId: ''
             datasource: prometheus
@@ -7740,20 +7814,6 @@ spec:
             datasource: prometheus
             metrics:
               - mcp_tool_calls_total
-          - panel: trace_coverage_by_service
-            title: Trace Coverage by Service
-            expr: 100 * up{job=~"otel-mcp-server|mcp-public|jaeger|otel-collector"}
-            refId: ''
-            datasource: prometheus
-            metrics:
-              - up
-          - panel: trace_coverage_by_service
-            title: Trace Coverage by Service
-            expr: 0 * absent(mcp_server_operation_duration_seconds_count)
-            refId: ''
-            datasource: prometheus
-            metrics:
-              - mcp_server_operation_duration_seconds_count
           - panel: mcp_operation_latency
             title: MCP Operation Latency
             expr: histogram_quantile(0.50, sum(rate(mcp_server_operation_duration_seconds_bucket{job=~"$mcp_job"}[5m])) by (le, tool))
@@ -7782,6 +7842,34 @@ spec:
             datasource: prometheus
             metrics:
               - mcp_backend_duration_seconds_bucket
+          - panel: collector_pipeline_health
+            title: Collector / Pipeline Health
+            expr: 100 * up{job=~"otel-collector|otel-mcp-server|mcp-public|jaeger"}
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - up
+          - panel: collector_pipeline_health
+            title: Collector / Pipeline Health
+            expr: sum(rate(otelcol_exporter_send_failed_spans_total[5m]))
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - otelcol_exporter_send_failed_spans_total
+          - panel: trace_coverage_by_service
+            title: Trace Coverage by Service
+            expr: 100 * up{job=~"otel-mcp-server|mcp-public|jaeger|otel-collector"}
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - up
+          - panel: trace_coverage_by_service
+            title: Trace Coverage by Service
+            expr: 0 * absent(mcp_server_operation_duration_seconds_count)
+            refId: ''
+            datasource: prometheus
+            metrics:
+              - mcp_server_operation_duration_seconds_count
           - panel: backend_requests_and_sessions
             title: Backend Requests and Sessions
             expr: sum by (backend) (rate(mcp_backend_requests_total{job=~"$mcp_job"}[5m]))
@@ -7810,20 +7898,20 @@ spec:
             datasource: prometheus
             metrics:
               - mcp_auth_attempts_total
-          - panel: collector_pipeline_health
-            title: Collector / Pipeline Health
-            expr: 100 * up{job=~"otel-collector|otel-mcp-server|mcp-public|jaeger"}
+          - panel: mcp_pipeline_uptime_bands
+            title: MCP / Pipeline Uptime Bands
+            expr: up{job=~"otel-mcp-server|mcp-public|jaeger|otel-collector"}
             refId: ''
             datasource: prometheus
             metrics:
               - up
-          - panel: collector_pipeline_health
-            title: Collector / Pipeline Health
-            expr: sum(rate(otelcol_exporter_send_failed_spans_total[5m]))
+          - panel: mcp_operation_latency_field
+            title: MCP Operation Latency Field
+            expr: sum(rate(mcp_server_operation_duration_seconds_bucket{job=~"$mcp_job"}[5m])) by (le)
             refId: ''
             datasource: prometheus
             metrics:
-              - otelcol_exporter_send_failed_spans_total
+              - mcp_server_operation_duration_seconds_bucket
     - id: kx-predictive-finops
       provider:
         kind: grafana
