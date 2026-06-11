@@ -70,6 +70,25 @@ plan closes.*
 > the "Mimir-compatible" claim; no Windows build upstream) and
 > `dashboard-linter` (advisory, per §3.3). Remaining: T3.
 
+> **T3 status — DELIVERED. All tiers T0–T4 are now live.**
+> `tools/lib/promtest-gen.mjs` generates `promtool test rules` fixtures
+> FROM THE PACK ITSELF — expectations (labels, annotations, `for:`)
+> read from the compiled YAML, never re-derived, so they move with the
+> compiler. Per ratio SLO: a healthy case (error rate 0 → every burn +
+> forecast alert proven SILENT, `:ratio_5m` evaluates to exactly 1) and
+> a breach case (good rate 0 → every alert proven to FIRE with the
+> exact emitted labels/annotations — including Prometheus
+> series-inherited labels from recording rules the forecast alert
+> queries — and `:error_ratio_5m` exactly 1). Series are synthesised
+> from the SLI legs via a matcher-aware recogniser
+> (`sum(rate(sel[w]))` / bare selectors; `=`, `!=`, `=~`, `!~`
+> honoured); unsupported leg shapes skip LOUDLY and a coverage floor
+> (≥3 SLOs) is asserted so the tier cannot silently evaporate.
+> Current coverage: 6 SLOs behaviourally proven across 4 packs
+> (12 burn + 2 forecast alerts), 5 skips reported (full-expression and
+> scalar legs from the live-drafted pack, regex-path hostile fixture).
+> §7 acceptance criteria: all six met.
+
 ## 1 · What the compiler emits (the surface under test)
 
 From `tools/lib/compile.mjs` (`compileCatalog` / `compileArtifact`):

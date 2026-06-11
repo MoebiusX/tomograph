@@ -146,5 +146,5 @@
   <text class="note" x="810" y="722">missing tooling skips LOUDLY locally · --strict in CI fails instead</text>
 </g>
 
-<text class="note" x="28" y="764">Tomograph · docs/TEST_PLAN_COMPILER_VALIDITY.md — tiers T0–T4 · T2 (Grafana 13 matrix) and T3 (behavioral promtool fixtures) are the next planned gates</text>
+<text class="note" x="28" y="764">Tomograph · docs/TEST_PLAN_COMPILER_VALIDITY.md — tiers T0–T4 ALL DELIVERED · T3: alerts proven to fire on breach + stay silent on healthy (promtool test rules, fixtures generated from the packs)</text>
 </svg>

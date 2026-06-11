@@ -31,6 +31,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from './lib/mini-yaml.mjs';
 import { compileCatalog, compileArtifact } from './lib/compile.mjs';
+import { generatePromtoolTest } from './lib/promtest-gen.mjs';
 import { createHarness } from './lib/harness.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -127,6 +128,12 @@ mkdirSync(OUT_DIR, { recursive: true });
 // failing assertions deliberately, one by one.
 const advisories = [];
 
+// T3 coverage accounting — behavioral fixtures only cover SLI legs the
+// synthesiser recognises; skips are reported and a floor is asserted so
+// the tier cannot silently evaporate.
+let t3Covered = 0;
+const t3Skips = [];
+
 let written = 0;
 function emit(packId, art) {
   const dir = join(OUT_DIR, packId.replace(/[^a-z0-9_.-]/gi, '_'));
@@ -174,6 +181,23 @@ function validatePack(fixture, canonical) {
         if (VALIDATORS.promtool) {
           const r = run(VALIDATORS.promtool, ['check', 'rules', file]);
           assert(r.ok, `promtool check rules · ${item.id} (${art.filename})`, r.out, 'exit 0');
+        }
+        // ---- T3: behavioral fixtures per SLO (healthy no-fire / breach fires) ----
+        if (VALIDATORS.promtool && item.id.startsWith('slo:') && !fixture.id.startsWith('edge:scale')) {
+          const sloId = item.id.slice(4);
+          const slo = (canonical?.spec?.slos || []).find(s => s.id === sloId);
+          const sli = slo ? (canonical?.spec?.slis || []).find(s => s.id === slo.sli) : null;
+          if (slo && sli && sli.type === 'ratio') {
+            const gen = generatePromtoolTest({ canonical, slo, sli, compiledYaml: art.content, rulesFilename: art.filename });
+            if (gen.skipped) {
+              t3Skips.push(`${fixture.id}/${sloId}: ${gen.skipped}`);
+            } else {
+              const testFile = emit(fixture.id, { filename: art.filename.replace(/\.yaml$/, '.test.yaml'), content: gen.yaml });
+              const r = run(VALIDATORS.promtool, ['test', 'rules', testFile]);
+              assert(r.ok, `promtool test rules (T3 behavioral) · ${sloId} — ${gen.alerts.length} alert(s) fire on breach, silent on healthy`, r.out, 'exit 0');
+              t3Covered++;
+            }
+          }
         }
         if (VALIDATORS.mimirtool) {
           // `rules lint` rewrites the file in place — give it a copy.
@@ -240,6 +264,16 @@ catch (e) {
   process.stdout.write(`  ✗ edge:scale-60: threw ${e.message}\n`);
 }
 
+if (VALIDATORS.promtool) {
+  assert(t3Covered >= 3,
+    `T3 coverage floor: ≥3 SLOs behaviorally tested (got ${t3Covered}; ${t3Skips.length} skipped for unsupported leg shapes)`,
+    t3Covered, '>= 3');
+}
+if (t3Skips.length) {
+  process.stdout.write(`\nT3 SKIPS (${t3Skips.length}) — SLI legs outside the synthesiser's shapes:\n`);
+  for (const s of t3Skips.slice(0, 12)) process.stdout.write(`  ○ ${s}\n`);
+  if (t3Skips.length > 12) process.stdout.write(`  … +${t3Skips.length - 12} more\n`);
+}
 if (advisories.length) {
   process.stdout.write(`\nADVISORY (${advisories.length}) — opinions, not validity; never failing:\n`);
   for (const a of advisories.slice(0, 20)) process.stdout.write(`  ⚠ ${a}\n`);
