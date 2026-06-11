@@ -89,6 +89,8 @@ try {
   const health = await getJson(base, '/healthz');
   assert(health.ok === true, 'GET /healthz returns ok');
   assert(health.specVersion === '1.2', 'GET /healthz reports specVersion 1.2');
+  assert(/^\d+\.\d+\.\d+/.test(health.version || ''), 'GET /healthz carries the app version', health.version);
+  assert(typeof health.build === 'string' && health.build.length > 0, 'GET /healthz carries the build identifier', health.build);
 
   // /api/packs catalog — empty by design as of Phase 7q (the studio
   // boots empty; user opens packs from disk via Upload / crawler /

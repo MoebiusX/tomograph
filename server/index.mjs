@@ -547,6 +547,7 @@ app.use((err, req, res, next) => {
 app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
+    ...versionInfo(),   // version, build, node — "what exactly is running?"
     specVersion: SPEC_VERSION,
     schemaPath: `vendor/observability-pack-spec/v${SPEC_VERSION}/observability-pack.schema.json`,
   });

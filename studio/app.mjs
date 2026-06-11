@@ -1192,6 +1192,10 @@ function installObservaChrome() {
                 <span class="observa-adv-item-sub">${escapeHtml(a.sub)}</span>
               </button>
             `).join('')}
+            <button type="button" class="observa-adv-item observa-adv-about" role="menuitem" data-action="about">
+              <span class="observa-adv-item-label">About Tomograph</span>
+              <span class="observa-adv-item-sub" id="observa-about-sub">version &amp; build</span>
+            </button>
           </div>
         </div>
       </div>
@@ -1263,7 +1267,11 @@ function installObservaChrome() {
   });
   window.addEventListener('resize', () => { if (advMenu && !advMenu.hidden) positionAdv(); });
   hdr.querySelectorAll('.observa-adv-item').forEach(item => {
-    item.addEventListener('click', () => { closeAdv(); routeTo(item.dataset.view); });
+    item.addEventListener('click', () => {
+      closeAdv();
+      if (item.dataset.action === 'about') { openAboutModal(); return; }
+      routeTo(item.dataset.view);
+    });
   });
   // Arrow-key navigation within the menu (standard menu pattern).
   advMenu?.addEventListener('keydown', (e) => {
@@ -3776,6 +3784,59 @@ function setupMcpPanel() {
 // ---------- theme ----------
 
 // ---------- theme ----------
+// ---------- about / version ----------
+//
+// /healthz carries { version, build, node } (server/version.mjs). Fetched
+// once at boot, displayed in the Advanced menu foot, the header subtitle,
+// and the About modal — "what exactly is running?" should never need a
+// terminal.
+let serverVersion = null;
+
+async function loadVersion() {
+  try {
+    const r = await fetch('/healthz');
+    if (r.ok) serverVersion = await r.json();
+  } catch (_) { /* offline boot path already handles the error */ }
+  const label = serverVersion ? `v${serverVersion.version} · build ${serverVersion.build}` : null;
+  if (!label) return;
+  const sub = document.getElementById('observa-about-sub');
+  if (sub) sub.textContent = label;
+  const hdrSub = document.querySelector('.hdr-sub');
+  if (hdrSub && !hdrSub.textContent.includes('build')) hdrSub.textContent += ` · ${label}`;
+  const brand = document.querySelector('.observa-brand');
+  if (brand) brand.title = `Tomograph ${label}`;
+}
+
+function openAboutModal() {
+  document.getElementById('about-modal')?.remove();
+  const v = serverVersion || {};
+  const row = (k, val) => val ? `<div class="about-row"><span class="about-key">${k}</span><span class="about-val">${escapeHtml(String(val))}</span></div>` : '';
+  const overlay = document.createElement('div');
+  overlay.id = 'about-modal';
+  overlay.className = 'about-overlay';
+  overlay.innerHTML = `
+    <div class="about-card" role="dialog" aria-modal="true" aria-label="About Tomograph">
+      <div class="about-brand">Tomo<i>graph</i></div>
+      <div class="about-tagline">the observability compiler</div>
+      <div class="about-version">${escapeHtml(v.version ? `v${v.version}` : 'version unknown')}<span class="about-build">${escapeHtml(v.build ? ` · build ${v.build}` : '')}</span></div>
+      <div class="about-rows">
+        ${row('spec', v.specVersion ? `ObservabilityPack v${v.specVersion}` : null)}
+        ${row('server', v.node ? `node ${v.node}` : null)}
+        ${row('identity', state.identity?.mode || 'local (no sign-in)')}
+        ${state.identity?.orgs?.length ? row('org', state.identity.orgs.map(o => o.name || o.id).join(' · ')) : ''}
+      </div>
+      <a class="about-link" href="https://github.com/MoebiusX/tomograph/blob/develop/docs/CHANGELOG.md" target="_blank" rel="noopener">changelog</a>
+      <button type="button" class="about-close" aria-label="Close">esc</button>
+    </div>
+  `;
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('.about-close').addEventListener('click', close);
+  overlay.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  document.body.appendChild(overlay);
+  overlay.querySelector('.about-close').focus();
+}
+
 // /auth/me → state.identity. Local mode: the endpoint 404s and identity
 // stays null — every downstream check degrades to today's behaviour.
 async function loadIdentity() {
