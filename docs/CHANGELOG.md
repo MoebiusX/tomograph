@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 - 2026-06-11
+
+- Release package and container image version `0.4.0`.
+- Includes the current studio/server package state and Kubernetes image tag updates.
+
 ## 0.3.0 — 2026-06-08
 
 **The spec v1.2 migration.** Studio now reads, renders, validates, scores, and lives on the canonical [ObservabilityPack spec v1.2](https://github.com/MoebiusX/otel-observability-pack/blob/main/spec/ObservabilityPack-Spec.md). All studio-shape v0.1/v0.2 artefacts are gone.

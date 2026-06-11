@@ -1,7 +1,7 @@
 # Tomograph — studio + API in one Express server (server/index.mjs).
 #
-# Build:  docker build -t tomograph:0.3.0 .
-# Run:    docker run --rm -p 8000:8000 tomograph:0.3.0
+# Build:  docker build -t tomograph:0.4.0 .
+# Run:    docker run --rm -p 8000:8000 tomograph:0.4.0
 # Open:   http://127.0.0.1:8000
 #
 # The k8s manifests under deploy/k8s/ expect this image; see deploy/k8s/README.md.

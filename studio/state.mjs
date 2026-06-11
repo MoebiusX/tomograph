@@ -15,6 +15,12 @@ export const state = {
   // Compare (two packs). Once chosen, mode becomes 'single' or 'compare'
   // and the header bar + tabs appear. Logo click returns to 'home'.
   mode: 'home',
+  // Which home renders: 'gate' (signed-in service picker) or 'hero'
+  // (the marketing/connect landing). Authenticated users with services
+  // land on the gate; local mode keeps the hero. Never persisted.
+  homeVariant: 'hero',
+  // /auth/me result (identity postures only; null in local mode).
+  identity: null,
   catalog: [],
   selectedService: null,
   selectedPackId: null,

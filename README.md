@@ -193,8 +193,8 @@ npm run test
 The whole app is one Express process, so the container story is one image:
 
 ```bash
-docker build -t tomograph:0.3.0 .
-docker run --rm -p 8000:8000 tomograph:0.3.0
+docker build -t tomograph:0.4.0 .
+docker run --rm -p 8000:8000 tomograph:0.4.0
 ```
 
 Kubernetes manifests (Deployment + Service + Ingress, applied with Kustomize)
