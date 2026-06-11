@@ -179,6 +179,23 @@ Canonical example: *"repo vs live drift check"* — crawl
 - Effort: M (CLI command + run-record writer ~200 lines reusing existing
   engines; studio panel ~150; schedule-snippet emitters trivial).
 
+### 12. Identity · tenancy · hosted posture *(plan ratification pending — 2026-06-12)*
+The v1 non-goal ("multi-tenant persistence") activates as its own
+stream: **sign in → land in your org → see only your services** —
+packs, journeys, deploys, audit, MCP endpoints all org-scoped,
+enforced server-side. Four stages, each shippable alone: OIDC identity
+(attaches at the existing `requireAuth` / `tomographActor` seam; the
+bearer token becomes the service-account path), workspace-per-org
+tenancy (the `workspaceRoot()` seam — file-first machinery unchanged),
+roles (viewer / operator / admin) + org-scoped MCP endpoints (write
+tokens stay pass-through, never stored), hosted hardening. Carries its
+own CI gate set (dex IdP container, authz matrix, tenancy-isolation
+proofs, local-mode zero-change regression). One scoped dependency
+exception proposed: `openid-client` confined to `server/auth.mjs` —
+everything else stays `node:` builtins. Full design, efforts (~2
+weeks), and the three maintainer decisions:
+[PRODUCTIZATION_PLAN.md](PRODUCTIZATION_PLAN.md). Effort: L.
+
 ## P3 — Make the verdict more trustworthy *(under research — re-enters the queue when the maintainer's research lands)*
 
 ### 1. Diagnostic-grade validation against incident ground truth
