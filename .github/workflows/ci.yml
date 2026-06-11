@@ -91,3 +91,23 @@ jobs:
       - name: Smoke-check studio HTML is parseable
         run: |
           node -e "const fs=require('fs');const html=fs.readFileSync('studio/index.html','utf8');if(!html.includes('</html>'))process.exit(1);console.log('studio html ok ('+html.length+' bytes)')"
+
+  # T4 — the product-story round trip against a REAL Grafana:
+  # compile → deploy-bulk (real MCP path) → fetch-live → diff → aligned.
+  # Separate job: needs docker; the validate job stays fast.
+  backend-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Round trip vs live Grafana (strict)
+        run: npm run test:backend:live:strict

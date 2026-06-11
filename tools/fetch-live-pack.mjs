@@ -294,6 +294,14 @@ function specSlug(s, fallback = 'item') {
 }
 
 function dashboardIdFrom(item, fallback = 'dashboard') {
+  // Dashboards deployed by Tomograph self-identify via the obs-pack-id
+  // tag (uids are capped + fingerprinted, so they can't carry the
+  // declared id). Honouring the tag closes the deploy→fetch→diff round
+  // trip with the SAME canonical id the source pack declares; dashboards
+  // without the tag keep the existing uid-first derivation.
+  const tags = item?.tags || item?.dashboard?.tags || [];
+  const idTag = (Array.isArray(tags) ? tags : []).find(t => String(t).startsWith('obs-pack-id:'));
+  if (idTag) return specSlug(String(idTag).slice('obs-pack-id:'.length), 'dash');
   const source = item?.dashboard?.uid || item?.uid || item?.id || item?.dashboard?.title || item?.title || fallback;
   return specSlug(source, 'dash');
 }

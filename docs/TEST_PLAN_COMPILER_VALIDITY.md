@@ -31,6 +31,31 @@ plan closes.*
 > 165 artifacts across 8 packs now pass strict T1. T2 (Grafana
 > container), T3 (promtool behavioral), T4 (round trip) remain per §8.
 
+> **T4 status — DELIVERED.** `npm run test:backend:live[:strict]`
+> (CI job `backend-live`) runs the full product story against a real
+> Grafana 12.4.4 (docker/validate.compose.yaml): compile → the server's
+> real `deploy-bulk` MCP path → fetch-live builder → diff engine →
+> aligned. `tools/lib/grafana-mcp-bridge.mjs` plays otel-mcp-server's
+> gateway role over the Grafana HTTP API (including its
+> ${DS_PROMETHEUS}→datasource mapping), so every ratified layer is the
+> production code. The first runs caught and fixed:
+> 1. dashboard uids over Grafana's 40-char limit — every payment-service
+>    dashboard deploy was rejected outright;
+> 2. rule-uid truncation COLLISIONS — `…good_5m`/`…total_5m`/`…ratio_5m`
+>    sliced to the same 40 chars, so deploys silently overwrote each
+>    other and only the last rule survived (now fingerprint-suffixed);
+> 3. round-trip identity loss for dashboards — fixed by the new
+>    `obs-pack-id:<id>` tag the compiler stamps and the live fetcher
+>    honours, so deployed dashboards come back under their declared
+>    canonical id (untagged dashboards keep the uid-first derivation);
+> 4. Grafana-managed recording rules were invisible to the fetcher's
+>    vmalert-first probe — the gateway exposes `list_recording_rules`.
+>
+> Result: 24 deployed artefacts (15 recording + 5 alerting rules, 4
+> dashboards) → 100% confirmed live by the diff, 0 decision-bearing
+> drift (4 cosmetic Grafana-normalisation rewrites, tolerated by
+> design). Remaining: T2 version matrix (Grafana 13), T3.
+
 ## 1 · What the compiler emits (the surface under test)
 
 From `tools/lib/compile.mjs` (`compileCatalog` / `compileArtifact`):

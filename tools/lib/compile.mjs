@@ -501,11 +501,30 @@ export function compileDeclaredPrometheusRule(canonical, indexOrName) {
 
 const GRAFANA_FOLDER_DEFAULT = 'observability-pack';
 
+// Deterministic 6-char FNV-1a fingerprint — appended to over-long uids
+// so truncation can never make two different names collide. (T4 caught
+// the bare slice: `…consumer_processing_success:good_5m` and `…:ratio_5m`
+// truncated to the SAME 40 chars, so successive deploys upserted over
+// each other and only the last rule survived in Grafana.)
+function uidFingerprint(name) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) {
+    h ^= name.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36).padStart(7, '0').slice(0, 7);
+}
+
+// Grafana wants stable, ≤40-char uids. Deterministic from name so
+// re-emits don't churn; names that overflow keep a unique fingerprint.
+function grafanaUid(prefix, name) {
+  const full = `${prefix}-${slug(name)}`;
+  if (full.length <= 40) return full;
+  return `${full.slice(0, 32)}-${uidFingerprint(full)}`;
+}
+
 function grafanaRuleUid(prefix, name) {
-  // Grafana wants stable, ≤40-char alphanumeric uids. Deterministic from
-  // name so re-emits don't churn.
-  const base = `${prefix}-${slug(name)}`.slice(0, 40);
-  return base;
+  return grafanaUid(prefix, name);
 }
 
 function grafanaPromQuery(refId, expr, instant = true) {
@@ -1264,9 +1283,17 @@ export function compileGrafanaDashboard(canonical, dashboardId, opts = {}) {
 
   const out = {
     title: dash.id,
-    uid: `obs-pack-${svcS}-${slug(dash.id)}`,
+    // Grafana rejects uids over 40 chars — same capped builder as rules
+    // (T4 caught the uncapped template: every payment-service dashboard
+    // uid was 41+ chars and the dashboards API refused all of them).
+    uid: grafanaUid('obs-pack', `${svcS}-${dash.id}`),
     description: `Compiled from ${nameOf(canonical)} pack. Do not hand-edit — re-emit from the pack.`,
-    tags: ['observability-pack', svcS],
+    // The obs-pack-id tag carries the pack-declared identity THROUGH the
+    // platform: uids are capped/fingerprinted, so the live fetcher reads
+    // this tag to give the dashboard the same canonical id the source
+    // pack declares — that's what makes the deploy→fetch→diff round trip
+    // close as ALIGNED instead of an id-mismatched pair.
+    tags: ['observability-pack', svcS, `obs-pack-id:${dash.id}`],
     timezone: 'browser',
     // The pack MAY pin schemaVersion explicitly; otherwise the resolved
     // Grafana profile supplies the version-correct value.

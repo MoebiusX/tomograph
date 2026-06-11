@@ -1,0 +1,26 @@
+# Disposable backends for the T2/T4 tiers of
+# docs/TEST_PLAN_COMPILER_VALIDITY.md — never for production use.
+#
+#   docker compose -f docker/validate.compose.yaml up -d --wait
+#   npm run test:backend:live
+#
+# Pinned version — bump deliberately alongside the validator pins in
+# tools/fetch-validators.mjs. Bound to loopback only.
+services:
+  grafana:
+    image: grafana/grafana:12.4.4
+    ports:
+      - "127.0.0.1:13000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana-provisioning:/etc/grafana/provisioning
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
