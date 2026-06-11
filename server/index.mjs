@@ -53,6 +53,7 @@ import {
 } from '../tools/lib/journey.mjs';
 import { retrofeedShadowSignals } from '../tools/lib/retrofeed.mjs';
 import { initAuth, authEnabled, readSession } from './auth.mjs';
+import { versionInfo } from './version.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -479,6 +480,7 @@ app.use((err, req, res, next) => {
 app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
+    ...versionInfo(),   // version, build, node — "what exactly is running?"
     specVersion: SPEC_VERSION,
     schemaPath: `vendor/observability-pack-spec/v${SPEC_VERSION}/observability-pack.schema.json`,
   });

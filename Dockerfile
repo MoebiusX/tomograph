@@ -7,6 +7,12 @@
 # The k8s manifests under deploy/k8s/ expect this image; see deploy/k8s/README.md.
 FROM node:22-alpine
 
+# Bake the build identifier into the image — the container has no .git,
+# so server/version.mjs reads this instead. Pass your CI run number/sha:
+#   docker build --build-arg TOMOGRAPH_BUILD=412.a1b2c3d -t tomograph:0.4.0 .
+ARG TOMOGRAPH_BUILD=container
+ENV TOMOGRAPH_BUILD=$TOMOGRAPH_BUILD
+
 ENV NODE_ENV=production
 WORKDIR /app
 

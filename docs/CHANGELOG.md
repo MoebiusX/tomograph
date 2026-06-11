@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### About + version/build identity
+- New `server/version.mjs`: app version (package.json) + build identifier — `TOMOGRAPH_BUILD` env (baked into images via Dockerfile ARG) → git `<commit-count>.<short-sha>[+dirty]` → `untracked`. `/healthz` now carries `version`, `build`, `node`.
+- Studio: **About Tomograph** in the Advanced menu (version, build, spec, server node, identity mode, changelog link); version + build shown in the menu entry and the classic header subtitle.
+
 ### Previous pack format (layered JSON) supported again
 - New `tools/lib/legacy.mjs` — detects the pre-v1.2 layered "studio-shape" JSON and upconverts it to a canonical v1.2 manifest. Lossless (every legacy artefact kept verbatim in `legacy.artefact.*` annotations), honest (every schema-forced placeholder marked `crawler.scaffold.*` → projects as Scaffold, never Declared), deterministic.
 - `POST /api/validate` upconverts legacy uploads transparently; the studio toast reports the conversion (`N artefacts mapped, M scaffolds`).

@@ -8053,3 +8053,33 @@ body.chrome-observa .disco {
   white-space: nowrap;
 }
 .observa-service[hidden] { display: none; }
+
+/* About modal — version & build, reachable from Advanced */
+.about-overlay {
+  position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--bg-0, #0f1623) 72%, transparent);
+  backdrop-filter: blur(3px);
+}
+.about-card {
+  position: relative; min-width: 340px; max-width: 92vw; padding: 36px 44px 28px;
+  background: var(--bg-1, #18202e); border: 1px solid var(--line, #2a3548);
+  border-radius: 12px; text-align: center;
+  box-shadow: 0 24px 80px rgba(0,0,0,.45);
+}
+.about-brand { font-family: var(--serif, 'Newsreader', serif); font-size: 34px; font-weight: 600; }
+.about-brand i { font-style: italic; opacity: .85; }
+.about-tagline { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-3, #788396); margin-top: 2px; }
+.about-version { font-family: var(--mono, 'IBM Plex Mono', monospace); font-size: 17px; font-weight: 700; margin: 18px 0 4px; }
+.about-build { font-weight: 400; font-size: 13px; color: var(--ink-2, #9aa3ad); }
+.about-rows { margin: 16px auto 8px; max-width: 320px; text-align: left; }
+.about-row { display: flex; justify-content: space-between; gap: 18px; padding: 5px 0; border-top: 1px dashed var(--line, #2a3548); font-size: 12px; }
+.about-row:first-child { border-top: 0; }
+.about-key { color: var(--ink-3, #788396); letter-spacing: .08em; text-transform: uppercase; font-size: 10px; padding-top: 2px; }
+.about-val { font-family: var(--mono, 'IBM Plex Mono', monospace); }
+.about-link { display: inline-block; margin-top: 10px; font-size: 12px; }
+.about-close {
+  position: absolute; top: 10px; right: 12px; border: 1px solid var(--line, #2a3548);
+  background: transparent; color: var(--ink-3, #788396); border-radius: 5px;
+  font-size: 10px; padding: 3px 7px; cursor: pointer;
+}
+.observa-adv-about { border-top: 1px solid var(--line, #2a3548); }
