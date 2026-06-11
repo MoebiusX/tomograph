@@ -298,6 +298,7 @@ function renderServiceSelect() {
     sel.appendChild(opt);
   }
   sel.value = state.selectedService || '';
+  updateObservaServiceChip();
   sel.onchange = () => {
     state.selectedService = sel.value || null;
     const currentA = state.catalog.find(p => p.id === state.selectedPackId);
@@ -686,7 +687,11 @@ export function renderMainView() {
   // Persistence: every mutation chain ends here, so this is the single
   // hook for the debounced write. Cheap when suspended (boot phase).
   persistence.schedule();
-  if (state.mode === 'home') { renderHomeView(); return; }
+  if (state.mode === 'home') {
+    if (state.homeVariant === 'gate') renderServiceGate();
+    else renderHomeView();
+    return;
+  }
   if (!state.pack) {
     // In the workspace but no pack yet. Discover ("what do we have?") is
     // where you LOAD or GENERATE a pack — so its empty state IS the three
@@ -1140,6 +1145,14 @@ function installObservaChrome() {
         </span>
       </a>
 
+      <!-- The active service — always visible once chosen (the gate or
+           the header SERVICE selector set it). "Tomograph is configured
+           for MY service" must never be a mystery. -->
+      <span class="observa-service" id="observa-service" hidden>
+        <span class="observa-service-key">SERVICE</span>
+        <span class="observa-service-name" id="observa-service-name"></span>
+      </span>
+
       <nav class="observa-tabs" role="tablist" aria-label="Primary">
         ${OBSERVA_TABS.map(t => `
           <button type="button" role="tab" class="observa-tab ${t.accent}" data-view="${t.id}"
@@ -1294,6 +1307,7 @@ async function boot() {
 
   setupUpload();
   setupTheme();
+  await loadIdentity();
   setupIdentityChip();
   setupResetButton();
   setupExportButton();
@@ -1375,9 +1389,88 @@ function goHome() {
   // would be weird with no pack loaded yet).
   state.view = 'layers';
   state.layerFilter = 'all';
+  // A signed-in user has services — home for them is "which service are
+  // you working on?", not the marketing hero. The hero stays for local
+  // mode and for true cold starts (no services yet); the gate links to
+  // it for "start something new".
+  state.homeVariant = (state.identity?.authenticated && serviceCatalogue().length) ? 'gate' : 'hero';
   applyModeChrome();
-  renderHomeView();
+  if (state.homeVariant === 'gate') renderServiceGate();
+  else renderHomeView();
   persistence.schedule();
+}
+
+// ============================================================
+// SERVICE GATE — the post-sign-in landing. The user's services
+// (from the same catalogue the header SERVICE selector reads),
+// one click from "signed in" to "Tomograph configured for my
+// service". docs/PRODUCTIZATION_PLAN.md Stage 1 UX.
+// ============================================================
+
+function renderServiceGate() {
+  const view = $('#layer-view');
+  if (!view) return;
+  const services = serviceCatalogue();
+  const who = state.identity?.name || state.identity?.email || state.identity?.sub || '';
+  view.innerHTML = `
+    <section class="svc-gate">
+      <div class="svc-gate-eyebrow">TOMOGRAPH · THE OBSERVABILITY COMPILER</div>
+      <h1 class="svc-gate-title">Welcome back${who ? `, ${escapeHtml(who.split(' ')[0])}` : ''}.</h1>
+      <p class="svc-gate-sub">Which service are you working on?</p>
+      <div class="svc-gate-grid">
+        ${services.map(s => `
+          <button type="button" class="svc-gate-card" data-service="${escapeHtml(s.key)}">
+            <span class="svc-gate-name">${escapeHtml(s.label)}</span>
+            <span class="svc-gate-meta">${s.packCount} pack${s.packCount === 1 ? '' : 's'}${s.liveCount ? ` · ${s.liveCount} live draft${s.liveCount === 1 ? '' : 's'}` : ''}</span>
+          </button>`).join('')}
+      </div>
+      <button type="button" class="svc-gate-new" id="svc-gate-new">+ start something new — connect an MCP endpoint, upload or scan a repo</button>
+    </section>
+  `;
+  view.querySelectorAll('.svc-gate-card').forEach(card => {
+    card.addEventListener('click', () => enterServiceWorkspace(card.dataset.service));
+  });
+  view.querySelector('#svc-gate-new')?.addEventListener('click', () => {
+    state.homeVariant = 'hero';
+    renderHomeView();
+  });
+}
+
+// Reflect the active service into the always-visible OBSERVA-bar chip.
+// Called wherever the selection can change (service select, analyze
+// mode entry, mode chrome) — hidden on home where no service is active.
+function updateObservaServiceChip() {
+  const chip = document.getElementById('observa-service');
+  if (!chip) return;
+  const name = document.getElementById('observa-service-name');
+  const services = serviceCatalogue();
+  const active = services.find(s => s.key === state.selectedService);
+  if (state.mode === 'home' || !active) { chip.hidden = true; return; }
+  name.textContent = active.label;
+  chip.hidden = false;
+}
+
+// One click on a service card → Tomograph configured for that service:
+// service selected, its most recent pack loaded as Pack A, Discover open.
+function enterServiceWorkspace(serviceKey) {
+  if (!serviceKey) return;
+  state.selectedService = serviceKey;
+  // Catalog order is oldest→newest (workspace registry order, new
+  // registrations appended) — the LAST match is the freshest. Prefer the
+  // declared (non-aggregate) pack; an aggregate live draft is a usable
+  // fallback when it's all the service has.
+  const matches = state.catalog.filter(p => p.ok && packMatchesService(p, serviceKey, { side: 'a' }));
+  const declared = matches.filter(p => !isLiveAggregatePack(p));
+  const pack = declared[declared.length - 1] || matches[matches.length - 1]
+    || state.catalog.filter(p => p.ok && packMatchesService(p, serviceKey, { side: 'b' })).pop();
+  if (!pack) {
+    // A service with nothing loadable (e.g. example-derived) — fall back
+    // to the hero so the user can bring a pack in.
+    state.homeVariant = 'hero';
+    renderHomeView();
+    return;
+  }
+  enterAnalyzeMode(pack.id, defaultEnvFor(pack.id));
 }
 
 function enterAnalyzeMode(packId, env) {
@@ -1417,6 +1510,7 @@ function enterCompareMode(aId, aEnv, bId, bEnv) {
 // new pack.
 function applyModeChrome() {
   const isHome = state.mode === 'home';
+  updateObservaServiceChip();
   // Under the OBSERVA chrome the pack/env selectors are PINNED as a
   // permanent master row — they are the user's primary controls and
   // must never be hidden by view. Only the legacy (non-chrome) layout
@@ -3637,16 +3731,21 @@ function setupMcpPanel() {
 // ---------- theme ----------
 
 // ---------- theme ----------
-// Identity chip — only renders when the server runs in an identity
-// posture (/auth/me exists and reports a session). Local mode: the
-// endpoint 404s and the header stays exactly as it is today.
-async function setupIdentityChip() {
-  let me = null;
+// /auth/me → state.identity. Local mode: the endpoint 404s and identity
+// stays null — every downstream check degrades to today's behaviour.
+async function loadIdentity() {
   try {
     const r = await fetch('/auth/me');
-    if (!r.ok) return;
-    me = await r.json();
-  } catch (_) { return; }
+    if (!r.ok) return null;
+    state.identity = await r.json();
+    return state.identity;
+  } catch (_) { return null; }
+}
+
+// Identity chip — only renders when the server runs in an identity
+// posture and a session exists.
+function setupIdentityChip() {
+  const me = state.identity;
   if (!me?.authenticated) return;
   const anchor = $('#theme-toggle');
   if (!anchor || document.getElementById('hdr-user')) return;
