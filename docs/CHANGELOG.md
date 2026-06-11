@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Stage 3 authorization — roles + org-scoped MCP endpoints
+- Roles per org (`viewer` | `operator` | `admin`; legacy `member` normalizes to operator) enforced per route in the tenancy middleware: reads = viewer, mutations = operator, org administration = admin. Bearer token stays the deployment-level service account.
+- Member management (deferred from Stage 2, now safe): `GET/PUT/DELETE /api/orgs/:org/members[/:sub]` — admin-only, active-org only, last-admin lockout guard.
+- Org-scoped MCP endpoints in `<org workspace>/mcp-endpoints.json`: admins register named read endpoints (`PUT /api/org/mcp-endpoints/:name` — URL via validateMcpUrl, optional `authEnv` env-name indirection; the registry never stores a secret). Every mcpUrl-taking route accepts `mcp:<name>`; the read token applies only on read routes — write tokens remain per-request pass-through.
+- Studio: viewer role disables mutating header buttons (the server 403 is the real gate); `npm run orgs -- add-member` validates roles (default operator).
+- New suite `server/test-authz.mjs`: the table-driven AuthZ matrix (9 routes × 5 actors), last-admin guards, and end-to-end `mcp:<name>` resolution incl. the env-indirected read token.
+
 ### Stage 2 tenancy — workspace-per-org
 - New `server/tenancy.mjs`: org registry in `<workspace>/orgs.json` (the file existing arms tenancy, mirroring `users.json`), per-request org context via AsyncLocalStorage, idempotent flat → `orgs/default/` boot migration. Requires identity; refuses to boot otherwise (fail-closed).
 - `workspaceRoot()` is context-aware: registry, deploys, snapshots, journeys, runs all answer from `<workspace>/orgs/<orgId>/` inside a request. The in-memory upload registry and workspace index cache are keyed per org.

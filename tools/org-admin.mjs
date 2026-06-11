@@ -13,13 +13,13 @@
  *   npm run orgs -- remove-member acme alice
  *   npm run orgs -- list
  *
- * Roles are recorded for Stage 3 (authorization); Stage 2 enforces
- * membership only. Tenancy requires identity (OIDC or users.json) —
+ * Roles (viewer | operator | admin) are ENFORCED per route as of
+ * Stage 3; legacy 'member' entries normalize to operator. Tenancy requires identity (OIDC or users.json) —
  * the server refuses to start with orgs.json and no identity.
  */
 
 import { existsSync } from 'node:fs';
-import { readOrgs, writeOrgs, orgsFilePath, validOrgId } from '../server/tenancy.mjs';
+import { readOrgs, writeOrgs, orgsFilePath, validOrgId, ROLES, normalizeRole } from '../server/tenancy.mjs';
 
 const args = process.argv.slice(2);
 const [cmd, orgId, member] = args;
@@ -74,7 +74,11 @@ function main() {
   if (!orgs[orgId]) throw new Error(`no such org: ${orgId}`);
   orgs[orgId].members = orgs[orgId].members || {};
   if (cmd === 'add-member') {
-    orgs[orgId].members[member] = flag('role', 'member');
+    const requested = flag('role', 'operator');
+    if (!ROLES.includes(String(requested).toLowerCase())) {
+      throw new Error(`role must be one of ${ROLES.join(' | ')} (got '${requested}')`);
+    }
+    orgs[orgId].members[member] = normalizeRole(requested);
     writeOrgs(orgs, file);
     console.log(`added ${member} to ${orgId} as ${orgs[orgId].members[member]}`);
   } else {

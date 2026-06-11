@@ -130,6 +130,32 @@ enforced server-side, not hidden client-side.
 
 ### Stage 3 — Authorization (roles + org-scoped MCP endpoints)
 
+> **Stage 3 status — DELIVERED** as designed below. Roles
+> (viewer | operator | admin, strictly ordered; legacy 'member' entries
+> normalize to operator — no silent escalation, no broken Stage 2
+> files) are enforced by `requiredRoleFor()` in the same middleware
+> seam that resolves the org: reads = viewer, mutations = operator,
+> org administration (members, MCP endpoint config) = admin; the bearer
+> stays the deployment-level service account. Member management landed
+> with the roles that make it safe: GET/PUT/DELETE
+> `/api/orgs/:org/members[/:sub]` (admin, active-org only, last-admin
+> lockout guard). Org MCP endpoints live file-first in
+> `<org workspace>/mcp-endpoints.json` (org-isolated for free):
+> admins register named READ endpoints (URL through validateMcpUrl +
+> optional `authEnv` env-name indirection — the registry never holds a
+> secret); every mcpUrl-taking route accepts `mcp:<name>`; the
+> registered read token fills in ONLY on read routes (draft /
+> refresh-live) — write paths keep per-request pass-through tokens,
+> the v1 secrets rule. Studio: viewer role disables the mutating
+> header buttons (server 403 is the real gate). Gate suite:
+> `server/test-authz.mjs` — the table-driven AuthZ matrix (9 routes ×
+> {anonymous, viewer, operator, admin, bearer}, 45 cells) plus
+> last-admin guards and end-to-end `mcp:<name>` resolution against an
+> in-process MCP server, including the env-indirected read token
+> actually arriving. Service grants inside an org remain deferred as
+> planned (the role check already receives the pack's
+> `bindings.service`).
+
 - **Roles per org:** `viewer` (read everything), `operator` (+ crawl /
   draft / register / deploy / retrofeed), `admin` (+ org settings,
   members, MCP endpoint config). Enforcement is a per-route check in
