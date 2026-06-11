@@ -89,6 +89,31 @@ enforced server-side, not hidden client-side.
 
 ### Stage 2 — Tenancy (workspace-per-org)
 
+> **Stage 2 status — DELIVERED** exactly as designed below.
+> `server/tenancy.mjs` owns the org registry (`orgs.json` at the
+> workspace root — the file existing arms tenancy, mirroring
+> `users.json`), the per-request org context (AsyncLocalStorage — no
+> orgId threading through call sites), and the idempotent flat →
+> `orgs/default/` boot migration. `workspaceRoot()` in the registry and
+> the journeys/runs engine answers `<workspace>/orgs/<orgId>/` inside a
+> request; the in-memory upload registry and the workspace index cache
+> are keyed per org (the two places a process-wide cache would have
+> leaked across tenants). The org comes from `X-Tomograph-Org`
+> (defaulting to the user's first membership); membership is enforced
+> at the middleware seam Stage 3 roles will extend; the bearer token
+> remains the deployment-level service account. Managed by
+> `npm run orgs -- create|remove|add-member|remove-member|list`;
+> member-mutation HTTP endpoints deliberately wait for Stage 3 roles
+> (any-member-can-edit-members would be an escalation hole, not a
+> feature). Tenancy without identity refuses to boot, fail-closed.
+> Studio: active org resolved before the first catalog fetch, an ORG
+> chip (switcher when multi-org) beside the brand — same
+> never-a-mystery rule as the SERVICE chip. Gate suite:
+> `server/test-tenancy.mjs` (29 assertions) proves org B reads/writes
+> NOTHING of org A at the API level AND by filesystem-path assertion,
+> plus migration, per-org reset, and the fail-closed posture; flat
+> (no-orgs.json) regression is asserted by every other suite.
+
 - `workspaceRoot()` becomes context-aware:
   `<TOMOGRAPH_WORKSPACE>/orgs/<orgId>/` per request, threaded through
   the few entry points that call it (registry, deploys, snapshots,

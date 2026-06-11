@@ -8053,3 +8053,20 @@ body.chrome-observa .disco {
   white-space: nowrap;
 }
 .observa-service[hidden] { display: none; }
+
+/* Stage 2 tenancy — active-org indicator/switcher in the header */
+.hdr-org { display: inline-flex; align-items: center; gap: 6px; margin-right: 10px; }
+.hdr-org .ctrl-key { font-size: 9px; letter-spacing: .14em; color: var(--ink-3, #788396); }
+.hdr-org-name { font-family: var(--mono, 'IBM Plex Mono', monospace); font-size: 11px; font-weight: 600; }
+.hdr-org select {
+  background: transparent; color: inherit; border: 1px solid var(--line, #2a3548);
+  border-radius: 5px; padding: 3px 6px; font-size: 11px;
+  font-family: var(--mono, 'IBM Plex Mono', monospace); cursor: pointer;
+}
+.observa-org { margin-right: 2px; }
+.observa-org-select {
+  background: transparent; color: inherit; border: 0; padding: 0;
+  font: inherit; font-family: var(--mono, 'IBM Plex Mono', monospace);
+  font-size: 12px; font-weight: 600; cursor: pointer; outline-offset: 2px;
+}
+.observa-org-select option { color: #0f1623; }

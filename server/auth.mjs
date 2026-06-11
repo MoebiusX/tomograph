@@ -44,6 +44,7 @@ import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypt
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import * as oidc from 'openid-client';
+import { tenancyEnabled, orgsForUser } from './tenancy.mjs';
 
 const SESSION_COOKIE = 'tomo_session';
 const FLOW_COOKIE = 'tomo_flow';
@@ -237,7 +238,12 @@ function registerShared(app, mode) {
   app.get('/auth/me', (req, res) => {
     const s = readSession(req);
     if (!s) return res.json({ ok: true, mode, authenticated: false, login: '/auth/login' });
-    res.json({ ok: true, mode, authenticated: true, sub: s.sub, email: s.email, name: s.name, expiresAt: s.exp });
+    res.json({
+      ok: true, mode, authenticated: true, sub: s.sub, email: s.email, name: s.name, expiresAt: s.exp,
+      // Stage 2 tenancy: the client needs the user's orgs at boot to pick
+      // an active one (X-Tomograph-Org) before the first /api call.
+      ...(tenancyEnabled() ? { orgs: orgsForUser(s.sub) } : {}),
+    });
   });
 }
 
