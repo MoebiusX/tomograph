@@ -1450,10 +1450,12 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   `;
 
   // The instrument-grade ladder: every rung rendered top (best) → bottom,
-  // the rung the score lands on highlighted — the highlight IS the
-  // verdict, so nothing else repeats the letter. Compact: letter, class,
-  // band; the blurb (and A++'s external-evidence requirement) live in the
-  // row tooltip instead of clogging the card.
+  // the rung the score lands on highlighted. The grade is NEVER shown
+  // naked — the header chip carries letter + class, the rung labels carry
+  // the metrology vocabulary, and the ladder note explains what the scale
+  // derives from. (These narrative pieces are maintainer-ratified —
+  // 2026-06-11: "grades cannot be put into context without some
+  // narrative". Do not strip them to de-duplicate.)
   const ladderHtml = `
     <ul class="grade-ladder">
       ${INSTRUMENT_GRADE_SCALE.map(g => {
@@ -1468,6 +1470,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
         </li>`;
       }).join('')}
     </ul>
+    <p class="grade-ladder-note">Grades derive from the verification score — A starts strictly above the ${audit.threshold}% audit bar, so the letter and the machine PASS/FAIL always agree. Verification evidence, not incident-validation. A++ needs external reference evidence this instrument cannot produce alone.</p>
   `;
 
   wrap.innerHTML = `
@@ -1475,7 +1478,9 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       <div class="diag-head-main">
         <div class="diag-report-head-line">
           <span class="diag-report-eyebrow">DIAGNOSTIC GRADE</span>
+          <span class="diag-report-status grade-chip tier-${escapeHtml(ig.tier)}" title="${escapeHtml(ig.blurb || '')}">${escapeHtml(ig.letter)} · ${escapeHtml(ig.label)}</span>
         </div>
+        <p class="diag-grade-blurb">${escapeHtml(ig.blurb || '')} Diagnostic-grade (A) begins above ${audit.threshold}%${passes ? '' : ` — this pack is ${(audit.threshold - audit.scorePctExact).toFixed(1)} pp below the bar`}.</p>
         <table class="diag-summary">
           <colgroup><col><col><col></colgroup>
           <tbody>

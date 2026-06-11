@@ -1942,10 +1942,30 @@ a:hover { color: var(--ink); }
   letter-spacing: 0.1em;
 }
 
-/* The grade ladder — sits BESIDE the verdict summary (no clog, no
-   repetition: the highlighted rung IS the verdict; blurbs live in row
-   tooltips). Inside .diag-report-head so the drift/posture bands —
-   inserted right after the header — can never push it below the fold. */
+/* One-line narrative under the head-line: what THIS grade means and the
+   distance to the diagnostic bar. Maintainer-ratified context — a grade
+   is never shown without its sentence. */
+.diag-grade-blurb {
+  margin: 4px 0 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  max-width: 70ch;
+}
+/* What the scale derives from — restores the ratified grade-ladder note
+   dropped when the scale was pinned beside the header. */
+.grade-ladder-note {
+  margin: 8px 2px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-4);
+}
+
+/* The grade ladder — sits BESIDE the verdict summary. The header chip
+   repeats the letter ON PURPOSE: the chip + label + blurb are the
+   narrative that makes the highlighted rung legible. Inside
+   .diag-report-head so the drift/posture bands — inserted right after
+   the header — can never push it below the fold. */
 .diag-report-head {
   display: flex;
   gap: 28px;
