@@ -368,23 +368,36 @@ function renderPackBSelect() {
   const cat = state.catalog || [];
   const ex  = state._examplesCache || [];
   const seen = new Set();
-  const options = [];
+  const options = [];      // packs in the active service (or live aggregates)
+  const crossService = []; // everything else — still comparable, grouped apart
   for (const p of [...cat, ...ex]) {
     if (!p?.id || !p.ok) continue;
     if (p.id === state.selectedPackId) continue;
-    // The ACTIVE Pack B is always representable, even when it wouldn't
-    // pass the service filter (e.g. a reference pack loaded via the
-    // References → Benchmark CTA) — a select must show its own value.
-    if (p.id !== state.compareBId
-        && !packMatchesService(p, state.selectedService, { side: 'b' })) continue;
     if (seen.has(p.id)) continue;
     seen.add(p.id);
-    options.push(p);
+    // Same-service packs (and live aggregates) lead the list; packs from
+    // OTHER services remain selectable under their own group — comparing
+    // across services is a sanctioned flow (legacy imports each derive
+    // their own service from the old pack id; live aggregates span many),
+    // and the diff's service scope keeps unrelated inventory honest.
+    // The ACTIVE Pack B is always representable wherever it falls — a
+    // select must show its own value.
+    if (p.id === state.compareBId || packMatchesService(p, state.selectedService, { side: 'b' })) {
+      options.push(p);
+    } else {
+      crossService.push(p);
+    }
   }
   // Sort by label so the list is stable across re-renders.
-  options.sort((a, b) => (a.label || a.id).localeCompare(b.label || b.id));
+  const byLabel = (a, b) => (a.label || a.id).localeCompare(b.label || b.id);
+  options.sort(byLabel);
+  crossService.sort(byLabel);
+  const opt = (p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(packSelectLabel(p))}</option>`;
   sel.innerHTML = '<option value="">— none —</option>'
-    + options.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(packSelectLabel(p))}</option>`).join('');
+    + options.map(opt).join('')
+    + (crossService.length
+        ? `<optgroup label="other services">${crossService.map(opt).join('')}</optgroup>`
+        : '');
   sel.value = state.compareBId || '';
   sel.onchange = () => {
     const newId = sel.value || null;

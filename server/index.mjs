@@ -53,6 +53,7 @@ import {
 } from '../tools/lib/journey.mjs';
 import { retrofeedShadowSignals } from '../tools/lib/retrofeed.mjs';
 import { initAuth, authEnabled, readSession } from './auth.mjs';
+import { versionInfo } from './version.mjs';
 import { tenancyEnabled, orgsForUser, orgExists, runWithOrg, currentOrg, readOrgs, migrateFlatWorkspace } from './tenancy.mjs';
 import { setWorkspaceRootResolver } from '../tools/lib/journey.mjs';
 import { orgWorkspaceRoot } from './tenancy.mjs';

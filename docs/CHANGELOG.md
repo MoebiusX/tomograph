@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed: comparing legacy imports (and any cross-service packs)
+- The PACK B picker filtered out every pack whose service didn't match the active one — two legacy imports (each deriving its own service from the old pack id) could never be compared. Cross-service packs are now selectable under an "other services" group; same-service packs and live aggregates still lead the list, and the diff's service scope keeps cross-service comparisons honest.
+
 ### Stage 2 tenancy — workspace-per-org
 - New `server/tenancy.mjs`: org registry in `<workspace>/orgs.json` (the file existing arms tenancy, mirroring `users.json`), per-request org context via AsyncLocalStorage, idempotent flat → `orgs/default/` boot migration. Requires identity; refuses to boot otherwise (fail-closed).
 - `workspaceRoot()` is context-aware: registry, deploys, snapshots, journeys, runs all answer from `<workspace>/orgs/<orgId>/` inside a request. The in-memory upload registry and workspace index cache are keyed per org.
