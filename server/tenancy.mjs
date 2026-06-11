@@ -84,6 +84,49 @@ export function orgExists(orgId) {
   return validOrgId(orgId) && Object.hasOwn(readOrgs(), orgId);
 }
 
+// ---------- roles (Stage 3 — authorization) ----------
+//
+// Three roles per org, strictly ordered:
+//   viewer    read everything in the org
+//   operator  + crawl / draft / register / deploy / retrofeed / reset
+//   admin     + org settings: members, MCP endpoint config
+//
+// Stage 2 files wrote free-form role strings (default 'member'); they
+// normalize to operator so existing orgs.json files keep working —
+// a member could already do everything before enforcement existed, so
+// operator is the no-surprise mapping. Unknown strings also land on
+// operator rather than silently escalating to admin.
+
+export const ROLES = ['viewer', 'operator', 'admin'];
+const ROLE_RANK = { viewer: 0, operator: 1, admin: 2 };
+
+export function normalizeRole(role) {
+  const r = String(role || '').toLowerCase();
+  return r === 'admin' ? 'admin' : r === 'viewer' ? 'viewer' : 'operator';
+}
+
+export function roleFor(orgId, sub) {
+  if (!validOrgId(orgId) || !sub) return null;
+  const org = readOrgs()[orgId];
+  if (!org?.members || !Object.hasOwn(org.members, sub)) return null;
+  return normalizeRole(org.members[sub]);
+}
+
+export function roleAtLeast(role, required) {
+  return (ROLE_RANK[role] ?? -1) >= (ROLE_RANK[required] ?? Infinity);
+}
+
+// The number of admins an org would have after a hypothetical change —
+// the guard that keeps the last admin from demoting or deleting
+// themselves into a lockout.
+export function adminCount(orgId, { excluding = null } = {}) {
+  const org = readOrgs()[orgId];
+  if (!org?.members) return 0;
+  return Object.entries(org.members)
+    .filter(([sub, role]) => sub !== excluding && normalizeRole(role) === 'admin')
+    .length;
+}
+
 // ---------- per-request org context ----------
 
 const orgContext = new AsyncLocalStorage();
@@ -100,6 +143,47 @@ export function orgWorkspaceRoot() {
   if (!org || !tenancyEnabled()) return base;
   if (!validOrgId(org)) throw new Error(`tenancy: invalid org id ${JSON.stringify(org)}`);
   return join(base, 'orgs', org);
+}
+
+// ---------- org-scoped MCP endpoints (Stage 3) ----------
+//
+// Admins register NAMED read endpoints per org; operators reference them
+// as `mcp:<name>` wherever a route takes an mcpUrl. The optional
+// `authEnv` is env-name indirection for a READ token (resolved at use
+// time, mirroring journeys' packB.mcp.authEnv) — the v1 secrets rule
+// stands: write tokens are per-request pass-through, never stored, and
+// endpoint records hold an env NAME, never a secret.
+//
+// File-first like everything else: <org workspace>/mcp-endpoints.json,
+// which also means endpoint configs are org-isolated for free.
+
+function mcpEndpointsPath() { return join(orgWorkspaceRoot(), 'mcp-endpoints.json'); }
+
+export function validEndpointName(name) { return /^[a-z][a-z0-9_-]{1,39}$/.test(String(name || '')); }
+
+export function readMcpEndpoints() {
+  try {
+    const data = JSON.parse(readFileSync(mcpEndpointsPath(), 'utf8'));
+    return (data && typeof data === 'object' && data.endpoints && typeof data.endpoints === 'object')
+      ? data : { endpoints: {} };
+  } catch (_) { return { endpoints: {} }; }
+}
+
+export function writeMcpEndpoints(data) {
+  const file = mcpEndpointsPath();
+  mkdirSync(orgWorkspaceRoot(), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
+  try { renameSync(tmp, file); }
+  catch (e) { try { rmSync(tmp, { force: true }); } catch (_) {} throw e; }
+}
+
+// `mcp:<name>` → the registered endpoint, or null. Only meaningful in
+// tenancy mode (flat mode has no admin to curate the registry).
+export function resolveMcpEndpoint(name) {
+  if (!tenancyEnabled() || !currentOrg() || !validEndpointName(name)) return null;
+  const rec = readMcpEndpoints().endpoints[name];
+  return rec && typeof rec.url === 'string' ? rec : null;
 }
 
 // ---------- boot migration: flat workspace → orgs/default/ ----------

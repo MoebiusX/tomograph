@@ -53,7 +53,11 @@ import {
 } from '../tools/lib/journey.mjs';
 import { retrofeedShadowSignals } from '../tools/lib/retrofeed.mjs';
 import { initAuth, authEnabled, readSession } from './auth.mjs';
-import { tenancyEnabled, orgsForUser, orgExists, runWithOrg, currentOrg, readOrgs, migrateFlatWorkspace } from './tenancy.mjs';
+import {
+  tenancyEnabled, orgsForUser, orgExists, runWithOrg, currentOrg, readOrgs, writeOrgs, migrateFlatWorkspace,
+  ROLES, normalizeRole, roleFor, roleAtLeast, adminCount,
+  readMcpEndpoints, writeMcpEndpoints, resolveMcpEndpoint, validEndpointName,
+} from './tenancy.mjs';
 import { setWorkspaceRootResolver } from '../tools/lib/journey.mjs';
 import { orgWorkspaceRoot } from './tenancy.mjs';
 
@@ -379,6 +383,32 @@ function validateMcpUrl(raw) {
   return { safeUrl };
 }
 
+// Stage 3: `mcp:<name>` indirection. Routes that accept an mcpUrl also
+// accept a registered org endpoint name; resolution happens here so the
+// raw-URL path is untouched. Returns:
+//   { url, readAuth }  resolved (readAuth only when the record names an
+//                      authEnv AND the env var is set — READ token only;
+//                      write tokens stay per-request pass-through)
+//   { error }          unknown name / unset env var / outside tenancy
+//   null               not an mcp: reference — caller proceeds with raw URL
+function resolveMcpUrlParam(raw) {
+  const m = /^mcp:([a-z0-9_-]+)$/i.exec(String(raw || '').trim());
+  if (!m) return null;
+  const name = m[1].toLowerCase();
+  const rec = resolveMcpEndpoint(name);
+  if (!rec) {
+    return { error: `unknown org MCP endpoint 'mcp:${name}' — an admin registers names via PUT /api/org/mcp-endpoints/${name}` };
+  }
+  let readAuth = null;
+  if (rec.authEnv) {
+    readAuth = (process.env[rec.authEnv] || '').trim() || null;
+    if (!readAuth) {
+      return { error: `endpoint 'mcp:${name}' names read-token env ${rec.authEnv}, but that variable is not set on the server` };
+    }
+  }
+  return { url: rec.url, readAuth };
+}
+
 // Returns a canonical object with the env overlay applied to spec.* AND
 // effective criticality/target propagated up to metadata.bindings so the
 // conformance scorer sees the correct tier for the selected environment.
@@ -514,9 +544,33 @@ app.use((req, res, next) => {
       return res.status(403).json({ ok: false, error: `not a member of org '${orgId}'` });
     }
   }
+  // Stage 3 — authorization. The bearer is the deployment-level service
+  // account (CI deploys, automation): full access. Humans get their org
+  // role; the route table below is the entire policy, small and explicit.
+  req.tomographRole = req.tomographBearer ? 'admin' : roleFor(orgId, req.tomographSub);
+  const need = requiredRoleFor(req);
+  if (!roleAtLeast(req.tomographRole, need)) {
+    return res.status(403).json({
+      ok: false,
+      error: `requires the ${need} role in org '${orgId}' (you are ${req.tomographRole})`,
+    });
+  }
   res.set('X-Tomograph-Org', orgId);   // echo so the client always knows the active org
   return runWithOrg(orgId, next);
 });
+
+// The whole Stage 3 route policy. Reads are viewer; mutations are
+// operator; org administration (members, MCP endpoint config) is admin.
+// `/api/orgs` exact (listing YOUR memberships) stays viewer; reading the
+// endpoint REGISTRY stays viewer (operators must see what names exist to
+// use `mcp:<name>`), its mutation is admin.
+function requiredRoleFor(req) {
+  const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+  const p = req.path;
+  if (p.startsWith('/api/orgs/')) return 'admin';                       // member management
+  if (p.startsWith('/api/org/mcp-endpoints')) return mutating ? 'admin' : 'viewer';
+  return mutating ? 'operator' : 'viewer';
+}
 
 app.use(express.json({ limit: '16mb' }));   // /api/crawl can carry a whole repo's worth of YAML
 app.use(express.text({ type: ['application/x-yaml', 'text/yaml', 'text/plain'], limit: '4mb' }));
@@ -574,6 +628,114 @@ app.get('/api/orgs', (req, res) => {
     ? Object.entries(readOrgs()).map(([id, o]) => ({ id, name: o?.name || id, role: 'service-account' }))
     : orgsForUser(req.tomographSub);
   res.json({ ok: true, tenancy: true, orgs, active: currentOrg() });
+});
+
+// ---------- Stage 3: member management (admin) ----------
+//
+// The endpoints deferred from Stage 2, now safe to expose because the
+// middleware enforces the admin role before they run. They operate on
+// the ACTIVE org only (switch X-Tomograph-Org to administer another org
+// where you hold admin). The last-admin guard keeps an org from locking
+// itself out.
+
+app.get('/api/orgs/:org/members', (req, res) => {
+  const orgId = currentOrg();
+  if (req.params.org !== orgId) {
+    return res.status(403).json({ ok: false, error: `members are managed on the ACTIVE org — set X-Tomograph-Org: ${req.params.org}` });
+  }
+  const org = readOrgs()[orgId];
+  const members = Object.entries(org?.members || {}).map(([sub, role]) => ({ sub, role: normalizeRole(role) }));
+  res.json({ ok: true, org: orgId, members });
+});
+
+app.put('/api/orgs/:org/members/:sub', (req, res) => {
+  const orgId = currentOrg();
+  if (req.params.org !== orgId) {
+    return res.status(403).json({ ok: false, error: `members are managed on the ACTIVE org — set X-Tomograph-Org: ${req.params.org}` });
+  }
+  const sub = String(req.params.sub || '');
+  const role = normalizeRole(req.body?.role);
+  if (!ROLES.includes(String(req.body?.role || '').toLowerCase()) ) {
+    return res.status(400).json({ ok: false, error: `role must be one of ${ROLES.join(' | ')}` });
+  }
+  const orgs = readOrgs();
+  const org = orgs[orgId];
+  if (!org) return res.status(404).json({ ok: false, error: `no such org: ${orgId}` });
+  const wasAdmin = org.members && normalizeRole(org.members[sub]) === 'admin' && Object.hasOwn(org.members, sub);
+  if (wasAdmin && role !== 'admin' && adminCount(orgId, { excluding: sub }) === 0) {
+    return res.status(400).json({ ok: false, error: `cannot demote ${sub}: an org must keep at least one admin` });
+  }
+  org.members = org.members || {};
+  org.members[sub] = role;
+  writeOrgs(orgs);
+  res.json({ ok: true, org: orgId, sub, role, actor: actorForRequest(req) });
+});
+
+app.delete('/api/orgs/:org/members/:sub', (req, res) => {
+  const orgId = currentOrg();
+  if (req.params.org !== orgId) {
+    return res.status(403).json({ ok: false, error: `members are managed on the ACTIVE org — set X-Tomograph-Org: ${req.params.org}` });
+  }
+  const sub = String(req.params.sub || '');
+  const orgs = readOrgs();
+  const org = orgs[orgId];
+  if (!org?.members || !Object.hasOwn(org.members, sub)) {
+    return res.status(404).json({ ok: false, error: `${sub} is not a member of ${orgId}` });
+  }
+  if (normalizeRole(org.members[sub]) === 'admin' && adminCount(orgId, { excluding: sub }) === 0) {
+    return res.status(400).json({ ok: false, error: `cannot remove ${sub}: an org must keep at least one admin` });
+  }
+  delete org.members[sub];
+  writeOrgs(orgs);
+  res.json({ ok: true, org: orgId, removed: sub });
+});
+
+// ---------- Stage 3: org-scoped MCP endpoints ----------
+//
+// Admins curate a NAMED registry of read endpoints per org; operators
+// reference `mcp:<name>` wherever a route takes an mcpUrl. authEnv is
+// env-name indirection for a READ token (resolved at use time); the
+// registry never holds a secret, and write tokens remain per-request
+// pass-through everywhere.
+
+app.get('/api/org/mcp-endpoints', (req, res) => {
+  if (!tenancyEnabled()) return res.status(400).json({ ok: false, error: 'org MCP endpoints need tenancy (orgs.json)' });
+  res.json({ ok: true, org: currentOrg(), ...readMcpEndpoints() });
+});
+
+app.put('/api/org/mcp-endpoints/:name', (req, res) => {
+  if (!tenancyEnabled()) return res.status(400).json({ ok: false, error: 'org MCP endpoints need tenancy (orgs.json)' });
+  const name = String(req.params.name || '');
+  if (!validEndpointName(name)) {
+    return res.status(400).json({ ok: false, error: 'endpoint name must match ^[a-z][a-z0-9_-]{1,39}$' });
+  }
+  const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
+  const { error, safeUrl } = validateMcpUrl(url);
+  if (error) return res.status(400).json({ ok: false, error });
+  const authEnv = typeof req.body?.authEnv === 'string' && req.body.authEnv.trim() ? req.body.authEnv.trim() : null;
+  if (authEnv && !/^[A-Z][A-Z0-9_]*$/.test(authEnv)) {
+    return res.status(400).json({ ok: false, error: 'authEnv must be an environment variable NAME (the secret itself is never stored)' });
+  }
+  const data = readMcpEndpoints();
+  data.endpoints[name] = {
+    url: safeUrl,
+    ...(authEnv ? { authEnv } : {}),
+    ...(typeof req.body?.note === 'string' && req.body.note ? { note: req.body.note.slice(0, 200) } : {}),
+    updatedAt: new Date().toISOString(),
+    updatedBy: actorForRequest(req),
+  };
+  writeMcpEndpoints(data);
+  res.json({ ok: true, org: currentOrg(), name, endpoint: data.endpoints[name] });
+});
+
+app.delete('/api/org/mcp-endpoints/:name', (req, res) => {
+  if (!tenancyEnabled()) return res.status(400).json({ ok: false, error: 'org MCP endpoints need tenancy (orgs.json)' });
+  const name = String(req.params.name || '');
+  const data = readMcpEndpoints();
+  if (!data.endpoints[name]) return res.status(404).json({ ok: false, error: `no such endpoint: ${name}` });
+  delete data.endpoints[name];
+  writeMcpEndpoints(data);
+  res.json({ ok: true, org: currentOrg(), removed: name });
 });
 
 app.get('/api/packs', (req, res) => {
@@ -1320,8 +1482,12 @@ app.post('/api/deploys/:deployId/rollback', async (req, res) => {
     return res.status(409).json({ ok: false, error: `no usable snapshot for ${rollbackOf} (status: ${snap?.meta?.status || 'none'}) — nothing to restore from` });
   }
   const b = req.body || {};
-  const mcpUrl = typeof b.mcpUrl === 'string' ? b.mcpUrl.trim() : '';
+  let mcpUrl = typeof b.mcpUrl === 'string' ? b.mcpUrl.trim() : '';
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  // Stage 3: `mcp:<name>` resolves to the org's registered endpoint.
+  const named = resolveMcpUrlParam(mcpUrl);
+  if (named?.error) return res.status(400).json({ ok: false, error: named.error });
+  if (named) mcpUrl = named.url;
   const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
   if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
   const dryRun = b.dryRun === true || b.dry_run === true;
@@ -1415,7 +1581,7 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   const meta = findPackMeta(req.params.id);
   if (!meta) return res.status(404).json({ ok: false, error: `unknown pack: ${req.params.id}` });
   const body = req.body || {};
-  const mcpUrl  = typeof body.mcpUrl  === 'string' ? body.mcpUrl.trim() : '';
+  let mcpUrl  = typeof body.mcpUrl  === 'string' ? body.mcpUrl.trim() : '';
   const mcpAuth = typeof body.mcpAuth === 'string' ? body.mcpAuth : null;
   const product = (typeof body.targetProduct === 'string' && body.targetProduct.trim()) ? body.targetProduct.trim() : 'grafana';
   const version = (typeof body.targetVersion === 'string' && body.targetVersion.trim()) ? body.targetVersion.trim() : '12';
@@ -1426,6 +1592,10 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   const env = readEnv(req.query);
 
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  // Stage 3: `mcp:<name>` resolves to the org's registered endpoint.
+  const named = resolveMcpUrlParam(mcpUrl);
+  if (named?.error) return res.status(400).json({ ok: false, error: named.error });
+  if (named) mcpUrl = named.url;
   const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
   if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
   if (!items || items.length === 0) return res.status(400).json({ ok: false, error: 'items array required and must be non-empty' });
@@ -1594,7 +1764,7 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
   }
 
   const body = req.body || {};
-  const mcpUrl  = typeof body.mcpUrl  === 'string' ? body.mcpUrl.trim()  : '';
+  let mcpUrl  = typeof body.mcpUrl  === 'string' ? body.mcpUrl.trim()  : '';
   const mcpAuth = typeof body.mcpAuth === 'string' ? body.mcpAuth        : null;
   const product = (typeof body.targetProduct === 'string' && body.targetProduct.trim())
     ? body.targetProduct.trim() : 'grafana';
@@ -1623,6 +1793,10 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
   const env = readEnv(req.query);
   const dashboardId = typeof req.query.dashboardId === 'string' ? req.query.dashboardId : undefined;
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  // Stage 3: `mcp:<name>` resolves to the org's registered endpoint.
+  const named = resolveMcpUrlParam(mcpUrl);
+  if (named?.error) return res.status(400).json({ ok: false, error: named.error });
+  if (named) mcpUrl = named.url;
   const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
   if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
 
@@ -1836,19 +2010,23 @@ app.get('/api/live-status', (req, res) => {
 // ----------------------------------------------------------------
 app.post('/api/draft-from-mcp', async (req, res) => {
   const body = req.body || {};
-  const mcpUrl  = typeof body.mcpUrl  === 'string' && body.mcpUrl.trim() ? body.mcpUrl.trim() : null;
+  let mcpUrl  = typeof body.mcpUrl  === 'string' && body.mcpUrl.trim() ? body.mcpUrl.trim() : null;
   const mcpAuth = typeof body.mcpAuth === 'string' && body.mcpAuth ? body.mcpAuth : null;
   const packName = typeof body.packName === 'string' && body.packName.trim()
     ? body.packName.trim()
     : null;
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  // Stage 3: `mcp:<name>` resolves to the org's registered endpoint.
+  const named = resolveMcpUrlParam(mcpUrl);
+  if (named?.error) return res.status(400).json({ ok: false, error: named.error });
+  if (named) mcpUrl = named.url;
   const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
   if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
 
   const t0 = Date.now();
   try {
     process.stderr.write(`[draft-from-mcp] POST -> ${safeMcpUrl}\n`);
-    const fetched = await fetchMcp({ mcpUrl, mcpAuth });
+    const fetched = await fetchMcp({ mcpUrl, mcpAuth: mcpAuth || named?.readAuth || null });
     const refreshedAt = new Date().toISOString();
     const pack = buildCanonicalPack({ refreshedAt, mcpUrl, packName, ...fetched });
     const errors = validateCanonical(pack, SCHEMA);
@@ -2000,16 +2178,20 @@ function banner(pack) {
 
 app.post('/api/refresh-live', async (req, res) => {
   const body = req.body || {};
-  const mcpUrl = typeof body.mcpUrl === 'string' && body.mcpUrl.trim() ? body.mcpUrl.trim() : null;
+  let mcpUrl = typeof body.mcpUrl === 'string' && body.mcpUrl.trim() ? body.mcpUrl.trim() : null;
   const mcpAuth = typeof body.mcpAuth === 'string' && body.mcpAuth ? body.mcpAuth : null;
   if (!mcpUrl) return res.status(400).json({ ok: false, error: 'mcpUrl required in JSON body' });
+  // Stage 3: `mcp:<name>` resolves to the org's registered endpoint.
+  const named = resolveMcpUrlParam(mcpUrl);
+  if (named?.error) return res.status(400).json({ ok: false, error: named.error });
+  if (named) mcpUrl = named.url;
   const { error: mcpUrlError, safeUrl: safeMcpUrl } = validateMcpUrl(mcpUrl);
   if (mcpUrlError) return res.status(400).json({ ok: false, error: mcpUrlError });
 
   const t0 = Date.now();
   try {
     process.stderr.write(`[refresh-live] POST /api/refresh-live -> ${safeMcpUrl}\n`);
-    const fetched = await fetchMcp({ mcpUrl, mcpAuth });
+    const fetched = await fetchMcp({ mcpUrl, mcpAuth: mcpAuth || named?.readAuth || null });
     const refreshedAt = new Date().toISOString();
     const pack = buildCanonicalPack({ refreshedAt, mcpUrl, ...fetched });
     const errors = validateCanonical(pack, SCHEMA);

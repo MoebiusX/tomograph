@@ -1321,6 +1321,7 @@ async function boot() {
   setupUpload();
   setupTheme();
   setupIdentityChip();
+  applyRoleAffordances();
   setupResetButton();
   setupExportButton();
   // Eagerly fetch /api/examples so the Pack B picker has the archived
@@ -3796,6 +3797,29 @@ function resolveActiveOrg() {
   if (!orgs.length) { setActiveOrg(null); return; }
   const saved = savedOrg();
   setActiveOrg((orgs.find(o => o.id === saved) || orgs[0]).id);
+}
+
+// Stage 3: the active org's role, normalized the way the server does
+// ('member'/unknown → operator). null outside tenancy mode.
+function activeOrgRole() {
+  const orgs = state.identity?.orgs || [];
+  const active = orgs.find(o => o.id === getActiveOrg()) || orgs[0];
+  if (!active) return null;
+  const r = String(active.role || '').toLowerCase();
+  return r === 'admin' ? 'admin' : r === 'viewer' ? 'viewer' : 'operator';
+}
+
+// Viewers get read-only affordances: the server enforces 403 on every
+// mutation regardless; this just keeps the UI from offering actions
+// that can only fail.
+function applyRoleAffordances() {
+  if (activeOrgRole() !== 'viewer') return;
+  for (const id of ['upload-btn', 'crawl-btn', 'draft-mcp-btn', 'reset-btn']) {
+    const btn = document.getElementById(id);
+    if (!btn) continue;
+    btn.disabled = true;
+    btn.title = 'viewer role — read-only in this org';
+  }
 }
 
 // Identity chip — only renders when the server runs in an identity
