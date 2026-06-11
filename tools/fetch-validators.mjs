@@ -44,6 +44,8 @@ const EXE = process.platform === 'win32' ? '.exe' : '';
 const PROM_V = '3.5.3';
 const AM_V = '0.32.2';
 const OTEL_V = '0.154.0';
+const MIMIR_V = '3.1.0';
+const DLINT_V = '0.1.1';
 
 const PINS = {
   promtool: {
@@ -93,6 +95,56 @@ const PINS = {
         url: `https://github.com/prometheus/alertmanager/releases/download/v${AM_V}/alertmanager-${AM_V}.darwin-arm64.tar.gz`,
         sha256: '837e2be3b0086070080a23c2328c604f7f9b08e11d9ef59dcc4455a7068e74c5',
         binPath: `alertmanager-${AM_V}.darwin-arm64/amtool`,
+      },
+    },
+  },
+  // mimirtool attests the rules flavor's "Mimir-compatible" claim.
+  // Grafana ships it as a RAW binary (no archive) and publishes no
+  // Windows build — Windows devs get a loud skip; CI (linux) runs it.
+  mimirtool: {
+    version: MIMIR_V,
+    archives: {
+      'linux-x64': {
+        url: `https://github.com/grafana/mimir/releases/download/mimir-${MIMIR_V}/mimirtool-linux-amd64`,
+        sha256: 'afe3e9b7e5063c0b5c7cb262a09d190882e3018497b45730e2abff600bccfaca',
+        raw: true,
+      },
+      'darwin-x64': {
+        url: `https://github.com/grafana/mimir/releases/download/mimir-${MIMIR_V}/mimirtool-darwin-amd64`,
+        sha256: 'cabc9c5161df47a16a4ff090230ef8d11731feb253fa34cea5bc9bf865280d95',
+        raw: true,
+      },
+      'darwin-arm64': {
+        url: `https://github.com/grafana/mimir/releases/download/mimir-${MIMIR_V}/mimirtool-darwin-arm64`,
+        sha256: '43d353daea81ca69d6d30afb180b3422030643de22b90ad099e65496b9efb3eb',
+        raw: true,
+      },
+    },
+  },
+  // dashboard-linter is ADVISORY (it encodes opinions beyond validity);
+  // the authoritative dashboard gate is the live Grafana import (T2).
+  'dashboard-linter': {
+    version: DLINT_V,
+    archives: {
+      'linux-x64': {
+        url: `https://github.com/grafana/dashboard-linter/releases/download/v${DLINT_V}/dashboard-linter_${DLINT_V}_linux_amd64.tar.gz`,
+        sha256: 'ab8891fa0e55b60baf0eb25c76cc92768c5e829a1ed525efd651bbd0c5ba9457',
+        binPath: 'dashboard-linter',
+      },
+      'win32-x64': {
+        url: `https://github.com/grafana/dashboard-linter/releases/download/v${DLINT_V}/dashboard-linter_${DLINT_V}_windows_amd64.zip`,
+        sha256: '3c0792a652cb5b5c2072c756b1f7a39f483ea6ad91114a98b8ef7d135ce7340c',
+        binPath: 'dashboard-linter.exe',
+      },
+      'darwin-x64': {
+        url: `https://github.com/grafana/dashboard-linter/releases/download/v${DLINT_V}/dashboard-linter_${DLINT_V}_darwin_amd64.tar.gz`,
+        sha256: '8ac4724705e7dc215cc6e1f80206c550cac345edddb110059593364191beb2af',
+        binPath: 'dashboard-linter',
+      },
+      'darwin-arm64': {
+        url: `https://github.com/grafana/dashboard-linter/releases/download/v${DLINT_V}/dashboard-linter_${DLINT_V}_darwin_arm64.tar.gz`,
+        sha256: '058a3fedd7a0d85e57933f029cbc0ae392548fe1256472e5a39dc6137c6d3ce7',
+        binPath: 'dashboard-linter',
       },
     },
   },
@@ -170,8 +222,11 @@ async function fetchTool(name, pin, { force }) {
   const key = platformKey();
   const arch = pin.archives[key];
   if (!arch) {
-    console.error(`  ${name}: no pinned archive for platform ${key} — add one to fetch-validators.mjs`);
-    return { name, ok: false, reason: `unsupported platform ${key}` };
+    // A platform with no published build (e.g. mimirtool on Windows) is
+    // a skip, not a failure — CI runs on linux where every pin exists,
+    // and the validate suite skips loudly per missing binary.
+    console.log(`  ${name}: no ${key} build published upstream — skipped (runs in CI)`);
+    return { name, ok: true, skipped: true };
   }
   const finalBin = join(BIN_DIR, name + EXE);
   const manifest = readManifest();
@@ -195,14 +250,19 @@ async function fetchTool(name, pin, { force }) {
   }
   console.log(`  ${name} ${pin.version}: checksum verified (${got.slice(0, 12)}…)`);
 
-  const extractDir = join(TOOLS_DIR, 'extract', name);
-  rmSync(extractDir, { recursive: true, force: true });
-  extract(archiveFile, extractDir);
-  const extractedBin = join(extractDir, arch.binPath);
-  if (!existsSync(extractedBin)) {
-    throw new Error(`${name}: expected binary missing after extraction: ${extractedBin}`);
+  if (arch.raw) {
+    // Release asset IS the binary (mimirtool style) — no extraction.
+    copyFileSync(archiveFile, finalBin);
+  } else {
+    const extractDir = join(TOOLS_DIR, 'extract', name);
+    rmSync(extractDir, { recursive: true, force: true });
+    extract(archiveFile, extractDir);
+    const extractedBin = join(extractDir, arch.binPath);
+    if (!existsSync(extractedBin)) {
+      throw new Error(`${name}: expected binary missing after extraction: ${extractedBin}`);
+    }
+    copyFileSync(extractedBin, finalBin);
   }
-  copyFileSync(extractedBin, finalBin);
   if (process.platform !== 'win32') chmodSync(finalBin, 0o755);
 
   const m = readManifest();

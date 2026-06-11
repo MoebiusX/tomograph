@@ -23,7 +23,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,8 +32,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
 const STRICT = process.argv.includes('--strict');
 const GRAFANA_URL = process.env.T4_GRAFANA_URL || 'http://127.0.0.1:13000';
+const GRAFANA13_URL = process.env.T4_GRAFANA13_URL || 'http://127.0.0.1:13013';
+const GRAFANA_PROV_URL = process.env.T4_GRAFANA_PROV_URL || 'http://127.0.0.1:13002';
 const GRAFANA_AUTH = process.env.T4_GRAFANA_AUTH || 'admin:admin';
 const COMPOSE_FILE = join(ROOT, 'docker', 'validate.compose.yaml');
+const PROV_DIR = join(ROOT, 'docker', '.t2-provisioning', 'alerting');
 const FOLDER = 't4-roundtrip';
 
 // The in-process server must see an isolated workspace BEFORE the module
@@ -64,10 +67,16 @@ async function grafanaUp() {
 }
 
 async function ensureGrafana() {
-  if (await grafanaUp()) return true;
+  // The grafana-prov service mounts this generated dir — it must exist
+  // before compose creates the container.
+  mkdirSync(PROV_DIR, { recursive: true });
+  const healthy = async (url) => { try { return (await fetch(`${url}/api/health`)).ok; } catch (_) { return false; } };
+  // All three services answering → nothing to do. Otherwise run compose
+  // (idempotent — also creates services added since the stack last started).
+  if (await healthy(GRAFANA_URL) && await healthy(GRAFANA13_URL) && await healthy(GRAFANA_PROV_URL)) return true;
   const probe = spawnSync('docker', ['version', '--format', '{{.Server.Version}}'], { encoding: 'utf8' });
-  if (probe.status !== 0) return false;
-  process.stdout.write(`backend-live: starting Grafana via ${COMPOSE_FILE}\n`);
+  if (probe.status !== 0) return await grafanaUp();
+  process.stdout.write(`backend-live: starting Grafana stack via ${COMPOSE_FILE}\n`);
   const up = spawnSync('docker', ['compose', '-f', COMPOSE_FILE, 'up', '-d', '--wait'], { encoding: 'utf8', timeout: 300_000 });
   if (up.status !== 0) {
     process.stdout.write(`  docker compose up failed: ${(up.stderr || '').slice(0, 300)}\n`);
@@ -87,6 +96,13 @@ async function api(base, path, opts = {}) {
   try { json = text ? JSON.parse(text) : null; } catch (_) { /* non-JSON */ }
   if (!res.ok) throw new Error(`${path} HTTP ${res.status}: ${text.slice(0, 300)}`);
   return json;
+}
+
+async function apiText(base, path, opts = {}) {
+  const res = await fetch(`${base}${path}`, opts);
+  const text = await res.text();
+  if (!res.ok) throw new Error(`${path} HTTP ${res.status}: ${text.slice(0, 300)}`);
+  return text;
 }
 
 // Every name a diff entry answers to — key, ids, titles on either side.
@@ -236,6 +252,114 @@ async function main() {
       decisionDrift.join(' · '), 'none');
 
     process.stdout.write(`\n  round trip: ${deployedNames.size} deployed → all confirmed live · ${driftedDeployed} round-trip drift (non-decision)\n`);
+
+    // ================= T2 — version matrix + provisioning load =================
+    // The rules/dashboards flavors claim "Grafana 12 / 13"; both versions
+    // must accept every artifact, and the round trip must survive each
+    // version's import rewrites on the decision-bearing fields.
+    const gfAuthOf = () => ({ headers: { Authorization: `Basic ${Buffer.from(GRAFANA_AUTH).toString('base64')}` } });
+    const reachable = async (url) => {
+      try { return (await fetch(`${url}/api/health`)).ok; } catch (_) { return false; }
+    };
+
+    for (const target of [
+      { name: 'grafana-12', url: GRAFANA_URL, deployed: true },
+      { name: 'grafana-13', url: GRAFANA13_URL, deployed: false },
+    ]) {
+      if (!(await reachable(target.url))) {
+        if (STRICT) assert(false, `T2: ${target.name} reachable at ${target.url}`);
+        else process.stdout.write(`  T2 ${target.name}: SKIPPED (not reachable at ${target.url})\n`);
+        continue;
+      }
+      process.stdout.write(`\n  T2 · ${target.name} (${target.url})\n`);
+
+      // Deploy to this target through the real path (12 already carries
+      // the T4 deploy; 13 gets its own).
+      if (!target.deployed) {
+        const b13 = await startGrafanaMcpBridge({ grafanaUrl: target.url, auth: GRAFANA_AUTH, datasourceUid: 'obs-pack-prom' });
+        try {
+          const dep13 = await api(base, `/api/packs/${encodeURIComponent(packAId)}/deploy-bulk?env=prod`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mcpUrl: b13.url, targetProduct: 'grafana', targetVersion: '13', targetFolder: FOLDER, mode: 'upsert', items }),
+          });
+          for (const r of dep13.results || []) {
+            assert(r.ok === true, `${target.name}: deploy item ok · ${r.item?.group}${r.item?.dashboardId ? ':' + r.item.dashboardId : ''}`, r.error || r, 'ok: true');
+          }
+        } finally { await b13.close(); }
+      }
+
+      // Dashboards: deep round trip — the exact bytes the deploy compiled
+      // vs what this Grafana version returns after its import rewrites.
+      for (const id of dashboardIds) {
+        const emitted = JSON.parse(await apiText(base,
+          `/api/packs/${encodeURIComponent(packAId)}/compile-artifact?env=prod&group=dashboards&flavor=grafana&artifact=${encodeURIComponent('dash:' + id)}`));
+        const live = await api(target.url, `/api/dashboards/uid/${encodeURIComponent(emitted.uid)}`, gfAuthOf());
+        assert(live?.dashboard?.title === id,
+          `${target.name}: '${id}' retrievable by emitted uid, title intact`, live?.dashboard?.title, id);
+        assert((live?.dashboard?.panels || []).length === (emitted.panels || []).length,
+          `${target.name}: '${id}' panel count survives import`, (live?.dashboard?.panels || []).length, (emitted.panels || []).length);
+        const sv = live?.dashboard?.schemaVersion;
+        assert(typeof sv === 'number' && sv >= 30,
+          `${target.name}: '${id}' schemaVersion is sane after import (emitted ${emitted.schemaVersion} → live ${sv})`, sv, '>= 30');
+      }
+
+      // Alert rules: decision-bearing fields survive the provisioning
+      // round trip — title, condition, refIds, and the PromQL itself.
+      const rulesYaml = await apiText(base,
+        `/api/packs/${encodeURIComponent(packAId)}/compile-artifact?env=prod&group=rules&flavor=grafana-managed&artifact=all`);
+      const { parse: parseYamlT2 } = await import('./lib/mini-yaml.mjs');
+      const emittedGroups = parseYamlT2(rulesYaml.replace(/^(\s*#[^\n]*\n)+/, ''))?.groups || [];
+      let rulesChecked = 0;
+      for (const g of emittedGroups) {
+        for (const rule of g.rules || []) {
+          const live = await api(target.url, `/api/v1/provisioning/alert-rules/${encodeURIComponent(rule.uid)}`, gfAuthOf()).catch(() => null);
+          if (!live) { assert(false, `${target.name}: rule '${rule.title}' retrievable by emitted uid`, 'not found', rule.uid); continue; }
+          rulesChecked++;
+          if (live.title !== rule.title) assert(false, `${target.name}: rule title survives · ${rule.uid}`, live.title, rule.title);
+          if (rule.record) {
+            // Recording rules carry their identity in record.metric/from;
+            // Grafana returns no condition for them.
+            if (live.record?.metric !== rule.record.metric) assert(false, `${target.name}: record metric survives · ${rule.title}`, live.record?.metric, rule.record.metric);
+          } else if (live.condition !== rule.condition) {
+            assert(false, `${target.name}: rule condition survives · ${rule.title}`, live.condition, rule.condition);
+          }
+          const emittedRefs = (rule.data || []).map(d => d.refId).join(',');
+          const liveRefs = (live.data || []).map(d => d.refId).join(',');
+          if (liveRefs !== emittedRefs) assert(false, `${target.name}: rule refIds survive · ${rule.title}`, liveRefs, emittedRefs);
+          const emittedExpr = (rule.data || []).find(d => d.datasourceUid !== '__expr__')?.model?.expr || '';
+          const liveExpr = (live.data || []).find(d => d.datasourceUid !== '__expr__')?.model?.expr || '';
+          if (liveExpr !== emittedExpr) assert(false, `${target.name}: PromQL survives · ${rule.title}`, liveExpr.slice(0, 120), emittedExpr.slice(0, 120));
+        }
+      }
+      assert(rulesChecked > 0, `${target.name}: deep rule round trip covered rules`, rulesChecked, '> 0');
+      process.stdout.write(`  T2 ${target.name}: ${dashboardIds.length} dashboards + ${rulesChecked} rules round-tripped field-exact ✓\n`);
+    }
+
+    // T2a — the provisioning FILE path (the flavor's documented
+    // "copy under provisioning/alerting/" usage), with the operator's
+    // deploy-time datasource substitution applied as the banner instructs.
+    if (await reachable(GRAFANA_PROV_URL)) {
+      const provYaml = (await apiText(base,
+        `/api/packs/${encodeURIComponent(packAId)}/compile-artifact?env=prod&group=rules&flavor=grafana-managed&artifact=all`))
+        .replaceAll('${DS_PROMETHEUS}', 'obs-pack-prom');
+      writeFileSync(join(PROV_DIR, 'tomograph-rules.yaml'), provYaml);
+      const reload = await fetch(`${GRAFANA_PROV_URL}/api/admin/provisioning/alerting/reload`, { method: 'POST', ...gfAuthOf() });
+      assert(reload.ok, 'T2a: provisioning reload accepted', `HTTP ${reload.status}`, '2xx');
+      const provRules = await api(GRAFANA_PROV_URL, '/api/v1/provisioning/alert-rules', gfAuthOf());
+      const provTitles = new Set((provRules || []).map(r => r.title));
+      const { parse: parseYamlProv } = await import('./lib/mini-yaml.mjs');
+      const wantGroups = parseYamlProv(provYaml.replace(/^(\s*#[^\n]*\n)+/, ''))?.groups || [];
+      let provChecked = 0;
+      for (const g of wantGroups) for (const rule of g.rules || []) {
+        provChecked++;
+        if (!provTitles.has(rule.title)) assert(false, `T2a: file-provisioned rule loaded · '${rule.title}'`, [...provTitles].slice(0, 8).join(','), rule.title);
+      }
+      assert(provChecked > 0, `T2a: provisioning file path loads all ${provChecked} rules ✓`);
+    } else if (STRICT) {
+      assert(false, `T2a: provisioning Grafana reachable at ${GRAFANA_PROV_URL}`);
+    } else {
+      process.stdout.write(`  T2a provisioning load: SKIPPED (not reachable at ${GRAFANA_PROV_URL})\n`);
+    }
   } finally {
     await bridge.close();
     await new Promise(r => srv.close(r));

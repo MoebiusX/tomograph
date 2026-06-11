@@ -56,6 +56,20 @@ plan closes.*
 > drift (4 cosmetic Grafana-normalisation rewrites, tolerated by
 > design). Remaining: T2 version matrix (Grafana 13), T3.
 
+> **T2 status — DELIVERED.** The "Grafana 12 / 13" flavor claim is now
+> attested on both versions (12.4.4 + 13.0.2 in the compose stack):
+> full deploy through the real path to EACH version, then a deep
+> round-trip comparison of the decision-bearing fields — dashboard
+> title/uid/panel-count/schemaVersion, alert-rule title/condition/
+> refIds/PromQL, recording-rule record.metric — all field-exact on both
+> versions (4 dashboards + 20 rules each). T2a covers the flavor's
+> documented FILE path: the compiled provisioning YAML (with the
+> operator's documented `${DS_PROMETHEUS}` substitution) is mounted,
+> reloaded via the admin provisioning endpoint, and all 20 rules load.
+> T1 additions: `mimirtool rules lint` (strict, linux/darwin — attests
+> the "Mimir-compatible" claim; no Windows build upstream) and
+> `dashboard-linter` (advisory, per §3.3). Remaining: T3.
+
 ## 1 · What the compiler emits (the surface under test)
 
 From `tools/lib/compile.mjs` (`compileCatalog` / `compileArtifact`):

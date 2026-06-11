@@ -45,3 +45,6 @@ docs/archive/TOMOGRAPH_MIGRATION_CHECKLIST.md
 
 # Superseded scratch versions of the brand/architecture diagrams.
 docs/diagrams/_prev*
+
+# Generated provisioning files for the T2 provisioning-load test.
+docker/.t2-provisioning/

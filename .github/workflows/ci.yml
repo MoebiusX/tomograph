@@ -97,7 +97,7 @@ jobs:
   # Separate job: needs docker; the validate job stays fast.
   backend-live:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20   # pulls Grafana 12.4.4 + 13.0.2 images cold
     steps:
       - uses: actions/checkout@v6
 

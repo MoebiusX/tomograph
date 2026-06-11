@@ -57,7 +57,14 @@ const VALIDATORS = {
   promtool: resolveBin('promtool'),
   amtool: resolveBin('amtool'),
   'otelcol-contrib': resolveBin('otelcol-contrib'),
+  mimirtool: resolveBin('mimirtool'),
+  'dashboard-linter': resolveBin('dashboard-linter'),
 };
+
+// Tools with no published build for this platform are a skip even under
+// --strict (mimirtool ships linux/darwin only); CI runs on linux where
+// every validator exists.
+const NO_BUILD_HERE = new Set(process.platform === 'win32' ? ['mimirtool'] : []);
 
 for (const [name, path] of Object.entries(VALIDATORS)) {
   if (path) {
@@ -65,6 +72,8 @@ for (const [name, path] of Object.entries(VALIDATORS)) {
     try { v = execFileSync(path, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).split('\n')[0]; }
     catch (e) { v = (e.stdout || e.stderr || '').split('\n')[0]; } // amtool prints version to stderr
     process.stdout.write(`validator: ${name} → ${path} (${String(v).trim()})\n`);
+  } else if (NO_BUILD_HERE.has(name)) {
+    process.stdout.write(`validator: ${name} → SKIPPED (no ${process.platform} build published — runs in CI on linux)\n`);
   } else if (STRICT) {
     assert(false, `${name} available (--strict requires every validator; run npm run fetch-validators)`);
   } else {
@@ -113,6 +122,11 @@ function makeScalePack() {
 rmSync(OUT_DIR, { recursive: true, force: true });
 mkdirSync(OUT_DIR, { recursive: true });
 
+// Advisory findings (mimirtool best practices, dashboard-linter
+// opinions) — reported, never failing. Promote rules we agree with to
+// failing assertions deliberately, one by one.
+const advisories = [];
+
 let written = 0;
 function emit(packId, art) {
   const dir = join(OUT_DIR, packId.replace(/[^a-z0-9_.-]/gi, '_'));
@@ -151,14 +165,37 @@ function validatePack(fixture, canonical) {
   }
 
   for (const group of catalog.groups || []) {
-    // ---- rules / prometheus → promtool check rules (every item) ----
+    // ---- rules / prometheus → promtool check rules (every item),
+    //      plus mimirtool for the flavor's "Mimir-compatible" claim ----
     if (group.id === 'rules' && group.flavors.some(f => f.id === 'prometheus')) {
       for (const item of group.items) {
         const art = compileArtifact(canonical, { group: 'rules', flavor: 'prometheus', artifact: item.id });
         const file = emit(fixture.id, art);
-        if (!VALIDATORS.promtool) continue;
-        const r = run(VALIDATORS.promtool, ['check', 'rules', file]);
-        assert(r.ok, `promtool check rules · ${item.id} (${art.filename})`, r.out, 'exit 0');
+        if (VALIDATORS.promtool) {
+          const r = run(VALIDATORS.promtool, ['check', 'rules', file]);
+          assert(r.ok, `promtool check rules · ${item.id} (${art.filename})`, r.out, 'exit 0');
+        }
+        if (VALIDATORS.mimirtool) {
+          // `rules lint` rewrites the file in place — give it a copy.
+          const copy = file.replace(/\.yaml$/, '.mimir.yaml');
+          writeFileSync(copy, art.content);
+          const lint = run(VALIDATORS.mimirtool, ['rules', 'lint', copy]);
+          assert(lint.ok, `mimirtool rules lint · ${item.id} (${art.filename})`, lint.out, 'exit 0');
+          // `rules check` flags best-practice findings — advisory only.
+          const chk = run(VALIDATORS.mimirtool, ['rules', 'check', copy]);
+          if (!chk.ok) advisories.push(`mimirtool check · ${fixture.id}/${item.id}: ${chk.out.split('\n')[0].slice(0, 140)}`);
+        }
+      }
+    }
+    // ---- dashboards → emit + dashboard-linter (advisory) ----
+    if (group.id === 'dashboards') {
+      for (const item of group.items.filter(i => i.id.startsWith('dash:'))) {
+        const art = compileArtifact(canonical, { group: 'dashboards', flavor: 'grafana', artifact: item.id });
+        const file = emit(fixture.id, art);
+        if (VALIDATORS['dashboard-linter']) {
+          const r = run(VALIDATORS['dashboard-linter'], ['lint', file]);
+          if (!r.ok) advisories.push(`dashboard-linter · ${fixture.id}/${item.id}: ${r.out.split('\n').filter(Boolean).length} finding(s)`);
+        }
       }
     }
     // ---- alertmanager → amtool check-config ----
@@ -203,5 +240,10 @@ catch (e) {
   process.stdout.write(`  ✗ edge:scale-60: threw ${e.message}\n`);
 }
 
+if (advisories.length) {
+  process.stdout.write(`\nADVISORY (${advisories.length}) — opinions, not validity; never failing:\n`);
+  for (const a of advisories.slice(0, 20)) process.stdout.write(`  ⚠ ${a}\n`);
+  if (advisories.length > 20) process.stdout.write(`  … +${advisories.length - 20} more\n`);
+}
 process.stdout.write(`\n${written} artifact(s) emitted under ${OUT_DIR} (kept for debugging)\n`);
 report('backend-validate');
