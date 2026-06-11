@@ -7,8 +7,9 @@ options doesn't take load off — one converged, finished UI does.
 
 The synthesis (A's verdict-first hero + action strip, B's mission-control
 tiles and panel grid, C's badness-ordered triage queue with the
-projected-grade basket) **shipped as the production Diagnose and
-Remediate tabs**. It is documented in
+projected-grade basket) is the single remaining prototype, **gated
+behind any `?proto=` value** pending ratification — production stays
+untouched. It is documented in
 [UX_DIAGNOSE_REMEDIATE.md](UX_DIAGNOSE_REMEDIATE.md).
 
 The prototype code (`studio/proto-*.mjs`, `studio/proto.css`) lives in

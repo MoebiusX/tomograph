@@ -38,6 +38,7 @@ import { renderJourneysView } from './journeys-view.mjs';
 import { renderBenchmarkView, renderComparePicker, renderTraceabilityView, refreshDiff, loadDiff, LENS_PRODUCTS, activeDiffScopeMode } from './compare-view.mjs';
 import { catalogToDeployManifest } from './artifact-model.mjs';
 import { computeDeployTransitions } from './verify-deploy.mjs';
+import { protoActive, renderProtoDiagnose, renderProtoRemediate } from './proto-view.mjs';
 
 // `state`, the `$`/`$$` DOM helpers and the persistence layer now live in
 // studio/state.mjs (imported above).
@@ -705,11 +706,17 @@ export function renderMainView() {
   switch (state.view) {
     case 'benchmark':                                         // legacy alias
     case 'compare-artefacts':                                 // removed view → report
-    case 'compare':            renderBenchmarkView(view); return;
+    case 'compare':
+      // The redesign synthesis runs ONLY behind ?proto (maintainer call,
+      // 2026-06-11) — without the query param production is untouched.
+      if (protoActive()) { renderProtoDiagnose(view); return; }
+      renderBenchmarkView(view); return;
     case 'traceability':       renderTraceabilityView(view); return;
     case 'atlas':              renderAtlasView(view); return;
     case 'conformance':        view.appendChild(renderConformanceView()); return;
-    case 'compile':            renderCompileView(view); return;
+    case 'compile':
+      if (protoActive()) { renderProtoRemediate(view); return; }
+      renderCompileView(view); return;
     case 'schema':             renderSchemaView(view); return;
     case 'otlp':               renderOtlpView(view); return;
     case 'references':         renderReferencesView(view); return;

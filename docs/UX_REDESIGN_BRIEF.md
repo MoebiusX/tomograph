@@ -6,12 +6,12 @@ can start the design work cold. It is a brief, not a spec: it defines
 the problem, the constraints, and how we'll judge proposals. It does
 NOT prescribe the solution.*
 
-> **Status 2026-06-11 — DELIVERED.** The synthesis of the three
-> commissioned directions shipped as the production Diagnose and
-> Remediate tabs (the prototypes themselves were retired — one finished
-> UI, not a menu). See [UX_DIAGNOSE_REMEDIATE.md](UX_DIAGNOSE_REMEDIATE.md)
-> for the shipped design and [docs/img/ux-redesign/](img/ux-redesign/)
-> for screenshots.
+> **Status 2026-06-11 — synthesis built, gated behind `?proto`.** The
+> three divergent directions were converged into ONE design (a menu of
+> options was judged "load, not help"); it runs behind any `?proto=`
+> value pending maintainer ratification, with production untouched. See
+> [UX_DIAGNOSE_REMEDIATE.md](UX_DIAGNOSE_REMEDIATE.md) and
+> [docs/img/ux-redesign/](img/ux-redesign/).
 
 ## Why this exists
 

@@ -7681,6 +7681,25 @@ body.chrome-observa .disco {
   --pr-gray:   #94A3B8;
 }
 
+/* ---------- prototype switcher pill (?proto only) ---------- */
+.proto-switcher {
+  position: fixed; left: 16px; bottom: 16px; z-index: 60;
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 8px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 999px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  font-family: var(--mono); font-size: 11px;
+}
+.proto-switcher-key { color: var(--ink-4); letter-spacing: 0.12em; margin-right: 2px; }
+.proto-switcher-btn {
+  display: inline-block; text-align: center;
+  padding: 3px 9px; border-radius: 999px;
+  color: var(--ink-2); text-decoration: none; border: 1px solid transparent;
+}
+.proto-switcher-btn.is-active { background: var(--CMP); color: #fff; font-weight: 700; }
+.proto-switcher-btn.is-exit { color: var(--ink-4); }
+.proto-switcher-btn.is-exit:hover { border-color: var(--line); background: var(--hover); }
+
 /* ---------- biggest-drag header column ---------- */
 .diag-head-drag {
   flex: 1 1 300px;

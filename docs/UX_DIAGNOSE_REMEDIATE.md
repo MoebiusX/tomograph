@@ -1,9 +1,16 @@
-# Diagnose & Remediate — the shipped redesign
+# Diagnose & Remediate — the redesign synthesis (behind ?proto)
 
-*The synthesis delivered for [UX_REDESIGN_BRIEF.md](UX_REDESIGN_BRIEF.md),
-2026-06-11. This IS the production UI for Tabs 2 and 3 — not a prototype,
-no flags. Screenshots (krystaline repo vs production-live MCP draft, both
-themes): [docs/img/ux-redesign/](img/ux-redesign/).*
+*The converged design for [UX_REDESIGN_BRIEF.md](UX_REDESIGN_BRIEF.md),
+2026-06-11. **Gated behind any `?proto=` value** (e.g.
+`http://localhost:8000/?proto=1`) pending maintainer ratification —
+without the query param the production tabs render untouched, except the
+restored grade narrative (chip · blurb · ladder note), which is a
+ratified-state fix, not part of the redesign. Implementation:
+`studio/proto-synthesis.mjs` + `studio/verdict-ui.mjs`, reusing the
+production renderers (chain cards, posture stack, retrofeed POST) via
+exports so no semantics are duplicated. Screenshots (krystaline repo vs
+production-live MCP draft, both themes):
+[docs/img/ux-redesign/](img/ux-redesign/).*
 
 ## Diagnose — "Can we trust it?"
 
@@ -75,11 +82,12 @@ live verification (not projected here)"* instead of faking a delta.
 
 | Piece | File |
 |---|---|
-| Verdict page (header, action strip, tiles, panels) | studio/compare-view.mjs |
-| Triage queue | studio/compile-view.mjs |
+| Synthesis prototype (verdict page + triage queue) | studio/proto-synthesis.mjs |
+| ?proto gate + switcher pill | studio/proto-view.mjs |
 | Shared model/projection/widgets | studio/verdict-ui.mjs |
 | Mission-control styles (`.mc-*`, `.rq-*`, `.diag-head-drag`) | studio/app.css |
+| Ratified renderers reused via export (chains, posture, retrofeed) | studio/compare-view.mjs, studio/compile-view.mjs |
 
-Engines untouched. The three divergent prototypes that preceded this
-synthesis (`?proto=a|b|c`) were retired in the same branch — see
-UX_PROTOTYPES.md for the pointer and git history for their code.
+Engines untouched; production views untouched without `?proto`. The
+three divergent prototypes that preceded this synthesis (`?proto=a|b|c`)
+were retired — see UX_PROTOTYPES.md and git history.

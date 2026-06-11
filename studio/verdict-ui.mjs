@@ -353,18 +353,53 @@ export function fmtUnits(n) {
 
 // ---------- honesty blocks (non-negotiable, shared by both tabs) ----------
 
+// The incomplete-snapshot warning. The MCP fetcher records which of its
+// probes (scrape_configs, dashboards, recording_rules, alert_rules,
+// metric_names) failed while drafting Pack B — a failed probe is a hole
+// of unknown size in the live picture, and without this banner a flaky
+// endpoint silently manufactures "drift". Wording answers three things
+// in order: what happened, what it does to the numbers, what to do.
 export function partialEvidenceBanner(model) {
   const ev = model.liveEvidence;
   if (!ev?.partial) return '';
-  const aLabel = model.mode === 'drift' ? 'Declared, not live' : 'Beyond target';
+  const aLabel = model.mode === 'drift' ? 'declared, not live' : 'beyond target';
+  const ok = ev.attempted.filter(p => !ev.failed.includes(p));
   return `
-    <div class="drift-partial-banner">
+    <div class="drift-partial-banner" title="Probe results recorded by the MCP fetcher in the pack's mcp.probesFailed annotation.${ok.length ? ` Answered: ${escapeHtml(ok.join(', '))}.` : ''}">
       <span class="drift-partial-key">⚠ PARTIAL LIVE EVIDENCE</span>
-      ${ev.failed.length} of ${ev.attempted.length} probe${ev.failed.length === 1 ? '' : 's'} failed during the live draft
-      (<code>${escapeHtml(ev.failed.join(', '))}</code>) — the live endpoint was likely mid-deploy or overloaded.
-      Pack B may be missing whole surfaces, so <strong>"${escapeHtml(aLabel)}" is probably overstated</strong>.
+      <strong>The live snapshot is incomplete.</strong> While drafting <strong>${escapeHtml(model.bName)}</strong> from MCP,
+      the <code>${escapeHtml(ev.failed.join(', '))}</code> probe${ev.failed.length === 1 ? ' got no answer' : 's got no answer'}
+      (${ev.attempted.length - ev.failed.length} of ${ev.attempted.length} surfaces responded) — the endpoint was likely mid-deploy or overloaded.
+      Anything that lives on the failed surface is invisible to this comparison, so
+      <strong>"${escapeHtml(aLabel)}" is an upper bound, not a count</strong>.
       Redraft from MCP before acting on this drift.
     </div>`;
+}
+
+// Evidence ledger rows (field / expected / observed / status) — the same
+// eight assertions the production report shows, derived from criteria.
+export function buildEvidenceRows(diagnostic) {
+  const all = [
+    ...diagnostic.coverage.criteria,
+    ...diagnostic.trust.criteria,
+    ...(diagnostic.operability?.criteria || []),
+  ];
+  const C = (key) => all.find(c => c.key === key);
+  const row = (field, exp, key, informational = false) => {
+    const c = C(key);
+    return { field, exp, obs: c?.detail || '—', pass: !!c?.pass, score: c?.score, informational };
+  };
+  return [
+    row('spec.telemetry.backends[].signal', 'metrics + logs + traces (≥ 3 of 4)', 'multi-modal'),
+    row('spec.otel.sdk.propagators', 'includes tracecontext', 'correlated'),
+    row('spec.slos[].objective + spec.baselines', '≥ 1 SLO with numeric objective · MTTD/MTTR baselines declared', 'calibrated'),
+    row('posture matrix · 4 layers × 10 mechanisms', 'average ≥ 50% observed', 'comprehensive'),
+    row('spec.remediation[]', '≥ 1 remediation runbook declared (informational — not scored)', 'actionable', true),
+    row('spec.validation.chaos_experiments[]', '≥ 1 chaos experiment declared', 'chaos-validated'),
+    row('requirement derivation graph · fallback repo-vs-live diff / mcp probes',
+      'declared SLO/SLI chains active in live; fallback ≥70% probes when no live pack is loaded', 'drift-free'),
+    row('metadata.annotations.mcp.refreshedAt', 'within last 24h', 'fresh'),
+  ];
 }
 
 export function scaffoldOosNotes(model) {
