@@ -53,7 +53,9 @@ import {
 } from '../tools/lib/journey.mjs';
 import { retrofeedShadowSignals } from '../tools/lib/retrofeed.mjs';
 import { initAuth, authEnabled, readSession } from './auth.mjs';
-import { versionInfo } from './version.mjs';
+import { tenancyEnabled, orgsForUser, orgExists, runWithOrg, currentOrg, readOrgs, migrateFlatWorkspace } from './tenancy.mjs';
+import { setWorkspaceRootResolver } from '../tools/lib/journey.mjs';
+import { orgWorkspaceRoot } from './tenancy.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -159,8 +161,35 @@ function loadPackFile(relPath) {
 // registration writes through to disk and start() rehydrates the map, so
 // crawled / drafted / uploaded packs survive restarts. Eviction at the cap
 // prunes both the map and the disk copy (retention by least-recently-used).
-const UPLOADED_PACKS = new Map();   // id → { canonical, source, createdAt }
+// With tenancy on, each org has its own registry — a process-wide map
+// would leak one org's packs into another's catalog, which is exactly
+// what the Stage 2 isolation gate forbids. Scope key '' is the flat
+// (tenancy-off) workspace; org scopes rehydrate lazily from their own
+// workspace subtree on first touch.
+const UPLOAD_REGISTRIES = new Map();   // scope ('' | orgId) → Map(id → { canonical, source, createdAt })
 const MAX_UPLOADS = 200;
+
+function uploadsMap() {
+  const scope = (tenancyEnabled() && currentOrg()) || '';
+  let m = UPLOAD_REGISTRIES.get(scope);
+  if (!m) {
+    m = new Map();
+    UPLOAD_REGISTRIES.set(scope, m);
+    if (scope) {
+      // First touch of this org in this process: rehydrate from its own
+      // workspace subtree (loadWorkspacePacks resolves the org root from
+      // the request's AsyncLocalStorage context).
+      try {
+        for (const p of loadWorkspacePacks()) {
+          if (!m.has(p.id)) m.set(p.id, { canonical: p.canonical, source: p.source, label: p.label, createdAt: p.createdAt });
+        }
+      } catch (e) {
+        process.stderr.write(`[workspace] org '${scope}' rehydrate failed: ${e.message}\n`);
+      }
+    }
+  }
+  return m;
+}
 
 function slugify(s) {
   return String(s || 'pack')
@@ -189,33 +218,34 @@ function registerUploadedPack(canonical, source, label) {
   // delete + re-insert refreshes its LRU position without minting a new
   // id. That makes re-upload safe (no duplicate entries) AND keeps the
   // user's pick alive when they're actively working with that pack.
-  if (UPLOADED_PACKS.has(id)) UPLOADED_PACKS.delete(id);
+  const uploads = uploadsMap();
+  if (uploads.has(id)) uploads.delete(id);
   // ALSO drop any older entry whose friendly label collides with the
   // new one. This is how the quick-start cases stay deduplicated:
   // a second "KrystalineX (repo scan)" replaces the first instead of
   // accumulating clones in the picker.
   if (label) {
-    for (const [otherId, rec] of [...UPLOADED_PACKS.entries()]) {
+    for (const [otherId, rec] of [...uploads.entries()]) {
       if (rec.label === label && otherId !== id) {
-        UPLOADED_PACKS.delete(otherId);
+        uploads.delete(otherId);
         deleteWorkspacePack(otherId);
       }
     }
   }
   const rec = { canonical, source: source || 'upload', label, createdAt: Date.now() };
-  UPLOADED_PACKS.set(id, rec);
+  uploads.set(id, rec);
   saveWorkspacePack(id, rec);
   // Evict the oldest if we've blown the cap — disk copy goes with it.
-  while (UPLOADED_PACKS.size > MAX_UPLOADS) {
-    const oldestKey = UPLOADED_PACKS.keys().next().value;
-    UPLOADED_PACKS.delete(oldestKey);
+  while (uploads.size > MAX_UPLOADS) {
+    const oldestKey = uploads.keys().next().value;
+    uploads.delete(oldestKey);
     deleteWorkspacePack(oldestKey);
   }
   return id;
 }
 
 function uploadedMeta(id) {
-  const upl = UPLOADED_PACKS.get(id);
+  const upl = uploadsMap().get(id);
   if (!upl) return null;
   touchWorkspacePack(id);   // keeps lastUsedAt-based retention honest (debounced)
   return {
@@ -417,6 +447,7 @@ app.use((req, res, next) => {
   const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
   if (m && token && tokenEquals(m[1].trim(), token)) {
     req.tomographActor = apiTokenLabel();
+    req.tomographBearer = true;
     return next();
   }
 
@@ -430,6 +461,7 @@ app.use((req, res, next) => {
         return res.status(403).json({ ok: false, error: 'missing X-Tomograph-CSRF header on a session-authenticated mutation' });
       }
       req.tomographActor = session.email || session.sub;
+      req.tomographSub = session.sub;   // tenancy middleware resolves org membership by sub
       return next();
     }
     // Identity mode protects ALL /api data (reads included) — "your
@@ -449,6 +481,41 @@ app.use((req, res, next) => {
     ok: false,
     error: 'unauthorized: mutating /api routes require `Authorization: Bearer <TOMOGRAPH_API_TOKEN>`',
   });
+});
+
+// ---------- tenancy (Stage 2 — workspace-per-org) ----------
+//
+// Armed when <workspace>/orgs.json exists (server/tenancy.mjs). Every
+// /api request then runs inside an AsyncLocalStorage org context, and
+// workspaceRoot() everywhere underneath answers <workspace>/orgs/<id>/.
+// The org comes from the X-Tomograph-Org header (or ?org=), defaulting
+// to the user's first membership; membership is enforced here — Stage 3
+// adds per-route roles on top of this same seam.
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/') || !tenancyEnabled()) return next();
+  const requested = String(req.headers['x-tomograph-org'] || req.query.org || '').trim();
+  let orgId;
+  if (req.tomographBearer) {
+    // The bearer is the deployment-level service account: it may target
+    // any existing org explicitly; without a header it falls back to
+    // 'default' (the migration org) or, failing that, the first org in
+    // orgs.json — so single-org deployments never need the header.
+    orgId = requested || (orgExists('default') ? 'default' : Object.keys(readOrgs())[0] || 'default');
+    if (!orgExists(orgId)) {
+      return res.status(403).json({ ok: false, error: `unknown org '${orgId}'` });
+    }
+  } else {
+    const memberships = orgsForUser(req.tomographSub);
+    if (!memberships.length) {
+      return res.status(403).json({ ok: false, error: 'no org membership — ask an admin to add you to orgs.json' });
+    }
+    orgId = requested || memberships[0].id;
+    if (!memberships.some(o => o.id === orgId)) {
+      return res.status(403).json({ ok: false, error: `not a member of org '${orgId}'` });
+    }
+  }
+  res.set('X-Tomograph-Org', orgId);   // echo so the client always knows the active org
+  return runWithOrg(orgId, next);
 });
 
 app.use(express.json({ limit: '16mb' }));   // /api/crawl can carry a whole repo's worth of YAML
@@ -491,17 +558,30 @@ app.get('/healthz', (req, res) => {
 // pairs this with a localStorage.clear() + reload. No body, no params.
 // Returns the number of entries dropped so the client can echo it.
 app.delete('/api/uploads', (req, res) => {
-  const dropped = UPLOADED_PACKS.size;
-  UPLOADED_PACKS.clear();
+  const uploads = uploadsMap();
+  const dropped = uploads.size;
+  uploads.clear();
   clearWorkspacePacks();   // reset means reset — the disk copies go too
   res.json({ ok: true, dropped });
+});
+
+// Stage 2 tenancy: the orgs visible to this request. Sessions see their
+// memberships (role recorded for Stage 3, not yet enforced); the bearer
+// service account sees every org. `active` echoes the request's resolved
+// org so clients never have to guess which workspace they're in.
+app.get('/api/orgs', (req, res) => {
+  if (!tenancyEnabled()) return res.json({ ok: true, tenancy: false, orgs: [], active: null });
+  const orgs = req.tomographBearer
+    ? Object.entries(readOrgs()).map(([id, o]) => ({ id, name: o?.name || id, role: 'service-account' }))
+    : orgsForUser(req.tomographSub);
+  res.json({ ok: true, tenancy: true, orgs, active: currentOrg() });
 });
 
 app.get('/api/packs', (req, res) => {
   // Catalog + in-memory uploads. Uploaded packs lead the list so the
   // picker surfaces them at the top — they're the user's just-created
   // work and most likely what they want to interact with next.
-  const uploads = [...UPLOADED_PACKS.keys()].map(id => catalogEntryForUpload(id)).filter(Boolean);
+  const uploads = [...uploadsMap().keys()].map(id => catalogEntryForUpload(id)).filter(Boolean);
   res.json({ packs: [...uploads, ...PACK_CATALOG.map(catalogEntry)] });
 });
 
@@ -2342,8 +2422,8 @@ function rehydrateUploadsFromWorkspace(silent) {
   let restored = 0;
   try {
     for (const p of loadWorkspacePacks()) {
-      if (UPLOADED_PACKS.has(p.id)) continue;
-      UPLOADED_PACKS.set(p.id, { canonical: p.canonical, source: p.source, label: p.label, createdAt: p.createdAt });
+      if (uploadsMap().has(p.id)) continue;
+      uploadsMap().set(p.id, { canonical: p.canonical, source: p.source, label: p.label, createdAt: p.createdAt });
       restored++;
     }
   } catch (e) {
@@ -2374,6 +2454,21 @@ export function start({ port = PORT, host = HOST, silent = false } = {}) {
         `  or bind to loopback (HOST=127.0.0.1), or set TOMOGRAPH_INSECURE_NO_AUTH=1 to override knowingly.`));
     }
   }
+  // Tenancy (Stage 2) sits ON TOP of identity: orgs.json without a way
+  // to know who the user is cannot enforce membership — fail closed with
+  // the fix in the message, same posture as incomplete OIDC config.
+  if (tenancyEnabled() && !authEnabled()) {
+    return Promise.reject(new Error(
+      'orgs.json found but no identity is configured: tenancy needs to know who the user is.\n' +
+      '  Configure OIDC (TOMOGRAPH_OIDC_*) or stand-alone users (users.json / npm run users),\n' +
+      '  or remove orgs.json to run the flat single-tenant workspace.'));
+  }
+  // One-shot, idempotent: a deployment whose flat workspace predates
+  // tenancy gets its state moved to orgs/default/ when orgs.json appears.
+  migrateFlatWorkspace({ log: (m) => { if (!silent) process.stdout.write(m + '\n'); } });
+  // Journeys/runs live in the engine (tools/lib/journey.mjs) — wire its
+  // root through the same context-aware resolver the registry uses.
+  setWorkspaceRootResolver(orgWorkspaceRoot);
   rehydrateUploadsFromWorkspace(silent);
   return new Promise((resolveListen, reject) => {
     const srv = app.listen(port, host, () => {
