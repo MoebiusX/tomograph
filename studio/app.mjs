@@ -892,7 +892,11 @@ async function handleFile(file) {
     renderMeta();
     renderTabs();
     renderMainView();
-    toast(`Loaded ${file.name}`);
+    if (res.legacy) {
+      toast(`Loaded ${file.name} — previous (layered JSON) format upconverted to canonical v1.2: ${res.legacy.mapped} artefacts mapped, ${res.legacy.scaffolded} scaffolds`);
+    } else {
+      toast(`Loaded ${file.name}`);
+    }
   } catch (e) {
     toast(`Failed to upload: ${e.message}`, 'error');
   }

@@ -1,9 +1,13 @@
 # Changelog
 
-## 0.4.0 - 2026-06-11
+## Unreleased
 
-- Release package and container image version `0.4.0`.
-- Includes the current studio/server package state and Kubernetes image tag updates.
+### Previous pack format (layered JSON) supported again
+- New `tools/lib/legacy.mjs` — detects the pre-v1.2 layered "studio-shape" JSON and upconverts it to a canonical v1.2 manifest. Lossless (every legacy artefact kept verbatim in `legacy.artefact.*` annotations), honest (every schema-forced placeholder marked `crawler.scaffold.*` → projects as Scaffold, never Declared), deterministic.
+- `POST /api/validate` upconverts legacy uploads transparently; the studio toast reports the conversion (`N artefacts mapped, M scaffolds`).
+- New CLI `npm run upconvert-legacy <file> [-o out.pack.json]`.
+- The four original layered JSON packs restored from git history as working examples: `examples/legacy/` (+ README documenting the format).
+- New suite `tools/test-legacy-pack.mjs` gates all four examples on every `npm test`; the validator's gatekeeper error now points legacy packs at the converter.
 
 ## 0.3.0 — 2026-06-08
 
