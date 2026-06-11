@@ -29,13 +29,17 @@
 //     listing or read transiently failed.
 
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, renameSync, rmSync, existsSync, statSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { join } from 'node:path';
 import { parse as parseYaml, emit as emitYaml } from '../tools/lib/mini-yaml.mjs';
+import { orgWorkspaceRoot } from './tenancy.mjs';
 
 const PACK_SUFFIX = '.pack.yaml';
 
+// Stage 2 tenancy: the root is context-aware — <workspace>/orgs/<orgId>/
+// inside a request that carries an org, the flat workspace otherwise
+// (byte-identical v1 behaviour when tenancy is off). See server/tenancy.mjs.
 function workspaceRoot() {
-  return resolve(process.env.TOMOGRAPH_WORKSPACE || '.tomograph');
+  return orgWorkspaceRoot();
 }
 function packsDir()  { return join(workspaceRoot(), 'packs'); }
 function indexPath() { return join(packsDir(), 'index.json'); }
@@ -88,19 +92,31 @@ function readIndex() {
   }
 }
 
-let pendingIndex = null;        // in-memory copy once loaded; mutations write through
-let deletedIds = new Set();     // ids deleted in-process — must survive merge-on-flush
-let flushTimer = null;
+// In-memory index state is keyed BY ROOT: with tenancy on, each org has
+// its own workspace subtree, and a process-wide single cache would bleed
+// one org's index (ids, labels, deletions) into another's flush. The
+// per-root record holds exactly the state the old module-level variables
+// did.
+const rootState = new Map();    // root → { pendingIndex, deletedIds, flushTimer }
 
-function index() {
-  if (!pendingIndex) pendingIndex = readIndex();
-  return pendingIndex;
+function stateFor(root = workspaceRoot()) {
+  let s = rootState.get(root);
+  if (!s) { s = { pendingIndex: null, deletedIds: new Set(), flushTimer: null }; rootState.set(root, s); }
+  return s;
 }
 
-function flushIndexNow({ merge = true } = {}) {
-  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-  if (!pendingIndex) return;
-  ensureDirs();
+function index() {
+  const s = stateFor();
+  if (!s.pendingIndex) s.pendingIndex = readIndex();
+  return s.pendingIndex;
+}
+
+function flushIndexNow({ merge = true, root = workspaceRoot() } = {}) {
+  const s = stateFor(root);
+  if (s.flushTimer) { clearTimeout(s.flushTimer); s.flushTimer = null; }
+  if (!s.pendingIndex) return;
+  const idxPath = join(root, 'packs', 'index.json');
+  mkdirSync(join(root, 'packs'), { recursive: true });
   if (merge) {
     // index.json is shared state: a dying process's debounced timer, a
     // sibling server, or a boot whose first read transiently failed can all
@@ -108,20 +124,29 @@ function flushIndexNow({ merge = true } = {}) {
     // Fold the on-disk entries back in before the whole-file rewrite so a
     // flush is never destructive; deletions made in this process are tracked
     // in deletedIds so they still win over the merge.
-    const disk = readIndex();
+    let disk = {};
+    try {
+      const data = JSON.parse(readFileSync(idxPath, 'utf8'));
+      if (data && typeof data === 'object' && !Array.isArray(data)) disk = data;
+    } catch (_) {}
     for (const [id, meta] of Object.entries(disk)) {
-      if (!(id in pendingIndex) && !deletedIds.has(id)) pendingIndex[id] = meta;
+      if (!(id in s.pendingIndex) && !s.deletedIds.has(id)) s.pendingIndex[id] = meta;
     }
   }
-  writeFileAtomic(indexPath(), JSON.stringify(pendingIndex, null, 2));
-  deletedIds.clear();
+  writeFileAtomic(idxPath, JSON.stringify(s.pendingIndex, null, 2));
+  s.deletedIds.clear();
 }
 
 function scheduleIndexFlush() {
-  if (flushTimer) clearTimeout(flushTimer);
-  flushTimer = setTimeout(() => { flushTimer = null; flushIndexNow(); }, 1500);
+  const s = stateFor();
+  const root = workspaceRoot();
+  if (s.flushTimer) clearTimeout(s.flushTimer);
+  // The debounced flush must land in the SAME org workspace it was
+  // scheduled from — the timer fires outside any request context, so the
+  // root is captured here, not re-resolved at fire time.
+  s.flushTimer = setTimeout(() => { s.flushTimer = null; flushIndexNow({ root }); }, 1500);
   // Never keep the process alive just to persist a lastUsedAt touch.
-  if (typeof flushTimer.unref === 'function') flushTimer.unref();
+  if (typeof s.flushTimer.unref === 'function') s.flushTimer.unref();
 }
 
 // ---------- public API ----------
@@ -141,7 +166,7 @@ export function saveWorkspacePack(id, { canonical, label, source, createdAt, las
 export function deleteWorkspacePack(id) {
   try { rmSync(join(packsDir(), id + PACK_SUFFIX), { force: true }); } catch (_) {}
   delete index()[id];
-  deletedIds.add(id);
+  stateFor().deletedIds.add(id);
   flushIndexNow();
 }
 
@@ -221,7 +246,7 @@ export function loadWorkspacePacks() {
       if (seen.has(id)) continue;
       if (existsSync(join(packsDir(), id + PACK_SUFFIX))) continue;
       delete idx[id];
-      deletedIds.add(id);   // a deliberate drop must win over merge-on-flush
+      stateFor().deletedIds.add(id);   // a deliberate drop must win over merge-on-flush
       pruned = true;
     }
   }
@@ -237,8 +262,9 @@ export function clearWorkspacePacks() {
       if (f.endsWith(PACK_SUFFIX)) { rmSync(join(packsDir(), f), { force: true }); dropped++; }
     }
   } catch (_) {}
-  pendingIndex = {};
-  deletedIds.clear();
+  const s = stateFor();
+  s.pendingIndex = {};
+  s.deletedIds.clear();
   // Reset means reset: replace the file outright, no merge — merging would
   // resurrect the very entries the user just asked to clear.
   flushIndexNow({ merge: false });
@@ -339,12 +365,13 @@ export function readDeploySnapshot(deployId) {
 // Test hook: force any debounced index write to land now.
 export function flushWorkspaceIndex() { flushIndexNow(); }
 
-// Test hook: drop the in-memory index cache so a re-pointed
+// Test hook: drop the in-memory index caches so a re-pointed
 // TOMOGRAPH_WORKSPACE takes effect within the same process.
 export function resetWorkspaceCache() {
-  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-  pendingIndex = null;
-  deletedIds.clear();
+  for (const s of rootState.values()) {
+    if (s.flushTimer) { clearTimeout(s.flushTimer); s.flushTimer = null; }
+  }
+  rootState.clear();
 }
 
 export function workspaceInfo() {

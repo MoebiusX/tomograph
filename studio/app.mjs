@@ -15,7 +15,7 @@ import {
   DISCO_SLAB_ACCENT, discoGradeLetter, discoGradeWord,
 } from './constants.mjs';
 import { state, $, $$, persistence } from './state.mjs';
-import { api, loadCatalog, validateUploaded } from './api.mjs';
+import { api, loadCatalog, validateUploaded, authHeaders, setActiveOrg, getActiveOrg, savedOrg } from './api.mjs';
 import {
   effectiveFocus, focusedPackId, focusedEnv, focusedPack,
   focusedConformance, setFocusedConformance,
@@ -1145,6 +1145,14 @@ function installObservaChrome() {
         </span>
       </a>
 
+      <!-- The active org (Stage 2 tenancy) — same rule as the SERVICE
+           chip: which workspace Tomograph is reading must never be a
+           mystery. Becomes a switcher when the user has several orgs. -->
+      <span class="observa-service observa-org" id="observa-org" hidden>
+        <span class="observa-service-key">ORG</span>
+        <span class="observa-service-name" id="observa-org-name"></span>
+      </span>
+
       <!-- The active service — always visible once chosen (the gate or
            the header SERVICE selector set it). "Tomograph is configured
            for MY service" must never be a mystery. -->
@@ -1299,6 +1307,11 @@ async function boot() {
   // Mount the new chrome FIRST so the user sees the demo shape even
   // while the catalog loads.
   installObservaChrome();
+  // Identity + active org BEFORE the first /api call — with tenancy on,
+  // /api/packs answers from the active org's workspace, so the org
+  // header has to be resolved before the catalog loads.
+  await loadIdentity();
+  resolveActiveOrg();
   try { await loadCatalog(); }
   catch (e) {
     document.body.innerHTML = `<pre class="json" style="margin:48px;max-width:800px">Failed to reach Tomograph's API.\n\n${escapeHtml(e.message)}\n\nMake sure the server is running: \`node server/index.mjs\` or \`npm run serve\`.</pre>`;
@@ -1307,7 +1320,6 @@ async function boot() {
 
   setupUpload();
   setupTheme();
-  await loadIdentity();
   setupIdentityChip();
   setupResetButton();
   setupExportButton();
@@ -1439,7 +1451,40 @@ function renderServiceGate() {
 // Reflect the active service into the always-visible OBSERVA-bar chip.
 // Called wherever the selection can change (service select, analyze
 // mode entry, mode chrome) — hidden on home where no service is active.
+function updateObservaOrgChip() {
+  const chip = document.getElementById('observa-org');
+  if (!chip) return;
+  const orgs = state.identity?.orgs || [];
+  const active = orgs.find(o => o.id === getActiveOrg()) || orgs[0];
+  if (!active) { chip.hidden = true; return; }
+  const name = document.getElementById('observa-org-name');
+  if (orgs.length > 1 && !chip.querySelector('select')) {
+    const sel = document.createElement('select');
+    sel.className = 'observa-org-select';
+    sel.setAttribute('aria-label', 'Active organisation');
+    for (const o of orgs) {
+      const opt = document.createElement('option');
+      opt.value = o.id;
+      opt.textContent = o.name || o.id;
+      sel.appendChild(opt);
+    }
+    sel.addEventListener('change', () => {
+      setActiveOrg(sel.value);
+      // Every view is a projection of the active org's workspace — a
+      // clean re-boot is the honest refresh.
+      window.location.reload();
+    });
+    name.replaceWith(sel);
+  }
+  const sel = chip.querySelector('select');
+  if (sel) sel.value = active.id;
+  else name.textContent = active.name || active.id;
+  chip.title = `organisation: ${active.id} (role: ${active.role || 'member'})`;
+  chip.hidden = false;
+}
+
 function updateObservaServiceChip() {
+  updateObservaOrgChip();
   const chip = document.getElementById('observa-service');
   if (!chip) return;
   const name = document.getElementById('observa-service-name');
@@ -1880,7 +1925,7 @@ async function doHomeMcpConnect() {
   try {
     const r = await fetch('/api/draft-from-mcp', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
         mcpUrl: url,
         mcpAuth: auth || undefined,
@@ -2250,7 +2295,7 @@ async function refreshLive() {
   try {
     const r = await fetch('/api/refresh-live', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
     });
     // Read as text first so we can surface a useful error if the server
@@ -2613,7 +2658,7 @@ async function doCrawl() {
   try {
     const r = await fetch('/api/crawl', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body),
     });
     const ct = r.headers.get('content-type') || '';
@@ -2668,7 +2713,7 @@ async function doCrawlFromGithub() {
   try {
     const r = await fetch('/api/crawl-github', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body),
     });
     const ct = r.headers.get('content-type') || '';
@@ -3015,7 +3060,7 @@ async function doRollback(deployId, packId, btn) {
   try {
     const r = await api(`/api/deploys/${encodeURIComponent(deployId)}/rollback`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Tomograph-CSRF': '1' },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...authHeaders() },
       body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
     });
     const manualNote = r.manual?.length ? ` · ${r.manual.length} manual step${r.manual.length === 1 ? '' : 's'}` : '';
@@ -3253,7 +3298,7 @@ async function doDeployBulk() {
     const path = `/api/packs/${encodeURIComponent(deployModalState.packId)}/deploy-bulk?${qs}`;
     const r = await fetch(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
         mcpUrl: url, mcpAuth: auth || undefined,
         targetProduct: product, targetVersion: version, targetFolder: folder || undefined,
@@ -3333,7 +3378,7 @@ export async function startDeployVerify({ deployId, packId, env, mcpUrl, mcpAuth
         document.createTextNode(`check ${attempt}/${VERIFY_DELAYS_MS.length}: drafting live state…`));
       const out = await api('/api/draft-from-mcp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Tomograph-CSRF': '1' },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...authHeaders() },
         body: JSON.stringify({ mcpUrl, mcpAuth }),
       });
       if (!out.ok) throw new Error(out.error || 'MCP draft failed');
@@ -3368,7 +3413,7 @@ export async function startDeployVerify({ deployId, packId, env, mcpUrl, mcpAuth
     try {
       await fetch(`/api/deploys/${encodeURIComponent(deployId)}/verify`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           outcome: last.summary.outcome,
           summary: last.summary,
@@ -3549,7 +3594,7 @@ async function doDraftFromMcp() {
   try {
     const r = await fetch('/api/draft-from-mcp', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined, packName: name || undefined }),
     });
     const ct = r.headers.get('content-type') || '';
@@ -3742,6 +3787,17 @@ async function loadIdentity() {
   } catch (_) { return null; }
 }
 
+// Stage 2 tenancy: pick the active org from the session's memberships
+// (/auth/me carries them when orgs.json is armed) — the persisted choice
+// when still valid, the first membership otherwise. Outside tenancy mode
+// this is a no-op and no org header is ever sent.
+function resolveActiveOrg() {
+  const orgs = state.identity?.orgs || [];
+  if (!orgs.length) { setActiveOrg(null); return; }
+  const saved = savedOrg();
+  setActiveOrg((orgs.find(o => o.id === saved) || orgs[0]).id);
+}
+
 // Identity chip — only renders when the server runs in an identity
 // posture and a session exists.
 function setupIdentityChip() {
@@ -3749,6 +3805,40 @@ function setupIdentityChip() {
   if (!me?.authenticated) return;
   const anchor = $('#theme-toggle');
   if (!anchor || document.getElementById('hdr-user')) return;
+
+  // Org indicator — a switcher when the user belongs to several orgs, a
+  // static label for exactly one. Switching reloads: every view is a
+  // projection of the active org's workspace, so a clean re-boot is the
+  // honest refresh.
+  const orgs = me.orgs || [];
+  if (orgs.length && !document.getElementById('hdr-org')) {
+    const wrap = document.createElement('span');
+    wrap.id = 'hdr-org';
+    wrap.className = 'hdr-org';
+    if (orgs.length > 1) {
+      wrap.innerHTML = `<span class="ctrl-key">ORG</span>`;
+      const sel = document.createElement('select');
+      sel.setAttribute('aria-label', 'Active organisation');
+      for (const o of orgs) {
+        const opt = document.createElement('option');
+        opt.value = o.id;
+        opt.textContent = o.name || o.id;
+        if (o.id === getActiveOrg()) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      sel.addEventListener('change', () => {
+        setActiveOrg(sel.value);
+        window.location.reload();
+      });
+      wrap.appendChild(sel);
+    } else {
+      const active = orgs[0];
+      wrap.innerHTML = `<span class="ctrl-key">ORG</span><span class="hdr-org-name">${escapeHtml(active.name || active.id)}</span>`;
+      wrap.title = `organisation: ${active.id}`;
+    }
+    anchor.parentNode.insertBefore(wrap, anchor);
+  }
+
   const chip = document.createElement('span');
   chip.id = 'hdr-user';
   chip.className = 'hdr-user';
@@ -3758,7 +3848,7 @@ function setupIdentityChip() {
     <button type="button" class="ctrl-btn hdr-user-out" title="Sign out">sign out</button>
   `;
   chip.querySelector('.hdr-user-out').addEventListener('click', async () => {
-    await fetch('/auth/logout', { method: 'POST', headers: { 'X-Tomograph-CSRF': '1' } }).catch(() => {});
+    await fetch('/auth/logout', { method: 'POST', headers: { ...authHeaders() } }).catch(() => {});
     window.location.assign('/auth/login');
   });
   anchor.parentNode.insertBefore(chip, anchor);

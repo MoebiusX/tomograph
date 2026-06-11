@@ -47,7 +47,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA = JSON.parse(readFileSync(
   resolve(__dirname, '../../vendor/observability-pack-spec/v1.2/observability-pack.schema.json'), 'utf8'));
 
-function workspaceRoot() { return resolve(process.env.TOMOGRAPH_WORKSPACE || '.tomograph'); }
+// The engine stays server-agnostic: by default the root comes from env
+// (flat workspace), but a host can inject a context-aware resolver —
+// the server wires Stage 2 tenancy (workspace-per-org) through here at
+// boot without this module importing any server code.
+let workspaceRootResolver = null;
+export function setWorkspaceRootResolver(fn) { workspaceRootResolver = typeof fn === 'function' ? fn : null; }
+function workspaceRoot() {
+  if (workspaceRootResolver) return workspaceRootResolver();
+  return resolve(process.env.TOMOGRAPH_WORKSPACE || '.tomograph');
+}
 function journeysDir()   { return join(workspaceRoot(), 'journeys'); }
 function runsDir(name)   { return join(workspaceRoot(), 'runs', sanitizeName(name)); }
 function sanitizeName(n) { return String(n).replace(/[^A-Za-z0-9._-]/g, '_'); }

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Stage 2 tenancy — workspace-per-org
+- New `server/tenancy.mjs`: org registry in `<workspace>/orgs.json` (the file existing arms tenancy, mirroring `users.json`), per-request org context via AsyncLocalStorage, idempotent flat → `orgs/default/` boot migration. Requires identity; refuses to boot otherwise (fail-closed).
+- `workspaceRoot()` is context-aware: registry, deploys, snapshots, journeys, runs all answer from `<workspace>/orgs/<orgId>/` inside a request. The in-memory upload registry and workspace index cache are keyed per org.
+- Org selection via `X-Tomograph-Org` (default: first membership); membership enforced in middleware; bearer token = deployment-level service account. New `GET /api/orgs`; `/auth/me` carries memberships; roles recorded for Stage 3 (not yet enforced).
+- New CLI `npm run orgs -- create|remove|add-member|remove-member|list`.
+- Studio: active org resolved before the first catalog fetch; ORG chip (switcher when multi-org) in the OBSERVA bar.
+- New suite `server/test-tenancy.mjs` — the isolation gate: org B reads/writes nothing of org A (API + filesystem-path assertions), migration, per-org reset, fail-closed posture.
+
 ### Previous pack format (layered JSON) supported again
 - New `tools/lib/legacy.mjs` — detects the pre-v1.2 layered "studio-shape" JSON and upconverts it to a canonical v1.2 manifest. Lossless (every legacy artefact kept verbatim in `legacy.artefact.*` annotations), honest (every schema-forced placeholder marked `crawler.scaffold.*` → projects as Scaffold, never Declared), deterministic.
 - `POST /api/validate` upconverts legacy uploads transparently; the studio toast reports the conversion (`N artefacts mapped, M scaffolds`).
