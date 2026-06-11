@@ -500,7 +500,7 @@ function renderRemediationPlan(host) {
   host.appendChild(wrap);
 }
 
-function buildRetrofeedPatchText(resolved, bName) {
+export function buildRetrofeedPatchText(resolved, bName) {
   const changes = [];
   for (const L of LAYERS_FOR_DIFF) {
     for (const e of resolved.byLayer[L] || []) {

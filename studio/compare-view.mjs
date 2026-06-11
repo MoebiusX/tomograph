@@ -1043,7 +1043,7 @@ function renderDriftDrill(diff, packB, compareBId, lens) {
 // outcome: what was adopted, what was skipped (with reasons), and the two
 // downloads — the additions fragment and the full updated pack — ready to
 // commit back to the service repo.
-async function runRetrofeed(btn, host, { keys, scopeMode } = {}) {
+export async function runRetrofeed(btn, host, { keys, scopeMode } = {}) {
   btn.disabled = true;
   try {
     const r = await api(`/api/packs/${encodeURIComponent(state.selectedPackId)}/retrofeed`, {
@@ -1115,7 +1115,7 @@ const POSTURE_MECHANISMS_GLOBAL = [
 // classifyArtefactLayer / classifyArtefactMechanism / computePostureMatrix
 // now live in studio/diagnostic-grade.mjs (imported above).
 
-function renderPostureMatrix(posture) {
+export function renderPostureMatrix(posture) {
   const wrap = document.createElement('div');
   wrap.className = 'benchmark-block posture-matrix-block';
   const cellVal = (layer, mech) => {
@@ -1179,7 +1179,7 @@ function renderPostureMatrix(posture) {
   return wrap;
 }
 
-function renderPostureNarrative(posture) {
+export function renderPostureNarrative(posture) {
   // Template-driven (no LLM). For each layer, count how many of the
   // 10 layer-specific mechanisms are present (declared OR evidence),
   // then map to a sentence.
@@ -1450,10 +1450,12 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   `;
 
   // The instrument-grade ladder: every rung rendered top (best) → bottom,
-  // the rung the score lands on highlighted — the highlight IS the
-  // verdict, so nothing else repeats the letter. Compact: letter, class,
-  // band; the blurb (and A++'s external-evidence requirement) live in the
-  // row tooltip instead of clogging the card.
+  // the rung the score lands on highlighted. The grade is NEVER shown
+  // naked — the header chip carries letter + class, the rung labels carry
+  // the metrology vocabulary, and the ladder note explains what the scale
+  // derives from. (These narrative pieces are maintainer-ratified —
+  // 2026-06-11: "grades cannot be put into context without some
+  // narrative". Do not strip them to de-duplicate.)
   const ladderHtml = `
     <ul class="grade-ladder">
       ${INSTRUMENT_GRADE_SCALE.map(g => {
@@ -1468,6 +1470,7 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
         </li>`;
       }).join('')}
     </ul>
+    <p class="grade-ladder-note">Grades derive from the verification score — A starts strictly above the ${audit.threshold}% audit bar, so the letter and the machine PASS/FAIL always agree. Verification evidence, not incident-validation. A++ needs external reference evidence this instrument cannot produce alone.</p>
   `;
 
   wrap.innerHTML = `
@@ -1475,7 +1478,9 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
       <div class="diag-head-main">
         <div class="diag-report-head-line">
           <span class="diag-report-eyebrow">DIAGNOSTIC GRADE</span>
+          <span class="diag-report-status grade-chip tier-${escapeHtml(ig.tier)}" title="${escapeHtml(ig.blurb || '')}">${escapeHtml(ig.letter)} · ${escapeHtml(ig.label)}</span>
         </div>
+        <p class="diag-grade-blurb">${escapeHtml(ig.blurb || '')} Diagnostic-grade (A) begins above ${audit.threshold}%${passes ? '' : ` — this pack is ${(audit.threshold - audit.scorePctExact).toFixed(1)} pp below the bar`}.</p>
         <table class="diag-summary">
           <colgroup><col><col><col></colgroup>
           <tbody>
@@ -1599,7 +1604,7 @@ function wireChainActions() {
   });
 }
 
-function renderDiagnosticTraceabilityGraph(graph) {
+export function renderDiagnosticTraceabilityGraph(graph) {
   const branches = Array.isArray(graph?.branches) ? graph.branches : [];
   const rollup = graph?.rollup;
   if (!rollup || !branches.length) return '';
@@ -1685,7 +1690,7 @@ function renderDiagnosticTraceabilityGraph(graph) {
   `;
 }
 
-function renderBenchmarkHeadline(posture, lens) {
+export function renderBenchmarkHeadline(posture, lens) {
   const head = document.createElement('div');
   head.className = 'benchmark-head';
 
@@ -1737,7 +1742,7 @@ function renderBenchmarkHeadline(posture, lens) {
 // coverage. Three concentric slices: declared / evidence / absent.
 // Glanceable summary the audience reads in 2 seconds.
 // ============================================================
-function renderPosturePieRow(posture) {
+export function renderPosturePieRow(posture) {
   const wrap = document.createElement('div');
   wrap.className = 'benchmark-block posture-pie-row-block';
 
@@ -2675,7 +2680,7 @@ export { layerItemsFor } from './diagnostic-grade.mjs';
 //
 // Returns true/false. Falls through to true when the lens is 'all'
 // or when no product is specified.
-function productSurface(art, product, pack) {
+export function productSurface(art, product, pack) {
   if (!product || product === 'all') return true;
   if (!art) return false;
   const p = product.toLowerCase();
