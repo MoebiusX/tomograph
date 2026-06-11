@@ -96,5 +96,5 @@
 </g>
 
 <line x1="200" y1="540" x2="1040" y2="540" stroke="#e2e8f0" stroke-width="1"/>
-<text class="foot" x="620" y="566" text-anchor="middle">static analysis + runtime verification · pure-ESM engine shared by studio, server &amp; CLIs · verified at HEAD 6fcb7ef</text>
+<text class="foot" x="620" y="566" text-anchor="middle">every output backend-attested — promtool · amtool · otelcol + live-Grafana round trip, strict in CI · verified at HEAD 795f122</text>
 </svg>
