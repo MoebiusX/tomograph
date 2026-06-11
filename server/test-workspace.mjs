@@ -99,6 +99,64 @@ try {
   packs = loadWorkspacePacks();
   assert(!packs.find(p => p.id === 'uploaded-broken-dddd4444'), 'unparseable pack file is skipped');
 
+  // --- REGRESSION (2026-06-11 empty-catalog incident) ---
+  // A pack file that exists but is unreadable/corrupt must NOT lose its
+  // index entry. Before the fix, any pack skipped during load was treated
+  // like a vanished file: its entry was pruned, and the pack later came
+  // back as an orphan with label/source/createdAt re-minted from mtime.
+  saveWorkspacePack('uploaded-corrupt-eeee6666', { canonical, label: 'Keep Me', source: 'unit', createdAt: 3000, lastUsedAt: 3000 });
+  const corruptPath = join(TMP, 'packs', 'uploaded-corrupt-eeee6666.pack.yaml');
+  const goodYaml = readFileSync(corruptPath, 'utf8');
+  writeFileSync(corruptPath, '{{{{ torn write [');
+  packs = loadWorkspacePacks();
+  assert(!packs.find(p => p.id === 'uploaded-corrupt-eeee6666'), 'corrupt pack is not served');
+  let idxNow = JSON.parse(readFileSync(join(TMP, 'packs', 'index.json'), 'utf8'));
+  assert(idxNow['uploaded-corrupt-eeee6666']?.label === 'Keep Me',
+         'corrupt pack KEEPS its index entry — unreadable is not absent',
+         idxNow['uploaded-corrupt-eeee6666']?.label, 'Keep Me');
+  writeFileSync(corruptPath, goodYaml);
+  packs = loadWorkspacePacks();
+  const recovered = packs.find(p => p.id === 'uploaded-corrupt-eeee6666');
+  assert(recovered?.label === 'Keep Me' && recovered?.createdAt === 3000,
+         'recovered pack file rejoins with its ORIGINAL metadata (no orphan re-adoption)',
+         { label: recovered?.label, createdAt: recovered?.createdAt }, { label: 'Keep Me', createdAt: 3000 });
+  deleteWorkspacePack('uploaded-corrupt-eeee6666');
+
+  // A whole-file index flush must not clobber entries this process never
+  // saw — that's how a boot whose first index read transiently failed (or a
+  // dying process's debounced timer) used to silently drop other packs'
+  // metadata from index.json while their files stayed on disk.
+  writeFileSync(join(TMP, 'packs', 'uploaded-foreign-ffff7777.pack.yaml'),
+    'apiVersion: observability.platform/v1\nkind: ObservabilityPack\nmetadata:\n  name: foreign\n');
+  idxNow = JSON.parse(readFileSync(join(TMP, 'packs', 'index.json'), 'utf8'));
+  idxNow['uploaded-foreign-ffff7777'] = { label: 'Foreign', source: 'other-process', createdAt: 4000, lastUsedAt: 4000 };
+  writeFileSync(join(TMP, 'packs', 'index.json'), JSON.stringify(idxNow, null, 2));
+  touchWorkspacePack('uploaded-ws-test-aaaa1111');   // in-memory copy doesn't know about foreign
+  flushWorkspaceIndex();                              // whole-file rewrite
+  idxNow = JSON.parse(readFileSync(join(TMP, 'packs', 'index.json'), 'utf8'));
+  assert(idxNow['uploaded-foreign-ffff7777']?.source === 'other-process',
+         'index flush merges with on-disk entries instead of clobbering them',
+         idxNow['uploaded-foreign-ffff7777']?.source, 'other-process');
+  packs = loadWorkspacePacks();
+  assert(packs.find(p => p.id === 'uploaded-foreign-ffff7777')?.label === 'Foreign',
+         'merged foreign entry loads with its own metadata, not orphan-adopted');
+  // ...but a deliberate delete still wins over the merge.
+  deleteWorkspacePack('uploaded-foreign-ffff7777');
+  idxNow = JSON.parse(readFileSync(join(TMP, 'packs', 'index.json'), 'utf8'));
+  assert(!idxNow['uploaded-foreign-ffff7777'], 'deletions persist through merge-on-flush');
+
+  // Atomic replace: no staging files left behind by index or pack writes.
+  const tmpDroppings = readdirSync(join(TMP, 'packs')).filter(f => f.includes('.tmp'));
+  assert(tmpDroppings.length === 0, 'no .tmp staging files left behind by atomic writes', tmpDroppings, []);
+
+  // A torn index.json (killed mid-write, pre-atomic-replace) degrades to
+  // orphan adoption — the packs still come back, nothing throws.
+  writeFileSync(join(TMP, 'packs', 'index.json'), '{"uploaded-ws-test-aaaa1111": {"label": "WS');
+  resetWorkspaceCache();
+  packs = loadWorkspacePacks();
+  assert(!!packs.find(p => p.id === 'uploaded-ws-test-aaaa1111'),
+         'packs survive a corrupt index.json via re-adoption');
+
   // --- deploy audit (10C): append-only JSONL, merge-at-read ---
   appendDeployRecord({ deployId: 'dep_t1', at: '2026-06-10T01:00:00Z', actor: 'local',
     pack: { id: 'uploaded-ws-test-aaaa1111', version: '1.2.3', contentHash: 'aaaa1111' },
