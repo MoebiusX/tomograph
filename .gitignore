@@ -14,6 +14,11 @@ coverage/
 # Per-machine state, never source. TOMOGRAPH_WORKSPACE relocates it.
 .tomograph/
 
+# Pinned backend-validator binaries + compiled-artifact scratch
+# (fetch-validators.mjs / test-backend-validate.mjs). Dev tooling,
+# fetched on demand, never source.
+.tools/
+
 # Ad-hoc test/debug dumps created during fetcher + adapter probing.
 # These are scratch artefacts, not source of truth.
 .tmp-*

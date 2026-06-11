@@ -122,14 +122,55 @@ function strip(s) {
   return String(s).replace(/\n\s*$/g, '').trim();
 }
 
+// One leg (good or total) of an SLI ratio, evaluated at burn window `w`.
+// Packs declare the legs in two shapes:
+//   - a bare series selector (`http_requests_total{...}`) — wrap it in
+//     the standard sum(rate(sel[w]));
+//   - a full rate expression (`sum(rate(sel[5m]))`) — swap its range
+//     windows for `w` instead. Wrapping a rate in another rate is not
+//     valid PromQL (promtool: "could not parse expression"), which is
+//     exactly what the old unconditional wrap emitted.
+// Only simple range selectors (`[5m]`, no subquery colon) are swapped.
+const RANGE_SELECTOR_RE = /\[\s*\d+(?:\.\d+)?(?:ms|s|m|h|d|w|y)\s*\]/g;
+function sliLegAt(expr, w) {
+  const e = strip(expr);
+  if (!e) return e;
+  // A scalar literal leg (live-drafted packs declare `total: "1"` when
+  // `good` is already a complete ratio) — wrapping a scalar in rate()
+  // is a promtool parse error ("ranges only allowed for vector
+  // selectors"); use it verbatim.
+  if (/^\d+(?:\.\d+)?$/.test(e)) return e;
+  if (RANGE_SELECTOR_RE.test(e)) {
+    RANGE_SELECTOR_RE.lastIndex = 0;
+    return `(${e.replace(RANGE_SELECTOR_RE, `[${w}]`)})`;
+  }
+  return `sum(rate(${e}[${w}]))`;
+}
+
+// Prometheus metric/rule names accept only [a-zA-Z0-9_:] without the
+// UTF-8 quoting syntax — an SLI id like `latência` embedded raw into a
+// recording-rule name is a promtool parse error. Labels keep the raw id
+// (label VALUES are full UTF-8); only name positions sanitize.
+function metricSafe(id) {
+  return String(id ?? '').replace(/[^a-zA-Z0-9_]/g, '_');
+}
+
+// The error-ratio expression for an SLI at burn window `w`.
+function burnErrorRatioAt(sli, w) {
+  return `(1 - ${sliLegAt(sli.good, w)} / ${sliLegAt(sli.total, w)})`;
+}
+
 // Substitute `ref:slis.X` and `ref:slos.X` in an expression with their
 // materialised PromQL. The recording-rule shorthand the spec encourages.
 function resolveRefs(expr, canonical) {
   if (typeof expr !== 'string') return expr;
-  return expr.replace(/ref:slis\.([a-z][a-z0-9_-]*)/g, (_, id) => {
+  // Id class is deliberately wider than ASCII: pack ids may carry
+  // unicode (the spec doesn't forbid it), and a ref the regex skips
+  // stays in the output as literal `ref:slis.x` — invalid PromQL.
+  return expr.replace(/ref:slis\.([a-zA-Z0-9_\--￿]+)/g, (_, id) => {
     const e = sliExpression(findSli(canonical, id));
     return e ? `(${e})` : `ref:slis.${id}`;
-  }).replace(/ref:slos\.([a-z][a-z0-9_-]*)/g, (_, id) => {
+  }).replace(/ref:slos\.([a-zA-Z0-9_\--￿]+)/g, (_, id) => {
     // SLO recording-rule references resolve to the SLO's underlying SLI
     // ratio; the resolved expression is "the SLI value".
     const slo = findSlo(canonical, id);
@@ -176,28 +217,28 @@ export function compilePrometheusRules(canonical, opts = {}) {
       // Materialise good/total/ratio so downstream alerts read the
       // recorded series, not the raw expression each evaluation.
       recordingRules.push({
-        record: `${svc}:${sli.id}:good_${RATE_WINDOW_RECORD}`,
+        record: `${svc}:${metricSafe(sli.id)}:good_${RATE_WINDOW_RECORD}`,
         expr: strip(sli.good),
         labels: { slo: slo.id, sli: sli.id, service: nameOf(canonical) },
       });
       recordingRules.push({
-        record: `${svc}:${sli.id}:total_${RATE_WINDOW_RECORD}`,
+        record: `${svc}:${metricSafe(sli.id)}:total_${RATE_WINDOW_RECORD}`,
         expr: strip(sli.total),
         labels: { slo: slo.id, sli: sli.id, service: nameOf(canonical) },
       });
       recordingRules.push({
-        record: `${svc}:${sli.id}:ratio_${RATE_WINDOW_RECORD}`,
-        expr: `${svc}:${sli.id}:good_${RATE_WINDOW_RECORD} / ${svc}:${sli.id}:total_${RATE_WINDOW_RECORD}`,
+        record: `${svc}:${metricSafe(sli.id)}:ratio_${RATE_WINDOW_RECORD}`,
+        expr: `${svc}:${metricSafe(sli.id)}:good_${RATE_WINDOW_RECORD} / ${svc}:${metricSafe(sli.id)}:total_${RATE_WINDOW_RECORD}`,
         labels: { slo: slo.id, sli: sli.id, service: nameOf(canonical) },
       });
       recordingRules.push({
-        record: `${svc}:${sli.id}:error_ratio_${RATE_WINDOW_RECORD}`,
-        expr: `1 - ${svc}:${sli.id}:ratio_${RATE_WINDOW_RECORD}`,
+        record: `${svc}:${metricSafe(sli.id)}:error_ratio_${RATE_WINDOW_RECORD}`,
+        expr: `1 - ${svc}:${metricSafe(sli.id)}:ratio_${RATE_WINDOW_RECORD}`,
         labels: { slo: slo.id, sli: sli.id, service: nameOf(canonical) },
       });
     } else {
       recordingRules.push({
-        record: `${svc}:${sli.id}:value_${RATE_WINDOW_RECORD}`,
+        record: `${svc}:${metricSafe(sli.id)}:value_${RATE_WINDOW_RECORD}`,
         expr,
         labels: { slo: slo.id, sli: sli.id, service: nameOf(canonical) },
       });
@@ -241,9 +282,8 @@ export function compilePrometheusRules(canonical, opts = {}) {
       const factor = w.factor || 1;
       const sev = w.severity || 'SEV3';
       const alertName = `${slo.id}_burn_${factor}x_${short}_${long}`.replace(/[^a-zA-Z0-9_]/g, '_');
-      const recordBase = `${svc}:${sli.id}`;
-      const shortErr = `(1 - sum(rate(${strip(sli.good)}[${short}])) / sum(rate(${strip(sli.total)}[${short}])))`;
-      const longErr  = `(1 - sum(rate(${strip(sli.good)}[${long}])) / sum(rate(${strip(sli.total)}[${long}])))`;
+      const shortErr = burnErrorRatioAt(sli, short);
+      const longErr  = burnErrorRatioAt(sli, long);
       const threshold = (factor * budget).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
       rules.push({
         alert: alertName,
@@ -297,7 +337,7 @@ export function compilePrometheusRules(canonical, opts = {}) {
     const budget = (1 - slo.objective).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
     forecastRules.push({
       alert: `${slo.id}_forecast_breach`,
-      expr: `predict_linear(${svc}:${sli.id}:error_ratio_${RATE_WINDOW_RECORD}[1h], ${horizonSec}) > ${budget}`,
+      expr: `predict_linear(${svc}:${metricSafe(sli.id)}:error_ratio_${RATE_WINDOW_RECORD}[1h], ${horizonSec}) > ${budget}`,
       for: '15m',
       labels: { severity: 'SEV3', slo: slo.id, kind: 'forecast', service: nameOf(canonical) },
       annotations: {
@@ -347,13 +387,13 @@ function buildRecordingRulesForSlo(canonical, slo) {
 
   if (sli.type === 'ratio') {
     return [
-      { record: `${svc}:${sli.id}:good_${RATE_WINDOW_RECORD}`, expr: strip(sli.good), labels },
-      { record: `${svc}:${sli.id}:total_${RATE_WINDOW_RECORD}`, expr: strip(sli.total), labels },
-      { record: `${svc}:${sli.id}:ratio_${RATE_WINDOW_RECORD}`, expr: `${svc}:${sli.id}:good_${RATE_WINDOW_RECORD} / ${svc}:${sli.id}:total_${RATE_WINDOW_RECORD}`, labels },
-      { record: `${svc}:${sli.id}:error_ratio_${RATE_WINDOW_RECORD}`, expr: `1 - ${svc}:${sli.id}:ratio_${RATE_WINDOW_RECORD}`, labels },
+      { record: `${svc}:${metricSafe(sli.id)}:good_${RATE_WINDOW_RECORD}`, expr: strip(sli.good), labels },
+      { record: `${svc}:${metricSafe(sli.id)}:total_${RATE_WINDOW_RECORD}`, expr: strip(sli.total), labels },
+      { record: `${svc}:${metricSafe(sli.id)}:ratio_${RATE_WINDOW_RECORD}`, expr: `${svc}:${metricSafe(sli.id)}:good_${RATE_WINDOW_RECORD} / ${svc}:${metricSafe(sli.id)}:total_${RATE_WINDOW_RECORD}`, labels },
+      { record: `${svc}:${metricSafe(sli.id)}:error_ratio_${RATE_WINDOW_RECORD}`, expr: `1 - ${svc}:${metricSafe(sli.id)}:ratio_${RATE_WINDOW_RECORD}`, labels },
     ];
   }
-  return [{ record: `${svc}:${sli.id}:value_${RATE_WINDOW_RECORD}`, expr, labels }];
+  return [{ record: `${svc}:${metricSafe(sli.id)}:value_${RATE_WINDOW_RECORD}`, expr, labels }];
 }
 
 function buildBurnRateAlertsForSlo(canonical, slo, burnRateBlock) {
@@ -368,8 +408,8 @@ function buildBurnRateAlertsForSlo(canonical, slo, burnRateBlock) {
     const factor = w.factor || 1;
     const sev = w.severity || 'SEV3';
     const alertName = `${slo.id}_burn_${factor}x_${short}_${long}`.replace(/[^a-zA-Z0-9_]/g, '_');
-    const shortErr = `(1 - sum(rate(${strip(sli.good)}[${short}])) / sum(rate(${strip(sli.total)}[${short}])))`;
-    const longErr  = `(1 - sum(rate(${strip(sli.good)}[${long}])) / sum(rate(${strip(sli.total)}[${long}])))`;
+    const shortErr = burnErrorRatioAt(sli, short);
+    const longErr  = burnErrorRatioAt(sli, long);
     const threshold = (factor * budget).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
     out.push({
       alert: alertName,
@@ -396,7 +436,7 @@ function buildForecastAlertForSlo(canonical, slo, forecast) {
   const budget = (1 - slo.objective).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
   return {
     alert: `${slo.id}_forecast_breach`,
-    expr: `predict_linear(${svc}:${sli.id}:error_ratio_${RATE_WINDOW_RECORD}[1h], ${horizonSec}) > ${budget}`,
+    expr: `predict_linear(${svc}:${metricSafe(sli.id)}:error_ratio_${RATE_WINDOW_RECORD}[1h], ${horizonSec}) > ${budget}`,
     for: '15m',
     labels: { severity: 'SEV3', slo: slo.id, kind: 'forecast', service: nameOf(canonical) },
     annotations: {
@@ -840,9 +880,22 @@ export function compileAlertmanager(canonical, opts = {}) {
         else if (profile.knobs.msteams === false) key = 'webhook_configs';
       }
       recCfg[key] = recCfg[key] || [];
-      if (kind === 'msteams')      recCfg[key].push({ webhook_url: `# secret: msteams_${slug(target)}`, send_resolved: true, room: target });
-      else if (kind === 'voice')   recCfg[key].push({ service_key: `# secret: pagerduty_${slug(target.replace(/^.*:\/\//, ''))}`, target });
-      else if (kind === 'whatsapp')recCfg[key].push({ url: `# secret: whatsapp_${slug(target)}`, target });
+      // Secrets are referenced as *_file paths (the Alertmanager-native
+      // pattern: mount the secret at deploy time), never inlined and
+      // never pseudo-commented — a "# secret: …" string in a URL field
+      // is not a URL and amtool check-config rejects the whole file.
+      // Only schema-valid fields are emitted; channel identity that has
+      // no schema home (the Teams room name) rides in a template field.
+      const secretFile = (id) => `/etc/alertmanager/secrets/${id}`;
+      if (kind === 'msteams') {
+        if (key === 'webhook_configs') {
+          recCfg[key].push({ url_file: secretFile(`msteams_${slug(target)}`), send_resolved: true });
+        } else {
+          recCfg[key].push({ webhook_url_file: secretFile(`msteams_${slug(target)}`), send_resolved: true, title: `${target} · {{ .CommonLabels.alertname }}` });
+        }
+      }
+      else if (kind === 'voice')   recCfg[key].push({ service_key_file: secretFile(`pagerduty_${slug(target.replace(/^.*:\/\//, ''))}`), details: { channel: target } });
+      else if (kind === 'whatsapp')recCfg[key].push({ url_file: secretFile(`whatsapp_${slug(target)}`), send_resolved: true });
       else if (kind === 'email')   recCfg[key].push({ to: target, send_resolved: true });
       else if (kind === 'webhook') recCfg[key].push({ url: target, send_resolved: true });
     }
@@ -877,8 +930,18 @@ export function compileAlertmanager(canonical, opts = {}) {
     },
   ] : undefined;
 
+  // email_configs are unusable without SMTP settings — Alertmanager
+  // rejects the config outright ("no global SMTP smarthost set"). Emit
+  // deploy-time placeholders only when an email receiver exists.
+  const hasEmail = receivers.some(r => (r.email_configs || []).length);
   const out = {
-    global: { resolve_timeout: '5m' },
+    global: {
+      resolve_timeout: '5m',
+      ...(hasEmail ? {
+        smtp_smarthost: 'smtp.example.internal:587',   // replace at deploy time
+        smtp_from: `alertmanager@${slug(svc)}.example.internal`,
+      } : {}),
+    },
     route: {
       receiver: 'null',
       group_by: ['alertname', 'severity'],
@@ -937,21 +1000,57 @@ export function compileOtelCollector(canonical, opts = {}) {
       sampling_percentage: Math.round(otel.sdk.sampling.ratio * 100),
     };
   }
+  // Processors with schema-required knobs cannot round-trip as empty
+  // blocks — the collector rejects e.g. memory_limiter without a
+  // check_interval. Inject the documented sane defaults when the pack
+  // declares the processor bare.
+  const PROCESSOR_REQUIRED_DEFAULTS = {
+    memory_limiter: { check_interval: '1s', limit_percentage: 80, spike_limit_percentage: 25 },
+  };
   for (const proc of p.processors || []) {
     const { name, ...rest } = proc;
-    processors[name] = Object.keys(rest).length ? rest : {};
+    const defaults = PROCESSOR_REQUIRED_DEFAULTS[name] || {};
+    processors[name] = { ...defaults, ...rest };
+    if (!Object.keys(processors[name]).length) processors[name] = {};
   }
 
-  // Exporters
+  // Exporters. Two corrections keep the emitted config loadable by a
+  // current collector (attested by `otelcol-contrib validate` in
+  // tools/test-backend-validate.mjs):
+  //  - kinds whose dedicated exporter was REMOVED from the collector
+  //    map to their modern equivalent (jaeger → otlp: the jaeger
+  //    exporter was deleted in v0.86; Jaeger ≥1.35 ingests OTLP);
+  //  - exporters with schema-required fields get deploy-time
+  //    placeholder values when the pack doesn't declare them — the
+  //    collector refuses to load e.g. an elasticsearch exporter with
+  //    no endpoint, so an empty block is not a valid hand-off.
+  const EXPORTER_KIND_RENAMES = { jaeger: 'otlp' };
+  const EXPORTER_REQUIRED_DEFAULTS = {
+    prometheusremotewrite: { endpoint: 'http://prometheus:9090/api/v1/write' },
+    elasticsearch: { endpoints: ['http://elasticsearch:9200'] },
+    otlp: { endpoint: 'otel-gateway:4317', tls: { insecure: true } },
+    otlphttp: { endpoint: 'http://otel-gateway:4318' },
+    loki: { endpoint: 'http://loki:3100/loki/api/v1/push' },
+    zipkin: { endpoint: 'http://zipkin:9411/api/v2/spans' },
+  };
   const exporters = {};
   const exporterNames = { metrics: '', logs: '', traces: '' };
   for (const sig of ['metrics', 'logs', 'traces']) {
     const e = p.exporters?.[sig];
     if (!e) continue;
-    const exporterName = e.kind;
+    const exporterName = EXPORTER_KIND_RENAMES[e.kind] || e.kind;
     exporterNames[sig] = exporterName;
     const { kind, ...rest } = e;
     exporters[exporterName] = Object.assign(exporters[exporterName] || {}, rest);
+  }
+  for (const [name, cfg] of Object.entries(exporters)) {
+    const defaults = EXPORTER_REQUIRED_DEFAULTS[name];
+    if (!defaults) continue;
+    const hasTarget = cfg.endpoint || cfg.endpoints || cfg.cloudid;
+    for (const [k, v] of Object.entries(defaults)) {
+      if (hasTarget && (k === 'endpoint' || k === 'endpoints')) continue;
+      if (cfg[k] === undefined) cfg[k] = v;
+    }
   }
 
   // The console/debug exporter was renamed `logging` → `debug` in Collector
@@ -985,11 +1084,30 @@ export function compileOtelCollector(canonical, opts = {}) {
     },
     pipelines: {},
   };
+  // Receivers and processors can be signal-restricted — the collector
+  // refuses to build e.g. a metrics pipeline containing
+  // probabilistic_sampler, or a traces pipeline fed by the prometheus
+  // receiver ("telemetry type is not supported"). Filter per pipeline;
+  // components not listed here support every signal.
+  const RECEIVER_SIGNALS = {
+    prometheus: new Set(['metrics']),
+    filelog: new Set(['logs']),
+    zipkin: new Set(['traces']),
+    jaeger: new Set(['traces']),
+  };
+  const PROCESSOR_SIGNALS = {
+    probabilistic_sampler: new Set(['traces', 'logs']),
+    tail_sampling: new Set(['traces']),
+    span: new Set(['traces']),
+    spanmetrics: new Set(['traces']),
+  };
   for (const sig of ['metrics', 'logs', 'traces']) {
     if (!exporterNames[sig]) continue;
+    const sigReceivers = pipelineNames.filter(r => !RECEIVER_SIGNALS[r] || RECEIVER_SIGNALS[r].has(sig));
+    if (!sigReceivers.length) continue;   // a pipeline with no receiver cannot exist
     service.pipelines[sig] = {
-      receivers: pipelineNames,
-      processors: processorNames,
+      receivers: sigReceivers,
+      processors: processorNames.filter(p => !PROCESSOR_SIGNALS[p] || PROCESSOR_SIGNALS[p].has(sig)),
       exporters: [exporterNames[sig]],
     };
   }
@@ -1120,7 +1238,7 @@ export function compileGrafanaDashboard(canonical, dashboardId, opts = {}) {
         targets: [{
           refId: 'A',
           datasource: targetDs,
-          expr: sli && sli.type === 'ratio' ? `${svcS}:${sli.id}:ratio_${RATE_WINDOW_RECORD}` : '',
+          expr: sli && sli.type === 'ratio' ? `${svcS}:${metricSafe(sli.id)}:ratio_${RATE_WINDOW_RECORD}` : '',
           legendFormat: slo?.id,
         }],
         fieldConfig: {

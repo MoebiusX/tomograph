@@ -9,6 +9,28 @@ floors); nothing checks that Prometheus, Grafana, Alertmanager, or the
 OTel Collector would actually accept the files. That gap is what this
 plan closes.*
 
+> **P1 status — DELIVERED (same day).** `npm run fetch-validators` +
+> `npm run test:backend[:strict]` are live; the strict run joins CI and
+> the default `npm test`. On its FIRST run the suite caught six classes
+> of real compiler bugs (every fixture pack affected — none of the
+> emitted files would have loaded), all fixed in the same change:
+> 1. burn-rate alerts double-wrapped expression-shaped SLI legs in
+>    `sum(rate(...))` — invalid PromQL on every ratio SLO;
+> 2. scalar SLI legs (`total: "1"`) were range-selected (`rate(1[5m])`);
+> 3. unicode SLI ids landed raw in recording-rule names (and unresolved
+>    in `ref:` substitution) — promtool parse errors;
+> 4. Alertmanager receivers emitted `"# secret: …"` pseudo-comments as
+>    URLs plus schema-invalid fields (`room`, `target`) — amtool
+>    rejected every config; now `*_file` secret refs + SMTP globals;
+> 5. the removed `jaeger` exporter was emitted verbatim, and exporters/
+>    processors with required fields round-tripped as empty blocks;
+> 6. every receiver/processor was wired into every pipeline — the
+>    collector refuses signal-restricted components (prometheus
+>    receiver in traces, tail_sampling in metrics).
+>
+> 165 artifacts across 8 packs now pass strict T1. T2 (Grafana
+> container), T3 (promtool behavioral), T4 (round trip) remain per §8.
+
 ## 1 · What the compiler emits (the surface under test)
 
 From `tools/lib/compile.mjs` (`compileCatalog` / `compileArtifact`):
