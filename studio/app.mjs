@@ -298,6 +298,7 @@ function renderServiceSelect() {
     sel.appendChild(opt);
   }
   sel.value = state.selectedService || '';
+  updateObservaServiceChip();
   sel.onchange = () => {
     state.selectedService = sel.value || null;
     const currentA = state.catalog.find(p => p.id === state.selectedPackId);
@@ -1140,6 +1141,14 @@ function installObservaChrome() {
         </span>
       </a>
 
+      <!-- The active service — always visible once chosen (the gate or
+           the header SERVICE selector set it). "Tomograph is configured
+           for MY service" must never be a mystery. -->
+      <span class="observa-service" id="observa-service" hidden>
+        <span class="observa-service-key">SERVICE</span>
+        <span class="observa-service-name" id="observa-service-name"></span>
+      </span>
+
       <nav class="observa-tabs" role="tablist" aria-label="Primary">
         ${OBSERVA_TABS.map(t => `
           <button type="button" role="tab" class="observa-tab ${t.accent}" data-view="${t.id}"
@@ -1423,6 +1432,20 @@ function renderServiceGate() {
   });
 }
 
+// Reflect the active service into the always-visible OBSERVA-bar chip.
+// Called wherever the selection can change (service select, analyze
+// mode entry, mode chrome) — hidden on home where no service is active.
+function updateObservaServiceChip() {
+  const chip = document.getElementById('observa-service');
+  if (!chip) return;
+  const name = document.getElementById('observa-service-name');
+  const services = serviceCatalogue();
+  const active = services.find(s => s.key === state.selectedService);
+  if (state.mode === 'home' || !active) { chip.hidden = true; return; }
+  name.textContent = active.label;
+  chip.hidden = false;
+}
+
 // One click on a service card → Tomograph configured for that service:
 // service selected, its most recent pack loaded as Pack A, Discover open.
 function enterServiceWorkspace(serviceKey) {
@@ -1483,6 +1506,7 @@ function enterCompareMode(aId, aEnv, bId, bEnv) {
 // new pack.
 function applyModeChrome() {
   const isHome = state.mode === 'home';
+  updateObservaServiceChip();
   // Under the OBSERVA chrome the pack/env selectors are PINNED as a
   // permanent master row — they are the user's primary controls and
   // must never be hidden by view. Only the legacy (non-chrome) layout
