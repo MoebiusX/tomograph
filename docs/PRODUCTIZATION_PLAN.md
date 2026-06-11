@@ -47,6 +47,29 @@ enforced server-side, not hidden client-side.
 
 ## 2 · Stages (dependency order; each independently shippable)
 
+> **Stage 1 status — DELIVERED**, with one maintainer-requested
+> addition: a **stand-alone posture with locally-defined users** — no
+> IdP, no network dependency. Users live scrypt-hashed in a plain file
+> (`TOMOGRAPH_USERS_FILE`, default `<workspace>/users.json` — plain
+> file chosen over sqlite: file-first like everything else, zero new
+> deps, and `node:sqlite` would raise the engine floor to Node 22),
+> managed by `npm run users -- add|passwd|remove|list`. The file
+> existing arms a password login page at `/auth/login`; the session
+> secret auto-persists into the workspace so stand-alone setup is one
+> command + restart. Both postures share the same HMAC cookie session,
+> CSRF gate, `/auth/me`, logout, and the bearer-token service-account
+> path; the fail-closed network rule now accepts identity as auth.
+> Login throttling: 5 failures per user+address → 30 s lockout; unknown
+> users burn a hash so there is no username oracle. Suites:
+> `server/test-auth-local.mjs` (21 assertions) and
+> `server/test-auth-oidc.mjs` (15 — full code+PKCE against an
+> in-process mock IdP with real RS256/JWKS validation through
+> openid-client), both in `npm test`. Studio: 401 → login redirect,
+> CSRF header on every request, signed-in chip + sign-out in the
+> header. Local no-auth mode is regression-asserted by every other
+> suite. Remaining stage-1 nicety: dex-in-docker interop leg on the
+> backend-live job.
+
 ### Stage 1 — Identity (OIDC login)
 
 - **Flow:** Authorization Code + PKCE against any OIDC provider

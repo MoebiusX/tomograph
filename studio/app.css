@@ -7939,3 +7939,15 @@ body.chrome-observa .disco {
   .diag-report-head { flex-wrap: wrap; }
   .diag-head-drag { flex-basis: 100%; order: 3; }
 }
+
+/* Identity chip — only present in identity postures (see setupIdentityChip). */
+.hdr-user { display: inline-flex; align-items: center; gap: 6px; }
+.hdr-user-name {
+  font: 600 11px/1 var(--mono);
+  color: var(--ink-2);
+  letter-spacing: 0.04em;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

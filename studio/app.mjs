@@ -1290,6 +1290,7 @@ async function boot() {
 
   setupUpload();
   setupTheme();
+  setupIdentityChip();
   setupResetButton();
   setupExportButton();
   // Eagerly fetch /api/examples so the Pack B picker has the archived
@@ -1781,7 +1782,7 @@ async function doHomeMcpConnect() {
   try {
     const r = await fetch('/api/draft-from-mcp', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
       body: JSON.stringify({
         mcpUrl: url,
         mcpAuth: auth || undefined,
@@ -2151,7 +2152,7 @@ async function refreshLive() {
   try {
     const r = await fetch('/api/refresh-live', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
       body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
     });
     // Read as text first so we can surface a useful error if the server
@@ -2514,7 +2515,7 @@ async function doCrawl() {
   try {
     const r = await fetch('/api/crawl', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
       body: JSON.stringify(body),
     });
     const ct = r.headers.get('content-type') || '';
@@ -2569,7 +2570,7 @@ async function doCrawlFromGithub() {
   try {
     const r = await fetch('/api/crawl-github', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
       body: JSON.stringify(body),
     });
     const ct = r.headers.get('content-type') || '';
@@ -2916,7 +2917,7 @@ async function doRollback(deployId, packId, btn) {
   try {
     const r = await api(`/api/deploys/${encodeURIComponent(deployId)}/rollback`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Tomograph-CSRF': '1' },
       body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined }),
     });
     const manualNote = r.manual?.length ? ` · ${r.manual.length} manual step${r.manual.length === 1 ? '' : 's'}` : '';
@@ -3154,7 +3155,7 @@ async function doDeployBulk() {
     const path = `/api/packs/${encodeURIComponent(deployModalState.packId)}/deploy-bulk?${qs}`;
     const r = await fetch(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
       body: JSON.stringify({
         mcpUrl: url, mcpAuth: auth || undefined,
         targetProduct: product, targetVersion: version, targetFolder: folder || undefined,
@@ -3234,7 +3235,7 @@ export async function startDeployVerify({ deployId, packId, env, mcpUrl, mcpAuth
         document.createTextNode(`check ${attempt}/${VERIFY_DELAYS_MS.length}: drafting live state…`));
       const out = await api('/api/draft-from-mcp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Tomograph-CSRF': '1' },
         body: JSON.stringify({ mcpUrl, mcpAuth }),
       });
       if (!out.ok) throw new Error(out.error || 'MCP draft failed');
@@ -3269,7 +3270,7 @@ export async function startDeployVerify({ deployId, packId, env, mcpUrl, mcpAuth
     try {
       await fetch(`/api/deploys/${encodeURIComponent(deployId)}/verify`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
         body: JSON.stringify({
           outcome: last.summary.outcome,
           summary: last.summary,
@@ -3450,7 +3451,7 @@ async function doDraftFromMcp() {
   try {
     const r = await fetch('/api/draft-from-mcp', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Tomograph-CSRF': '1' },
       body: JSON.stringify({ mcpUrl: url, mcpAuth: auth || undefined, packName: name || undefined }),
     });
     const ct = r.headers.get('content-type') || '';
@@ -3632,6 +3633,34 @@ function setupMcpPanel() {
 // ---------- theme ----------
 
 // ---------- theme ----------
+// Identity chip — only renders when the server runs in an identity
+// posture (/auth/me exists and reports a session). Local mode: the
+// endpoint 404s and the header stays exactly as it is today.
+async function setupIdentityChip() {
+  let me = null;
+  try {
+    const r = await fetch('/auth/me');
+    if (!r.ok) return;
+    me = await r.json();
+  } catch (_) { return; }
+  if (!me?.authenticated) return;
+  const anchor = $('#theme-toggle');
+  if (!anchor || document.getElementById('hdr-user')) return;
+  const chip = document.createElement('span');
+  chip.id = 'hdr-user';
+  chip.className = 'hdr-user';
+  chip.title = `signed in as ${me.email || me.sub} (${me.mode})`;
+  chip.innerHTML = `
+    <span class="hdr-user-name">⏣ ${escapeHtml(me.name || me.email || me.sub)}</span>
+    <button type="button" class="ctrl-btn hdr-user-out" title="Sign out">sign out</button>
+  `;
+  chip.querySelector('.hdr-user-out').addEventListener('click', async () => {
+    await fetch('/auth/logout', { method: 'POST', headers: { 'X-Tomograph-CSRF': '1' } }).catch(() => {});
+    window.location.assign('/auth/login');
+  });
+  anchor.parentNode.insertBefore(chip, anchor);
+}
+
 // The inline script in <head> already applied the persisted/system theme
 // before paint. Here we wire the toggle and keep the studio in sync with
 // the system preference if the user hasn't pinned one.

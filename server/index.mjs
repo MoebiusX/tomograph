@@ -51,6 +51,7 @@ import {
   listJourneys, loadJourneyDef, runJourney, readJourneyRuns, saveJourneyDef,
 } from '../tools/lib/journey.mjs';
 import { retrofeedShadowSignals } from '../tools/lib/retrofeed.mjs';
+import { initAuth, authEnabled, readSession } from './auth.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -403,15 +404,44 @@ function tokenEquals(candidate, token) {
 function actorForRequest(req) { return req?.tomographActor || 'local'; }
 
 app.use((req, res, next) => {
+  if (req.path.startsWith('/auth/')) return next();   // the login flow itself
   const token = apiToken();
-  if (!token) return next();   // posture 1/3 — enforced at start(), not here
+  const identity = authEnabled();                     // OIDC or stand-alone users
+  if (!token && !identity) return next();             // posture 1/3 — local, no friction
+  const isApi = req.path.startsWith('/api/');
   const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
-  if (!mutating || !req.path.startsWith('/api/')) return next();
+
+  // Bearer token: the service-account / CI path — works in every posture.
   const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
-  if (m && tokenEquals(m[1].trim(), token)) {
+  if (m && token && tokenEquals(m[1].trim(), token)) {
     req.tomographActor = apiTokenLabel();
     return next();
   }
+
+  if (identity) {
+    const session = readSession(req);
+    if (session) {
+      // Cookie-authenticated mutations require the custom header —
+      // cross-origin pages can't set one without a CORS preflight, so
+      // SameSite=Lax + this check closes the CSRF window.
+      if (mutating && isApi && req.headers['x-tomograph-csrf'] !== '1') {
+        return res.status(403).json({ ok: false, error: 'missing X-Tomograph-CSRF header on a session-authenticated mutation' });
+      }
+      req.tomographActor = session.email || session.sub;
+      return next();
+    }
+    // Identity mode protects ALL /api data (reads included) — "your
+    // services" is enforced server-side. The static studio shell stays
+    // open so the client can land and redirect to the login page.
+    if (isApi) {
+      return res.status(401).json({ ok: false, error: 'unauthorized: sign in required', login: '/auth/login' });
+    }
+    return next();
+  }
+
+  // Token-only posture (no identity configured): original 10B contract —
+  // mutating /api routes require the bearer, reads stay open.
+  if (!mutating || !isApi) return next();
   res.set('WWW-Authenticate', 'Bearer realm="tomograph"');
   return res.status(401).json({
     ok: false,
@@ -421,6 +451,11 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '16mb' }));   // /api/crawl can carry a whole repo's worth of YAML
 app.use(express.text({ type: ['application/x-yaml', 'text/yaml', 'text/plain'], limit: '4mb' }));
+app.use(express.urlencoded({ extended: false, limit: '64kb' }));   // /auth/login form
+
+// Identity routes (/auth/*) — inert in local mode; throws fail-closed at
+// boot when OIDC is configured incompletely. See server/auth.mjs.
+initAuth(app);
 
 // Express's PayloadTooLargeError is thrown by the body parsers BEFORE
 // any of our handlers run, and the default error path returns HTML.
@@ -1214,7 +1249,7 @@ app.post('/api/deploys/:deployId/rollback', async (req, res) => {
   await rpc('initialize', {
     protocolVersion: '2025-06-18',
     capabilities: {},
-    clientInfo: { name: 'observabilitypack-studio-rollback', version: '0.3.0' },
+    clientInfo: { name: 'observabilitypack-studio-rollback', version: '0.4.0' },
   }).catch(() => {});
   const availableTools = await discoverMcpToolNames(rpc);
 
@@ -1330,7 +1365,7 @@ app.post('/api/packs/:id/deploy-bulk', async (req, res) => {
   await rpc('initialize', {
     protocolVersion: '2025-06-18',
     capabilities: {},
-    clientInfo: { name: 'observabilitypack-studio-deploy-bulk', version: '0.3.0' },
+    clientInfo: { name: 'observabilitypack-studio-deploy-bulk', version: '0.4.0' },
   }).catch(() => {});
   const availableTools = await discoverMcpToolNames(rpc);
   const missingTools = new Set();
@@ -1531,7 +1566,7 @@ app.post('/api/packs/:id/deploy/:target', async (req, res) => {
     await rpc('initialize', {
       protocolVersion: '2025-06-18',
       capabilities: {},
-      clientInfo: { name: 'observabilitypack-studio-deploy', version: '0.3.0' },
+      clientInfo: { name: 'observabilitypack-studio-deploy', version: '0.4.0' },
     }).catch(() => {});
 
     const availableTools = await discoverMcpToolNames(rpc);
@@ -2312,9 +2347,11 @@ function isLoopbackHost(h) {
 }
 
 export function start({ port = PORT, host = HOST, silent = false } = {}) {
-  // Fail closed (10B): binding beyond loopback with no API token would
+  // Fail closed (10B): binding beyond loopback with no auth at all would
   // expose every write route — crawl, draft, deploy — to the network.
-  if (!isLoopbackHost(host) && !apiToken()) {
+  // Identity (OIDC or stand-alone users) satisfies the requirement just
+  // like the API token does.
+  if (!isLoopbackHost(host) && !apiToken() && !authEnabled()) {
     if (process.env.TOMOGRAPH_INSECURE_NO_AUTH === '1') {
       process.stderr.write(
         `[studio] WARNING: bound to ${host} with NO auth (TOMOGRAPH_INSECURE_NO_AUTH=1). ` +
