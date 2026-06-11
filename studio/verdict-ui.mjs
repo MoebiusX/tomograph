@@ -1,28 +1,29 @@
-// studio/proto-shared.mjs
+// studio/verdict-ui.mjs
 //
-// Shared substrate for the three UX-redesign prototypes (?proto=a|b|c —
-// see docs/UX_REDESIGN_BRIEF.md). Everything here CONSUMES the ratified
-// engines (diagnostic-grade, /api/diff, journeys) — no engine logic is
-// duplicated, no numbers are invented. The prototypes are view-layer
-// only and live behind the query param; none of this executes in the
-// production tabs.
+// Shared substrate for the Diagnose grade page and the Remediate triage
+// queue (the 2026-06 redesign — docs/UX_DIAGNOSE_REMEDIATE.md). Pure
+// view-layer: every number comes from the ratified engines
+// (diagnostic-grade, /api/diff, /api/journeys); nothing here re-scores.
 //
 // Three responsibilities:
-//   1. buildProtoModel()  — one normalized read of the verdict + drift
-//      universe (per-item badness, biggest-gap attribution, honesty flags).
-//   2. projectGrade()     — the "fixing these N takes you from B to A"
-//      sentence, computed by RE-RUNNING the real grade engine on a
-//      hypothetical post-fix diff. Conservative: requirement-chain
-//      integrity is held constant, freshness/chaos are never projected.
-//   3. Widgets            — KPI tiles, sparklines, chips, donuts, the
-//      instrument ladder, and the honesty blocks (partial-evidence,
-//      scaffold, out-of-scope, verification≠validation) every variant
-//      must carry verbatim in spirit.
+//   1. buildVerdictModel()  — one normalized read of the drift universe:
+//      per-layer buckets, per-item badness (the engine's own weights),
+//      biggest-gap attribution, honesty flags. Accepts the active
+//      product-lens predicate so counts match the lensed drill.
+//   2. projectGrade()       — "fixing these N takes you from B to A",
+//      computed by RE-RUNNING computeDiagnosticGrade on a hypothetical
+//      post-fix diff. Conservative: requirement-chain integrity is held
+//      constant, freshness/chaos are never projected; when the drift
+//      criterion is anchored on chain integrity, chainAnchored lets the
+//      caller say so instead of faking a delta.
+//   3. Widgets + honesty blocks — KPI tiles, sparklines, chips, donuts,
+//      and the partial-evidence / scaffold / out-of-scope /
+//      verification≠validation blocks every surface must carry.
 
 import { state } from './state.mjs';
 import { api } from './api.mjs';
 import { escapeHtml } from './util.mjs';
-import { diffEntryLabel, deploySelectionFromEntries, deploySurfaceForArtefact } from './artifact-model.mjs';
+import { diffEntryLabel, deploySurfaceForArtefact } from './artifact-model.mjs';
 import {
   computeDiagnosticGrade,
   computePostureMatrix,
@@ -32,58 +33,27 @@ import {
   isScaffoldDiffEntry,
   partialLiveEvidence,
   criterionScore,
-  INSTRUMENT_GRADE_SCALE,
   DELTA_BADNESS,
 } from './diagnostic-grade.mjs';
-import { catalogEntryFor, loadDiff, LAYERS_FOR_DIFF } from './compare-view.mjs';
-import { loadPackB, renderMainView, renderTabs } from './app.mjs';
+import { catalogEntryFor, LAYERS_FOR_DIFF } from './compare-view.mjs';
 
-export const PROTO_LAYER_NAMES = {
+export const VERDICT_LAYER_NAMES = {
   L1: 'Contract', L2: 'Telemetry', L2X: 'Extended', L3: 'Insight',
   L4: 'Action', L5: 'Validation', GOV: 'Governance',
 };
 
-// ---------- comparison loading gate ----------
-//
-// Mirrors the production Diagnose behaviour (don't regress the spinner /
-// retry): when a Pack B is selected but the pack or diff hasn't arrived,
-// render motion + a retry path and return true so the caller bails.
-export function protoEnsureComparison(host) {
-  const haveB = !!state.packB;
-  if (!state.compareBId || (haveB && (state.diff || state.diff?.error))) return false;
-  const loading = document.createElement('div');
-  loading.className = 'placeholder loading-compare';
-  loading.innerHTML = `
-    <span class="compare-spinner" aria-hidden="true"></span>
-    <span>Comparing <strong>${escapeHtml(state.pack?.name || 'pack A')}</strong> against <strong>${escapeHtml(String(state.compareBId))}</strong>…</span>
-    <span class="loading-compare-sub">matching artefacts by behavioural identity — large packs take a few seconds</span>
-  `;
-  host.appendChild(loading);
-  Promise.all([
-    haveB ? Promise.resolve() : loadPackB(),
-    (state.diff && !state.diff.error) ? Promise.resolve() : loadDiff(),
-  ]).then(() => { renderTabs(); renderMainView(); })
-    .catch((e) => {
-      loading.classList.remove('loading-compare');
-      loading.innerHTML = `
-        <span>Comparison failed to load: ${escapeHtml(e?.message || 'unknown error')}</span>
-        <button type="button" class="ctrl-btn loading-compare-retry">retry</button>
-      `;
-      loading.querySelector('.loading-compare-retry')?.addEventListener('click', () => renderMainView());
-    });
-  return true;
-}
-
 // ---------- the normalized model ----------
 
-// Stable identity for a diff entry inside the prototype layer — used to
-// match basket selections back to entries when building the hypothetical
-// post-fix diff. diff entries carry a server `key`; fall back to the label.
+// Stable identity for a diff entry inside the view layer — used to match
+// basket selections back to entries when building the hypothetical
+// post-fix diff. diff entries carry a server `key`; fall back to label.
 function entryUid(L, kind, entry) {
   return `${L}::${kind}::${entry.key || diffEntryLabel(entry)}`;
 }
 
-export function buildProtoModel() {
+// passesLens(entry, side) — optional predicate threading the Diagnose
+// product lens into the model so the lattice matches the lensed counts.
+export function buildVerdictModel({ passesLens = null } = {}) {
   const haveB = !!state.packB;
   const posture = computePostureMatrix(state.pack, state.packB);
   const diff = (state.diff && !state.diff.error && state.diff.layers) ? state.diff : null;
@@ -91,6 +61,7 @@ export function buildProtoModel() {
   const mode = compareModeFor(state.packB, state.compareBId);
   const bName = catalogEntryFor(state.compareBId)?.label
     || state.packB?.meta?.name || state.packB?.metadata?.name || state.packB?.id || 'Pack B';
+  const lensed = (entry, side) => !passesLens || passesLens(entry, side);
 
   const totals = { aligned: 0, drifted: 0, onlyInA: 0, onlyInB: 0, scaffold: 0, outOfScope: 0 };
   const layers = [];
@@ -100,15 +71,15 @@ export function buildProtoModel() {
   if (diff) {
     for (const L of LAYERS_FOR_DIFF) {
       const bucket = diff.layers[L] || { onlyInA: [], onlyInB: [], inBoth: [], outOfScope: [] };
-      const matched = (bucket.inBoth || []).filter(e => !isScaffoldDiffEntry(e));
+      const matched = (bucket.inBoth || []).filter(e => lensed(e, 'a') && !isScaffoldDiffEntry(e));
       const aligned = matched.filter(e => e.match !== 'drifted');
       const drifted = matched.filter(e => e.match === 'drifted');
-      const onlyInA = (bucket.onlyInA || []).filter(e => !isScaffoldDiffEntry(e));
-      const onlyInB = (bucket.onlyInB || []).filter(e => !isScaffoldDiffEntry(e));
+      const onlyInA = (bucket.onlyInA || []).filter(e => lensed(e, 'a') && !isScaffoldDiffEntry(e));
+      const onlyInB = (bucket.onlyInB || []).filter(e => lensed(e, 'b') && !isScaffoldDiffEntry(e));
       const scaffold = [
         ...(bucket.onlyInA || []), ...(bucket.onlyInB || []), ...(bucket.inBoth || []),
       ].filter(e => isScaffoldDiffEntry(e));
-      const outOfScope = bucket.outOfScope || [];
+      const outOfScope = (bucket.outOfScope || []).filter(e => lensed(e, 'b'));
 
       totals.aligned += aligned.length;
       totals.drifted += drifted.length;
@@ -119,10 +90,10 @@ export function buildProtoModel() {
       driftedEntries.push(...drifted);
 
       if (aligned.length || drifted.length || onlyInA.length || onlyInB.length || outOfScope.length) {
-        layers.push({ L, name: PROTO_LAYER_NAMES[L] || L, aligned, drifted, onlyInA, onlyInB, outOfScope });
+        layers.push({ L, name: VERDICT_LAYER_NAMES[L] || L, aligned, drifted, onlyInA, onlyInB, outOfScope });
       }
 
-      // Per-item triage entries with their REAL badness weight — same
+      // Per-item triage entries with their REAL badness weight — the same
       // weights the engine scores with (DELTA_BADNESS / driftedEntryBadness).
       const aW = mode === 'drift' ? DELTA_BADNESS.declaredNotLive : DELTA_BADNESS.liveNotDeclared;
       const bW = mode === 'drift' ? DELTA_BADNESS.liveNotDeclared : DELTA_BADNESS.declaredNotLive;
@@ -173,12 +144,7 @@ export function buildProtoModel() {
   ].sort((x, y) => y.units - x.units);
   const biggestGap = buckets[0].units > 0 ? buckets[0] : null;
 
-  // Deployable selection across the whole declared-not-live set (the
-  // "deploy the missing set" action — same arithmetic as production).
-  const onlyInAArts = layers.flatMap(r => r.onlyInA.map(e => e.artefact).filter(Boolean));
-  const deployableSet = mode === 'drift'
-    ? deploySelectionFromEntries(onlyInAArts.map(a => deploySurfaceForArtefact(a)))
-    : { identities: new Set(), rows: 0 };
+  const deployableSet = deploySelectionFromItems(items);
 
   return {
     haveB, posture, diff, diagnostic, mode, bName,
@@ -189,8 +155,23 @@ export function buildProtoModel() {
   };
 }
 
+// Deploy selection over triage items (optionally restricted to a basket
+// of item uids) — same identity/rows arithmetic as the deploy modal.
+export function deploySelectionFromItems(items, selectedUids = null) {
+  const identities = new Set();
+  let rows = 0;
+  for (const it of items) {
+    if (!it.deployable || !it.deployIdentity) continue;
+    if (selectedUids && !selectedUids.has(it.uid)) continue;
+    if (identities.has(it.deployIdentity)) continue;
+    identities.add(it.deployIdentity);
+    rows += it.deployRows || 1;
+  }
+  return { identities, rows };
+}
+
 // ---------- grade projection ----------
-//
+
 // "Fixing these N takes you from B (65%) to A (87%)" — computed by the
 // REAL engine on a hypothetical diff where the given items are resolved:
 // declared-not-live entries verify live, drifted entries re-align,
@@ -241,7 +222,7 @@ export function projectGrade(uids /* Set<string> | null = fix everything */) {
   };
 }
 
-// One sentence the demo hinges on. Returns '' when there is nothing to fix.
+// One sentence the demo hinges on. Returns '' when nothing would move.
 export function projectionSentence(projection, n) {
   if (!projection) return '';
   const b = projection.before.overall.instrumentGrade;
@@ -257,12 +238,12 @@ export function projectionSentence(projection, n) {
 // ---------- journey run history (sparklines + deltas) ----------
 
 let _runsPromise = null;
-let _runs = null;   // { journey: string|null, runs: [{gradeScore, alignmentPct, at, outcome}] } | null
+let _runs = null;   // { journey, runs: [{gradeScore, alignmentPct, at, outcome}] } | null
 
 export function runHistory() { return _runs; }
 
-// Fire-and-forget loader: views call this; when it resolves with data the
-// view re-renders once and runHistory() is populated. Cached per session.
+// Fire-and-forget loader: views call this; when it resolves with data
+// the onReady callback fires once and runHistory() is populated.
 export function loadRunHistory(onReady) {
   if (_runs) { return; }
   if (_runsPromise) { _runsPromise.then(onReady); return; }
@@ -313,22 +294,22 @@ export function sparklineSvg(values, { w = 96, h = 28 } = {}) {
   });
   const last = pts[pts.length - 1].split(',');
   return `
-    <svg class="proto-spark" viewBox="0 0 ${w} ${h}" aria-hidden="true" preserveAspectRatio="none">
+    <svg class="mc-spark" viewBox="0 0 ${w} ${h}" aria-hidden="true" preserveAspectRatio="none">
       <polyline points="${pts.join(' ')}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
       <circle cx="${last[0]}" cy="${last[1]}" r="2.2" fill="currentColor"/>
     </svg>`;
 }
 
-// A mission-control stat tile. series/delta are optional; when run history
-// is absent the tile says so instead of faking a trend.
+// A mission-control stat tile. series/delta are optional; when run
+// history is absent the tile says so instead of faking a trend.
 export function kpiTile({ accent = 'cmp', label, value, unit = '', series = null, deltaText = '', note = '', warn = false }) {
   const spark = series ? sparklineSvg(series) : '';
   return `
-    <div class="proto-tile is-${accent}${warn ? ' is-warn' : ''}">
-      <div class="proto-tile-label">${escapeHtml(label)}</div>
-      <div class="proto-tile-value">${value}<span class="proto-tile-unit">${escapeHtml(unit)}</span></div>
-      <div class="proto-tile-trend">${spark}${deltaText ? `<span class="proto-tile-delta">${escapeHtml(deltaText)}</span>` : ''}</div>
-      ${note ? `<div class="proto-tile-note">${escapeHtml(note)}</div>` : ''}
+    <div class="mc-tile is-${accent}${warn ? ' is-warn' : ''}">
+      <div class="mc-tile-label">${escapeHtml(label)}</div>
+      <div class="mc-tile-value">${value}<span class="mc-tile-unit">${escapeHtml(unit)}</span></div>
+      <div class="mc-tile-trend">${spark}${deltaText ? `<span class="mc-tile-delta">${escapeHtml(deltaText)}</span>` : ''}</div>
+      ${note ? `<div class="mc-tile-note">${escapeHtml(note)}</div>` : ''}
     </div>`;
 }
 
@@ -341,7 +322,7 @@ export function deltaVsPrevious(series, unit = 'pp') {
 }
 
 export function chip(status, text) {
-  return `<span class="proto-chip is-${escapeHtml(status)}">${escapeHtml(text)}</span>`;
+  return `<span class="mc-chip is-${escapeHtml(status)}">${escapeHtml(text)}</span>`;
 }
 
 export function criterionChip(c) {
@@ -362,33 +343,15 @@ export function donutSvg(segs, centerText, { size = 104 } = {}) {
     return a;
   }).join('');
   const center = centerText
-    ? `<text x="${cx}" y="${cy}" class="proto-donut-center" text-anchor="middle" dominant-baseline="central">${escapeHtml(String(centerText))}</text>` : '';
-  return `<svg viewBox="0 0 ${size} ${size}" class="proto-donut" aria-hidden="true"><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--line)" stroke-width="${sw}"/>${arcs}${center}</svg>`;
+    ? `<text x="${cx}" y="${cy}" class="mc-donut-center" text-anchor="middle" dominant-baseline="central">${escapeHtml(String(centerText))}</text>` : '';
+  return `<svg viewBox="0 0 ${size} ${size}" class="mc-donut" aria-hidden="true"><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--line)" stroke-width="${sw}"/>${arcs}${center}</svg>`;
 }
 
 export function fmtUnits(n) {
   return Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, '');
 }
 
-// The instrument-grade ladder — same scale, prototype skin.
-export function ladderHtml(ig, overallPct, { compact = false } = {}) {
-  return `
-    <ul class="proto-ladder${compact ? ' is-compact' : ''}">
-      ${INSTRUMENT_GRADE_SCALE.map(g => {
-        const current = g.letter === ig.letter;
-        const unreachable = g.minPct === null;
-        const tip = g.blurb + (unreachable ? ` Requires ${g.requires}.` : '') + (current ? ` ← this pack: ${overallPct}%.` : '');
-        return `
-        <li class="proto-rung tier-${g.tier}${current ? ' is-current' : ''}${unreachable ? ' is-unreachable' : ''}" title="${escapeHtml(tip)}">
-          <span class="proto-rung-letter">${escapeHtml(g.letter)}</span>
-          ${compact ? '' : `<span class="proto-rung-label">${escapeHtml(g.label)}</span>`}
-          <span class="proto-rung-range">${escapeHtml(g.range)}</span>
-        </li>`;
-      }).join('')}
-    </ul>`;
-}
-
-// ---------- honesty blocks (non-negotiable, shared across variants) ----------
+// ---------- honesty blocks (non-negotiable, shared by both tabs) ----------
 
 export function partialEvidenceBanner(model) {
   const ev = model.liveEvidence;
@@ -422,54 +385,13 @@ export function verificationNote(model) {
         Pack A carries no live signal. Drift &amp; freshness require an MCP-drafted or live-refreshed pack to verify.</div>`
     : '';
   return `${warn}
-    <p class="proto-verification-note">Verification, not validation: this grade attests that declared artefacts
+    <p class="mc-verification-note">Verification, not validation: this grade attests that declared artefacts
     are <em>verified against live state</em> — it does not claim the observability design itself is right.</p>`;
 }
 
 export function operabilityNote(model) {
   const op = model.diagnostic.operability || {};
   return escapeHtml(op.note || 'response readiness, not diagnostic capability — observed, displayed, never scored');
-}
-
-// Evidence ledger rows (field / expected / observed / status) — the same
-// eight assertions the production report shows, derived from criteria.
-export function buildEvidenceRows(diagnostic) {
-  const all = [
-    ...diagnostic.coverage.criteria,
-    ...diagnostic.trust.criteria,
-    ...(diagnostic.operability?.criteria || []),
-  ];
-  const C = (key) => all.find(c => c.key === key);
-  const row = (field, exp, key, informational = false) => {
-    const c = C(key);
-    return { field, exp, obs: c?.detail || '—', pass: !!c?.pass, score: c?.score, informational };
-  };
-  return [
-    row('spec.telemetry.backends[].signal', 'metrics + logs + traces (≥ 3 of 4)', 'multi-modal'),
-    row('spec.otel.sdk.propagators', 'includes tracecontext', 'correlated'),
-    row('spec.slos[].objective + spec.baselines', '≥ 1 SLO with numeric objective · MTTD/MTTR baselines declared', 'calibrated'),
-    row('posture matrix · 4 layers × 10 mechanisms', 'average ≥ 50% observed', 'comprehensive'),
-    row('spec.remediation[]', '≥ 1 remediation runbook declared (informational — not scored)', 'actionable', true),
-    row('spec.validation.chaos_experiments[]', '≥ 1 chaos experiment declared', 'chaos-validated'),
-    row('requirement derivation graph · fallback repo-vs-live diff / mcp probes',
-      'declared SLO/SLI chains active in live; fallback ≥70% probes when no live pack is loaded', 'drift-free'),
-    row('metadata.annotations.mcp.refreshedAt', 'within last 24h', 'fresh'),
-  ];
-}
-
-// Deploy selection over triage items (optionally restricted to a basket of
-// item uids) — same identity/rows arithmetic as the production deploy modal.
-export function deploySelectionFromItems(items, selectedUids = null) {
-  const identities = new Set();
-  let rows = 0;
-  for (const it of items) {
-    if (!it.deployable || !it.deployIdentity) continue;
-    if (selectedUids && !selectedUids.has(it.uid)) continue;
-    if (identities.has(it.deployIdentity)) continue;
-    identities.add(it.deployIdentity);
-    rows += it.deployRows || 1;
-  }
-  return { identities, rows };
 }
 
 // Fix-kind chip vocabulary shared by the triage surfaces.
@@ -483,7 +405,7 @@ export function fixChip(fix) {
     'beyond-target': ['manual', 'BEYOND TARGET'],
   };
   const [cls, text] = map[fix] || ['manual', String(fix).toUpperCase()];
-  return `<span class="proto-fix is-${cls}">${text}</span>`;
+  return `<span class="mc-fix is-${cls}">${text}</span>`;
 }
 
 export function badnessClassChip(item) {

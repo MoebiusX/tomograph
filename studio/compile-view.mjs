@@ -18,8 +18,13 @@ import {
   focusedCompileArtifact, setFocusedCompileArtifact,
 } from './focus.mjs';
 import { openDeployModal, renderMainView } from './app.mjs';
-import { catalogEntryFor, layerItemsFor, loadDiff, LAYERS_FOR_DIFF, renderLiveScopeControl } from './compare-view.mjs';
-import { artefactLabel, deploySelectionFromEntries, deploySurfaceForArtefact } from './artifact-model.mjs';
+import { loadDiff, LAYERS_FOR_DIFF, renderLiveScopeControl } from './compare-view.mjs';
+import { artefactLabel } from './artifact-model.mjs';
+import {
+  buildVerdictModel, projectGrade, projectionSentence, deploySelectionFromItems,
+  kpiTile, fmtUnits, fixChip, badnessClassChip,
+  partialEvidenceBanner, scaffoldOosNotes,
+} from './verdict-ui.mjs';
 
 // ---------- COMPILE view ----------
 //
@@ -217,287 +222,184 @@ function parseCdFilename(cd) {
 // renderOtlpView / renderOtlpBody now live in studio/otlp-view.mjs.
 // ============================================================
 
+
 // ============================================================
-// RECONCILIATION PLAN — the bidirectional band that leads Remediate.
+// TRIAGE QUEUE — the band that leads Remediate.
 //
-// "Fix the gaps" starts by deciding which direction each gap flows:
-//
-//   repo → live   — Pack A declares it, live does not; deploy or delete intent
-//   live → repo   — live has it, Pack A does not; retrofeed or mark out of scope
-//   drifted       — both sides have it but behaviour differs; choose source of truth
-//
-// The default with Pack B loaded is bidirectional: deployment rows for
-// repo→live plus a generated ReconcilePatch for live→repo. That models
-// the real operating loop: close production gaps and bring production
-// truth back into code.
+// "Fix the gaps" as a worklist, not a form: every finding from the same
+// scoped diff Diagnose graded, ordered by the engine's own weighted
+// badness (declared-not-live 1.0 · drifted 0.5/1.0/0.1 by field class ·
+// live-not-declared 0.15). Each row names its fix path — one-click
+// deploy, retrofeed repo patch, field decision, or manual — and the
+// basket draws the line from work to grade: "fixing these N takes you
+// from B to A", computed by re-running the verdict engine on the
+// hypothetical post-fix diff (chains/freshness/chaos never projected).
+// The per-artefact compiler below stays as the drill-down.
 // ============================================================
 
-// The active set operation, resolving the null default by Pack-B
-// presence. B / ∪ / − require Pack B; without it we clamp to 'A'.
-function effectiveRemediateOp() {
-  const legacy = { A: 'deploy', B: 'retrofeed', AUB: 'all', 'A-B': 'deploy' };
-  const op = legacy[state.remediateOp] || state.remediateOp || (state.packB ? 'all' : 'deploy');
-  if (!state.packB && op !== 'deploy') return 'deploy';
-  return op;
-}
+// Display filter for the queue (session-only — selection is unaffected).
+let triageFilter = 'all';
 
-// Resolve a set operation to a per-layer artefact list. Uses the
-// server-computed diff (state.diff) for B / ∪ / − so the membership
-// matches the Diagnose drill exactly; falls back to whole-pack walks
-// when the diff isn't present (op 'A', or B-ops before the diff loads).
-function resolveRemediationSet(op) {
-  const haveB = !!state.packB;
-  const diff = (state.diff && !state.diff.error && state.diff.layers) ? state.diff : null;
-  const out = { byLayer: {}, total: 0, deployable: 0, author: 0, retrofeed: 0, drift: 0, needsDiff: false };
-
-  for (const L of LAYERS_FOR_DIFF) {
-    let entries = [];
-    if (op === 'deploy' || !haveB) {
-      if (!diff) { out.needsDiff = true; entries = layerItemsFor(state.pack, L).map(a => ({ art: a })); }
-      else entries = (diff.layers[L]?.onlyInA || []).map(e => ({ art: e.artefact, direction: 'deploy', identity: e.key }));
-    } else if (op === 'retrofeed') {
-      if (!diff) { out.needsDiff = true; entries = []; }
-      else entries = (diff.layers[L]?.onlyInB || []).map(e => ({ art: e.artefact, direction: 'retrofeed', identity: e.key }));
-    } else if (op === 'drift') {
-      if (!diff) { out.needsDiff = true; entries = []; }
-      else entries = (diff.layers[L]?.inBoth || [])
-        .filter(e => e.match === 'drifted')
-        .map(e => ({ art: e.a, artB: e.b, deltas: e.deltas || [], direction: 'drift', identity: e.key }));
-    } else if (op === 'all') {
-      if (!diff) { out.needsDiff = true; entries = []; }
-      else entries = [
-        ...(diff.layers[L]?.onlyInA || []).map(e => ({ art: e.artefact, direction: 'deploy', identity: e.key })),
-        ...(diff.layers[L]?.onlyInB || []).map(e => ({ art: e.artefact, direction: 'retrofeed', identity: e.key })),
-        ...(diff.layers[L]?.inBoth || [])
-          .filter(e => e.match === 'drifted')
-          .map(e => ({ art: e.a, artB: e.b, deltas: e.deltas || [], direction: 'drift', identity: e.key })),
-      ];
-    }
-    const enriched = entries
-      .filter(e => e.art)
-      .map(e => {
-        const deploySurface = deploySurfaceForArtefact(e.art);
-        const deployable = e.direction === 'deploy' ? deploySurface.deployable : false;
-        return { ...e, ...deploySurface, deployable };
-      });
-    if (enriched.length) {
-      out.byLayer[L] = enriched;
-      out.total += enriched.length;
-      out.deployable += enriched.filter(e => e.deployable).length;
-      out.retrofeed += enriched.filter(e => e.direction === 'retrofeed').length;
-      out.drift += enriched.filter(e => e.direction === 'drift').length;
-      out.author += enriched.filter(e => !e.deployable).length;
-    }
-  }
-  return out;
-}
-
-// Selected deployable identities = all deployable in the set minus the
-// ones the user unchecked. `rows` is the count the deploy modal will show
-// after expanding SLOs into recording + alerting rows.
-function remediationSelectedDeployment(resolved) {
-  const deselected = state.remediateDeselected || new Set();
-  const entries = [];
-  for (const L of LAYERS_FOR_DIFF) {
-    entries.push(...(resolved.byLayer[L] || []));
-  }
-  return deploySelectionFromEntries(entries, deselected);
-}
-
-const REMEDIATE_OPS = [
-  { id: 'all',       label: 'Bidirectional', sub: 'repo ↔ live',  needsB: true  },
-  { id: 'deploy',    label: 'Deploy',        sub: 'repo → live',  needsB: false },
-  { id: 'retrofeed', label: 'Retrofeed',     sub: 'live → repo',  needsB: true  },
-  { id: 'drift',     label: 'Reconcile',     sub: 'field drift',  needsB: true  },
+const TRIAGE_FILTERS = [
+  { id: 'all',       label: 'All',             test: () => true },
+  { id: 'deploy',    label: 'Deploy',          test: i => i.fix === 'deploy' },
+  { id: 'retrofeed', label: 'Retrofeed',       test: i => i.fix === 'retrofeed' || i.fix === 'adopt' },
+  { id: 'reconcile', label: 'Field decisions', test: i => i.fix === 'reconcile' },
+  { id: 'manual',    label: 'Manual',          test: i => i.fix === 'manual' || i.fix === 'beyond-target' },
 ];
 
-const REMEDIATE_LAYER_NAMES = { L1:'Contract', L2:'Telemetry', L2X:'Extended', L3:'Insight', L4:'Action', L5:'Validation', GOV:'Governance' };
-
-// The remediation plan band — leads the Remediate view. Appends to host.
-function renderRemediationPlan(host) {
-  const op = effectiveRemediateOp();
+function renderTriageQueue(host) {
   const haveB = !!state.packB;
-
   const wrap = document.createElement('div');
-  wrap.className = 'remediate-plan';
+  wrap.className = 'rq-band';
+  host.appendChild(wrap);
 
-  // ---- Set-operation selector ----
-  const bName = haveB
-    ? (catalogEntryFor(state.compareBId)?.label || state.packB?.meta?.name || state.packB?.id || 'Pack B')
-    : null;
-  const opsHtml = REMEDIATE_OPS.map(o => {
-    const disabled = o.needsB && !haveB;
-    return `<button type="button" class="remediate-op${o.id === op ? ' is-active' : ''}${disabled ? ' is-disabled' : ''}"
-      data-op="${o.id}" ${disabled ? 'disabled title="Load a Pack B from the header to enable"' : ''}>
-      <span class="remediate-op-label">${escapeHtml(o.label)}</span>
-      <span class="remediate-op-sub">${escapeHtml(o.sub)}</span>
-    </button>`;
-  }).join('');
+  if (!haveB) {
+    wrap.innerHTML = `
+      <div class="rq-head">
+        <span class="rq-eyebrow">TRIAGE</span>
+        <span class="rq-title">What do we fix first?</span>
+        <span class="rq-sub">Load a <strong>Pack B</strong> from the header to compute the queue —
+          drift, shadow signals, and gaps to target, ordered by what they cost the grade.
+          The compiler below emits any artefact directly in the meantime.</span>
+      </div>`;
+    return;
+  }
 
-  wrap.innerHTML = `
-    <div class="remediate-plan-head">
-      <span class="remediate-plan-eyebrow">RECONCILE</span>
-      How do we close the loop?
-      ${haveB ? `<span class="remediate-plan-vs">A = your pack · B = <strong>${escapeHtml(bName)}</strong></span>`
-              : `<span class="remediate-plan-vs">Load a <strong>Pack B</strong> from the header to unlock live→repo retrofeed and drift decisions</span>`}
-    </div>
-    <div class="remediate-ops">${opsHtml}</div>
-  `;
-
-  // Scope control (item 5): the remediation sets are carved from the same
-  // scoped diff as Diagnose — expose the scope HERE too, so what's parked
-  // out of scope is a visible choice while deciding what to deploy, not a
-  // silent precondition. Changing it refreshes the diff and re-renders.
-  if (haveB) wrap.appendChild(renderLiveScopeControl({ standalone: true }));
-
-  // Wire op buttons.
-  wrap.querySelectorAll('.remediate-op:not(.is-disabled)').forEach(btn => {
-    btn.onclick = () => {
-      state.remediateOp = btn.dataset.op;
-      state.remediateDeselected = new Set();   // reset curation on op change
-      renderMainView();
-    };
-  });
-
-  // ---- Resolve the set ----
-  const resolved = resolveRemediationSet(op);
-
-  // B-ops need the diff; load it lazily, then re-render.
-  if (resolved.needsDiff && haveB && state.compareBId) {
-    const loading = document.createElement('div');
-    loading.className = 'remediate-loading';
-    loading.textContent = 'Computing the set…';
-    wrap.appendChild(loading);
-    host.appendChild(wrap);
+  // The queue is carved from the same scoped diff as Diagnose; fetch it
+  // lazily with motion, never a silent hang.
+  if (!state.diff || state.diff.error || !state.diff.layers) {
+    wrap.innerHTML = `<div class="remediate-loading">Computing the set…</div>`;
     loadDiff().then(() => renderMainView());
     return;
   }
 
-  const selectedDeployment = remediationSelectedDeployment(resolved);
+  const vm = buildVerdictModel();
+  const bName = vm.bName;
 
-  // ---- Summary tiles ----
-  const summary = document.createElement('div');
-  summary.className = 'remediate-summary';
-  const opMeaning = {
-    all:       'Bidirectional plan: deploy repo-only intent, retrofeed live-only evidence, and decide drifted fields.',
-    deploy:    `Artefacts in your pack but not in ${escapeHtml(bName || 'Pack B')} — deploy delta or delete stale intent.`,
-    retrofeed: `Artefacts live in ${escapeHtml(bName || 'Pack B')} but missing from your pack — generate a repo retrofeed patch.`,
-    drift:     'Matched artefacts whose decision-bearing fields diverge — choose repo or live as source of truth.',
-  };
-  summary.innerHTML = `
-    <div class="remediate-summary-lede">${opMeaning[op] || ''}</div>
-    <div class="remediate-tiles">
-      <div class="remediate-tile is-total"><div class="remediate-tile-n">${resolved.total}</div><div class="remediate-tile-l">in set</div></div>
-      <div class="remediate-tile is-deployable"><div class="remediate-tile-n">${selectedDeployment.rows}</div><div class="remediate-tile-l">deploy rows selected</div></div>
-      <div class="remediate-tile is-retrofeed"><div class="remediate-tile-n">${resolved.retrofeed}</div><div class="remediate-tile-l">repo patch items</div></div>
-      <div class="remediate-tile is-drift"><div class="remediate-tile-n">${resolved.drift}</div><div class="remediate-tile-l">field decisions</div></div>
+  // Basket = every finding minus explicit deselections (persisted shape
+  // unchanged: state.remediateDeselected is the Set of unchecked rows).
+  const deselected = state.remediateDeselected instanceof Set
+    ? state.remediateDeselected
+    : (state.remediateDeselected = new Set());
+  for (const uid of [...deselected]) if (!vm.items.some(i => i.uid === uid)) deselected.delete(uid);
+  const basket = new Set(vm.items.filter(i => !deselected.has(i.uid)).map(i => i.uid));
+  const picked = vm.items.filter(i => basket.has(i.uid));
+  const dep = deploySelectionFromItems(vm.items, basket);
+  const projection = basket.size ? projectGrade(basket) : null;
+  const sentence = projection ? projectionSentence(projection, basket.size) : '';
+
+  const projTile = projection && projection.afterPct > projection.beforePct
+    ? kpiTile({
+        accent: 'cmp', label: 'PROJECTED GRADE',
+        value: escapeHtml(projection.after.overall.instrumentGrade.letter),
+        unit: ` ${projection.afterPct}%`,
+        note: `from ${projection.before.overall.instrumentGrade.letter} (${projection.beforePct}%) — the selected fixes, engine-projected`,
+      })
+    : kpiTile({
+        accent: 'cmp', label: 'PROJECTED GRADE', value: '—', unit: '',
+        note: projection?.chainAnchored
+          ? 'anchored on chain integrity — repairs land at the next live verification'
+          : 'select fixes to project',
+      });
+
+  const filterChips = TRIAGE_FILTERS.map(f => {
+    const n = f.id === 'all' ? vm.items.length : vm.items.filter(f.test).length;
+    return `<button type="button" class="rq-filter${triageFilter === f.id ? ' is-active' : ''}" data-filter="${f.id}">
+      ${escapeHtml(f.label)} <span class="rq-filter-n">${n}</span></button>`;
+  }).join('');
+
+  const activeFilter = TRIAGE_FILTERS.find(f => f.id === triageFilter) || TRIAGE_FILTERS[0];
+  const shown = vm.items.filter(activeFilter.test);
+
+  wrap.innerHTML = `
+    <div class="rq-head">
+      <span class="rq-eyebrow">TRIAGE</span>
+      <span class="rq-title">What do we fix first?</span>
+      <span class="rq-sub">every finding from the live diff vs <strong>${escapeHtml(bName)}</strong>,
+        ordered by weighted badness — the engine's own cost model, not a heuristic</span>
+    </div>
+    ${partialEvidenceBanner(vm)}
+    <div class="mc-tiles">
+      ${kpiTile({ accent: 'red', label: 'FINDINGS', value: String(vm.items.length), unit: '', note: `${fmtUnits(vm.weighted.totalBadness)} weighted badness units total` })}
+      ${kpiTile({ accent: 'amber', label: 'SELECTED', value: String(basket.size), unit: ` of ${vm.items.length}`, note: 'rows in the basket below' })}
+      ${kpiTile({ accent: 'green', label: 'DEPLOYABLE', value: String(dep.identities.size), unit: ` · ${dep.rows} rows`, note: 'one-click via the deploy modal' })}
+      ${projTile}
+    </div>
+    <div class="rq-tools">
+      <div class="rq-filters">${filterChips}</div>
+    </div>
+    <table class="rq-table">
+      <thead><tr><th></th><th>Finding</th><th>Layer</th><th>Class</th><th>Badness</th><th>Fix</th><th></th></tr></thead>
+      <tbody>
+        ${shown.map(i => `
+          <tr class="${deselected.has(i.uid) ? 'is-deselected' : ''}" data-uid="${escapeHtml(i.uid)}">
+            <td><input type="checkbox" ${deselected.has(i.uid) ? '' : 'checked'} aria-label="include in the basket"></td>
+            <td class="rq-label">${escapeHtml(artefactLabel(i.art, i.label))}${i.fields?.length ? `<span class="rq-fields">${escapeHtml(i.fields.slice(0, 3).join(', '))}</span>` : ''}</td>
+            <td><span class="mc-lnum">${i.layer}</span></td>
+            <td>${badnessClassChip(i)}</td>
+            <td class="rq-w">${escapeHtml(fmtUnits(i.badness))}</td>
+            <td>${fixChip(i.fix)}</td>
+            <td>${i.deployable ? `<button type="button" class="mc-act is-mini" data-deploy="${escapeHtml(i.uid)}">deploy</button>` : ''}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+    ${shown.length === 0 ? `<div class="remediate-empty">Nothing ${triageFilter === 'all' ? 'to remediate — every concrete artefact aligns.' : `under the ${escapeHtml(activeFilter.label)} filter.`}</div>` : ''}
+    ${scaffoldOosNotes(vm)}
+    <div class="rq-patch-host"></div>
+    <div class="mc-deploybar">
+      ${dep.identities.size ? `<button type="button" class="mc-act is-primary" id="rq-deploy">⇪ Deploy ${dep.identities.size} selected (${dep.rows} row${dep.rows === 1 ? '' : 's'})</button>` : ''}
+      ${sentence ? `<span class="mc-deploybar-projection">${escapeHtml(sentence)}</span>` : ''}
     </div>
   `;
-  wrap.appendChild(summary);
 
-  if (resolved.total === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'remediate-empty';
-    empty.textContent = op === 'deploy'
-      ? 'Nothing to deploy — your pack has no artefacts beyond Pack B.'
-      : 'This set is empty.';
-    wrap.appendChild(empty);
-    host.appendChild(wrap);
-    return;
-  }
+  // Scope control right under the head — what's parked out of scope is a
+  // visible choice while deciding what to deploy, not a silent precondition.
+  const head = wrap.querySelector('.rq-head');
+  head.insertAdjacentElement('afterend', renderLiveScopeControl({ standalone: true }));
 
-  const patchText = buildRetrofeedPatchText(resolved, bName);
-  if (patchText) {
-    const patch = document.createElement('details');
-    patch.className = 'remediate-patch';
-    patch.open = true;
-    patch.innerHTML = `
-      <summary>Repo retrofeed patch (${resolved.retrofeed} item${resolved.retrofeed === 1 ? '' : 's'})</summary>
-      <pre>${escapeHtml(patchText)}</pre>
-    `;
-    wrap.appendChild(patch);
-  }
-
-  // ---- Per-layer, per-item checklist ----
-  const list = document.createElement('div');
-  list.className = 'remediate-list';
-  const deselected = state.remediateDeselected || (state.remediateDeselected = new Set());
-  for (const L of LAYERS_FOR_DIFF) {
-    const entries = resolved.byLayer[L];
-    if (!entries || !entries.length) continue;
-    const layerEl = document.createElement('div');
-    layerEl.className = 'remediate-layer';
-    const depCount = entries.reduce((sum, e) => sum + (e.deployable ? (e.deployRows || 1) : 0), 0);
-    layerEl.innerHTML = `
-      <div class="remediate-layer-head">
-        <span class="remediate-layer-num">${L}</span>
-        <span class="remediate-layer-name">${escapeHtml(REMEDIATE_LAYER_NAMES[L] || L)}</span>
-        <span class="remediate-layer-count">${entries.length}${depCount ? ` · ${depCount} deploy row${depCount === 1 ? '' : 's'}` : ''}</span>
-      </div>
-    `;
-    const ul = document.createElement('ul');
-    ul.className = 'remediate-items';
-    for (const e of entries) {
-      const li = document.createElement('li');
-      const checked = e.deployable && e.identity && !deselected.has(e.identity);
-      li.className = `remediate-item is-${e.direction || 'deploy'}` + (e.deployable ? '' : ' is-author');
-      const labelText = artefactLabel(e.art, e.identity || '—');
-      if (e.deployable) {
-        li.innerHTML = `
-          <label class="remediate-item-row">
-            <input type="checkbox" ${checked ? 'checked' : ''}>
-            <span class="remediate-item-name">${escapeHtml(labelText)}</span>
-            <span class="remediate-item-tag is-deploy">${escapeHtml(e.deployLabel || (e.kind === 'dashboard' ? 'dashboard' : 'rules'))}</span>
-          </label>
-        `;
-        const cb = li.querySelector('input');
-        cb.onchange = () => {
-          if (cb.checked) deselected.delete(e.identity);
-          else deselected.add(e.identity);
-          renderMainView();
-        };
-      } else {
-        const tag = e.direction === 'retrofeed' ? 'repo patch'
-          : e.direction === 'drift' ? 'field decision'
-          : 'manual fix';
-        const driftText = e.direction === 'drift' && e.deltas?.length
-          ? `<span class="remediate-item-delta">${escapeHtml(e.deltas.slice(0, 3).map(d => d.path || d.field || 'field').join(' · '))}</span>`
-          : '';
-        li.innerHTML = `
-          <div class="remediate-item-row">
-            <span class="remediate-item-name">${escapeHtml(labelText)}</span>
-            ${driftText}
-            <span class="remediate-item-tag is-author">${escapeHtml(tag)}</span>
-          </div>
-        `;
-      }
-      ul.appendChild(li);
+  // Retrofeed repo patch — the live→repo half of the loop, scoped to the
+  // basket's retrofeed rows. Same ReconcilePatch the classic band emitted.
+  const retroPicked = picked.filter(i => i.fix === 'retrofeed' || i.fix === 'adopt');
+  if (retroPicked.length) {
+    const resolvedLike = { byLayer: {} };
+    for (const i of retroPicked) {
+      (resolvedLike.byLayer[i.layer] = resolvedLike.byLayer[i.layer] || []).push({
+        direction: 'retrofeed', identity: i.identity || '', art: i.art,
+      });
     }
-    layerEl.appendChild(ul);
-    list.appendChild(layerEl);
+    const patchText = buildRetrofeedPatchText(resolvedLike, bName);
+    if (patchText) {
+      const patch = document.createElement('details');
+      patch.className = 'remediate-patch';
+      patch.innerHTML = `
+        <summary>Repo retrofeed patch (${retroPicked.length} item${retroPicked.length === 1 ? '' : 's'} in the basket)</summary>
+        <pre>${escapeHtml(patchText)}</pre>
+      `;
+      wrap.querySelector('.rq-patch-host').appendChild(patch);
+    }
   }
-  wrap.appendChild(list);
 
-  // ---- Deploy action ----
-  const action = document.createElement('div');
-  action.className = 'remediate-action';
-  const n = selectedDeployment.rows;
-  const deployPackId = state.selectedPackId;
-  action.innerHTML = `
-    <button type="button" class="remediate-deploy-btn" ${n === 0 ? 'disabled' : ''}>
-      Deploy ${n} selected →
-    </button>
-    <span class="remediate-action-hint">${n === 0
-      ? 'Select at least one deployable row, or handle the manual follow-up items.'
-      : 'Opens the deploy form pre-selected to these rows. Manual items need pack, instrumentation, or platform config changes.'}</span>
-  `;
-  const btn = action.querySelector('.remediate-deploy-btn');
-  if (btn && n > 0) {
-    btn.onclick = () => openDeployModal({ packId: deployPackId, presetIdentities: selectedDeployment.identities });
-  }
-  wrap.appendChild(action);
-
-  host.appendChild(wrap);
+  // ---- wiring ----
+  wrap.querySelectorAll('.rq-filter').forEach(btn => {
+    btn.onclick = () => { triageFilter = btn.dataset.filter; renderMainView(); };
+  });
+  wrap.querySelectorAll('.rq-table input[type="checkbox"]').forEach(cb => {
+    cb.onchange = () => {
+      const uid = cb.closest('tr').dataset.uid;
+      if (cb.checked) deselected.delete(uid); else deselected.add(uid);
+      renderMainView();
+    };
+  });
+  wrap.querySelectorAll('[data-deploy]').forEach(btn => {
+    btn.onclick = () => {
+      const item = vm.items.find(i => i.uid === btn.dataset.deploy);
+      if (!item?.deployIdentity) return;
+      openDeployModal({ packId: state.selectedPackId, presetIdentities: new Set([item.deployIdentity]) });
+    };
+  });
+  wrap.querySelector('#rq-deploy')?.addEventListener('click', () =>
+    openDeployModal({ packId: state.selectedPackId, presetIdentities: dep.identities }));
 }
 
 function buildRetrofeedPatchText(resolved, bName) {
@@ -549,10 +451,10 @@ function yamlScalar(value) {
 }
 
 export function renderCompileView(host) {
-  // The reconciliation plan leads the view: repo→live deployment,
-  // live→repo retrofeed, and drift field decisions. The per-artefact
+  // The triage queue leads the view: every finding ordered by weighted
+  // badness, basket → deploy/retrofeed, projected grade. The per-artefact
   // compiler below remains the drill-down to inspect/emit one artefact.
-  renderRemediationPlan(host);
+  renderTriageQueue(host);
 
   const section = document.createElement('section');
   section.className = 'section compile-view';

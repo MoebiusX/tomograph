@@ -18,18 +18,21 @@ import { diffEntryLabel, deploySelectionFromEntries, deploySurfaceForArtefact } 
 import {
   POSTURE_LAYERS,
   POSTURE_MECHANISMS_PER_LAYER,
-  compareModeFor,
   computeDiagnosticGrade,
-  computeWeightedDeltaRisk,
   computePostureMatrix,
   layerItemsFor,
   criterionScore,
   diagnosticAuditStatus,
+  DRIFT_HEALTH_PASS_PCT,
   INSTRUMENT_GRADE_SCALE,
   instrumentGradeFor,
-  isScaffoldDiffEntry,
-  partialLiveEvidence,
 } from './diagnostic-grade.mjs';
+import {
+  buildVerdictModel, projectGrade, projectionSentence,
+  loadRunHistory, runSeries, deltaVsPrevious,
+  kpiTile, chip, criterionChip, donutSvg, fmtUnits,
+  partialEvidenceBanner, scaffoldOosNotes,
+} from './verdict-ui.mjs';
 
 // ---------- compare view ----------
 
@@ -695,40 +698,22 @@ export function renderBenchmarkView(view) {
   // the verdict's "comprehensive" criterion and the drill-down below.
   const posture = computePostureMatrix(state.pack, state.packB);
 
-  // THE verdict — diagnostic-grade YES/NO from coverage (2A) + trust /
-  // drift (2B), Pack A alone. Always leads the view.
+  // THE verdict page — the ratified narrative header (grade chip + blurb
+  // + summary rows + labelled ladder + derivation note) leading one
+  // coherent answer: what's costing the grade, what to do about it (the
+  // persistent action strip), trends, then every report as a focused
+  // panel. One journey, no stapled scrolls.
   const diagnostic = computeDiagnosticGrade(state.pack, state.packB, posture, state.compareBId, state.diff);
-  const verdict = renderDiagnosticGradeVerdict(diagnostic, lens, state.packB);
+  const verdict = renderDiagnosticGradeVerdict(diagnostic, lens, posture);
   scaffold.appendChild(verdict);
 
-  // The COMPARE band (A-vs-B drill, or the invite to load a Pack B) sits
-  // DIRECTLY under the verdict summary band — before the deep 2A/2B/
-  // evidence tables — so the side-by-side comparison is the first thing
-  // the user sees, not buried beneath the full compliance report.
-  const verdictHead = verdict.querySelector('.diag-report-head');
-  const placeCompareBand = (el) => {
-    if (!el) return;
-    if (verdictHead && verdictHead.nextSibling) verdict.insertBefore(el, verdictHead.nextSibling);
-    else if (verdictHead) verdict.appendChild(el);
-    else scaffold.appendChild(el);
-  };
   if (!haveB) {
-    // Pack A only — invite a Pack B; the verdict above is the
-    // coverage-only read, the A-vs-B comparison the optional deepening.
-    placeCompareBand(renderComparePrompt());
-  } else {
-    // Pack B present — render the true side-by-side A-vs-B drill (drift
-    // cells / gap deltas) as the lead evidence beneath the verdict.
-    placeCompareBand(renderDriftDrill(state.diff, state.packB, state.compareBId, lens));
-    placeCompareBand(renderLiveScopeControl({ standalone: true }));
+    // Pack A only — invite a Pack B right under the header; the verdict
+    // above is the coverage-only read, the comparison the deepening.
+    const verdictHead = verdict.querySelector('.diag-report-head');
+    if (verdictHead?.nextSibling) verdict.insertBefore(renderComparePrompt(), verdictHead.nextSibling);
+    else verdict.appendChild(renderComparePrompt());
   }
-
-  // Drill-down — per-layer × per-mechanism coverage map. Pack-A-derived,
-  // so it's the "why" behind the verdict whether or not a Pack B exists.
-  scaffold.appendChild(renderBenchmarkHeadline(posture, lens));
-  scaffold.appendChild(renderPostureMatrix(posture));
-  scaffold.appendChild(renderPostureNarrative(posture));
-  scaffold.appendChild(renderPosturePieRow(posture));
 }
 
 // Affordance shown in Diagnose when only Pack A is loaded. Points the
@@ -750,293 +735,6 @@ function renderComparePrompt() {
     </div>
   `;
   return el;
-}
-
-// THE A-vs-B drill — the real side-by-side evidence behind the verdict.
-// Consumes state.diff (server-computed set arithmetic on the two packs'
-// artefact keys) and projects it through the active product lens, then
-// frames the three buckets (inBoth / onlyInA / onlyInB) in either drift
-// or gap language. Returns null when no usable diff exists so the caller
-// can simply skip the section.
-function renderDriftDrill(diff, packB, compareBId, lens) {
-  if (!diff || diff.error || !diff.layers) return null;
-
-  const mode = compareModeFor(packB, compareBId);
-  const useLens = lens && lens !== 'all';
-
-  // Project a bucket entry's artefact (shape varies: onlyIn* carry
-  // `.artefact`, inBoth carries `.a`/`.b`). For lens scoping we test
-  // the A-side projection (or B-side for onlyInB) against the surface.
-  const passesLens = (entry, side) => {
-    if (!useLens) return true;
-    const art = side === 'b' ? (entry.artefact || entry.b) : (entry.artefact || entry.a);
-    const pack = side === 'b' ? packB : state.pack;
-    return productSurface(art, lens, pack);
-  };
-
-  // Per-layer filtered buckets + running totals.
-  const layerNames = { L1:'Contract', L2:'Telemetry', L2X:'Extended', L3:'Insight', L4:'Action', L5:'Validation', GOV:'Governance' };
-  let totAligned = 0, totDrifted = 0, totA = 0, totB = 0, totOOS = 0, totScaffold = 0;
-  const rows = [];
-  for (const L of LAYERS_FOR_DIFF) {
-    const bucket = diff.layers[L] || { onlyInA: [], onlyInB: [], inBoth: [], outOfScope: [] };
-    // inBoth = shared identity. Split it: structurally-equal pairs are
-    // aligned; same-identity-but-divergent pairs are drifted. Matching is
-    // an object comparison, not a name check.
-    const matched = bucket.inBoth.filter(e => passesLens(e, 'a') && !isScaffoldDiffEntry(e));
-    const aligned = matched.filter(e => e.match !== 'drifted');
-    const drifted = matched.filter(e => e.match === 'drifted');
-    const rawOnlyInA = bucket.onlyInA.filter(e => passesLens(e, 'a'));
-    const rawOnlyInB = bucket.onlyInB.filter(e => passesLens(e, 'b'));
-    const onlyInA = rawOnlyInA.filter(e => !isScaffoldDiffEntry(e));
-    const onlyInB = rawOnlyInB.filter(e => !isScaffoldDiffEntry(e));
-    const scaffold = [
-      ...rawOnlyInA.filter(e => isScaffoldDiffEntry(e)),
-      ...rawOnlyInB.filter(e => isScaffoldDiffEntry(e)),
-      ...bucket.inBoth.filter(e => passesLens(e, 'a') && isScaffoldDiffEntry(e)),
-    ];
-    // Live members of a family this pack declares nothing of — the rest of the
-    // platform inventory. Shown muted, never counted as drift.
-    const outOfScope = (bucket.outOfScope || []).filter(e => passesLens(e, 'b'));
-    if (aligned.length === 0 && drifted.length === 0 && onlyInA.length === 0
-        && onlyInB.length === 0 && outOfScope.length === 0 && scaffold.length === 0) continue;
-    totAligned += aligned.length;
-    totDrifted += drifted.length;
-    totA += onlyInA.length;
-    totB += onlyInB.length;
-    totOOS += outOfScope.length;
-    totScaffold += scaffold.length;
-    rows.push({ L, name: layerNames[L] || L, aligned, drifted, onlyInA, onlyInB, outOfScope, scaffold });
-  }
-
-  const universe = totAligned + totDrifted + totA + totB;
-  if (universe === 0) return null;
-
-  // Mode-specific framing for the two delta columns.
-  const bName = catalogEntryFor(compareBId)?.label || packB?.meta?.name || packB?.metadata?.name || packB?.id || 'Pack B';
-  const frame = mode === 'drift'
-    ? {
-        eyebrow: 'DRIFT · DECLARED vs LIVE',
-        lede: totA > 0
-          ? `<strong>${totA}</strong> declared artefact${totA === 1 ? '' : 's'} not confirmed in <strong>${escapeHtml(bName)}</strong> — possible drift.`
-          : `Every declared artefact is confirmed live in <strong>${escapeHtml(bName)}</strong>.`,
-        aLabel: 'Declared, not live',
-        aHint: 'in your pack · not seen in the live system → drift risk',
-        aWeightClass: 'anchor',
-        aWeightText: '1.0',
-        aClass: 'is-drift',
-        bLabel: 'Live, not declared',
-        bHint: 'seen live · missing from your pack → shadow signal',
-        bWeightClass: 'low',
-        bWeightText: '0.15',
-        bClass: 'is-shadow',
-        riskNote: 'Weighted badness: declared-not-live = 1.0; drifted = 0.5 by default, 1.0 for decision-bearing fields, 0.1 for cosmetic fields; live-not-declared = 0.15. Out-of-scope live inventory is excluded.',
-      }
-    : {
-        eyebrow: 'GAP · CURRENT vs TARGET',
-        lede: totB > 0
-          ? `<strong>${totB}</strong> artefact${totB === 1 ? '' : 's'} in <strong>${escapeHtml(bName)}</strong> you don't have yet — the gap to close.`
-          : `You match or exceed <strong>${escapeHtml(bName)}</strong> on every artefact.`,
-        aLabel: 'Beyond target',
-        aHint: 'in your pack · not in the target → extra coverage',
-        aWeightClass: 'low',
-        aWeightText: '0.15',
-        aClass: 'is-extra',
-        bLabel: 'Missing vs target',
-        bHint: 'in the target · not in your pack → gap to close',
-        bWeightClass: 'anchor',
-        bWeightText: '1.0',
-        bClass: 'is-gap',
-        riskNote: 'Weighted badness: missing target artefacts = 1.0; drifted = 0.5 by default, 1.0 for decision-bearing fields, 0.1 for cosmetic fields; beyond-target extras = 0.15.',
-      };
-
-  const wrap = document.createElement('div');
-  wrap.className = `benchmark-block drift-drill-block drift-mode-${mode}`;
-
-  // Sample keys for a bucket, using the human artefact title when the
-  // server key is a structural projection like sli:{"id":"..."}.
-  const sampleKeys = (entries, max = 4) => {
-    const names = entries.slice(0, max).map(e => escapeHtml(diffEntryLabel(e)));
-    const more = entries.length > max ? ` +${entries.length - max}` : '';
-    return names.length ? names.join(' · ') + more : '—';
-  };
-
-  // Sample drifted pairs as `name(field,field)` so the reader sees not just
-  // WHICH artefacts drifted but WHICH FIELDS diverged.
-  const sampleDeltas = (entries, max = 3) => {
-    const names = entries.slice(0, max).map(e => {
-      const fields = (e.deltas || []).map(d => d.field).slice(0, 3).join(',');
-      return escapeHtml(diffEntryLabel(e)) + (fields ? `<span class="drift-delta-fields">(${escapeHtml(fields)})</span>` : '');
-    });
-    const more = entries.length > max ? ` +${entries.length - max}` : '';
-    return names.length ? names.join(' · ') + more : '—';
-  };
-
-  // Drift makeup as two donuts: how much aligns (donut 1), then what the
-  // non-aligned remainder is made of (donut 2). A legend carries the counts
-  // so labels never crowd the rings. Each segment is a dash on a full
-  // circle, accumulating clockwise from 12 o'clock.
-  const donut = (segs, centerText) => {
-    const r = 40, cx = 52, cy = 52, sw = 18, C = 2 * Math.PI * r;
-    const total = segs.reduce((s, x) => s + x.value, 0) || 1;
-    let acc = 0;
-    const arcs = segs.filter(s => s.value > 0).map(s => {
-      const len = (s.value / total) * C;
-      const a = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${s.color}" stroke-width="${sw}" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-acc).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"/>`;
-      acc += len;
-      return a;
-    }).join('');
-    const center = centerText ? `<text x="${cx}" y="${cy}" class="drift-donut-pct" text-anchor="middle" dominant-baseline="central">${centerText}</text>` : '';
-    return `<svg viewBox="0 0 104 104" class="drift-donut-svg" aria-hidden="true"><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--line)" stroke-width="${sw}"/>${arcs}${center}</svg>`;
-  };
-
-  const C_ALIGNED = 'var(--ok, #16a34a)';
-  const C_DRIFTED = 'rgb(150, 90, 200)';
-  const C_DECL    = 'rgb(200, 70, 40)';
-  const C_SHADOW  = 'rgb(180, 120, 0)';
-  const allDriftedEntries = rows.flatMap(r => r.drifted);
-  const weighted = computeWeightedDeltaRisk({
-    mode,
-    aligned: totAligned,
-    driftedEntries: allDriftedEntries,
-    onlyInA: totA,
-    onlyInB: totB,
-  });
-  const fmtUnits = (n) => Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, '');
-  const legendHtml = [
-    { n: totAligned, units: 0, color: C_ALIGNED, label: 'Aligned', hint: 'shape matches live', weightClass: 'good', weightText: '0' },
-    { n: totDrifted, units: weighted.driftedUnits, color: C_DRIFTED, label: 'Drifted', hint: 'field values diverge', weightClass: 'weighted', weightText: 'field' },
-    { n: totA, units: weighted.onlyInAUnits, color: C_DECL, label: frame.aLabel, hint: frame.aHint, weightClass: frame.aWeightClass, weightText: frame.aWeightText },
-    { n: totB, units: weighted.onlyInBUnits, color: C_SHADOW, label: frame.bLabel, hint: frame.bHint, weightClass: frame.bWeightClass, weightText: frame.bWeightText },
-  ].map(l => `<li class="drift-legend-item">
-      <span class="drift-legend-sw" style="background:${l.color}"></span>
-      <span class="drift-legend-n">${l.n}</span>
-      <span class="drift-legend-label">${escapeHtml(l.label)}</span>
-      <span class="drift-weight drift-weight-${escapeHtml(l.weightClass)}">w ${escapeHtml(l.weightText)}</span>
-      <span class="drift-legend-risk">${escapeHtml(fmtUnits(l.units))} risk units</span>
-      <span class="drift-legend-hint">${escapeHtml(l.hint)}</span>
-    </li>`).join('');
-
-  const layerRowsHtml = rows.map(r => `
-    <tr class="drift-row">
-      <th class="drift-row-layer"><span class="drift-row-num">${r.L}</span> ${escapeHtml(r.name)}</th>
-      <td class="drift-cell is-aligned">
-        <span class="drift-cell-n">${r.aligned.length}</span>
-        <span class="drift-cell-keys">${r.aligned.length ? sampleKeys(r.aligned) : ''}</span>
-      </td>
-      <td class="drift-cell is-drifted">
-        <span class="drift-cell-n">${r.drifted.length}</span>
-        <span class="drift-cell-keys">${r.drifted.length ? sampleDeltas(r.drifted) : ''}</span>
-      </td>
-      <td class="drift-cell ${frame.aClass}">
-        <span class="drift-cell-n">${r.onlyInA.length}</span>
-        <span class="drift-cell-keys">${r.onlyInA.length ? sampleKeys(r.onlyInA) : ''}</span>
-      </td>
-      <td class="drift-cell ${frame.bClass}">
-        <span class="drift-cell-n">${r.onlyInB.length}</span>
-        <span class="drift-cell-keys">${r.onlyInB.length ? sampleKeys(r.onlyInB) : ''}</span>
-        ${r.outOfScope.length ? `<span class="drift-cell-oos" title="Live members of families this pack declares nothing of — platform inventory, not drift.">+${r.outOfScope.length} out of scope</span>` : ''}
-      </td>
-    </tr>`).join('');
-
-  const lensNote = useLens
-    ? ` <span class="drift-lens-note">· lens: ${escapeHtml(LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens)}</span>`
-    : '';
-
-  // A thin live draft (some probes 503'd) silently inflates declared-not-
-  // live into garbage. Say so LOUDLY before anyone reads the numbers.
-  const liveEvidence = partialLiveEvidence(packB);
-  const partialBanner = liveEvidence.partial ? `
-    <div class="drift-partial-banner">
-      <span class="drift-partial-key">⚠ PARTIAL LIVE EVIDENCE</span>
-      ${liveEvidence.failed.length} of ${liveEvidence.attempted.length} probe${liveEvidence.failed.length === 1 ? '' : 's'} failed during the live draft
-      (<code>${escapeHtml(liveEvidence.failed.join(', '))}</code>) — the live endpoint was likely mid-deploy or overloaded.
-      Pack B may be missing whole surfaces, so <strong>"${escapeHtml(frame.aLabel)}" is probably overstated</strong>.
-      Redraft from MCP before acting on this drift.
-    </div>` : '';
-
-  wrap.innerHTML = `
-    <div class="benchmark-block-head">
-      <span class="benchmark-block-eyebrow">${frame.eyebrow}</span>
-      ${frame.lede}${lensNote}
-    </div>
-    ${partialBanner}
-    <div class="drift-charts">
-      <figure class="drift-chart">
-        ${donut([{ value: totAligned, color: C_ALIGNED }, { value: weighted.totalBadness, color: 'var(--ink-4)' }], weighted.healthPct + '%')}
-        <figcaption>weighted health</figcaption>
-      </figure>
-      <span class="drift-charts-arrow" aria-hidden="true">→</span>
-      <figure class="drift-chart">
-        ${donut([
-          { value: weighted.driftedUnits, color: C_DRIFTED },
-          { value: weighted.onlyInAUnits, color: C_DECL },
-          { value: weighted.onlyInBUnits, color: C_SHADOW },
-        ], fmtUnits(weighted.totalBadness))}
-        <figcaption>weighted badness</figcaption>
-      </figure>
-      <ul class="drift-legend">${legendHtml}</ul>
-    </div>
-    <p class="drift-risk-note">${escapeHtml(frame.riskNote)} Health = aligned / (aligned + weighted badness).</p>
-    <table class="drift-table">
-      <thead>
-        <tr>
-          <th class="drift-th-layer">Layer</th>
-          <th class="drift-th is-aligned">Aligned</th>
-          <th class="drift-th is-drifted">Drifted</th>
-          <th class="drift-th ${frame.aClass}">${escapeHtml(frame.aLabel)}</th>
-          <th class="drift-th ${frame.bClass}">${escapeHtml(frame.bLabel)}</th>
-        </tr>
-      </thead>
-      <tbody>${layerRowsHtml}</tbody>
-    </table>
-    ${totScaffold ? `<p class="drift-oos-note">${totScaffold} schema-required scaffold artefact${totScaffold === 1 ? '' : 's'} had no source evidence in the selected environment. Shown in the pack, excluded from drift badness.</p>` : ''}
-    ${totOOS ? `<p class="drift-oos-note">${totOOS} live artefact${totOOS === 1 ? '' : 's'} out of declared scope — members of families <strong>${escapeHtml(bName)}</strong> runs but your pack doesn't declare (the rest of the platform inventory). Shown for context, not counted as drift.
-      <button type="button" class="ctrl-link drift-oos-widen" title="Switch the live scope to 'All live' so the parked inventory is classified instead of parked">show them — widen scope</button></p>` : ''}
-  `;
-  // Parked ≠ ignored: one click reclassifies the out-of-scope inventory.
-  wrap.querySelector('.drift-oos-widen')?.addEventListener('click', () => {
-    state.diffScopeMode = 'all';
-    state.diff = null;
-    refreshDiff();
-  });
-
-  // ---------- bidirectional remediation actions (item 4) ----------
-  // The two arrows, right where the gaps are diagnosed. Forward (drift mode
-  // only): compile + deploy the declared-not-live set — preset → deploy
-  // modal. Reverse (both modes): adopt the onlyInB entries back into the
-  // declared pack — live shadow signals in drift mode, the target's
-  // declarations in gap/benchmark mode. In gap mode onlyInA means "beyond
-  // target", so there is nothing to push.
-  if (totA > 0 || totB > 0) {
-    const actions = document.createElement('div');
-    actions.className = 'drift-actions';
-    const onlyInAArts = rows.flatMap(r => r.onlyInA.map(e => e.artefact).filter(Boolean));
-    const deployable = mode === 'drift'
-      ? deploySelectionFromEntries(onlyInAArts.map(a => deploySurfaceForArtefact(a)))
-      : { identities: new Set(), rows: 0 };
-    const rfLabel = mode === 'drift'
-      ? `⤵ Retrofeed ${totB} shadow signal${totB === 1 ? '' : 's'} to the pack`
-      : `⤵ Adopt ${totB} declaration${totB === 1 ? '' : 's'} from ${escapeHtml(bName)}`;
-    actions.innerHTML = `
-      ${mode === 'drift' && totA > 0 && deployable.identities.size ? `
-        <button type="button" class="ctrl-btn" id="drift-deploy-missing"
-          title="Open the deploy modal preselected with the deployable declared-not-live artefacts (${deployable.rows} rule/dashboard row${deployable.rows === 1 ? '' : 's'})">
-          ⇪ Deploy the missing set (${deployable.identities.size})</button>` : ''}
-      ${totB > 0 ? `
-        <button type="button" class="ctrl-btn" id="drift-retrofeed"
-          title="Adopt the ${mode === 'drift' ? 'live-not-declared shadow signals' : 'target pack’s missing declarations'} into your pack — download the additions and the updated pack for a repo PR">
-          ${rfLabel}</button>` : ''}
-      <div class="drift-retrofeed-result" hidden></div>
-    `;
-    wrap.appendChild(actions);
-    actions.querySelector('#drift-deploy-missing')?.addEventListener('click', () => {
-      openDeployModal({ packId: state.selectedPackId, presetIdentities: deployable.identities });
-    });
-    actions.querySelector('#drift-retrofeed')?.addEventListener('click', (ev) =>
-      runRetrofeed(ev.currentTarget, actions.querySelector('.drift-retrofeed-result')));
-  }
-  return wrap;
 }
 
 // Call the retrofeed endpoint for the current A/B pair and render the
@@ -1302,13 +1000,32 @@ function renderPostureNarrative(posture) {
 //   below  → Far from diagnostic-grade
 // ============================================================
 
-// Diagnose view — rendered as a compliance report, not a pitch deck.
-// Density and evidence are the design language; every row encodes
-// observed vs expected. No giant typography, no decorative tiles.
-// Reads like an audit findings document because that's what it IS.
-function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
+// Diagnose view — a compliance report with mission-control posture:
+// the ratified narrative header answers "can we trust it?" at a glance,
+// the action strip answers "what do we do?", the trend tiles answer
+// "which way is it moving?", and every deep report is a focused panel
+// instead of a stapled scroll. Density and evidence stay the design
+// language; every row still encodes observed vs expected.
+function renderDiagnosticGradeVerdict(diagnostic, lens, posture) {
   const wrap = document.createElement('div');
   wrap.className = 'diag-report';
+
+  // The drift universe, projected through the active product lens (same
+  // rule the old drill used) so panel counts match the lensed view.
+  const useLens = lens && lens !== 'all';
+  const passesLens = !useLens ? null : (entry, side) => {
+    const art = side === 'b' ? (entry.artefact || entry.b) : (entry.artefact || entry.a);
+    const pack = side === 'b' ? state.packB : state.pack;
+    return productSurface(art, lens, pack);
+  };
+  const vm = buildVerdictModel({ passesLens });
+
+  // Trend tiles read journey run history; kick the fetch off now and
+  // repaint once when it lands (only when no comparison gate is pending —
+  // re-entering the gate would double-fetch the diff).
+  loadRunHistory(() => {
+    if (state.view === 'compare' && (!state.compareBId || state.packB)) renderMainView();
+  });
 
   const cov = diagnostic.coverage;
   const trust = diagnostic.trust;
@@ -1346,6 +1063,16 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
   const bar = (p) => `
     <span class="diag-bar"><span class="diag-bar-fill" style="width:${Math.max(0,Math.min(100,p))}%"></span></span>
   `;
+
+  // The ONE thing costing the most grade, with the engine-computed
+  // projection of fixing exactly that bucket (see verdict-ui.projectGrade
+  // for the honesty fence — chains/freshness/chaos never projected).
+  let dragSentence = '';
+  if (vm.haveB && vm.biggestGap) {
+    const gapUids = new Set(vm.items.filter(i => i.kind === vm.biggestGap.kind).map(i => i.uid));
+    const gp = gapUids.size ? projectGrade(gapUids) : null;
+    dragSentence = gp ? projectionSentence(gp, gapUids.size) : '';
+  }
 
   // ---------- Criterion table (2A or 2B) ----------
   // One row per criterion. Tight. Pip · name · observed · expected.
@@ -1494,63 +1221,374 @@ function renderDiagnosticGradeVerdict(diagnostic, lens, packB) {
           </tbody>
         </table>
       </div>
+      ${vm.haveB ? `
+      <div class="diag-head-drag${vm.biggestGap ? '' : ' is-clean'}">
+        ${vm.biggestGap ? `
+          <span class="diag-drag-eyebrow">BIGGEST DRAG ON THE GRADE</span>
+          <p class="diag-drag-lede"><strong class="diag-drag-n">${vm.biggestGap.n}</strong>
+            artefact${vm.biggestGap.n === 1 ? '' : 's'} <strong>${escapeHtml(vm.biggestGap.label)}</strong>
+            — ${escapeHtml(fmtUnits(vm.biggestGap.units))} of ${escapeHtml(fmtUnits(vm.weighted.totalBadness))} weighted badness units.</p>
+          ${dragSentence ? `<p class="diag-drag-projection">${escapeHtml(dragSentence)}</p>` : ''}
+        ` : `
+          <span class="diag-drag-eyebrow">NO DRIFT DETECTED</span>
+          <p class="diag-drag-lede">Every concrete artefact aligns with <strong>${escapeHtml(vm.bName)}</strong>.
+            Remaining grade loss comes from the scored criteria, not drift.</p>
+        `}
+      </div>` : ''}
       <!-- The scale sits BESIDE the summary, inside the header block —
-           other bands (drift drill, posture) are inserted directly after
-           the header, so anything below it gets pushed off-screen. -->
+           other bands are inserted directly after the header, so anything
+           below it gets pushed off-screen. -->
       <aside class="diag-grade-scale">
         ${ladderHtml}
       </aside>
     </header>
-
-    <section class="diag-section">
-      <header class="diag-section-head">
-        <span class="diag-section-num">2A</span>
-        <span class="diag-section-title">Coverage — are we observing the right signals?</span>
-        <span class="diag-section-meta">${fmtScore(cov.passed)}/${cov.total} score · ${covPct}%</span>
-      </header>
-      ${critTable(cov.criteria)}
-    </section>
-
-    <section class="diag-section">
-      <header class="diag-section-head">
-        <span class="diag-section-num">2B</span>
-        <span class="diag-section-title">Trust — can we trust what the signals show?</span>
-        <span class="diag-section-meta">${fmtScore(trust.passed)}/${trust.total} score · ${trustPct}%</span>
-      </header>
-      ${!trust.hasMcpSource ? `
-        <div class="diag-banner">
-          <span class="diag-banner-key">WARN</span>
-          Pack A carries no live signal. Drift &amp; freshness require an MCP-drafted or live-refreshed pack to verify.
-        </div>
-      ` : ''}
-      ${critTable(trust.criteria)}
-    </section>
-
-    <section class="diag-section diag-section-info">
-      <header class="diag-section-head">
-        <span class="diag-section-num">2C</span>
-        <span class="diag-section-title">Operability — can oncall act on what it sees?</span>
-        <span class="diag-section-meta">informational · not scored</span>
-      </header>
-      <div class="diag-banner">
-        <span class="diag-banner-key">INFO</span>
-        ${escapeHtml(operability.note || 'response readiness, not diagnostic capability — observed, displayed, never scored')}
-      </div>
-      ${critTable(operability.criteria)}
-    </section>
-
-    ${chainBlock}
-
-    <section class="diag-section">
-      <header class="diag-section-head">
-        <span class="diag-section-num">⊜</span>
-        <span class="diag-section-title">Evidence — expected vs observed</span>
-        <span class="diag-section-meta">${fmtScore(evidenceRows.filter(r => !r.informational).reduce((n, r) => n + criterionScore(r), 0))}/${evidenceRows.filter(r => !r.informational).length} evidence score · +${evidenceRows.filter(r => r.informational).length} informational</span>
-      </header>
-      ${evidenceTable}
-    </section>
   `;
+
+  // Action strip — deploy-the-missing-set / retrofeed / re-verify.
+  // Persistent, directly under the verdict: the most valuable pixels on
+  // the page are never buried mid-scroll again.
+  wrap.appendChild(buildVerdictActionStrip(vm));
+  if (vm.haveB) wrap.appendChild(renderLiveScopeControl({ standalone: true }));
+
+  // Honesty before numbers: a thin live draft makes "declared, not live"
+  // garbage — say so LOUDLY before anyone reads the panels.
+  wrap.insertAdjacentHTML('beforeend', partialEvidenceBanner(vm));
+
+  // Trend tiles — what the header can't show: which way it's moving.
+  wrap.insertAdjacentHTML('beforeend', buildTrendTiles(vm, diagnostic));
+
+  // The deep reports — 2A/2B/2C, chains, evidence, drift lattice, strata,
+  // posture — as focused panels. Same ratified content, reachable instead
+  // of stapled.
+  wrap.appendChild(buildVerdictPanels(vm, {
+    posture,
+    lensSlug: lens,
+    lensLabel: useLens ? (LENS_PRODUCTS.find(lp => lp.slug === lens)?.label || lens) : null,
+    covSection: {
+      meta: `${fmtScore(cov.passed)}/${cov.total} score · ${covPct}%`,
+      table: critTable(cov.criteria), criteria: cov.criteria,
+    },
+    trustSection: {
+      meta: `${fmtScore(trust.passed)}/${trust.total} score · ${trustPct}%`,
+      table: critTable(trust.criteria), criteria: trust.criteria,
+      hasMcpSource: trust.hasMcpSource,
+    },
+    opSection: {
+      table: critTable(operability.criteria), criteria: operability.criteria,
+      note: operability.note || 'response readiness, not diagnostic capability — observed, displayed, never scored',
+    },
+    evidenceSection: {
+      meta: `${fmtScore(evidenceRows.filter(r => !r.informational).reduce((n, r) => n + criterionScore(r), 0))}/${evidenceRows.filter(r => !r.informational).length} evidence score · +${evidenceRows.filter(r => r.informational).length} informational`,
+      table: evidenceTable, rows: evidenceRows,
+    },
+    chainBlock,
+    chainRollup: diagnostic.traceabilityGraph?.rollup || null,
+  }));
   return wrap;
+}
+
+// ---------- the verdict page bands (action strip · trends · panels) ----------
+
+// Deploy / retrofeed / re-verify — wired to the same machinery the old
+// drift drill carried (deploy modal preset, runRetrofeed POST), now
+// persistent at the top instead of buried mid-scroll.
+function buildVerdictActionStrip(vm) {
+  const strip = document.createElement('div');
+  strip.className = 'mc-actionbar';
+  const dep = vm.deployableSet;
+  const rfLabel = vm.mode === 'drift'
+    ? `⤵ Retrofeed ${vm.totals.onlyInB} shadow signal${vm.totals.onlyInB === 1 ? '' : 's'} to the pack`
+    : `⤵ Adopt ${vm.totals.onlyInB} declaration${vm.totals.onlyInB === 1 ? '' : 's'} from ${escapeHtml(vm.bName)}`;
+  strip.innerHTML = `
+    ${vm.mode === 'drift' && dep.identities.size ? `
+      <button type="button" class="mc-act is-primary" id="mc-deploy-missing"
+        title="Open the deploy modal preselected with the deployable declared-not-live artefacts (${dep.rows} rule/dashboard row${dep.rows === 1 ? '' : 's'})">
+        ⇪ Deploy the missing set (${dep.identities.size})</button>` : ''}
+    ${vm.haveB && vm.totals.onlyInB > 0 ? `
+      <button type="button" class="mc-act" id="mc-retrofeed"
+        title="Adopt the ${vm.mode === 'drift' ? 'live-not-declared shadow signals' : 'target pack’s missing declarations'} into your pack — download the additions and the updated pack for a repo PR">
+        ${rfLabel}</button>` : ''}
+    <button type="button" class="mc-act" id="mc-reverify"
+      title="Open Journeys to re-run the live verification — the only thing that actually moves the grade">↻ Re-verify</button>
+    <button type="button" class="mc-act is-quiet" id="mc-open-remediate">Open Remediate →</button>
+    <div class="drift-retrofeed-result" hidden></div>
+  `;
+  strip.querySelector('#mc-deploy-missing')?.addEventListener('click', () =>
+    openDeployModal({ packId: state.selectedPackId, presetIdentities: vm.deployableSet.identities }));
+  strip.querySelector('#mc-retrofeed')?.addEventListener('click', (ev) =>
+    runRetrofeed(ev.currentTarget, strip.querySelector('.drift-retrofeed-result')));
+  strip.querySelector('#mc-reverify')?.addEventListener('click', () => {
+    state.view = 'journeys';
+    renderTabs(); renderMainView();
+  });
+  strip.querySelector('#mc-open-remediate')?.addEventListener('click', () => {
+    state.view = 'compile';
+    renderTabs(); renderMainView();
+  });
+  return strip;
+}
+
+// Trend tiles — sparkline + delta from journey run history where it
+// exists; honest "no run history yet" notes where it doesn't.
+function buildTrendTiles(vm, diagnostic) {
+  const scoreSeries = runSeries('gradeScore');
+  const alignSeries = runSeries('alignmentPct');
+  const freshC = diagnostic.trust.criteria.find(c => c.key === 'fresh');
+  const rollup = diagnostic.traceabilityGraph?.rollup;
+  const histNote = scoreSeries ? '' : 'no run history yet — capture a journey to chart trends';
+  const tiles = [
+    kpiTile({
+      accent: 'cmp', label: 'SCORE TREND', value: `${vm.overallPct}`, unit: '%',
+      series: scoreSeries, deltaText: deltaVsPrevious(scoreSeries), note: histNote,
+    }),
+    kpiTile({
+      accent: 'amber', label: 'DRIFT FIDELITY',
+      value: vm.haveB && vm.diff ? `${vm.weighted.healthPct}` : '—',
+      unit: vm.haveB && vm.diff ? '%' : '',
+      series: alignSeries, deltaText: deltaVsPrevious(alignSeries),
+      note: vm.haveB && vm.diff ? `${fmtUnits(vm.weighted.totalBadness)} badness units` : 'load a Pack B to measure',
+      warn: vm.haveB && vm.diff && vm.weighted.healthPct < DRIFT_HEALTH_PASS_PCT,
+    }),
+    kpiTile({
+      accent: 'purple', label: 'CHAIN INTEGRITY',
+      value: rollup ? `${Math.round((rollup.integrityMean || 0) * 100)}` : '—',
+      unit: rollup ? '%' : '',
+      note: rollup ? `${rollup.intact}/${rollup.declaredTotal} declared commitments intact` : 'needs a live diff with declared SLO chains',
+      warn: !!rollup && (rollup.broken > 0),
+    }),
+    kpiTile({
+      accent: 'cyan', label: 'FRESHNESS', value: freshC?.pass ? 'OK' : 'STALE', unit: '',
+      note: freshC?.detail || '', warn: !freshC?.pass,
+    }),
+  ];
+  return `<div class="mc-tiles">${tiles.join('')}</div>`;
+}
+
+// One focused panel: glanceable body, expandable detail (⤢), one title,
+// one question — no prose walls. Toggling is local DOM state.
+function mcPanel({ id, accent = 'cmp', num = '', title, question, micro = '', body, detail = '', wide = false }) {
+  return `
+    <article class="mc-panel is-${accent}${wide ? ' is-wide' : ''}" data-panel="${escapeHtml(id)}">
+      <header class="mc-panel-head">
+        ${num ? `<span class="mc-panel-num">${escapeHtml(num)}</span>` : ''}
+        <span class="mc-panel-title">${escapeHtml(title)}</span>
+        <span class="mc-panel-micro">${micro}</span>
+        ${detail ? `<button type="button" class="mc-panel-toggle" title="expand the full report">⤢</button>` : ''}
+      </header>
+      <div class="mc-panel-q">${escapeHtml(question)}</div>
+      <div class="mc-panel-body">${body}</div>
+      ${detail ? `<div class="mc-panel-detail" hidden>${detail}</div>` : ''}
+    </article>`;
+}
+
+const C_LATTICE = {
+  aligned: 'var(--pass-border)',
+  drifted: 'rgb(150, 90, 200)',
+  decl: 'rgb(200, 70, 40)',
+  shadow: 'rgb(180, 120, 0)',
+};
+
+function buildVerdictPanels(vm, ctx) {
+  const grid = document.createElement('div');
+  grid.className = 'mc-grid';
+  const panels = [];
+  const critChips = (criteria) => `
+    <ul class="mc-crit">${criteria.map(c => `
+      <li>${c.informational ? chip('info', c.pass ? 'YES' : 'NO') : criterionChip(c)}
+        <span class="mc-crit-name" title="${escapeHtml(c.detail)}">${escapeHtml(c.label)}</span></li>`).join('')}
+    </ul>`;
+
+  // Sample keys for a bucket — the human artefact titles, exactly like
+  // the old drill, so the strata detail names WHAT drifted, not just counts.
+  const sampleKeys = (entries, max = 4) => {
+    const names = entries.slice(0, max).map(e => escapeHtml(diffEntryLabel(e)));
+    const more = entries.length > max ? ` +${entries.length - max}` : '';
+    return names.length ? names.join(' · ') + more : '—';
+  };
+  const sampleDeltas = (entries, max = 3) => {
+    const names = entries.slice(0, max).map(e => {
+      const fields = (e.deltas || []).map(d => d.field).slice(0, 3).join(',');
+      return escapeHtml(diffEntryLabel(e)) + (fields ? `<span class="drift-delta-fields">(${escapeHtml(fields)})</span>` : '');
+    });
+    const more = entries.length > max ? ` +${entries.length - max}` : '';
+    return names.length ? names.join(' · ') + more : '—';
+  };
+
+  if (vm.haveB && vm.diff) {
+    const aLabel = vm.mode === 'drift' ? 'declared, not live' : 'beyond target';
+    const bLabel = vm.mode === 'drift' ? 'live, not declared' : 'missing vs target';
+    const aW = vm.mode === 'drift' ? '1.0' : '0.15';
+    const bW = vm.mode === 'drift' ? '0.15' : '1.0';
+    const riskNote = vm.mode === 'drift'
+      ? 'Weighted badness: declared-not-live = 1.0; drifted = 0.5 by default, 1.0 for decision-bearing fields, 0.1 for cosmetic fields; live-not-declared = 0.15. Out-of-scope live inventory is excluded.'
+      : 'Weighted badness: missing target artefacts = 1.0; drifted = 0.5 by default, 1.0 for decision-bearing fields, 0.1 for cosmetic fields; beyond-target extras = 0.15.';
+    panels.push(mcPanel({
+      id: 'lattice', accent: 'amber', title: 'Signal Lattice',
+      question: vm.mode === 'drift' ? `does the declared pack match ${vm.bName}?` : `how far from ${vm.bName}?`,
+      micro: chip(vm.weighted.healthPct >= DRIFT_HEALTH_PASS_PCT ? 'pass' : vm.weighted.healthPct >= 60 ? 'partial' : 'fail', `${vm.weighted.healthPct}% health`)
+        + (ctx.lensLabel ? ` ${chip('info', `LENS · ${ctx.lensLabel.toUpperCase()}`)}` : ''),
+      body: `
+        <div class="mc-lattice">
+          <figure>${donutSvg([{ value: vm.totals.aligned, color: C_LATTICE.aligned }, { value: vm.weighted.totalBadness, color: 'var(--ink-4)' }], vm.weighted.healthPct + '%', { size: 96 })}<figcaption>weighted health</figcaption></figure>
+          <figure>${donutSvg([
+            { value: vm.weighted.driftedUnits, color: C_LATTICE.drifted },
+            { value: vm.weighted.onlyInAUnits, color: C_LATTICE.decl },
+            { value: vm.weighted.onlyInBUnits, color: C_LATTICE.shadow },
+          ], fmtUnits(vm.weighted.totalBadness), { size: 96 })}<figcaption>weighted badness</figcaption></figure>
+          <ul class="mc-lattice-legend">
+            <li><span class="sw" style="background:${C_LATTICE.aligned}"></span>${vm.totals.aligned} aligned · w 0</li>
+            <li><span class="sw" style="background:${C_LATTICE.drifted}"></span>${vm.totals.drifted} drifted · w per field</li>
+            <li><span class="sw" style="background:${C_LATTICE.decl}"></span>${vm.totals.onlyInA} ${escapeHtml(aLabel)} · w ${aW}</li>
+            <li><span class="sw" style="background:${C_LATTICE.shadow}"></span>${vm.totals.onlyInB} ${escapeHtml(bLabel)} · w ${bW}</li>
+          </ul>
+        </div>`,
+      detail: `
+        <p class="drift-risk-note">${escapeHtml(riskNote)} Health = aligned / (aligned + weighted badness).</p>
+        ${scaffoldOosNotes(vm)}
+        ${vm.totals.outOfScope ? '<button type="button" class="ctrl-link drift-oos-widen" title="Switch the live scope to \'All live\' so the parked inventory is classified instead of parked">show them — widen scope</button>' : ''}`,
+    }));
+
+    const maxBad = Math.max(1, ...vm.layers.map(r => r.drifted.length + r.onlyInA.length + r.onlyInB.length));
+    panels.push(mcPanel({
+      id: 'strata', accent: 'blue', title: 'Strata Drill',
+      question: 'which layer carries the drift?',
+      micro: `${vm.layers.length} strata`,
+      body: `
+        <table class="mc-strata">
+          <thead><tr><th></th><th>aligned</th><th>drifted</th><th>a-only</th><th>b-only</th></tr></thead>
+          <tbody>${vm.layers.map(r => {
+            const bad = r.drifted.length + r.onlyInA.length + r.onlyInB.length;
+            return `<tr class="${bad ? '' : 'is-quiet'}" style="--heat:${(bad / maxBad).toFixed(2)}">
+              <th><span class="mc-lnum">${r.L}</span> ${escapeHtml(r.name)}</th>
+              <td class="is-aligned">${r.aligned.length}</td>
+              <td class="is-drifted">${r.drifted.length || ''}</td>
+              <td class="is-decl">${r.onlyInA.length || ''}</td>
+              <td class="is-shadow">${r.onlyInB.length || ''}${r.outOfScope.length ? ` <span class="mc-oos-inline">+${r.outOfScope.length} oos</span>` : ''}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>`,
+      detail: vm.layers.map(r => {
+        const drifted = r.drifted.length ? `<div class="mc-strata-detail"><span class="mc-lnum">${r.L}</span> drifted: ${sampleDeltas(r.drifted)}</div>` : '';
+        const missing = r.onlyInA.length ? `<div class="mc-strata-detail"><span class="mc-lnum">${r.L}</span> ${vm.mode === 'drift' ? 'declared-not-live' : 'beyond target'}: ${sampleKeys(r.onlyInA)}</div>` : '';
+        const shadow = r.onlyInB.length ? `<div class="mc-strata-detail"><span class="mc-lnum">${r.L}</span> ${vm.mode === 'drift' ? 'live-not-declared' : 'missing vs target'}: ${sampleKeys(r.onlyInB)}</div>` : '';
+        return drifted + missing + shadow;
+      }).join('') || '<div class="mc-strata-detail">no deltas</div>',
+    }));
+  }
+
+  if (ctx.chainBlock && ctx.chainRollup) {
+    const r = ctx.chainRollup;
+    panels.push(mcPanel({
+      id: 'chains', accent: 'purple', num: '2B.G', title: 'Requirement Chains', wide: true,
+      question: 'do declared SLO/SLI derivations hold in live?',
+      micro: chip(r.broken ? 'fail' : r.partial ? 'partial' : 'pass', `${r.intact}/${r.declaredTotal} INTACT`)
+        + ` ${Math.round((r.integrityMean || 0) * 100)}% integrity`,
+      body: `
+        <div class="mc-cells">
+          <span class="mc-cell is-pass"><strong>${r.intact}</strong> intact</span>
+          <span class="mc-cell is-partial"><strong>${r.partial}</strong> partial</span>
+          <span class="mc-cell is-fail"><strong>${r.broken}</strong> broken</span>
+          <span class="mc-cell is-info"><strong>${r.undeclared}</strong> live-only</span>
+        </div>`,
+      detail: ctx.chainBlock,
+    }));
+  }
+
+  panels.push(mcPanel({
+    id: 'coverage', accent: 'blue', num: '2A', title: 'Coverage',
+    question: 'are we observing the right signals?',
+    micro: ctx.covSection.meta,
+    body: critChips(ctx.covSection.criteria),
+    detail: ctx.covSection.table,
+  }));
+  panels.push(mcPanel({
+    id: 'trust', accent: 'green', num: '2B', title: 'Trust',
+    question: 'can we trust what the signals show?',
+    micro: ctx.trustSection.meta,
+    body: `${ctx.trustSection.hasMcpSource ? '' : `
+      <div class="diag-banner"><span class="diag-banner-key">WARN</span>
+        Pack A carries no live signal. Drift &amp; freshness require an MCP-drafted or live-refreshed pack to verify.</div>`}
+      ${critChips(ctx.trustSection.criteria)}`,
+    detail: ctx.trustSection.table,
+  }));
+  panels.push(mcPanel({
+    id: 'operability', accent: 'gray', num: '2C', title: 'Operability',
+    question: 'can oncall act on what it sees?',
+    micro: chip('info', 'INFORMATIONAL · NOT SCORED'),
+    body: `
+      <div class="diag-banner"><span class="diag-banner-key">INFO</span> ${escapeHtml(ctx.opSection.note)}</div>
+      ${critChips(ctx.opSection.criteria)}`,
+    detail: ctx.opSection.table,
+  }));
+  panels.push(mcPanel({
+    id: 'evidence', accent: 'cyan', num: '⊜', title: 'Evidence Ledger',
+    question: 'what pack field backs each claim?',
+    micro: ctx.evidenceSection.meta,
+    body: (() => {
+      const failing = ctx.evidenceSection.rows.filter(r => !r.informational && !r.pass);
+      if (!failing.length) return '<div class="mc-panel-note">every scored assertion attested — expand for the full field-by-field trail</div>';
+      return `<ul class="mc-crit">${failing.map(r => `
+        <li>${chip(typeof r.score === 'number' && r.score > 0 ? 'partial' : 'fail', typeof r.score === 'number' && r.score > 0 ? 'PARTIAL' : 'FAIL')}
+          <span class="mc-crit-name mc-mono" title="${escapeHtml(r.obs)}">${escapeHtml(r.field)}</span></li>`).join('')}
+      </ul>`;
+    })(),
+    detail: ctx.evidenceSection.table,
+  }));
+
+  // Posture matrix — the per-layer × per-mechanism coverage substrate
+  // behind the "comprehensive" criterion. DOM-built, so appended after.
+  let present = 0, evidence = 0, absent = 0;
+  for (const l of POSTURE_LAYERS) {
+    for (const m of POSTURE_MECHANISMS_PER_LAYER) {
+      const arr = ctx.posture.cells[`${l.key}:${m.key}`];
+      if (!arr || arr.length === 0) absent++;
+      else if (arr.every(a => a._evidence)) evidence++;
+      else present++;
+    }
+  }
+  const postureTotal = POSTURE_LAYERS.length * POSTURE_MECHANISMS_PER_LAYER.length;
+  const observedPct = Math.round(((present + evidence) / postureTotal) * 100);
+  panels.push(mcPanel({
+    id: 'posture', accent: 'cmp', title: 'Posture Matrix', wide: true,
+    question: 'where do the coverage gaps live, mechanism by mechanism?',
+    micro: chip(observedPct >= 50 ? 'pass' : 'fail', `${observedPct}% OBSERVED`)
+      + ` ${evidence} evidenced · ${present} declared · ${absent} absent of ${postureTotal}`,
+    body: '<div class="mc-panel-note">4 layers × 10 mechanisms — expand for the full matrix and narrative</div>',
+    detail: '<div class="mc-posture-host"></div>',
+  }));
+
+  grid.innerHTML = panels.join('');
+
+  // DOM-built posture content into its host — the full ratified stack:
+  // headline verdict word, per-layer pie row, the matrix, the narrative.
+  // Reorganized into the panel, nothing removed.
+  const postureHost = grid.querySelector('.mc-posture-host');
+  if (postureHost) {
+    postureHost.appendChild(renderBenchmarkHeadline(ctx.posture, ctx.lensSlug));
+    postureHost.appendChild(renderPosturePieRow(ctx.posture));
+    postureHost.appendChild(renderPostureMatrix(ctx.posture));
+    postureHost.appendChild(renderPostureNarrative(ctx.posture));
+  }
+
+  // One delegated listener: panel expand/collapse + the oos widen action.
+  grid.addEventListener('click', (ev) => {
+    if (ev.target.closest?.('.drift-oos-widen')) {
+      state.diffScopeMode = 'all';
+      state.diff = null;
+      refreshDiff();
+      return;
+    }
+    const btn = ev.target.closest?.('.mc-panel-toggle');
+    if (!btn) return;
+    const panel = btn.closest('.mc-panel');
+    const detail = panel.querySelector('.mc-panel-detail');
+    const open = detail.hidden;
+    detail.hidden = !open;
+    panel.classList.toggle('is-expanded', open);
+    btn.textContent = open ? '⤡' : '⤢';
+  });
+
+  return grid;
 }
 
 // ---------- requirement-branch reconciliation (item 6) ----------
