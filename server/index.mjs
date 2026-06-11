@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { parse as parseYaml, emit as emitYaml } from '../tools/lib/mini-yaml.mjs';
 import { adapt, listEnvironments, applyEnvironmentOverlay } from '../tools/lib/adapter.mjs';
+import { isLegacyLayeredPack, upconvertLegacyPack } from '../tools/lib/legacy.mjs';
 import { validateCanonical, SPEC_VERSION } from '../tools/lib/validator.mjs';
 import { evaluateConformance, RUBRIC } from '../tools/lib/conformance.mjs';
 import { crawlFiles, crawlToYaml } from '../tools/lib/crawler.mjs';
@@ -2270,6 +2271,14 @@ app.post('/api/validate', (req, res) => {
     } else {
       return res.status(400).json({ ok: false, errors: ['expected JSON body or text/yaml body'] });
     }
+    // Previous pack format — the pre-v1.2 layered JSON (examples/legacy/).
+    // Upconvert at the gate so everything downstream (validator, adapter,
+    // conformance, compile, deploy, diff) stays one canonical pipeline.
+    // The response carries the conversion report so the client can say so.
+    let legacyReport = null;
+    if (isLegacyLayeredPack(canonical)) {
+      ({ canonical, report: legacyReport } = upconvertLegacyPack(canonical, { now: new Date().toISOString() }));
+    }
     const errors = validateCanonical(canonical, SCHEMA);
     if (errors.length) return res.json({ ok: false, errors });
     const env = readEnv(req.query);
@@ -2284,7 +2293,7 @@ app.post('/api/validate', (req, res) => {
     // mcp URL); falls back to the canonical's metadata.name.
     const sourceHint = typeof req.query.source === 'string' && req.query.source ? req.query.source : null;
     const id = registerUploadedPack(canonical, sourceHint || canonical.metadata?.name || 'upload');
-    res.json({ ok: true, adapted, conformance, registered: { id, source: sourceHint || null } });
+    res.json({ ok: true, adapted, conformance, registered: { id, source: sourceHint || null }, ...(legacyReport ? { legacy: legacyReport } : {}) });
   } catch (e) {
     res.status(400).json({ ok: false, errors: [e.message] });
   }
