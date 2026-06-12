@@ -59,6 +59,7 @@ export const CAPABILITIES = Object.freeze({
   // ---- discovery probes: candidate cascade, first responder wins ---------
   recording_rules: {
     kind: 'probe',
+    responseShape: 'rule-groups',
     // VictoriaMetrics stacks expose recorded series + their PromQL via
     // `vmalert_rules` (type=recording carries the real `query` body and the
     // group `interval`). It is tried FIRST because on VM-backed clusters the
@@ -81,6 +82,7 @@ export const CAPABILITIES = Object.freeze({
   },
   alert_rules: {
     kind: 'probe',
+    responseShape: 'rule-groups',
     // VMAlert (`vmalert_rules` type=alerting) carries the real alert `query`,
     // `severity`, and `for`/`duration`; tried FIRST for the same reason as
     // recording_rules (the Prometheus ruler comes back empty on VM stacks).
@@ -103,6 +105,7 @@ export const CAPABILITIES = Object.freeze({
   },
   dashboards: {
     kind: 'probe',
+    responseShape: 'dashboard-search',
     // grafana_dashboards_search is the canonical otel-mcp-server tool
     // (Grafana skill). The others are legacy / community-MCP names. The
     // search limit is env-tunable, so the caller injects it at resolve time
@@ -120,6 +123,7 @@ export const CAPABILITIES = Object.freeze({
   },
   scrape_configs: {
     kind: 'probe',
+    responseShape: 'scrape-targets',
     // metrics_targets is the canonical otel-mcp-server tool (metrics skill);
     // returns the Prometheus /api/v1/targets shape. The rest are legacy.
     candidates: [
@@ -133,6 +137,7 @@ export const CAPABILITIES = Object.freeze({
   },
   metric_names: {
     kind: 'probe',
+    responseShape: 'name-values',
     // Candidates ordered by likelihood:
     //   metrics_label_values — canonical otel-mcp-server name; needs
     //     { label: '__name__' } to enumerate metric names

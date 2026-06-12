@@ -1,0 +1,88 @@
+{
+  "groups": [
+    {
+      "name": "finops:capacity",
+      "file": "/etc/vmalert/recording-rules.yml",
+      "interval": 300,
+      "rules": [
+        {
+          "name": "finops:cpu:usage_per_pod_5m",
+          "type": "recording",
+          "state": "",
+          "query": "sum(rate(container_cpu_usage_seconds_total{namespace=\"krystalinex\", container!=\"\"}[5m])) by (pod) * 3600\n",
+          "duration": 0,
+          "health": "ok",
+          "lastError": null,
+          "evaluationTime": 0.000909864,
+          "lastEvaluation": "2026-06-12T13:15:34.975594063Z",
+          "activeAt": null
+        },
+        {
+          "name": "finops:memory:usage_per_pod_gb_hours",
+          "type": "recording",
+          "state": "",
+          "query": "sum(container_memory_working_set_bytes{namespace=\"krystalinex\", container!=\"\"}) by (pod) / 1073741824\n",
+          "duration": 0,
+          "health": "ok",
+          "lastError": null,
+          "evaluationTime": 0.000543262,
+          "lastEvaluation": "2026-06-12T13:15:34.976525676Z",
+          "activeAt": null
+        },
+        {
+          "name": "finops:kong:overhead_seconds",
+          "type": "recording",
+          "state": "",
+          "query": "histogram_quantile(0.99,\n  sum(rate(kong_kong_latency_ms_bucket[5m])) by (le)\n) / 1000\n",
+          "duration": 0,
+          "health": "ok",
+          "lastError": null,
+          "evaluationTime": 0.001332167,
+          "lastEvaluation": "2026-06-12T13:15:34.977074984Z",
+          "activeAt": null
+        }
+      ]
+    },
+    {
+      "name": "krystalinex.application",
+      "file": "/etc/vmalert/alerting-rules.yml",
+      "interval": 15,
+      "rules": [
+        {
+          "name": "HighErrorRate",
+          "type": "alerting",
+          "state": "inactive",
+          "severity": "critical",
+          "query": "(\n  sum(rate(http_requests_total{status=~\"5..\"}[5m]))\n  /\n  sum(rate(http_requests_total[5m]))\n) > 0.05\n",
+          "duration": 120,
+          "health": "ok",
+          "lastError": null,
+          "evaluationTime": 0.002521534,
+          "lastEvaluation": "2026-06-12T13:16:33.245164177Z",
+          "activeAt": null,
+          "annotations": {
+            "description": "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)",
+            "summary": "High error rate detected"
+          }
+        },
+        {
+          "name": "HighLatencyP99",
+          "type": "alerting",
+          "state": "inactive",
+          "severity": "warning",
+          "query": "histogram_quantile(0.99,\n  sum(rate(http_request_duration_seconds_bucket[5m])) by (le)\n) > 2\n",
+          "duration": 300,
+          "health": "ok",
+          "lastError": null,
+          "evaluationTime": 0.029914935,
+          "lastEvaluation": "2026-06-12T13:16:33.247703519Z",
+          "activeAt": null,
+          "annotations": {
+            "description": "P99 latency is {{ $value | humanizeDuration }} (threshold: 2s)",
+            "summary": "High P99 latency detected"
+          }
+        }
+      ]
+    }
+  ]
+}
