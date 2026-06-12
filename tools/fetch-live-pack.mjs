@@ -40,6 +40,7 @@ import { validateCanonical, SPEC_VERSION } from './lib/validator.mjs';
 import { inferSlisFromRecordingRules } from './lib/sli-inference.mjs';
 import { materializeL2XFromBackends } from './lib/l2x.mjs';
 import { serviceSlug as slug } from './lib/slug.mjs';
+import { probeCandidates, capabilityTool, candidateTool, BUILD_INFO_PROBES } from './lib/contracts/mcp-capabilities.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = resolve(__dirname, '..', 'vendor', 'observability-pack-spec', `v${SPEC_VERSION}`, 'observability-pack.schema.json');
@@ -56,6 +57,23 @@ const JSON_ANNOTATION_BLOCK_LENGTH = 4096;
 // Per-request MCP timeout. Without it a hung endpoint stalls the fetch (and
 // the server's /api/refresh-live caller) forever. Capped at 5 minutes.
 const MCP_TIMEOUT_MS = Math.min(Number(process.env.TOMOGRAPH_MCP_TIMEOUT_MS || 30_000) || 30_000, 300_000);
+
+// Single-tool capability names resolved ONCE from the contract registry
+// (tools/lib/contracts/mcp-capabilities.mjs). The registry owns every MCP
+// tool name; this file never hardcodes one — tools/test-contract-guard.mjs
+// enforces that. Rename a tool upstream → edit the registry row, not this file.
+const TOOL = {
+  backendCapabilities: capabilityTool('backend_capabilities'),
+  systemHealth:        capabilityTool('system_health'),
+  systemTopology:      capabilityTool('system_topology'),
+  anomaliesActive:     capabilityTool('anomalies_active'),
+  anomaliesBaselines:  capabilityTool('anomalies_baselines'),
+  dashboardSearch:     candidateTool('dashboards', 'search'),
+  dashboardDetail:     capabilityTool('dashboard_detail'),
+  grafanaHealth:       capabilityTool('grafana_version'),
+  metricsQuery:        capabilityTool('build_info_versions'),
+  tracesServices:      capabilityTool('traces_alive'),
+};
 
 function annotationJson(value) {
   const compact = JSON.stringify(value);
@@ -428,7 +446,7 @@ export function buildCanonicalPack({
 
   // ---- metadata ----
   // Core tools that were called regardless of probes.
-  const coreCalled = ['system_health','system_topology','anomalies_active','anomalies_baselines'].filter(n => !errors[n]);
+  const coreCalled = [TOOL.systemHealth, TOOL.systemTopology, TOOL.anomaliesActive, TOOL.anomaliesBaselines].filter(n => !errors[n]);
   // Probe tool that actually responded (per probe).
   const probeAnswered = Object.entries(probeResults)
     .filter(([_, v]) => v?.tool)
@@ -504,7 +522,7 @@ export function buildCanonicalPack({
       propagators: ['tracecontext'],
     },
   };
-  if (!errors.system_health) markVerified('otel');
+  if (!errors[TOOL.systemHealth]) markVerified('otel');
 
   // ---- spec.telemetry.backends ----
   // When the MCP exposes backend_capabilities, drive backends from the
@@ -588,7 +606,7 @@ export function buildCanonicalPack({
           signal,
           product: productSlug,
           ...(Object.keys(version).length ? { version } : {}),
-        }, 'backend_capabilities');
+        }, TOOL.backendCapabilities);
       }
     }
   }
@@ -597,10 +615,10 @@ export function buildCanonicalPack({
   // always present even when backend_capabilities was unavailable.
   // (Schema requires at least one telemetry backend.)
   if (backends.length === 0) {
-    pushBackend({ id: 'metrics-prom', signal: 'metrics', product: 'prometheus' }, 'system_health');
+    pushBackend({ id: 'metrics-prom', signal: 'metrics', product: 'prometheus' }, TOOL.systemHealth);
     pushBackend({ id: 'logs-elastic', signal: 'logs',    product: 'elasticsearch' }, null);
     pushBackend({ id: 'traces-jaeger', signal: 'traces', product: 'jaeger' },
-                (topology?.dependencies || []).some(d => (d.child || '').includes('jaeger')) ? 'system_topology' : null);
+                (topology?.dependencies || []).some(d => (d.child || '').includes('jaeger')) ? TOOL.systemTopology : null);
   }
 
   // Capability inventory annotations — the studio renders these on
@@ -833,7 +851,7 @@ export function buildCanonicalPack({
     annotations['mcp.discovered.alerts_firing.count'] = String(names.length);
     annotations['mcp.discovered.alerts_firing.total_firings'] = String(totalFirings);
     annotations['mcp.discovered.alerts_firing.names'] = names.slice(0, 64).join(',');
-    annotations['mcp.discovered.alerts_firing.source'] = 'metrics_query/ALERTS';
+    annotations['mcp.discovered.alerts_firing.source'] = `${TOOL.metricsQuery}/ALERTS`;
     markVerified('policy.alerts_firing');
   }
   if (Array.isArray(ruleEvidence?.recordingRuleNames) && ruleEvidence.recordingRuleNames.length) {
@@ -891,7 +909,7 @@ export function buildCanonicalPack({
     measurement_source: 'mcp.anomalies_baselines',
     review_cadence: 'weekly',
   };
-  if (!errors.anomalies_baselines) markVerified('baselines');
+  if (!errors[TOOL.anomaliesBaselines]) markVerified('baselines');
 
   // ---- spec.validation ----
   // Empty — MCP can't directly attest chaos / synthetics.
@@ -968,15 +986,9 @@ function normInterval(v) {
 export const PROBES = [
   {
     name: 'recording_rules',
-    // VictoriaMetrics stacks expose recorded series + their PromQL via
-    // `vmalert_rules` (type=recording carries the real `query` body and the
-    // group `interval`). It is tried FIRST because on VM-backed clusters the
-    // Prometheus ruler endpoint (`metrics_alerts` / `/api/v1/rules`) returns
-    // EMPTY — which previously forced a name-only inventory fallback that
-    // stubbed each expr as the bare series name. Prometheus /api/v1/rules
-    // returns BOTH recording and alert rules in one payload; our adapt
-    // filters to record-only rules.
-    candidates: ['vmalert_rules', 'metrics_alerts', 'list_recording_rules', 'prometheus_recording_rules', 'metrics_recording_rules', 'mimir_recording_rules', 'rules_list_recording', 'prometheus_rules', 'rules_list'],
+    // Candidate list + fallback-order rationale live in the contract
+    // registry (tools/lib/contracts/mcp-capabilities.mjs).
+    candidates: probeCandidates('recording_rules'),
     target: 'spec.queries.recording_rules',
     adapt: (response) => {
       // Common shapes:
@@ -1003,14 +1015,9 @@ export const PROBES = [
   },
   {
     name: 'alert_rules',
-    // VMAlert (`vmalert_rules` type=alerting) carries the real alert `query`,
-    // `severity`, and `for`/`duration`; tried FIRST for the same reason as
-    // recording_rules (the Prometheus ruler comes back empty on VM stacks).
-    // metrics_alerts (Prometheus /api/v1/rules) and grafana_alert_rules
-    // (Grafana unified alerting) are the next canonical names; alertmanager_alerts
-    // surfaces FIRING alerts (not declarations) but counts as evidence the
-    // alerting stack works.
-    candidates: ['vmalert_rules', 'metrics_alerts', 'grafana_alert_rules', 'alertmanager_alerts', 'list_alert_rules', 'prometheus_alert_rules', 'metrics_alert_rules', 'mimir_alert_rules', 'rules_list_alerting', 'prometheus_alerts'],
+    // Candidate list + fallback-order rationale live in the contract
+    // registry (tools/lib/contracts/mcp-capabilities.mjs).
+    candidates: probeCandidates('alert_rules'),
     target: 'spec.policy.burn_rate_alerts',
     adapt: (response) => {
       const groups = response?.groups || response?.data?.groups || [];
@@ -1034,18 +1041,10 @@ export const PROBES = [
   },
   {
     name: 'dashboards',
-    // grafana_dashboards_search is the canonical otel-mcp-server tool
-    // (Grafana skill). The others are legacy / community-MCP names.
-    candidates: [
-      { name: 'grafana_dashboards_search', args: { type: 'dash-db', limit: GRAFANA_DASHBOARD_SEARCH_LIMIT } },
-      'grafana_dashboard_get',
-      'list_dashboards',
-      'grafana_dashboards',
-      'grafana_list_dashboards',
-      'grafana_search_dashboards',
-      'dashboards_list',
-      'grafana_search',
-    ],
+    // Candidate list + fallback-order rationale live in the contract
+    // registry; the env-tunable search limit is injected here because the
+    // data-only contracts layer doesn't read process.env.
+    candidates: probeCandidates('dashboards', { grafanaDashboardSearchLimit: GRAFANA_DASHBOARD_SEARCH_LIMIT }),
     target: 'spec.dashboards',
     adapt: (response) => {
       // otel-mcp-server's grafana_dashboards_search returns:
@@ -1056,9 +1055,9 @@ export const PROBES = [
   },
   {
     name: 'scrape_configs',
-    // metrics_targets is the canonical otel-mcp-server tool (metrics skill);
-    // returns the Prometheus /api/v1/targets shape. The rest are legacy.
-    candidates: ['metrics_targets', 'list_scrape_configs', 'prometheus_scrape_configs', 'prometheus_targets', 'metrics_scrape_jobs', 'list_metric_jobs'],
+    // Candidate list + fallback-order rationale live in the contract
+    // registry (tools/lib/contracts/mcp-capabilities.mjs).
+    candidates: probeCandidates('scrape_configs'),
     target: 'spec.telemetry.scrape_evidence',   // annotation-only; no schema field
     adapt: (response) => {
       // otel-mcp-server's metrics_targets returns:
@@ -1083,22 +1082,10 @@ export const PROBES = [
   },
   {
     name: 'metric_names',
-    // Candidates ordered by likelihood. Candidates can be either a bare
-    // tool name (no args needed) or `{ name, args }` when the tool
-    // requires arguments to enumerate metric names:
-    //   metrics_label_values  — canonical otel-mcp-server name; needs
-    //     { label: '__name__' } to enumerate metric names
-    //   metrics_metadata      — requires { metric: '<name>' } per metric,
-    //     so it's the FALLBACK only (chicken-and-egg)
-    //   the rest are legacy / community-MCP names
-    candidates: [
-      { name: 'metrics_label_values', args: { label: '__name__' } },
-      'list_metrics',
-      'prometheus_metric_names',
-      'metrics_inventory',
-      'mimir_metric_names',
-      'metrics_metadata',
-    ],
+    // Candidate list + fallback-order rationale live in the contract
+    // registry. Candidates are either a bare tool name (no args) or
+    // `{ name, args }` when the tool needs arguments to enumerate names.
+    candidates: probeCandidates('metric_names'),
     target: 'spec.otel.metric_inventory',
     adapt: (response) => {
       // otel-mcp-server metrics_label_values shape:
@@ -1190,16 +1177,16 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   // VersionSpec was designed around. Call it up-front; downstream
   // builders use it to (a) declare telemetry.backends[] with real
   // version blocks and (b) surface the full inventory to the studio.
-  const capabilitiesRaw = discoveredToolNames.has('backend_capabilities')
-    ? await safe('backend_capabilities', () => callTool('backend_capabilities'))
+  const capabilitiesRaw = discoveredToolNames.has(TOOL.backendCapabilities)
+    ? await safe(TOOL.backendCapabilities, () => callTool(TOOL.backendCapabilities))
     : null;
   const capabilities = capabilitiesRaw ? parseBackendCapabilities(capabilitiesRaw) : null;
 
   const [health, topology, anomaliesActive, baselinesData] = await Promise.all([
-    safe('system_health',       () => callTool('system_health')),
-    safe('system_topology',     () => callTool('system_topology')),
-    safe('anomalies_active',    () => callTool('anomalies_active')),
-    safe('anomalies_baselines', () => callTool('anomalies_baselines')),
+    safe(TOOL.systemHealth,       () => callTool(TOOL.systemHealth)),
+    safe(TOOL.systemTopology,     () => callTool(TOOL.systemTopology)),
+    safe(TOOL.anomaliesActive,    () => callTool(TOOL.anomaliesActive)),
+    safe(TOOL.anomaliesBaselines, () => callTool(TOOL.anomaliesBaselines)),
   ]);
 
   if (!health || !topology) {
@@ -1322,10 +1309,10 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   // raw sanitized Grafana JSON when the MCP exposes it. Enrich the winning
   // dashboard probe with one grafana_dashboard_get call per UID.
   if (
-    probeResults.dashboards?.tool === 'grafana_dashboards_search' &&
-    discoveredToolNames.has('grafana_dashboard_get')
+    probeResults.dashboards?.tool === TOOL.dashboardSearch &&
+    discoveredToolNames.has(TOOL.dashboardDetail)
   ) {
-    const searchResponse = await cachedCall('grafana_dashboards_search', {
+    const searchResponse = await cachedCall(TOOL.dashboardSearch, {
       type: 'dash-db',
       limit: GRAFANA_DASHBOARD_SEARCH_LIMIT,
     });
@@ -1338,7 +1325,7 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
         detailed.push(dashboardFromSearchItem(item));
         continue;
       }
-      const detail = await cachedCall('grafana_dashboard_get', {
+      const detail = await cachedCall(TOOL.dashboardDetail, {
         uid,
         include_json: GRAFANA_DASHBOARD_INCLUDE_JSON,
         panel_limit: GRAFANA_DASHBOARD_PANEL_LIMIT,
@@ -1353,10 +1340,10 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     if (detailed.length) {
       probeResults.dashboards = {
         ...probeResults.dashboards,
-        tool: 'grafana_dashboards_search+grafana_dashboard_get',
+        tool: `${TOOL.dashboardSearch}+${TOOL.dashboardDetail}`,
         attempted: [
           ...(probeResults.dashboards.attempted || []),
-          'grafana_dashboard_get',
+          TOOL.dashboardDetail,
         ].filter((v, i, a) => a.indexOf(v) === i),
         adapted: detailed,
         rawSize: JSON.stringify(detailed).length,
@@ -1384,55 +1371,29 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   const liveVersions = {};
 
   // Grafana — grafana_health returns {version, commit, database, orgId}.
-  if (discoveredToolNames.has('grafana_health')) {
-    const r = await quiet('grafana_health', () => callTool('grafana_health'));
+  if (discoveredToolNames.has(TOOL.grafanaHealth)) {
+    const r = await quiet(TOOL.grafanaHealth, () => callTool(TOOL.grafanaHealth));
     if (r && typeof r.version === 'string') {
-      liveVersions.grafana = { declared: r.version, commit: r.commit || null, source: 'grafana_health' };
+      liveVersions.grafana = { declared: r.version, commit: r.commit || null, source: TOOL.grafanaHealth };
     }
   }
 
   // Metrics-query-based version probes — each backend that publishes a
-  // `*_build_info` metric (Prometheus convention) gets a probe here. We
-  // run them in parallel since each is independent. The label that
-  // carries the version differs by product:
-  //
-  //   vm_app_version       → labels { short_version, version }
-  //   prometheus_build_info → labels { version, revision, branch }
-  //   loki_build_info       → labels { version, revision }
-  //   alertmanager_build_info → labels { version, revision }
-  //   tempo_build_info      → labels { version, revision }
-  //   cortex_build_info     → labels { version, revision } (Mimir uses the
-  //                              cortex_ prefix from its Cortex heritage)
-  //   grafana_build_info    → labels { version, edition, branch }
-  //                              (we also have grafana_health above; this
-  //                              is the metric fallback for installs that
-  //                              don't expose the health tool)
-  //
-  // For each, the same shape: query the metric, take the first result's
-  // labels, capture { declared, source } plus any provenance labels
-  // (revision, edition, branch). When the result is empty, the backend
-  // either isn't scraped or doesn't publish that metric — both are
-  // legitimate negatives that the studio chip should NOT mark as live.
-  if (discoveredToolNames.has('metrics_query')) {
-    const buildInfoProbes = [
-      // product slug, metric name, version-label (in priority order)
-      { product: 'victoriametrics', metric: 'vm_app_version',           versionLabels: ['short_version', 'version'], extra: ['version'] },
-      { product: 'prometheus',      metric: 'prometheus_build_info',    versionLabels: ['version'],                  extra: ['revision', 'branch'] },
-      { product: 'loki',            metric: 'loki_build_info',          versionLabels: ['version'],                  extra: ['revision', 'branch'] },
-      { product: 'alertmanager',    metric: 'alertmanager_build_info',  versionLabels: ['version'],                  extra: ['revision', 'branch'] },
-      { product: 'tempo',           metric: 'tempo_build_info',         versionLabels: ['version'],                  extra: ['revision', 'branch'] },
-      { product: 'mimir',           metric: 'cortex_build_info',        versionLabels: ['version'],                  extra: ['revision', 'branch'] },
-      // grafana_build_info is a metric fallback for the rare case where
-      // grafana_health isn't exposed; harmless if it duplicates because
-      // grafana_health stamps first and we don't overwrite below.
-      { product: 'grafana',         metric: 'grafana_build_info',       versionLabels: ['version'],                  extra: ['edition', 'branch'] },
-    ];
-
-    await Promise.all(buildInfoProbes.map(async (probe) => {
+  // `*_build_info` metric (Prometheus convention) gets a row in
+  // BUILD_INFO_PROBES (contract registry); the per-product metric and
+  // version-label facts live there. We run them in parallel since each is
+  // independent. For each, the same shape: query the metric, take the
+  // first result's labels, capture { declared, source } plus any
+  // provenance labels (revision, edition, branch). When the result is
+  // empty, the backend either isn't scraped or doesn't publish that
+  // metric — both are legitimate negatives that the studio chip should
+  // NOT mark as live.
+  if (discoveredToolNames.has(TOOL.metricsQuery)) {
+    await Promise.all(BUILD_INFO_PROBES.map(async (probe) => {
       // Skip if a richer source (e.g. grafana_health) already populated this product.
       if (liveVersions[probe.product]) return;
-      const resp = await quiet(`metrics_query.${probe.metric}`,
-        () => callTool('metrics_query', { query: probe.metric }));
+      const resp = await quiet(`${TOOL.metricsQuery}.${probe.metric}`,
+        () => callTool(TOOL.metricsQuery, { query: probe.metric }));
       const series = resp?.result?.[0]?.metric;
       if (!series) return;
       let declared = null;
@@ -1443,7 +1404,7 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
         }
       }
       if (!declared) return;
-      const info = { declared, source: `metrics_query/${probe.metric}` };
+      const info = { declared, source: `${TOOL.metricsQuery}/${probe.metric}` };
       for (const x of (probe.extra || [])) {
         if (typeof series[x] === 'string' && series[x] !== declared) info[x] = series[x];
       }
@@ -1472,8 +1433,8 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   // backend in the capability inventory (typically Jaeger) — never
   // light up all of them, which would falsely claim Tempo/Zipkin/etc.
   // are running.
-  if (discoveredToolNames.has('traces_services')) {
-    const tr = await quiet('traces_services', () => callTool('traces_services'));
+  if (discoveredToolNames.has(TOOL.tracesServices)) {
+    const tr = await quiet(TOOL.tracesServices, () => callTool(TOOL.tracesServices));
     if (tr && Array.isArray(tr.services) && tr.services.length) {
       const services = tr.services.map(s => String(s).toLowerCase());
       const tracesBackends = (capabilities?.skills || [])
@@ -1489,7 +1450,7 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
       if (winner && !liveVersions[winner]) {
         liveVersions[winner] = {
           alive: true,
-          source: 'traces_services',
+          source: TOOL.tracesServices,
           serviceCount: tr.services.length,
           disambiguatedBy: matched ? 'service-name-match' : 'capability-inventory-first',
         };
@@ -1530,9 +1491,9 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
   const alertProbe = probeResults?.alert_rules;
   const alertPrimaryEmpty = alertProbe &&
     (alertProbe.outcome === 'empty' || (Array.isArray(alertProbe.adapted) && alertProbe.adapted.length === 0));
-  if (alertPrimaryEmpty && discoveredToolNames.has('metrics_query')) {
-    const r = await quiet('metrics_query.ALERTS',
-      () => callTool('metrics_query', { query: 'count by (alertname, severity, team, alertgroup) (ALERTS{alertstate="firing"})' }));
+  if (alertPrimaryEmpty && discoveredToolNames.has(TOOL.metricsQuery)) {
+    const r = await quiet(`${TOOL.metricsQuery}.ALERTS`,
+      () => callTool(TOOL.metricsQuery, { query: 'count by (alertname, severity, team, alertgroup) (ALERTS{alertstate="firing"})' }));
     const series = Array.isArray(r?.result) ? r.result : [];
     for (const s of series) {
       const m = s?.metric || {};
@@ -1576,21 +1537,21 @@ export async function fetchMcp({ mcpUrl, mcpAuth = null } = {}) {
     Object.values(probeResults)
       .flatMap(r => String(r?.tool || '').split('+'))
       .filter(Boolean)
-      .concat(['system_health', 'system_topology', 'anomalies_active', 'anomalies_baselines'])
+      .concat([TOOL.systemHealth, TOOL.systemTopology, TOOL.anomaliesActive, TOOL.anomaliesBaselines])
   );
   // Version probes count as "wired" too — surface them so they don't
   // show up as "not yet probed" in the unmatched panel.
-  if (liveVersions.grafana?.source === 'grafana_health') allMatchedNames.add('grafana_health');
+  if (liveVersions.grafana?.source === TOOL.grafanaHealth) allMatchedNames.add(TOOL.grafanaHealth);
   // metrics_query gets used for build_info probes across many products
   // (vm_app_version, loki_build_info, alertmanager_build_info, …).
   // If ANY of them landed, the tool is "wired."
   const metricBuiltSourced = Object.values(liveVersions).some(v =>
-    typeof v?.source === 'string' && v.source.startsWith('metrics_query/'));
-  if (metricBuiltSourced) allMatchedNames.add('metrics_query');
+    typeof v?.source === 'string' && v.source.startsWith(`${TOOL.metricsQuery}/`));
+  if (metricBuiltSourced) allMatchedNames.add(TOOL.metricsQuery);
   // traces_services availability probe — wired when any trace product
   // captured an `alive: true` entry via it.
-  const tracesAlive = Object.values(liveVersions).some(v => v?.source === 'traces_services');
-  if (tracesAlive) allMatchedNames.add('traces_services');
+  const tracesAlive = Object.values(liveVersions).some(v => v?.source === TOOL.tracesServices);
+  if (tracesAlive) allMatchedNames.add(TOOL.tracesServices);
   const unmatchedTools = discoveredTools.filter(t => !allMatchedNames.has(t.name));
 
   return {
