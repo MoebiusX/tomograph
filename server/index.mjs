@@ -53,6 +53,8 @@ import {
 } from '../tools/lib/journey.mjs';
 import { retrofeedShadowSignals } from '../tools/lib/retrofeed.mjs';
 import { initAuth, authEnabled, readSession } from './auth.mjs';
+import { validateMcpUrl, redactCredentials } from './mcp-url.mjs';
+import { parseGithubUrl, isCrawlerFile, ghFetch } from './github-crawl.mjs';
 import { versionInfo } from './version.mjs';
 import { tenancyEnabled, orgsForUser, orgExists, runWithOrg, currentOrg, readOrgs, migrateFlatWorkspace } from './tenancy.mjs';
 import { setWorkspaceRootResolver } from '../tools/lib/journey.mjs';
@@ -319,66 +321,9 @@ function readEnv(query) {
   return typeof query.env === 'string' && query.env ? query.env : null;
 }
 
-// ---------- MCP URL validation (SSRF guard) ----------
-//
-// Every deploy / draft / refresh endpoint fetches a caller-supplied mcpUrl
-// server-side, which is a server-side request forgery vector if the URL is
-// taken on faith. validateMcpUrl() is the single gate:
-//   - only http(s) is accepted (no file:, ftp:, gopher:, ...);
-//   - localhost / private / link-local addresses are allowed by default
-//     (a local MCP server is the normal dev setup) but logged per use;
-//     set TOMOGRAPH_ALLOW_LOCAL_MCP=0 to turn them into 400s when the
-//     studio is exposed beyond the developer's own machine;
-//   - the returned safeUrl has credentials stripped — stderr logs must use
-//     it (or redactCredentials), never the raw URL.
-// Hostnames that RESOLVE to private addresses are not caught (no DNS
-// lookup here); the literal-IP check covers hex/decimal/octal IPv4 forms
-// because the WHATWG URL parser normalises those to dotted-decimal.
-
-const PRIVATE_V4 = [
-  /^127\./, /^10\./, /^192\.168\./, /^169\.254\./, /^0\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-];
-
-function isLocalOrPrivateHost(hostname) {
-  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  if (PRIVATE_V4.some(re => re.test(host))) return true;
-  // IPv6: loopback/unspecified, unique-local fc00::/7, link-local fe80::/10,
-  // and IPv4-mapped forms of any of the above.
-  if (host === '::1' || host === '::') return true;
-  if (/^f[cd]/.test(host) || /^fe[89ab]/.test(host)) return true;
-  if (host.startsWith('::ffff:')) return isLocalOrPrivateHost(host.slice(7));
-  return false;
-}
-
-function redactCredentials(text) {
-  return String(text).replace(/\/\/[^/\s@]+@/g, '//***@');
-}
-
-// Returns { safeUrl } when the URL is fetchable, { error } when it must be
-// rejected with a 400. safeUrl is the parsed URL with credentials removed.
-function validateMcpUrl(raw) {
-  let url;
-  try {
-    url = new URL(raw);
-  } catch {
-    return { error: `mcpUrl is not a valid URL: ${redactCredentials(raw)}` };
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    return { error: `mcpUrl must be http or https; got scheme '${url.protocol.replace(/:$/, '')}'` };
-  }
-  url.username = '';
-  url.password = '';
-  const safeUrl = url.href;
-  if (isLocalOrPrivateHost(url.hostname)) {
-    if (process.env.TOMOGRAPH_ALLOW_LOCAL_MCP === '0') {
-      return { error: `mcpUrl targets a local/private address (${url.hostname}), which TOMOGRAPH_ALLOW_LOCAL_MCP=0 forbids` };
-    }
-    process.stderr.write(`[mcp-url] note: ${safeUrl} targets a local/private address; set TOMOGRAPH_ALLOW_LOCAL_MCP=0 to refuse these\n`);
-  }
-  return { safeUrl };
-}
+// MCP URL validation (SSRF guard) lives in server/mcp-url.mjs — every
+// deploy / draft / refresh endpoint goes through validateMcpUrl(), and
+// stderr logs use redactCredentials()/safeUrl, never the raw URL.
 
 // Returns a canonical object with the env overlay applied to spec.* AND
 // effective criticality/target propagated up to metadata.bindings so the
@@ -2142,69 +2087,7 @@ app.post('/api/crawl', (req, res) => {
 //
 // Bandwidth guards: max 200 files, max 16 MB total, max 1 MB per file.
 // ----------------------------------------------------------------
-function parseGithubUrl(input) {
-  if (typeof input !== 'string' || !input.trim()) return null;
-  const cleaned = input.trim().replace(/\.git$/, '').replace(/\/$/, '');
-  // owner/repo bare form
-  const bare = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/.exec(cleaned);
-  if (bare) return { owner: bare[1], repo: bare[2] };
-  // Full URL form
-  const url = /github\.com[/:]([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)(?:\/tree\/([A-Za-z0-9._/-]+))?/.exec(cleaned);
-  if (url) return { owner: url[1], repo: url[2], ref: url[3] };
-  return null;
-}
-
-// Files the crawler will actually look at — keep the network round
-// trips down by filtering BEFORE downloading.
-function isCrawlerFile(path) {
-  if (typeof path !== 'string') return false;
-  const p = path.toLowerCase();
-  if (p.includes('node_modules/') || p.includes('.git/') || p.startsWith('.git/')) return false;
-  const sourceMetricCandidate =
-    /\.(cjs|mjs|js|jsx|ts|tsx|py|go|java|kt|rs|cs)$/.test(p) &&
-    !/(\.test\.|\.spec\.|\.d\.ts$|package-lock|yarn\.lock|pnpm-lock|tokenizer\.json)/.test(p) &&
-    /(metrics?|prometheus|observability|telemetry|instrumentation|monitor|otel|mcp|bayesian|processor)/.test(p);
-  return (
-    sourceMetricCandidate ||
-    /(^|\/)(application|bootstrap)[\w.-]*\.ya?ml$/.test(p) ||
-    /(^|\/)docker[-_]compose[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
-    /(^|\/)compose[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
-    /\.rules\.(ya?ml)$/.test(p) ||
-    /(^|\/)prometheus[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
-    /(^|\/)alertmanager[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
-    /(^|\/)otel[a-z0-9._-]*config[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
-    /(^|\/)otelcol[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
-    /(^|\/)collector[a-z0-9._-]*\.(ya?ml)$/.test(p) ||
-    /(^|\/)chart\.(ya?ml)$/.test(p) ||
-    /(^|\/)values[\w.-]*\.(ya?ml)$/.test(p) ||
-    /(^|\/)templates\/.*\.(ya?ml)$/.test(p) ||
-    /(^|\/)k8s\/.*\.(ya?ml)$/.test(p) ||
-    /(^|\/)dashboards?\/.*\.json$/.test(p) ||
-    /(^|\/)grafana\/.*\.json$/.test(p) ||
-    /\.dashboard\.json$/.test(p) ||
-    /(^|\/)kustomization\.(ya?ml)$/.test(p)
-  );
-}
-
-async function ghFetch(path, init = {}) {
-  const headers = {
-    'Accept': 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-    'User-Agent': 'tomograph-crawler/1.0',
-    ...(init.headers || {}),
-  };
-  if (process.env.GITHUB_TOKEN) {
-    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
-  }
-  const res = await fetch(`https://api.github.com${path}`, { ...init, headers });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    const err = new Error(`GitHub ${res.status} on ${path}: ${body.slice(0, 200)}`);
-    err.status = res.status;
-    throw err;
-  }
-  return res;
-}
+// parseGithubUrl / isCrawlerFile / ghFetch live in server/github-crawl.mjs.
 
 app.post('/api/crawl-github', async (req, res) => {
   const body = req.body || {};
