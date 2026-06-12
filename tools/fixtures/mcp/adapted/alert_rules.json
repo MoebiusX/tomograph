@@ -1,0 +1,26 @@
+[
+  {
+    "name": "HighErrorRate",
+    "expr": "(\n  sum(rate(http_requests_total{status=~\"5..\"}[5m]))\n  /\n  sum(rate(http_requests_total[5m]))\n) > 0.05\n",
+    "for": "2m",
+    "labels": {
+      "severity": "critical"
+    },
+    "annotations": {
+      "description": "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)",
+      "summary": "High error rate detected"
+    }
+  },
+  {
+    "name": "HighLatencyP99",
+    "expr": "histogram_quantile(0.99,\n  sum(rate(http_request_duration_seconds_bucket[5m])) by (le)\n) > 2\n",
+    "for": "5m",
+    "labels": {
+      "severity": "warning"
+    },
+    "annotations": {
+      "description": "P99 latency is {{ $value | humanizeDuration }} (threshold: 2s)",
+      "summary": "High P99 latency detected"
+    }
+  }
+]

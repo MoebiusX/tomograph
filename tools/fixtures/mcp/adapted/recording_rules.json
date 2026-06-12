@@ -1,0 +1,17 @@
+[
+  {
+    "name": "finops:cpu:usage_per_pod_5m",
+    "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"krystalinex\", container!=\"\"}[5m])) by (pod) * 3600\n",
+    "interval": "5m"
+  },
+  {
+    "name": "finops:memory:usage_per_pod_gb_hours",
+    "expr": "sum(container_memory_working_set_bytes{namespace=\"krystalinex\", container!=\"\"}) by (pod) / 1073741824\n",
+    "interval": "5m"
+  },
+  {
+    "name": "finops:kong:overhead_seconds",
+    "expr": "histogram_quantile(0.99,\n  sum(rate(kong_kong_latency_ms_bucket[5m])) by (le)\n) / 1000\n",
+    "interval": "5m"
+  }
+]

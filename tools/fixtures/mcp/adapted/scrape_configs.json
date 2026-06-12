@@ -1,0 +1,8 @@
+[
+  "node-exporter",
+  "alertmanager",
+  "grafana",
+  "otel-collector",
+  "payment-processor",
+  "victoriametrics"
+]
