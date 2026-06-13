@@ -1,6 +1,6 @@
-# Tomograph
+# Tomograph is now Observogram
 
-**Tomograph is the observability compiler and diagnostic workspace for
+**Observogram is the observability compiler and diagnostic workspace for
 ObservabilityPack spec v1.2.**
 
 It answers one operational question:
@@ -60,7 +60,7 @@ Create or load a pack:
 - generate a live pack from an OpenTelemetry MCP server
 - upload a canonical YAML or JSON ObservabilityPack
 
-The Discover view renders the observability tomogram across the layered model:
+The Discover view renders the observability Observogram across the layered model:
 
 - L1 Contract: SLIs and SLOs
 - L2 Telemetry: OTel, backends, collectors, pipelines
@@ -322,7 +322,7 @@ studio/
   app.mjs                  Browser app shell and three-step workflow
   compare-view.mjs         Diagnostic Grade, drift, traceability entry points
   compile-view.mjs         Remediate, compile catalog, deploy surfaces
-  layers-view.mjs          Discover tomogram and artifact cards
+  layers-view.mjs          Discover Observogram and artifact cards
 
 tools/
   crawl-repo.mjs           CLI repo crawler
